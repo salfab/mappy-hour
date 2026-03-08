@@ -283,6 +283,8 @@ interface InstantStreamDonePayload {
 const METERS_PER_DEGREE_LAT = 111_320;
 const DEFAULT_MAP_CENTER: [number, number] = [46.5197, 6.6323];
 const DEFAULT_MAP_ZOOM = 13;
+const MAP_MAX_NATIVE_ZOOM = 19;
+const MAP_MAX_ZOOM = 23;
 const MAP_VIEW_STORAGE_KEY = "mappy-hour:map:view";
 const UI_PARAMS_STORAGE_KEY = "mappy-hour:ui:params";
 type XY = [number, number];
@@ -345,7 +347,9 @@ function loadStoredMapView(): StoredMapView | null {
       lon < -180 ||
       lon > 180 ||
       typeof zoom !== "number" ||
-      !Number.isFinite(zoom)
+      !Number.isFinite(zoom) ||
+      zoom < 0 ||
+      zoom > MAP_MAX_ZOOM
     ) {
       return null;
     }
@@ -1697,6 +1701,7 @@ export function SunlightMapClient() {
       const storedView = loadStoredMapView();
       const map = L.map(mapContainerRef.current, {
         zoomControl: true,
+        maxZoom: MAP_MAX_ZOOM,
       }).setView(
         storedView
           ? [storedView.lat, storedView.lon]
@@ -1705,7 +1710,8 @@ export function SunlightMapClient() {
       );
 
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
+        maxNativeZoom: MAP_MAX_NATIVE_ZOOM,
+        maxZoom: MAP_MAX_ZOOM,
         attribution: "&copy; OpenStreetMap contributors",
       }).addTo(map);
 
