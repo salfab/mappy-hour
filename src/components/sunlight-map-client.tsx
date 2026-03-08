@@ -42,8 +42,28 @@ interface AreaApiResponse {
   };
 }
 
-function todayLocalDateString(): string {
-  return new Date().toISOString().slice(0, 10);
+function zurichNowDateAndTime(): { date: string; time: string } {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Europe/Zurich",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+    .formatToParts(now)
+    .reduce<Record<string, string>>((accumulator, part) => {
+      if (part.type !== "literal") {
+        accumulator[part.type] = part.value;
+      }
+      return accumulator;
+    }, {});
+
+  const date = `${parts.year}-${parts.month}-${parts.day}`;
+  const time = `${parts.hour}:${parts.minute}`;
+  return { date, time };
 }
 
 function getInstantColor(point: AreaInstantPoint): string {
@@ -73,14 +93,15 @@ function getDailyColor(sunnyMinutes: number): string {
 }
 
 export function SunlightMapClient() {
+  const defaultNow = useMemo(() => zurichNowDateAndTime(), []);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
   const pointsLayerRef = useRef<LayerGroup | null>(null);
   const leafletModuleRef = useRef<typeof import("leaflet") | null>(null);
 
   const [mode, setMode] = useState<AreaMode>("instant");
-  const [date, setDate] = useState(todayLocalDateString());
-  const [localTime, setLocalTime] = useState("12:00");
+  const [date, setDate] = useState(defaultNow.date);
+  const [localTime, setLocalTime] = useState(defaultNow.time);
   const [gridStepMeters, setGridStepMeters] = useState(200);
   const [sampleEveryMinutes, setSampleEveryMinutes] = useState(15);
   const [isLoading, setIsLoading] = useState(false);

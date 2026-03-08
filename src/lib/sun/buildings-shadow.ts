@@ -97,9 +97,14 @@ function pointInPolygon(pointX: number, pointY: number, polygon: FootprintPoint[
     const xj = polygon[j].x;
     const yj = polygon[j].y;
 
+    const deltaY = yj - yi;
+    if (Math.abs(deltaY) < 1e-12) {
+      continue;
+    }
+
     const intersects =
       yi > pointY !== yj > pointY &&
-      pointX < ((xj - xi) * (pointY - yi)) / Math.max(yj - yi, 1e-12) + xi;
+      pointX < ((xj - xi) * (pointY - yi)) / deltaY + xi;
     if (intersects) {
       inside = !inside;
     }
