@@ -7,7 +7,7 @@ import { buildGridFromBbox } from "@/lib/geo/grid";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
 import { evaluateInstantSunlight } from "@/lib/sun/solar";
-import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
+import { zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
 export const runtime = "nodejs";
 
@@ -21,9 +21,7 @@ const querySchema = z
     maxLat: z.coerce.number(),
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     timezone: z.string().default("Europe/Zurich"),
-    startLocalTime: z.string().regex(/^\d{2}:\d{2}$/).default("00:00"),
-    endLocalTime: z.string().regex(/^\d{2}:\d{2}$/).default("23:59"),
-    sampleEveryMinutes: z.coerce.number().int().min(1).max(60).default(15),
+    localTime: z.string().regex(/^\d{2}:\d{2}$/).default("12:00"),
     gridStepMeters: z.coerce.number().int().min(1).max(2000).default(250),
     maxPoints: z.coerce.number().int().min(1).max(5000).default(3000),
   })
@@ -42,28 +40,15 @@ const querySchema = z
     },
   );
 
-interface PreparedPoint {
-  id: string;
-  lat: number;
-  lon: number;
-  pointLv95: {
-    easting: number;
-    northing: number;
-  };
-  pointElevationMeters: number | null;
-  horizonMask: Awaited<
-    ReturnType<typeof buildPointEvaluationContext>
-  >["horizonMask"];
-  buildingShadowEvaluator: Awaited<
-    ReturnType<typeof buildPointEvaluationContext>
-  >["buildingShadowEvaluator"];
-  vegetationShadowEvaluator: Awaited<
-    ReturnType<typeof buildPointEvaluationContext>
-  >["vegetationShadowEvaluator"];
-}
-
 function dedupeWarnings(warnings: string[]): string[] {
   return Array.from(new Set(warnings));
+}
+
+function percent(done: number, total: number): number {
+  if (total <= 0) {
+    return 100;
+  }
+  return Math.max(0, Math.min(100, (done / total) * 100));
 }
 
 function extractTerrainHorizonDebug(
@@ -78,45 +63,6 @@ function extractTerrainHorizonDebug(
     radiusKm: mask.radiusKm,
     ridgePoints: mask.ridgePoints,
   };
-}
-
-function createUtcSamples(
-  date: string,
-  timeZone: string,
-  sampleEveryMinutes: number,
-  startLocalTime: string,
-  endLocalTime: string,
-): Date[] {
-  const { startUtc: dayStartUtc, endUtc: dayEndUtc } = getZonedDayRangeUtc(date, timeZone);
-  const rangeStartUtc = zonedDateTimeToUtc(date, startLocalTime, timeZone);
-  const rangeEndUtc = zonedDateTimeToUtc(date, endLocalTime, timeZone);
-  const startUtc = new Date(
-    Math.max(dayStartUtc.getTime(), rangeStartUtc.getTime()),
-  );
-  const endUtc = new Date(Math.min(dayEndUtc.getTime(), rangeEndUtc.getTime()));
-  if (endUtc.getTime() <= startUtc.getTime()) {
-    return [];
-  }
-  const sampleEveryMs = sampleEveryMinutes * 60_000;
-  const result: Date[] = [];
-
-  for (
-    let cursor = startUtc.getTime();
-    cursor < endUtc.getTime();
-    cursor += sampleEveryMs
-  ) {
-    result.push(new Date(cursor));
-  }
-
-  return result;
-}
-
-function percent(done: number, total: number): number {
-  if (total <= 0) {
-    return 100;
-  }
-
-  return Math.max(0, Math.min(100, (done / total) * 100));
 }
 
 function yieldToEventLoop(): Promise<void> {
@@ -162,6 +108,7 @@ export async function GET(request: Request) {
         { status: 400 },
       );
     }
+
     const signal = request.signal;
     let streamAborted = false;
 
@@ -180,16 +127,20 @@ export async function GET(request: Request) {
         };
 
         const run = async () => {
-          const points: PreparedPoint[] = [];
           const warnings: string[] = [];
-          let indoorPointsExcluded = 0;
-          let pointsWithElevation = 0;
+          const utcDate = zonedDateTimeToUtc(query.date, query.localTime, query.timezone);
+          const totalSteps = grid.length + 1;
+          const startedAt = performance.now();
+          const partialBatchSize = 120;
+          const progressInterval = Math.max(1, Math.floor(grid.length / 200));
+
           let terrainMethod = "none";
           let buildingsMethod = "none";
           let vegetationMethod = "none";
-          const preparationStartedAt = performance.now();
-          const preparationTotalSteps = grid.length + 1;
-          const prepProgressInterval = Math.max(1, Math.floor(grid.length / 200));
+          let pointsWithElevation = 0;
+          let indoorPointsExcluded = 0;
+          let outdoorPointCount = 0;
+          let processedRawPoints = 0;
           let terrainHorizonOverride:
             | Awaited<ReturnType<typeof buildDynamicHorizonMask>>
             | undefined;
@@ -197,7 +148,7 @@ export async function GET(request: Request) {
           sendEvent("progress", {
             phase: "preparing",
             done: 0,
-            total: preparationTotalSteps,
+            total: totalSteps,
             percent: 0,
             etaSeconds: null,
           });
@@ -221,24 +172,63 @@ export async function GET(request: Request) {
               `Dynamic terrain horizon build failed (${error instanceof Error ? error.message : "unknown error"}). Falling back to preprocessed Lausanne horizon mask when available.`,
             );
           }
-          const terrainHorizonDebug = extractTerrainHorizonDebug(
-            terrainHorizonOverride,
-          );
+
+          const terrainHorizonDebug = extractTerrainHorizonDebug(terrainHorizonOverride);
+          sendEvent("start", {
+            mode: "instant",
+            date: query.date,
+            timezone: query.timezone,
+            localTime: query.localTime,
+            utcTime: utcDate.toISOString(),
+            bbox: {
+              minLon: query.minLon,
+              minLat: query.minLat,
+              maxLon: query.maxLon,
+              maxLat: query.maxLat,
+            },
+            gridStepMeters: query.gridStepMeters,
+            gridPointCount: grid.length,
+            model: {
+              terrainHorizonMethod: terrainMethod,
+              buildingsShadowMethod: buildingsMethod,
+              vegetationShadowMethod: vegetationMethod,
+              terrainHorizonDebug,
+            },
+            warnings: dedupeWarnings(warnings),
+          });
           sendEvent("progress", {
-            phase: "preparing",
+            phase: "evaluation",
             done: 1,
-            total: preparationTotalSteps,
-            percent: Math.round(percent(1, preparationTotalSteps) * 10) / 10,
+            total: totalSteps,
+            percent: Math.round(percent(1, totalSteps) * 10) / 10,
             etaSeconds: null,
           });
           await yieldToEventLoop();
 
-          for (let gridIndex = 0; gridIndex < grid.length; gridIndex += 1) {
+          const pointsBatch: Array<{
+            id: string;
+            lat: number;
+            lon: number;
+            lv95Easting: number;
+            lv95Northing: number;
+            pointElevationMeters: number | null;
+            isSunny: boolean;
+            terrainBlocked: boolean;
+            buildingsBlocked: boolean;
+            vegetationBlocked: boolean;
+            altitudeDeg: number;
+            azimuthDeg: number;
+            horizonAngleDeg: number | null;
+            buildingBlockerId: string | null;
+            insideBuilding: boolean;
+            indoorBuildingId: string | null;
+          }> = [];
+
+          for (const point of grid) {
             if (streamAborted) {
               return;
             }
 
-            const point = grid[gridIndex];
             const context = await buildPointEvaluationContext(point.lat, point.lon, {
               skipTerrainSamplingWhenIndoor: true,
               terrainHorizonOverride: terrainHorizonOverride ?? undefined,
@@ -247,11 +237,13 @@ export async function GET(request: Request) {
             buildingsMethod = context.buildingsShadowMethod;
             vegetationMethod = context.vegetationShadowMethod ?? "none";
             warnings.push(...context.warnings);
+            processedRawPoints += 1;
 
             if (context.insideBuilding) {
               indoorPointsExcluded += 1;
             } else {
-              if (points.length >= query.maxPoints) {
+              outdoorPointCount += 1;
+              if (outdoorPointCount > query.maxPoints) {
                 sendEvent("error", {
                   error: "Outdoor grid exceeds maxPoints limit.",
                   details: `Computed more than ${query.maxPoints} outdoor points (raw: ${grid.length}, indoor excluded: ${indoorPointsExcluded}).`,
@@ -263,38 +255,63 @@ export async function GET(request: Request) {
                 pointsWithElevation += 1;
               }
 
-              points.push({
-                id: point.id,
+              const sample = evaluateInstantSunlight({
                 lat: point.lat,
                 lon: point.lon,
-                pointLv95: context.pointLv95,
-                pointElevationMeters: context.pointElevationMeters,
+                utcDate,
+                timeZone: query.timezone,
                 horizonMask: context.horizonMask,
                 buildingShadowEvaluator: context.buildingShadowEvaluator,
                 vegetationShadowEvaluator: context.vegetationShadowEvaluator,
               });
+
+              pointsBatch.push({
+                id: point.id,
+                lat: point.lat,
+                lon: point.lon,
+                lv95Easting: Math.round(context.pointLv95.easting * 1000) / 1000,
+                lv95Northing: Math.round(context.pointLv95.northing * 1000) / 1000,
+                pointElevationMeters: context.pointElevationMeters,
+                isSunny: sample.isSunny,
+                terrainBlocked: sample.terrainBlocked,
+                buildingsBlocked: sample.buildingsBlocked,
+                vegetationBlocked: sample.vegetationBlocked,
+                altitudeDeg: Math.round(sample.altitudeDeg * 1000) / 1000,
+                azimuthDeg: Math.round(sample.azimuthDeg * 1000) / 1000,
+                horizonAngleDeg:
+                  sample.horizonAngleDeg === null
+                    ? null
+                    : Math.round(sample.horizonAngleDeg * 1000) / 1000,
+                buildingBlockerId: sample.buildingBlockerId,
+                insideBuilding: false,
+                indoorBuildingId: null,
+              });
             }
 
-            const prepDone = gridIndex + 1;
+            if (pointsBatch.length >= partialBatchSize) {
+              sendEvent("partial", {
+                points: pointsBatch.splice(0, pointsBatch.length),
+                pointCount: outdoorPointCount,
+                indoorPointsExcluded,
+              });
+              await yieldToEventLoop();
+            }
+
             if (
-              prepDone === grid.length ||
-              prepDone % prepProgressInterval === 0
+              processedRawPoints === grid.length ||
+              processedRawPoints % progressInterval === 0
             ) {
-              const elapsedMs = performance.now() - preparationStartedAt;
-              const preparationDoneSteps = prepDone + 1;
-              const donePercent = percent(
-                preparationDoneSteps,
-                preparationTotalSteps,
-              );
+              const elapsedMs = performance.now() - startedAt;
+              const doneSteps = processedRawPoints + 1;
+              const donePercent = percent(doneSteps, totalSteps);
               const etaMs =
-                preparationDoneSteps > 0
-                  ? (elapsedMs / preparationDoneSteps) *
-                    Math.max(preparationTotalSteps - preparationDoneSteps, 0)
+                doneSteps > 0
+                  ? (elapsedMs / doneSteps) * Math.max(totalSteps - doneSteps, 0)
                   : null;
               sendEvent("progress", {
-                phase: "preparing",
-                done: preparationDoneSteps,
-                total: preparationTotalSteps,
+                phase: "evaluation",
+                done: doneSteps,
+                total: totalSteps,
                 percent: Math.round(donePercent * 10) / 10,
                 etaSeconds:
                   etaMs === null ? null : Math.max(0, Math.round(etaMs / 1000)),
@@ -303,122 +320,43 @@ export async function GET(request: Request) {
             }
           }
 
-          const samples = createUtcSamples(
-            query.date,
-            query.timezone,
-            query.sampleEveryMinutes,
-            query.startLocalTime,
-            query.endLocalTime,
-          );
-          if (samples.length === 0) {
-            sendEvent("error", {
-              error: "Invalid daily time range.",
-              details: `No samples in range ${query.startLocalTime}-${query.endLocalTime} for ${query.date}.`,
+          if (pointsBatch.length > 0) {
+            sendEvent("partial", {
+              points: pointsBatch,
+              pointCount: outdoorPointCount,
+              indoorPointsExcluded,
             });
-            return;
+            await yieldToEventLoop();
           }
-          const totalEvaluations = points.length * samples.length;
-          const responseWarnings = dedupeWarnings(warnings);
-          const evalStartedAt = performance.now();
-          let evaluationsDone = 0;
 
-          sendEvent("start", {
+          sendEvent("done", {
+            mode: "instant",
             date: query.date,
             timezone: query.timezone,
-            startLocalTime: query.startLocalTime,
-            endLocalTime: query.endLocalTime,
-            sampleEveryMinutes: query.sampleEveryMinutes,
+            localTime: query.localTime,
+            utcTime: utcDate.toISOString(),
+            bbox: {
+              minLon: query.minLon,
+              minLat: query.minLat,
+              maxLon: query.maxLon,
+              maxLat: query.maxLat,
+            },
             gridStepMeters: query.gridStepMeters,
+            pointCount: outdoorPointCount,
             gridPointCount: grid.length,
-            pointCount: points.length,
-            indoorPointsExcluded,
-            frameCount: samples.length,
-            points: points.map((point) => ({
-              id: point.id,
-              lat: point.lat,
-              lon: point.lon,
-            })),
             model: {
               terrainHorizonMethod: terrainMethod,
               buildingsShadowMethod: buildingsMethod,
               vegetationShadowMethod: vegetationMethod,
               terrainHorizonDebug,
             },
-            warnings: responseWarnings,
-          });
-          await yieldToEventLoop();
-
-          for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
-            if (streamAborted) {
-              break;
-            }
-
-            const sampleDate = samples[sampleIndex];
-            const sunnyMask = new Uint8Array(Math.ceil(points.length / 8));
-            let sunnyCount = 0;
-            let localTime = "";
-
-            for (let pointIndex = 0; pointIndex < points.length; pointIndex += 1) {
-              const point = points[pointIndex];
-              const sample = evaluateInstantSunlight({
-                lat: point.lat,
-                lon: point.lon,
-                utcDate: sampleDate,
-                timeZone: query.timezone,
-                horizonMask: point.horizonMask,
-                buildingShadowEvaluator: point.buildingShadowEvaluator,
-                vegetationShadowEvaluator: point.vegetationShadowEvaluator,
-              });
-              if (!localTime) {
-                localTime = sample.localTime;
-              }
-
-              if (sample.isSunny) {
-                sunnyMask[pointIndex >> 3] |= 1 << (pointIndex & 7);
-                sunnyCount += 1;
-              }
-
-              evaluationsDone += 1;
-            }
-
-            sendEvent("frame", {
-              index: sampleIndex,
-              localTime,
-              sunnyCount,
-              sunMaskBase64: Buffer.from(sunnyMask).toString("base64"),
-            });
-
-            const elapsedMs = performance.now() - evalStartedAt;
-            const donePercent = percent(evaluationsDone, totalEvaluations);
-            const etaMs =
-              evaluationsDone > 0
-                ? (elapsedMs / evaluationsDone) *
-                    Math.max(totalEvaluations - evaluationsDone, 0)
-                : null;
-
-            sendEvent("progress", {
-              phase: "evaluation",
-              done: evaluationsDone,
-              total: totalEvaluations,
-              percent: Math.round(donePercent * 10) / 10,
-              etaSeconds:
-                etaMs === null ? null : Math.max(0, Math.round(etaMs / 1000)),
-            });
-            await yieldToEventLoop();
-          }
-
-          sendEvent("done", {
+            warnings: dedupeWarnings(warnings),
             stats: {
               elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
-              evaluationElapsedMs:
-                Math.round((performance.now() - evalStartedAt) * 1000) / 1000,
               pointsWithElevation,
-              pointsWithoutElevation: points.length - pointsWithElevation,
+              pointsWithoutElevation: outdoorPointCount - pointsWithElevation,
               indoorPointsExcluded,
-              frameCount: samples.length,
-              totalEvaluations,
             },
-            warnings: responseWarnings,
           });
         };
 
@@ -427,7 +365,7 @@ export async function GET(request: Request) {
             const message =
               error instanceof Error ? error.message : "Unknown streaming error";
             sendEvent("error", {
-              error: "Timeline streaming failed.",
+              error: "Instant streaming failed.",
               details: message,
             });
           })
@@ -449,7 +387,7 @@ export async function GET(request: Request) {
   } catch (error) {
     return NextResponse.json(
       {
-        error: "Daily timeline calculation failed.",
+        error: "Instant area streaming failed.",
         details: error instanceof Error ? error.message : "Unknown error",
       },
       { status: 500 },

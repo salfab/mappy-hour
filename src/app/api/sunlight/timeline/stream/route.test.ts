@@ -42,6 +42,34 @@ function parseSseEventData(streamText: string, eventName: string): unknown | nul
   }
 }
 
+function parseAllSseEventData(streamText: string, eventName: string): unknown[] {
+  const marker = `event: ${eventName}\ndata: `;
+  const payloads: unknown[] = [];
+  let cursor = 0;
+
+  while (cursor < streamText.length) {
+    const startIndex = streamText.indexOf(marker, cursor);
+    if (startIndex < 0) {
+      break;
+    }
+
+    const dataStart = startIndex + marker.length;
+    const dataEnd = streamText.indexOf("\n\n", dataStart);
+    if (dataEnd < 0) {
+      break;
+    }
+
+    try {
+      payloads.push(JSON.parse(streamText.slice(dataStart, dataEnd)));
+    } catch {
+      // Ignore malformed payloads in parser helper.
+    }
+    cursor = dataEnd + 2;
+  }
+
+  return payloads;
+}
+
 vi.mock("@/lib/sun/evaluation-context", () => ({
   buildPointEvaluationContext: vi.fn(async (lat: number, lon: number) =>
     createMockContext(lat, lon),
@@ -167,5 +195,75 @@ describe("GET /api/sunlight/timeline/stream", () => {
     expect(startPayload?.model?.terrainHorizonDebug?.ridgePoints?.[0]?.azimuthDeg).toBe(
       90,
     );
+  });
+
+  it("includes start/end local times in stream start payload", async () => {
+    const request = new Request(
+      "http://localhost/api/sunlight/timeline/stream?minLon=6.599447&minLat=46.522107&maxLon=6.600200&maxLat=46.522700&date=2026-03-08&timezone=Europe/Zurich&startLocalTime=07:00&endLocalTime=09:00&sampleEveryMinutes=60&gridStepMeters=20&maxPoints=3000",
+      {
+        method: "GET",
+      },
+    );
+
+    const response = await GET(request);
+    expect(response.status).toBe(200);
+
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    const decoder = new TextDecoder();
+    let streamText = "";
+    while (true) {
+      const chunk = await reader!.read();
+      if (chunk.done) {
+        break;
+      }
+      streamText += decoder.decode(chunk.value, { stream: true });
+    }
+    streamText += decoder.decode();
+
+    const startPayload = parseSseEventData(streamText, "start") as
+      | {
+          startLocalTime?: string;
+          endLocalTime?: string;
+          frameCount?: number;
+        }
+      | null;
+
+    expect(startPayload).not.toBeNull();
+    expect(startPayload?.startLocalTime).toBe("07:00");
+    expect(startPayload?.endLocalTime).toBe("09:00");
+    expect(startPayload?.frameCount).toBe(2);
+  });
+
+  it("emits an error event when daily range has no samples", async () => {
+    const request = new Request(
+      "http://localhost/api/sunlight/timeline/stream?minLon=6.599447&minLat=46.522107&maxLon=6.600200&maxLat=46.522700&date=2026-03-08&timezone=Europe/Zurich&startLocalTime=10:00&endLocalTime=10:00&sampleEveryMinutes=60&gridStepMeters=20&maxPoints=3000",
+      {
+        method: "GET",
+      },
+    );
+
+    const response = await GET(request);
+    expect(response.status).toBe(200);
+
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    const decoder = new TextDecoder();
+    let streamText = "";
+    while (true) {
+      const chunk = await reader!.read();
+      if (chunk.done) {
+        break;
+      }
+      streamText += decoder.decode(chunk.value, { stream: true });
+    }
+    streamText += decoder.decode();
+
+    const errorPayloads = parseAllSseEventData(streamText, "error") as Array<{
+      error?: string;
+      details?: string;
+    }>;
+    expect(errorPayloads.length).toBeGreaterThan(0);
+    expect(errorPayloads[0]?.error).toContain("Invalid daily time range");
   });
 });
