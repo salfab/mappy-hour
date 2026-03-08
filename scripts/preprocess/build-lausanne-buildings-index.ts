@@ -250,6 +250,46 @@ async function listZipFilesRecursively(rootDirectory: string): Promise<string[]>
   return result;
 }
 
+function selectLatestZipByTile(zipFiles: string[]): string[] {
+  const latestByTile = new Map<
+    string,
+    {
+      filePath: string;
+      version: string;
+    }
+  >();
+  const passthrough: string[] = [];
+
+  for (const filePath of zipFiles) {
+    const fileName = path.basename(filePath);
+    const match =
+      /^swissbuildings3d_2_(\d{4}-\d{2})_(\d{4}-\d{2}_2056_5728\.dxf\.zip)$/i.exec(
+        fileName,
+      );
+    if (!match) {
+      passthrough.push(filePath);
+      continue;
+    }
+
+    const version = match[1];
+    const tileKey = match[2].toLowerCase();
+    const current = latestByTile.get(tileKey);
+    if (!current || version > current.version) {
+      latestByTile.set(tileKey, {
+        filePath,
+        version,
+      });
+    }
+  }
+
+  const selected = [
+    ...passthrough,
+    ...Array.from(latestByTile.values()).map((entry) => entry.filePath),
+  ];
+  selected.sort();
+  return selected;
+}
+
 function parseNumber(value: string): number | null {
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -500,11 +540,18 @@ function parseZipObstacles(
 
 async function main() {
   const startedAt = performance.now();
-  const zipFiles = await listZipFilesRecursively(RAW_BUILDINGS_DIR);
+  const allZipFiles = await listZipFilesRecursively(RAW_BUILDINGS_DIR);
+  const zipFiles = selectLatestZipByTile(allZipFiles);
 
   if (zipFiles.length === 0) {
     throw new Error(
       `No building zip files found in ${RAW_BUILDINGS_DIR}. Run ingest:lausanne:buildings first.`,
+    );
+  }
+
+  if (zipFiles.length !== allZipFiles.length) {
+    console.log(
+      `[buildings-index] Keeping latest zip per tile: ${zipFiles.length}/${allZipFiles.length} files selected.`,
     );
   }
 
@@ -546,8 +593,10 @@ async function main() {
   const payload = {
     generatedAt: new Date().toISOString(),
     method: "dxf-footprint-prism-v1",
+    sourceSelectionStrategy: "latest-zip-per-tile",
     sourceDirectory: RAW_BUILDINGS_DIR,
     zipFilesProcessed: zipFiles.length,
+    zipFilesDiscovered: allZipFiles.length,
     rawObstaclesCount,
     uniqueObstaclesCount: obstacles.length,
     elapsedSeconds,
