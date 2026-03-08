@@ -63,7 +63,54 @@ interface BuildingsAreaApiResponse {
   };
 }
 
+interface TimelinePoint {
+  id: string;
+  lat: number;
+  lon: number;
+}
+
+interface TimelineFrame {
+  index: number;
+  localTime: string;
+  sunnyCount: number;
+  sunMaskBase64: string;
+}
+
+interface DailyTimelineState {
+  date: string;
+  timezone: string;
+  sampleEveryMinutes: number;
+  gridStepMeters: number;
+  pointCount: number;
+  gridPointCount: number;
+  indoorPointsExcluded: number;
+  frameCount: number;
+  points: TimelinePoint[];
+  frames: TimelineFrame[];
+  warnings: string[];
+  stats: {
+    elapsedMs: number;
+    evaluationElapsedMs: number;
+    pointsWithElevation: number;
+    pointsWithoutElevation: number;
+    indoorPointsExcluded: number;
+    frameCount: number;
+    totalEvaluations: number;
+  } | null;
+}
+
+interface TimelineProgress {
+  phase: string;
+  done: number;
+  total: number;
+  percent: number;
+  etaSeconds: number | null;
+}
+
 const METERS_PER_DEGREE_LAT = 111_320;
+const DEFAULT_MAP_CENTER: [number, number] = [46.5197, 6.6323];
+const DEFAULT_MAP_ZOOM = 13;
+const MAP_VIEW_STORAGE_KEY = "mappy-hour:map:view";
 type XY = [number, number];
 type Ring = XY[];
 type Polygon = Ring[];
@@ -75,6 +122,65 @@ interface ParsedPoint {
   lat: number;
   lon: number;
   isSunny: boolean;
+}
+
+interface StoredMapView {
+  lat: number;
+  lon: number;
+  zoom: number;
+}
+
+function loadStoredMapView(): StoredMapView | null {
+  try {
+    const raw = globalThis.localStorage.getItem(MAP_VIEW_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<StoredMapView>;
+    const lat = parsed.lat;
+    const lon = parsed.lon;
+    const zoom = parsed.zoom;
+    if (
+      typeof lat !== "number" ||
+      !Number.isFinite(lat) ||
+      lat < -90 ||
+      lat > 90 ||
+      typeof lon !== "number" ||
+      !Number.isFinite(lon) ||
+      lon < -180 ||
+      lon > 180 ||
+      typeof zoom !== "number" ||
+      !Number.isFinite(zoom)
+    ) {
+      return null;
+    }
+
+    return {
+      lat,
+      lon,
+      zoom,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistMapView(view: StoredMapView): void {
+  try {
+    globalThis.localStorage.setItem(MAP_VIEW_STORAGE_KEY, JSON.stringify(view));
+  } catch {
+    // Ignore storage errors to avoid blocking map interactions.
+  }
+}
+
+function decodeBase64ToBytes(base64: string): Uint8Array {
+  const binary = globalThis.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 function zurichNowDateAndTime(): { date: string; time: string } {
@@ -300,10 +406,60 @@ function buildBuildingsContours(buildings: BuildingsAreaApiResponse | null): Mul
   return mergePolygons(polygons);
 }
 
+function toInstantAreaResponseFromTimeline(
+  timeline: DailyTimelineState,
+  frameIndex: number,
+  decodedMaskCache: Map<number, Uint8Array>,
+): AreaApiResponse | null {
+  if (timeline.frames.length === 0 || timeline.points.length === 0) {
+    return null;
+  }
+
+  const safeIndex = Math.max(0, Math.min(frameIndex, timeline.frames.length - 1));
+  const frame = timeline.frames[safeIndex];
+  let mask = decodedMaskCache.get(frame.index);
+  if (!mask) {
+    mask = decodeBase64ToBytes(frame.sunMaskBase64);
+    decodedMaskCache.set(frame.index, mask);
+  }
+
+  const points: AreaInstantPoint[] = timeline.points.map((point, index) => {
+    const isSunny = ((mask[index >> 3] >> (index & 7)) & 1) === 1;
+    return {
+      id: point.id,
+      lat: point.lat,
+      lon: point.lon,
+      isSunny,
+      terrainBlocked: false,
+      buildingsBlocked: false,
+      altitudeDeg: 0,
+      azimuthDeg: 0,
+      pointElevationMeters: null,
+    };
+  });
+
+  const stats = timeline.stats;
+  return {
+    mode: "instant",
+    gridStepMeters: timeline.gridStepMeters,
+    pointCount: points.length,
+    points,
+    warnings: timeline.warnings,
+    stats: {
+      elapsedMs: stats?.elapsedMs ?? 0,
+      pointsWithElevation: stats?.pointsWithElevation ?? 0,
+      pointsWithoutElevation: stats?.pointsWithoutElevation ?? 0,
+      indoorPointsExcluded: stats?.indoorPointsExcluded ?? timeline.indoorPointsExcluded,
+    },
+  };
+}
+
 export function SunlightMapClient() {
   const defaultNow = useMemo(() => zurichNowDateAndTime(), []);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
+  const timelineStreamRef = useRef<EventSource | null>(null);
+  const decodedTimelineMaskCacheRef = useRef<Map<number, Uint8Array>>(new Map());
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
   const buildingsLayerRef = useRef<LayerGroup | null>(null);
@@ -320,18 +476,66 @@ export function SunlightMapClient() {
   const [lastBuildings, setLastBuildings] = useState<BuildingsAreaApiResponse | null>(
     null,
   );
+  const [dailyTimeline, setDailyTimeline] = useState<DailyTimelineState | null>(
+    null,
+  );
+  const [dailyFrameIndex, setDailyFrameIndex] = useState(0);
+  const [dailyProgress, setDailyProgress] = useState<TimelineProgress | null>(null);
+  const [buildingWarnings, setBuildingWarnings] = useState<string[]>([]);
   const [showSunny, setShowSunny] = useState(true);
   const [showShadow, setShowShadow] = useState(true);
   const [showBuildings, setShowBuildings] = useState(true);
 
+  const visualAreaResponse = useMemo(() => {
+    if (mode === "daily" && dailyTimeline) {
+      return toInstantAreaResponseFromTimeline(
+        dailyTimeline,
+        dailyFrameIndex,
+        decodedTimelineMaskCacheRef.current,
+      );
+    }
+
+    return lastResult;
+  }, [dailyFrameIndex, dailyTimeline, lastResult, mode]);
+
+  const activeWarnings = useMemo(() => {
+    if (mode === "daily" && dailyTimeline) {
+      return Array.from(new Set([...dailyTimeline.warnings, ...buildingWarnings]));
+    }
+
+    return lastResult?.warnings ?? [];
+  }, [buildingWarnings, dailyTimeline, lastResult, mode]);
+
+  const activeFrameTime = useMemo(() => {
+    if (!dailyTimeline || dailyTimeline.frames.length === 0) {
+      return null;
+    }
+
+    const safeIndex = Math.max(
+      0,
+      Math.min(dailyFrameIndex, dailyTimeline.frames.length - 1),
+    );
+    return dailyTimeline.frames[safeIndex]?.localTime ?? null;
+  }, [dailyFrameIndex, dailyTimeline]);
+
   const helperText = useMemo(() => {
+    if (mode === "daily" && dailyTimeline) {
+      const stats = dailyTimeline.stats;
+      const base = `${dailyTimeline.pointCount} points, frames: ${dailyTimeline.frames.length}/${dailyTimeline.frameCount}, indoor exclus: ${dailyTimeline.indoorPointsExcluded}`;
+      if (!stats) {
+        return `${base}, calcul timeline en cours...`;
+      }
+
+      return `${base}, ${stats.elapsedMs} ms, evaluations: ${stats.totalEvaluations}`;
+    }
+
     if (!lastResult) {
       return "Aucun calcul encore lance.";
     }
     const excludedIndoor = lastResult.stats.indoorPointsExcluded ?? 0;
     const buildingCount = lastBuildings?.count ?? 0;
     return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, batiments: ${buildingCount}, warnings: ${lastResult.warnings.length}`;
-  }, [lastBuildings?.count, lastResult]);
+  }, [dailyTimeline, lastBuildings?.count, lastResult, mode]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -347,9 +551,15 @@ export function SunlightMapClient() {
       }
 
       leafletModuleRef.current = L;
+      const storedView = loadStoredMapView();
       const map = L.map(mapContainerRef.current, {
         zoomControl: true,
-      }).setView([46.5197, 6.6323], 13);
+      }).setView(
+        storedView
+          ? [storedView.lat, storedView.lon]
+          : DEFAULT_MAP_CENTER,
+        storedView?.zoom ?? DEFAULT_MAP_ZOOM,
+      );
 
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,
@@ -365,12 +575,25 @@ export function SunlightMapClient() {
         const message = `Lat ${event.latlng.lat.toFixed(5)}, Lon ${event.latlng.lng.toFixed(5)}`;
         map.attributionControl.setPrefix(`Mappy Hour - ${message}`);
       });
+
+      map.on("moveend", () => {
+        const center = map.getCenter();
+        persistMapView({
+          lat: Number(center.lat.toFixed(6)),
+          lon: Number(center.lng.toFixed(6)),
+          zoom: map.getZoom(),
+        });
+      });
     };
 
     void initMap();
 
     return () => {
       isCancelled = true;
+      if (timelineStreamRef.current) {
+        timelineStreamRef.current.close();
+        timelineStreamRef.current = null;
+      }
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
@@ -384,7 +607,7 @@ export function SunlightMapClient() {
 
   const renderLayers = useCallback(
     (
-      response: AreaApiResponse,
+      response: AreaApiResponse | null,
       buildings: BuildingsAreaApiResponse | null,
       visibility: {
         sunny: boolean;
@@ -404,7 +627,9 @@ export function SunlightMapClient() {
       shadowLayer.clearLayers();
       buildingsLayer.clearLayers();
 
-      const { sunnyContours, shadowContours } = buildSunAndShadowContours(response);
+      const { sunnyContours, shadowContours } = response
+        ? buildSunAndShadowContours(response)
+        : { sunnyContours: [], shadowContours: [] };
       const buildingsContours = buildBuildingsContours(buildings);
       const sunnyOutdoorContours = subtractPolygons(sunnyContours, buildingsContours);
       const shadowOutdoorContours = subtractPolygons(shadowContours, buildingsContours);
@@ -458,16 +683,65 @@ export function SunlightMapClient() {
   );
 
   useEffect(() => {
-    if (!lastResult) {
-      return;
-    }
-
-    renderLayers(lastResult, lastBuildings, {
+    renderLayers(visualAreaResponse, lastBuildings, {
       sunny: showSunny,
       shadow: showShadow,
       buildings: showBuildings,
     });
-  }, [lastBuildings, lastResult, renderLayers, showBuildings, showShadow, showSunny]);
+  }, [
+    lastBuildings,
+    renderLayers,
+    showBuildings,
+    showShadow,
+    showSunny,
+    visualAreaResponse,
+  ]);
+
+  useEffect(() => {
+    if (mode === "daily") {
+      return;
+    }
+
+    if (timelineStreamRef.current) {
+      timelineStreamRef.current.close();
+      timelineStreamRef.current = null;
+      setIsLoading(false);
+    }
+  }, [mode]);
+
+  const loadBuildingsLayer = useCallback(async (bbox: [number, number, number, number]) => {
+    const buildingsPayload = {
+      bbox,
+      maxBuildings: 6000,
+    };
+
+    const buildingsResponse = await fetch("/api/buildings/area", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(buildingsPayload),
+    });
+
+    if (buildingsResponse.ok) {
+      return (await buildingsResponse.json()) as BuildingsAreaApiResponse;
+    }
+
+    const buildingError = (await buildingsResponse.json().catch(() => null)) as
+      | { error?: string; detail?: string }
+      | null;
+    return {
+      count: 0,
+      buildings: [],
+      warnings: [
+        buildingError?.detail ?? buildingError?.error ?? "Buildings layer unavailable.",
+      ],
+      stats: {
+        elapsedMs: 0,
+        rawIntersectingCount: 0,
+      },
+    } satisfies BuildingsAreaApiResponse;
+  }, []);
 
   const runAreaCalculation = useCallback(async () => {
     const map = mapRef.current;
@@ -483,113 +757,263 @@ export function SunlightMapClient() {
       Number(bounds.getNorth().toFixed(6)),
     ];
 
+    if (timelineStreamRef.current) {
+      timelineStreamRef.current.close();
+      timelineStreamRef.current = null;
+    }
+
     setIsLoading(true);
     setError(null);
+    setBuildingWarnings([]);
+    decodedTimelineMaskCacheRef.current.clear();
 
-    try {
-      const areaPayload = {
-        bbox,
-        date,
-        timezone: "Europe/Zurich",
-        mode,
-        localTime,
-        sampleEveryMinutes,
-        gridStepMeters,
-        maxPoints: 3000,
-      };
-      const buildingsPayload = {
-        bbox,
-        maxBuildings: 6000,
-      };
-
-      const [areaResponse, buildingsResponse] = await Promise.all([
-        fetch("/api/sunlight/area", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(areaPayload),
-        }),
-        fetch("/api/buildings/area", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(buildingsPayload),
-        }),
-      ]);
-
-      const areaJson = (await areaResponse.json()) as AreaApiResponse & {
-        error?: string;
-        detail?: string;
-      };
-      if (!areaResponse.ok) {
-        throw new Error(areaJson.detail ?? areaJson.error ?? "Area calculation failed");
-      }
-
-      let buildingsJson: BuildingsAreaApiResponse = {
-        count: 0,
-        buildings: [],
-        warnings: [],
-        stats: {
-          elapsedMs: 0,
-          rawIntersectingCount: 0,
-        },
-      };
-
-      if (buildingsResponse.ok) {
-        buildingsJson = (await buildingsResponse.json()) as BuildingsAreaApiResponse;
-      } else {
-        const buildingError = (await buildingsResponse.json().catch(() => null)) as
-          | { error?: string; detail?: string }
-          | null;
-        buildingsJson = {
-          count: 0,
-          buildings: [],
-          warnings: [
-            buildingError?.detail ??
-              buildingError?.error ??
-              "Buildings layer unavailable.",
-          ],
-          stats: {
-            elapsedMs: 0,
-            rawIntersectingCount: 0,
-          },
+    if (mode === "instant") {
+      setDailyTimeline(null);
+      setDailyProgress(null);
+      try {
+        const areaPayload = {
+          bbox,
+          date,
+          timezone: "Europe/Zurich",
+          mode,
+          localTime,
+          sampleEveryMinutes,
+          gridStepMeters,
+          maxPoints: 3000,
         };
-      }
 
-      const mergedResult: AreaApiResponse = {
-        ...areaJson,
-        warnings: Array.from(
-          new Set([
-            ...areaJson.warnings,
-            ...buildingsJson.warnings.map((warning) => `buildings: ${warning}`),
-          ]),
-        ),
+        const [areaResponse, buildingsJson] = await Promise.all([
+          fetch("/api/sunlight/area", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(areaPayload),
+          }),
+          loadBuildingsLayer(bbox),
+        ]);
+
+        const areaJson = (await areaResponse.json()) as AreaApiResponse & {
+          error?: string;
+          detail?: string;
+        };
+        if (!areaResponse.ok) {
+          throw new Error(areaJson.detail ?? areaJson.error ?? "Area calculation failed");
+        }
+
+        const mergedResult: AreaApiResponse = {
+          ...areaJson,
+          warnings: Array.from(
+            new Set([
+              ...areaJson.warnings,
+              ...buildingsJson.warnings.map((warning) => `buildings: ${warning}`),
+            ]),
+          ),
+        };
+
+        setLastResult(mergedResult);
+        setLastBuildings(buildingsJson);
+      } catch (requestError) {
+        setError(requestError instanceof Error ? requestError.message : "Unknown error");
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    setLastResult(null);
+    setDailyTimeline(null);
+    setDailyFrameIndex(0);
+    setDailyProgress({
+      phase: "starting",
+      done: 0,
+      total: 1,
+      percent: 0,
+      etaSeconds: null,
+    });
+
+    let streamFinished = false;
+    let buildingsFinished = false;
+    let streamFailed = false;
+
+    const finalizeIfDone = () => {
+      if (streamFinished && buildingsFinished) {
+        setIsLoading(false);
+      }
+    };
+
+    void loadBuildingsLayer(bbox)
+      .then((buildingsJson) => {
+        setLastBuildings(buildingsJson);
+        const prefixedWarnings = buildingsJson.warnings.map(
+          (warning) => `buildings: ${warning}`,
+        );
+        setBuildingWarnings(prefixedWarnings);
+        if (buildingsJson.warnings.length > 0) {
+          setDailyTimeline((previous) => {
+            if (!previous) {
+              return previous;
+            }
+            return {
+              ...previous,
+              warnings: Array.from(
+                new Set([
+                  ...previous.warnings,
+                  ...prefixedWarnings,
+                ]),
+              ),
+            };
+          });
+        }
+      })
+      .catch((buildingError) => {
+        setError(
+          buildingError instanceof Error
+            ? buildingError.message
+            : "Buildings layer request failed.",
+        );
+      })
+      .finally(() => {
+        buildingsFinished = true;
+        finalizeIfDone();
+      });
+
+    const query = new URLSearchParams({
+      minLon: String(bbox[0]),
+      minLat: String(bbox[1]),
+      maxLon: String(bbox[2]),
+      maxLat: String(bbox[3]),
+      date,
+      timezone: "Europe/Zurich",
+      sampleEveryMinutes: String(sampleEveryMinutes),
+      gridStepMeters: String(gridStepMeters),
+      maxPoints: "3000",
+    });
+
+    const timelineStream = new EventSource(
+      `/api/sunlight/timeline/stream?${query.toString()}`,
+    );
+    timelineStreamRef.current = timelineStream;
+
+    timelineStream.addEventListener("start", (event) => {
+      const data = JSON.parse((event as MessageEvent).data) as {
+        date: string;
+        timezone: string;
+        sampleEveryMinutes: number;
+        gridStepMeters: number;
+        pointCount: number;
+        gridPointCount: number;
+        indoorPointsExcluded: number;
+        frameCount: number;
+        points: TimelinePoint[];
+        warnings: string[];
       };
 
-      setLastResult(mergedResult);
-      setLastBuildings(buildingsJson);
-      renderLayers(mergedResult, buildingsJson, {
-        sunny: showSunny,
-        shadow: showShadow,
-        buildings: showBuildings,
+      decodedTimelineMaskCacheRef.current.clear();
+      setDailyTimeline({
+        date: data.date,
+        timezone: data.timezone,
+        sampleEveryMinutes: data.sampleEveryMinutes,
+        gridStepMeters: data.gridStepMeters,
+        pointCount: data.pointCount,
+        gridPointCount: data.gridPointCount,
+        indoorPointsExcluded: data.indoorPointsExcluded,
+        frameCount: data.frameCount,
+        points: data.points,
+        frames: [],
+        warnings: data.warnings,
+        stats: null,
       });
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Unknown error");
-    } finally {
-      setIsLoading(false);
-    }
+      setDailyFrameIndex(0);
+    });
+
+    timelineStream.addEventListener("progress", (event) => {
+      const data = JSON.parse((event as MessageEvent).data) as TimelineProgress;
+      setDailyProgress(data);
+    });
+
+    timelineStream.addEventListener("frame", (event) => {
+      const data = JSON.parse((event as MessageEvent).data) as TimelineFrame;
+      setDailyTimeline((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        const nextFrames = [...previous.frames, data];
+        return {
+          ...previous,
+          frames: nextFrames,
+        };
+      });
+      setDailyFrameIndex(data.index);
+    });
+
+    timelineStream.addEventListener("done", (event) => {
+      const data = JSON.parse((event as MessageEvent).data) as {
+        stats: NonNullable<DailyTimelineState["stats"]>;
+        warnings: string[];
+      };
+      setDailyTimeline((previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          stats: data.stats,
+          warnings: Array.from(new Set([...previous.warnings, ...data.warnings])),
+        };
+      });
+      setDailyProgress({
+        phase: "done",
+        done: data.stats.totalEvaluations,
+        total: data.stats.totalEvaluations,
+        percent: 100,
+        etaSeconds: 0,
+      });
+      streamFailed = true;
+      timelineStream.close();
+      if (timelineStreamRef.current === timelineStream) {
+        timelineStreamRef.current = null;
+      }
+      streamFinished = true;
+      finalizeIfDone();
+    });
+
+    timelineStream.addEventListener("error", (event) => {
+      if (streamFailed || streamFinished) {
+        return;
+      }
+      streamFailed = true;
+      const errorPayload = (() => {
+        try {
+          return JSON.parse((event as MessageEvent).data) as {
+            error?: string;
+            details?: string;
+          };
+        } catch {
+          return null;
+        }
+      })();
+      setError(
+        errorPayload?.details ??
+          errorPayload?.error ??
+          "Timeline streaming failed.",
+      );
+      timelineStream.close();
+      if (timelineStreamRef.current === timelineStream) {
+        timelineStreamRef.current = null;
+      }
+      streamFinished = true;
+      finalizeIfDone();
+    });
   }, [
     date,
     gridStepMeters,
+    loadBuildingsLayer,
     localTime,
     mode,
-    renderLayers,
     sampleEveryMinutes,
-    showBuildings,
-    showShadow,
-    showSunny,
   ]);
 
   return (
@@ -660,7 +1084,11 @@ export function SunlightMapClient() {
           onClick={() => void runAreaCalculation()}
           disabled={isLoading}
         >
-          {isLoading ? "Calcul..." : "Calculer zone visible"}
+          {isLoading
+            ? "Calcul..."
+            : mode === "daily"
+              ? "Calculer timeline"
+              : "Calculer zone visible"}
         </button>
       </div>
 
@@ -693,17 +1121,59 @@ export function SunlightMapClient() {
         </label>
       </div>
 
+      {mode === "daily" ? (
+        <div className="grid gap-2 rounded-lg border border-white/15 bg-black/20 px-3 py-3 text-sm">
+          <div className="flex items-center justify-between">
+            <span>Timeline quotidienne</span>
+            <span>{activeFrameTime ?? "--:--:--"}</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={Math.max(0, (dailyTimeline?.frames.length ?? 1) - 1)}
+            step={1}
+            value={Math.min(
+              dailyFrameIndex,
+              Math.max(0, (dailyTimeline?.frames.length ?? 1) - 1),
+            )}
+            onChange={(event) => setDailyFrameIndex(Number(event.target.value))}
+            disabled={!dailyTimeline || dailyTimeline.frames.length === 0}
+          />
+          <p className="text-xs text-slate-300">
+            Frames recues: {dailyTimeline?.frames.length ?? 0}/
+            {dailyTimeline?.frameCount ?? 0}
+          </p>
+          {dailyProgress ? (
+            <div className="grid gap-1">
+              <div className="h-2 w-full overflow-hidden rounded bg-slate-700/70">
+                <div
+                  className="h-full rounded bg-yellow-300 transition-[width] duration-150"
+                  style={{ width: `${Math.min(100, Math.max(0, dailyProgress.percent))}%` }}
+                />
+              </div>
+              <p className="text-xs text-slate-300">
+                {dailyProgress.phase} - {dailyProgress.percent.toFixed(1)}% (
+                {dailyProgress.done}/{dailyProgress.total}), ETA:{" "}
+                {dailyProgress.etaSeconds === null
+                  ? "-"
+                  : `${dailyProgress.etaSeconds}s`}
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <p className="text-sm text-slate-200">{helperText}</p>
       {error ? (
         <p className="rounded border border-red-300/40 bg-red-500/20 px-3 py-2 text-sm text-red-100">
           {error}
         </p>
       ) : null}
-      {lastResult?.warnings?.length ? (
+      {activeWarnings.length ? (
         <div className="rounded border border-amber-300/40 bg-amber-200/10 px-3 py-2 text-sm text-amber-100">
           <p className="font-semibold">Warnings</p>
           <ul className="list-disc pl-5">
-            {lastResult.warnings.map((warning) => (
+            {activeWarnings.map((warning) => (
               <li key={warning}>{warning}</li>
             ))}
           </ul>

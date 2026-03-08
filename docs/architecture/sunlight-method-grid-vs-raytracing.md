@@ -2,6 +2,9 @@
 
 Date: 2026-03-08
 
+Related ADR:
+- `docs/architecture/adr-0001-daily-timeline-streaming.md`
+
 ## Context
 
 For the map, there are two main families of methods:
