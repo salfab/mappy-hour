@@ -32,6 +32,7 @@ interface AreaDailyPoint {
 
 interface AreaApiResponse {
   mode: AreaMode;
+  gridStepMeters: number;
   pointCount: number;
   points: AreaInstantPoint[] | AreaDailyPoint[];
   warnings: string[];
@@ -42,6 +43,26 @@ interface AreaApiResponse {
     indoorPointsExcluded?: number;
   };
 }
+
+interface BuildingPolygon {
+  id: string;
+  footprint: Array<{
+    lat: number;
+    lon: number;
+  }>;
+}
+
+interface BuildingsAreaApiResponse {
+  count: number;
+  buildings: BuildingPolygon[];
+  warnings: string[];
+  stats: {
+    elapsedMs: number;
+    rawIntersectingCount: number;
+  };
+}
+
+const METERS_PER_DEGREE_LAT = 111_320;
 
 function zurichNowDateAndTime(): { date: string; time: string } {
   const now = new Date();
@@ -67,37 +88,32 @@ function zurichNowDateAndTime(): { date: string; time: string } {
   return { date, time };
 }
 
-function getInstantColor(point: AreaInstantPoint): string {
-  if (point.isSunny) {
-    return "#facc15";
-  }
-  if (point.buildingsBlocked) {
-    return "#ef4444";
-  }
-  if (point.terrainBlocked) {
-    return "#64748b";
-  }
-  return "#334155";
-}
+function buildCellPolygon(
+  lat: number,
+  lon: number,
+  gridStepMeters: number,
+): Array<[number, number]> {
+  const halfLatDeg = gridStepMeters / METERS_PER_DEGREE_LAT / 2;
+  const halfLonDeg =
+    gridStepMeters /
+    (METERS_PER_DEGREE_LAT * Math.max(Math.cos((lat * Math.PI) / 180), 0.01)) /
+    2;
 
-function getDailyColor(sunnyMinutes: number): string {
-  if (sunnyMinutes >= 480) {
-    return "#fde047";
-  }
-  if (sunnyMinutes >= 240) {
-    return "#f97316";
-  }
-  if (sunnyMinutes > 0) {
-    return "#fb7185";
-  }
-  return "#1e293b";
+  return [
+    [lat - halfLatDeg, lon - halfLonDeg],
+    [lat - halfLatDeg, lon + halfLonDeg],
+    [lat + halfLatDeg, lon + halfLonDeg],
+    [lat + halfLatDeg, lon - halfLonDeg],
+  ];
 }
 
 export function SunlightMapClient() {
   const defaultNow = useMemo(() => zurichNowDateAndTime(), []);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
-  const pointsLayerRef = useRef<LayerGroup | null>(null);
+  const sunnyLayerRef = useRef<LayerGroup | null>(null);
+  const shadowLayerRef = useRef<LayerGroup | null>(null);
+  const buildingsLayerRef = useRef<LayerGroup | null>(null);
   const leafletModuleRef = useRef<typeof import("leaflet") | null>(null);
 
   const [mode, setMode] = useState<AreaMode>("instant");
@@ -108,14 +124,21 @@ export function SunlightMapClient() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<AreaApiResponse | null>(null);
+  const [lastBuildings, setLastBuildings] = useState<BuildingsAreaApiResponse | null>(
+    null,
+  );
+  const [showSunny, setShowSunny] = useState(true);
+  const [showShadow, setShowShadow] = useState(true);
+  const [showBuildings, setShowBuildings] = useState(true);
 
   const helperText = useMemo(() => {
     if (!lastResult) {
       return "Aucun calcul encore lance.";
     }
     const excludedIndoor = lastResult.stats.indoorPointsExcluded ?? 0;
-    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, warnings: ${lastResult.warnings.length}`;
-  }, [lastResult]);
+    const buildingCount = lastBuildings?.count ?? 0;
+    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, batiments: ${buildingCount}, warnings: ${lastResult.warnings.length}`;
+  }, [lastBuildings?.count, lastResult]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -140,8 +163,9 @@ export function SunlightMapClient() {
         attribution: "&copy; OpenStreetMap contributors",
       }).addTo(map);
 
-      const pointsLayer = L.layerGroup().addTo(map);
-      pointsLayerRef.current = pointsLayer;
+      sunnyLayerRef.current = L.layerGroup().addTo(map);
+      shadowLayerRef.current = L.layerGroup().addTo(map);
+      buildingsLayerRef.current = L.layerGroup().addTo(map);
       mapRef.current = map;
 
       map.on("click", (event: LeafletMouseEvent) => {
@@ -158,32 +182,53 @@ export function SunlightMapClient() {
         mapRef.current.remove();
         mapRef.current = null;
       }
-      pointsLayerRef.current = null;
+      sunnyLayerRef.current = null;
+      shadowLayerRef.current = null;
+      buildingsLayerRef.current = null;
       leafletModuleRef.current = null;
     };
   }, []);
 
-  const renderPoints = useCallback(
-    (response: AreaApiResponse) => {
+  const renderLayers = useCallback(
+    (
+      response: AreaApiResponse,
+      buildings: BuildingsAreaApiResponse | null,
+      visibility: {
+        sunny: boolean;
+        shadow: boolean;
+        buildings: boolean;
+      },
+    ) => {
       const L = leafletModuleRef.current;
-      const layer = pointsLayerRef.current;
-      if (!L || !layer) {
+      const sunnyLayer = sunnyLayerRef.current;
+      const shadowLayer = shadowLayerRef.current;
+      const buildingsLayer = buildingsLayerRef.current;
+      if (!L || !sunnyLayer || !shadowLayer || !buildingsLayer) {
         return;
       }
 
-      layer.clearLayers();
+      sunnyLayer.clearLayers();
+      shadowLayer.clearLayers();
+      buildingsLayer.clearLayers();
 
       if (response.mode === "instant") {
         for (const point of response.points as AreaInstantPoint[]) {
-          const color = getInstantColor(point);
-          const circle = L.circleMarker([point.lat, point.lon], {
-            radius: 5,
-            color,
-            weight: 1,
-            fillColor: color,
-            fillOpacity: 0.8,
-          });
-          circle.bindTooltip(
+          const isSunny = point.isSunny;
+          if ((isSunny && !visibility.sunny) || (!isSunny && !visibility.shadow)) {
+            continue;
+          }
+
+          const polygon = L.polygon(
+            buildCellPolygon(point.lat, point.lon, response.gridStepMeters),
+            {
+              color: isSunny ? "#eab308" : "#6b7280",
+              fillColor: isSunny ? "#facc15" : "#64748b",
+              weight: 0.5,
+              opacity: 0.45,
+              fillOpacity: 0.35,
+            },
+          );
+          polygon.bindTooltip(
             [
               `id: ${point.id}`,
               `sunny: ${point.isSunny}`,
@@ -193,32 +238,73 @@ export function SunlightMapClient() {
               `az: ${point.azimuthDeg.toFixed(2)} deg`,
             ].join("<br/>"),
           );
-          circle.addTo(layer);
+          polygon.addTo(isSunny ? sunnyLayer : shadowLayer);
         }
+      } else {
+        for (const point of response.points as AreaDailyPoint[]) {
+          const isSunny = point.sunnyMinutes > 0;
+          if ((isSunny && !visibility.sunny) || (!isSunny && !visibility.shadow)) {
+            continue;
+          }
+
+          const polygon = L.polygon(
+            buildCellPolygon(point.lat, point.lon, response.gridStepMeters),
+            {
+              color: isSunny ? "#eab308" : "#6b7280",
+              fillColor: isSunny ? "#facc15" : "#64748b",
+              weight: 0.5,
+              opacity: 0.45,
+              fillOpacity: 0.35,
+            },
+          );
+          polygon.bindTooltip(
+            [
+              `id: ${point.id}`,
+              `sunnyMinutes: ${point.sunnyMinutes}`,
+              `sunnyHours: ${(point.sunnyMinutes / 60).toFixed(2)}`,
+            ].join("<br/>"),
+          );
+          polygon.addTo(isSunny ? sunnyLayer : shadowLayer);
+        }
+      }
+
+      if (!visibility.buildings || !buildings) {
         return;
       }
 
-      for (const point of response.points as AreaDailyPoint[]) {
-        const color = getDailyColor(point.sunnyMinutes);
-        const circle = L.circleMarker([point.lat, point.lon], {
-          radius: 5,
-          color,
-          weight: 1,
-          fillColor: color,
-          fillOpacity: 0.8,
-        });
-        circle.bindTooltip(
-          [
-            `id: ${point.id}`,
-            `sunnyMinutes: ${point.sunnyMinutes}`,
-            `sunnyHours: ${(point.sunnyMinutes / 60).toFixed(2)}`,
-          ].join("<br/>"),
+      for (const building of buildings.buildings) {
+        if (building.footprint.length < 3) {
+          continue;
+        }
+
+        const polygon = L.polygon(
+          building.footprint.map((vertex) => [vertex.lat, vertex.lon]),
+          {
+            color: "#2563eb",
+            fillColor: "#2563eb",
+            weight: 0.8,
+            opacity: 0.55,
+            fillOpacity: 0.24,
+          },
         );
-        circle.addTo(layer);
+        polygon.bindTooltip(`building: ${building.id}`);
+        polygon.addTo(buildingsLayer);
       }
     },
     [],
   );
+
+  useEffect(() => {
+    if (!lastResult) {
+      return;
+    }
+
+    renderLayers(lastResult, lastBuildings, {
+      sunny: showSunny,
+      shadow: showShadow,
+      buildings: showBuildings,
+    });
+  }, [lastBuildings, lastResult, renderLayers, showBuildings, showShadow, showSunny]);
 
   const runAreaCalculation = useCallback(async () => {
     const map = mapRef.current;
@@ -238,7 +324,7 @@ export function SunlightMapClient() {
     setError(null);
 
     try {
-      const payload = {
+      const areaPayload = {
         bbox,
         date,
         timezone: "Europe/Zurich",
@@ -248,31 +334,100 @@ export function SunlightMapClient() {
         gridStepMeters,
         maxPoints: 2000,
       };
+      const buildingsPayload = {
+        bbox,
+        maxBuildings: 6000,
+      };
 
-      const response = await fetch("/api/sunlight/area", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
+      const [areaResponse, buildingsResponse] = await Promise.all([
+        fetch("/api/sunlight/area", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(areaPayload),
+        }),
+        fetch("/api/buildings/area", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(buildingsPayload),
+        }),
+      ]);
 
-      const json = (await response.json()) as AreaApiResponse & {
+      const areaJson = (await areaResponse.json()) as AreaApiResponse & {
         error?: string;
         detail?: string;
       };
-      if (!response.ok) {
-        throw new Error(json.detail ?? json.error ?? "Area calculation failed");
+      if (!areaResponse.ok) {
+        throw new Error(areaJson.detail ?? areaJson.error ?? "Area calculation failed");
       }
 
-      setLastResult(json);
-      renderPoints(json);
+      let buildingsJson: BuildingsAreaApiResponse = {
+        count: 0,
+        buildings: [],
+        warnings: [],
+        stats: {
+          elapsedMs: 0,
+          rawIntersectingCount: 0,
+        },
+      };
+
+      if (buildingsResponse.ok) {
+        buildingsJson = (await buildingsResponse.json()) as BuildingsAreaApiResponse;
+      } else {
+        const buildingError = (await buildingsResponse.json().catch(() => null)) as
+          | { error?: string; detail?: string }
+          | null;
+        buildingsJson = {
+          count: 0,
+          buildings: [],
+          warnings: [
+            buildingError?.detail ??
+              buildingError?.error ??
+              "Buildings layer unavailable.",
+          ],
+          stats: {
+            elapsedMs: 0,
+            rawIntersectingCount: 0,
+          },
+        };
+      }
+
+      const mergedResult: AreaApiResponse = {
+        ...areaJson,
+        warnings: Array.from(
+          new Set([
+            ...areaJson.warnings,
+            ...buildingsJson.warnings.map((warning) => `buildings: ${warning}`),
+          ]),
+        ),
+      };
+
+      setLastResult(mergedResult);
+      setLastBuildings(buildingsJson);
+      renderLayers(mergedResult, buildingsJson, {
+        sunny: showSunny,
+        shadow: showShadow,
+        buildings: showBuildings,
+      });
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unknown error");
     } finally {
       setIsLoading(false);
     }
-  }, [date, gridStepMeters, localTime, mode, renderPoints, sampleEveryMinutes]);
+  }, [
+    date,
+    gridStepMeters,
+    localTime,
+    mode,
+    renderLayers,
+    sampleEveryMinutes,
+    showBuildings,
+    showShadow,
+    showSunny,
+  ]);
 
   return (
     <section className="grid gap-4 rounded-2xl border border-white/15 bg-white/5 p-5">
@@ -344,6 +499,35 @@ export function SunlightMapClient() {
         >
           {isLoading ? "Calcul..." : "Calculer zone visible"}
         </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-4 rounded-lg border border-white/15 bg-black/20 px-3 py-2 text-sm">
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={showSunny}
+            onChange={(event) => setShowSunny(event.target.checked)}
+          />
+          <span className="rounded px-2 py-0.5 text-black" style={{ background: "#facc15" }}>
+            ensoleille
+          </span>
+        </label>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={showShadow}
+            onChange={(event) => setShowShadow(event.target.checked)}
+          />
+          <span className="rounded bg-slate-500 px-2 py-0.5 text-white">ombre</span>
+        </label>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={showBuildings}
+            onChange={(event) => setShowBuildings(event.target.checked)}
+          />
+          <span className="rounded bg-blue-600 px-2 py-0.5 text-white">buildings</span>
+        </label>
       </div>
 
       <p className="text-sm text-slate-200">{helperText}</p>
