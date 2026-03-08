@@ -336,8 +336,25 @@ function mergePolygons(polygons: Polygon[]): MultiPolygon {
   }
 
   const [first, ...rest] = polygons;
-  const merged = polygonClipping.union(first, ...rest);
-  return Array.isArray(merged) ? (merged as MultiPolygon) : [];
+  try {
+    const merged = polygonClipping.union(first, ...rest);
+    return Array.isArray(merged) ? (merged as MultiPolygon) : [];
+  } catch {
+    // Fallback path: merge incrementally and skip invalid geometries
+    // so one bad ring does not crash the whole map rendering.
+    let result: MultiPolygon = [first];
+    for (const polygon of rest) {
+      try {
+        const mergedIncremental = polygonClipping.union(result, [polygon]);
+        if (Array.isArray(mergedIncremental)) {
+          result = mergedIncremental as MultiPolygon;
+        }
+      } catch {
+        // Skip invalid polygon
+      }
+    }
+    return result;
+  }
 }
 
 function subtractPolygons(base: MultiPolygon, mask: MultiPolygon): MultiPolygon {
@@ -345,8 +362,13 @@ function subtractPolygons(base: MultiPolygon, mask: MultiPolygon): MultiPolygon 
     return base;
   }
 
-  const difference = polygonClipping.difference(base, mask);
-  return Array.isArray(difference) ? (difference as MultiPolygon) : [];
+  try {
+    const difference = polygonClipping.difference(base, mask);
+    return Array.isArray(difference) ? (difference as MultiPolygon) : [];
+  } catch {
+    // Keep base as fallback instead of crashing rendering.
+    return base;
+  }
 }
 
 function parsePointsForContours(response: AreaApiResponse): ParsedPoint[] {
