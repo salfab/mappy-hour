@@ -312,7 +312,7 @@ export function SunlightMapClient() {
           <span>Grille (m)</span>
           <input
             type="number"
-            min={30}
+            min={5}
             max={2000}
             step={10}
             value={gridStepMeters}
