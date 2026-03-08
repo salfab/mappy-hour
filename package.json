@@ -12,6 +12,7 @@
     "ingest:lausanne:buildings": "tsx scripts/ingest/download-lausanne-buildings.ts",
     "ingest:lausanne:terrain:ch": "tsx scripts/ingest/download-lausanne-terrain-ch.ts",
     "ingest:lausanne:terrain:horizon": "tsx scripts/ingest/download-lausanne-horizon-dem.ts",
+    "ingest:lausanne:places": "tsx scripts/ingest/download-lausanne-places-osm.ts",
     "preprocess:lausanne:buildings": "tsx scripts/preprocess/build-lausanne-buildings-index.ts",
     "preprocess:lausanne:horizon": "tsx scripts/preprocess/build-lausanne-horizon-mask.ts"
   },

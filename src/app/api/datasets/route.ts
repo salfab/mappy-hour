@@ -6,8 +6,10 @@ import { NextResponse } from "next/server";
 import {
   PROCESSED_BUILDINGS_INDEX_PATH,
   PROCESSED_HORIZON_MASK_PATH,
+  PROCESSED_LAUSANNE_PLACES_PATH,
   RAW_BUILDINGS_DIR,
   RAW_HORIZON_DEM_DIR,
+  RAW_LAUSANNE_PLACES_PATH,
   RAW_TERRAIN_CH_DIR,
 } from "@/lib/storage/data-paths";
 
@@ -49,12 +51,16 @@ export async function GET() {
     horizonDemFiles,
     horizonMaskExists,
     buildingsIndexExists,
+    rawPlacesExists,
+    processedPlacesExists,
   ] = await Promise.all([
     countFilesRecursively(RAW_BUILDINGS_DIR),
     countFilesRecursively(RAW_TERRAIN_CH_DIR),
     countFilesRecursively(RAW_HORIZON_DEM_DIR),
     fileExists(PROCESSED_HORIZON_MASK_PATH),
     fileExists(PROCESSED_BUILDINGS_INDEX_PATH),
+    fileExists(RAW_LAUSANNE_PLACES_PATH),
+    fileExists(PROCESSED_LAUSANNE_PLACES_PATH),
   ]);
 
   return NextResponse.json({
@@ -79,6 +85,14 @@ export async function GET() {
       buildingsIndex: {
         filePath: PROCESSED_BUILDINGS_INDEX_PATH,
         exists: buildingsIndexExists,
+      },
+      placesRaw: {
+        filePath: RAW_LAUSANNE_PLACES_PATH,
+        exists: rawPlacesExists,
+      },
+      placesProcessed: {
+        filePath: PROCESSED_LAUSANNE_PLACES_PATH,
+        exists: processedPlacesExists,
       },
     },
   });
