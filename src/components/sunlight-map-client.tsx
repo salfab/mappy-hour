@@ -515,6 +515,49 @@ function localTimeToMinutes(value: string): number | null {
   return hour * 60 + minute;
 }
 
+function destinationPointByAzimuth(
+  lat: number,
+  lon: number,
+  azimuthDeg: number,
+  distanceMeters: number,
+): { lat: number; lon: number } {
+  const azimuthRad = (azimuthDeg * Math.PI) / 180;
+  const deltaEastMeters = Math.sin(azimuthRad) * distanceMeters;
+  const deltaNorthMeters = Math.cos(azimuthRad) * distanceMeters;
+  const deltaLat = deltaNorthMeters / METERS_PER_DEGREE_LAT;
+  const metersPerDegreeLon =
+    METERS_PER_DEGREE_LAT * Math.cos((lat * Math.PI) / 180);
+  const deltaLon =
+    Math.abs(metersPerDegreeLon) < 1e-9
+      ? 0
+      : deltaEastMeters / metersPerDegreeLon;
+
+  return {
+    lat: lat + deltaLat,
+    lon: lon + deltaLon,
+  };
+}
+
+function computeFootprintCenter(
+  footprint: BuildingPolygon["footprint"],
+): { lat: number; lon: number } | null {
+  if (footprint.length === 0) {
+    return null;
+  }
+
+  let sumLat = 0;
+  let sumLon = 0;
+  for (const vertex of footprint) {
+    sumLat += vertex.lat;
+    sumLon += vertex.lon;
+  }
+
+  return {
+    lat: sumLat / footprint.length,
+    lon: sumLon / footprint.length,
+  };
+}
+
 function classifyTerrainSource(
   response: PointInstantApiResponse,
 ): "DEM local (colline du terrain de la ville)" | "montagnes" | null {
@@ -1238,6 +1281,8 @@ export function SunlightMapClient() {
   const terrainLayerRef = useRef<LayerGroup | null>(null);
   const heatmapLayerRef = useRef<LayerGroup | null>(null);
   const placesLayerRef = useRef<LayerGroup | null>(null);
+  const clickHighlightLayerRef = useRef<LayerGroup | null>(null);
+  const lastBuildingsRef = useRef<BuildingsAreaApiResponse | null>(null);
   const leafletModuleRef = useRef<typeof import("leaflet") | null>(null);
   const placesRequestIdRef = useRef(0);
   const clickDebugParamsRef = useRef<{
@@ -1295,6 +1340,10 @@ export function SunlightMapClient() {
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showPlaces, setShowPlaces] = useState(true);
   const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
+
+  useEffect(() => {
+    lastBuildingsRef.current = lastBuildings;
+  }, [lastBuildings]);
 
   const visualAreaResponse = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
@@ -1459,6 +1508,200 @@ export function SunlightMapClient() {
     ignoreVegetationShadowRef.current = ignoreVegetationShadow;
   }, [ignoreVegetationShadow]);
 
+  const renderShadowBlockerHighlight = useCallback(
+    (params: {
+      lat: number;
+      lon: number;
+      response: PointInstantApiResponse;
+      primarySource: string;
+      ridgePoint: TerrainHorizonRidgePoint | null;
+    }) => {
+      const L = leafletModuleRef.current;
+      const highlightLayer = clickHighlightLayerRef.current;
+      if (!L || !highlightLayer) {
+        return;
+      }
+
+      highlightLayer.clearLayers();
+
+      L.circleMarker([params.lat, params.lon], {
+        radius: 5,
+        color: "#111827",
+        fillColor: "#f8fafc",
+        fillOpacity: 0.95,
+        weight: 2,
+      })
+        .addTo(highlightLayer)
+        .bindTooltip("Point diagnostique", {
+          direction: "top",
+          opacity: 0.9,
+        });
+
+      const drawRayToTarget = (
+        targetLat: number,
+        targetLon: number,
+        color: string,
+        label: string,
+      ) => {
+        L.polyline(
+          [
+            [params.lat, params.lon],
+            [targetLat, targetLon],
+          ],
+          {
+            color,
+            weight: 2.2,
+            opacity: 0.9,
+            dashArray: "8 5",
+          },
+        )
+          .addTo(highlightLayer)
+          .bindTooltip(label, { sticky: true });
+      };
+
+      if (params.primarySource === "batiment") {
+        const blockerId =
+          params.response.sample.buildingBlockerId ??
+          params.response.pointContext.indoorBuildingId;
+        const building =
+          blockerId === null
+            ? null
+            : (lastBuildingsRef.current?.buildings.find(
+                (item) => item.id === blockerId,
+              ) ?? null);
+
+        if (building && building.footprint.length >= 3) {
+          const ring = building.footprint.map(
+            (vertex) => [vertex.lat, vertex.lon] as [number, number],
+          );
+          L.polygon(ring, {
+            color: "#c2410c",
+            fillColor: "#fb923c",
+            weight: 2.6,
+            opacity: 0.95,
+            fillOpacity: 0.28,
+          })
+            .addTo(highlightLayer)
+            .bindTooltip(`Bloqueur batiment: ${blockerId}`, { sticky: true });
+
+          const center = computeFootprintCenter(building.footprint);
+          if (center) {
+            drawRayToTarget(
+              center.lat,
+              center.lon,
+              "#ea580c",
+              "Rayon vers le batiment bloqueur",
+            );
+          }
+          return;
+        }
+
+        const distance = params.response.sample.buildingBlockerDistanceMeters;
+        if (distance !== null && Number.isFinite(distance) && distance > 0) {
+          const fallbackPoint = destinationPointByAzimuth(
+            params.lat,
+            params.lon,
+            params.response.sample.azimuthDeg,
+            distance,
+          );
+          L.circleMarker([fallbackPoint.lat, fallbackPoint.lon], {
+            radius: 6,
+            color: "#c2410c",
+            fillColor: "#fb923c",
+            fillOpacity: 0.9,
+            weight: 2,
+          })
+            .addTo(highlightLayer)
+            .bindTooltip("Approximation du bloqueur batiment", { sticky: true });
+          drawRayToTarget(
+            fallbackPoint.lat,
+            fallbackPoint.lon,
+            "#ea580c",
+            "Rayon vers le bloqueur batiment (approx.)",
+          );
+        }
+        return;
+      }
+
+      if (params.primarySource === "vegetation") {
+        const distance = params.response.sample.vegetationBlockerDistanceMeters;
+        const vegetationPoint =
+          typeof distance === "number" && Number.isFinite(distance) && distance > 0
+            ? destinationPointByAzimuth(
+                params.lat,
+                params.lon,
+                params.response.sample.azimuthDeg,
+                distance,
+              )
+            : destinationPointByAzimuth(
+                params.lat,
+                params.lon,
+                params.response.sample.azimuthDeg,
+                30,
+              );
+
+        L.circleMarker([vegetationPoint.lat, vegetationPoint.lon], {
+          radius: 6,
+          color: "#166534",
+          fillColor: "#22c55e",
+          fillOpacity: 0.92,
+          weight: 2,
+        })
+          .addTo(highlightLayer)
+          .bindTooltip("Bloqueur vegetation", { sticky: true });
+        drawRayToTarget(
+          vegetationPoint.lat,
+          vegetationPoint.lon,
+          "#16a34a",
+          "Rayon vers le bloqueur vegetation",
+        );
+        return;
+      }
+
+      if (
+        params.primarySource === "montagnes" ||
+        params.primarySource === "DEM local (colline du terrain de la ville)" ||
+        params.primarySource === "terrain/horizon"
+      ) {
+        if (params.ridgePoint) {
+          L.circleMarker([params.ridgePoint.lat, params.ridgePoint.lon], {
+            radius: 6,
+            color: "#92400e",
+            fillColor: "#f59e0b",
+            fillOpacity: 0.95,
+            weight: 2,
+          })
+            .addTo(highlightLayer)
+            .bindTooltip(`Bloqueur terrain: ${params.primarySource}`, {
+              sticky: true,
+            });
+          drawRayToTarget(
+            params.ridgePoint.lat,
+            params.ridgePoint.lon,
+            "#b45309",
+            `Rayon vers ${params.primarySource}`,
+          );
+        }
+        return;
+      }
+
+      if (params.primarySource === "courbure de la terre") {
+        L.circleMarker([params.lat, params.lon], {
+          radius: 8,
+          color: "#7c3aed",
+          fillColor: "#a78bfa",
+          fillOpacity: 0.3,
+          weight: 2,
+        })
+          .addTo(highlightLayer)
+          .bindTooltip("Soleil sous l'horizon (courbure de la terre)", {
+            sticky: true,
+          });
+      }
+    },
+    [],
+  );
+
   const runPointClickDiagnostics = useCallback(async (lat: number, lon: number) => {
     const params = clickDebugParamsRef.current;
     const ignoreVegetationForUi = ignoreVegetationShadowRef.current;
@@ -1613,7 +1856,15 @@ export function SunlightMapClient() {
       console.warn("Warnings:", json.warnings);
     }
     console.groupEnd();
-  }, []);
+
+    renderShadowBlockerHighlight({
+      lat: payload.lat,
+      lon: payload.lon,
+      response: json,
+      primarySource: primarySourceEffective,
+      ridgePoint,
+    });
+  }, [renderShadowBlockerHighlight]);
 
   useEffect(() => {
     const stored = loadStoredUiParams();
@@ -1722,6 +1973,7 @@ export function SunlightMapClient() {
       terrainLayerRef.current = L.layerGroup().addTo(map);
       heatmapLayerRef.current = L.layerGroup().addTo(map);
       placesLayerRef.current = L.layerGroup().addTo(map);
+      clickHighlightLayerRef.current = L.layerGroup().addTo(map);
       mapRef.current = map;
 
       map.on("click", (event: LeafletMouseEvent) => {
@@ -1772,6 +2024,7 @@ export function SunlightMapClient() {
       terrainLayerRef.current = null;
       heatmapLayerRef.current = null;
       placesLayerRef.current = null;
+      clickHighlightLayerRef.current = null;
       leafletModuleRef.current = null;
     };
   }, [runPointClickDiagnostics]);
