@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
+import type { HorizonMask } from "@/lib/sun/horizon-mask";
 
 import { POST } from "./route";
 
@@ -8,6 +10,8 @@ interface MockContextOverrides {
   insideBuilding?: boolean;
   indoorBuildingId?: string | null;
   pointElevationMeters?: number | null;
+  terrainHorizonMethod?: string;
+  horizonMask?: HorizonMask | null;
 }
 
 function createMockContext(
@@ -23,10 +27,10 @@ function createMockContext(
     insideBuilding: overrides.insideBuilding ?? false,
     indoorBuildingId: overrides.indoorBuildingId ?? null,
     pointElevationMeters: overrides.pointElevationMeters ?? 520,
-    terrainHorizonMethod: "mock-terrain",
+    terrainHorizonMethod: overrides.terrainHorizonMethod ?? "mock-terrain",
     buildingsShadowMethod: "mock-buildings",
     warnings: [],
-    horizonMask: null,
+    horizonMask: overrides.horizonMask ?? null,
     buildingShadowEvaluator: undefined,
   };
 }
@@ -222,5 +226,74 @@ describe("POST /api/sunlight/area", () => {
     expect(response.status).toBe(400);
     expect(json.error).toContain("Outdoor grid exceeds maxPoints limit");
     expect(json.detail).toContain("outdoor points");
+  });
+
+  it("includes dynamic terrain horizon debug data when DEM horizon is available", async () => {
+    const dynamicMask = {
+      generatedAt: "2026-03-08T00:00:00.000Z",
+      method: "copernicus-dem30-runtime-raycast-v1",
+      center: { lat: 46.5225, lon: 6.6005 },
+      radiusKm: 120,
+      binsDeg: Array.from({ length: 360 }, (_, index) => (index === 90 ? 18 : -2)),
+      ridgePoints: [
+        {
+          azimuthDeg: 90,
+          lat: 46.53,
+          lon: 6.71,
+          distanceMeters: 8450,
+          horizonAngleDeg: 18,
+          peakElevationMeters: 2280,
+        },
+      ],
+    };
+
+    vi.mocked(buildDynamicHorizonMask).mockResolvedValue(dynamicMask);
+    vi.mocked(buildPointEvaluationContext).mockImplementation(
+      async (lat, lon, options) =>
+        createMockContext(lat, lon, {
+          terrainHorizonMethod:
+            options?.terrainHorizonOverride?.method ?? "mock-terrain",
+          horizonMask: options?.terrainHorizonOverride ?? null,
+        }),
+    );
+
+    const payload = {
+      bbox: [6.599447, 46.522107, 6.6002, 46.5227],
+      date: "2026-03-08",
+      timezone: "Europe/Zurich",
+      mode: "instant",
+      localTime: "09:19",
+      sampleEveryMinutes: 15,
+      gridStepMeters: 20,
+      maxPoints: 3000,
+    };
+
+    const request = new Request("http://localhost/api/sunlight/area", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const response = await POST(request);
+    const json = (await response.json()) as {
+      error?: string;
+      model: {
+        terrainHorizonMethod: string;
+        terrainHorizonDebug: {
+          center: { lat: number; lon: number };
+          radiusKm: number;
+          ridgePoints: Array<{ azimuthDeg: number; horizonAngleDeg: number }>;
+        } | null;
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(json.error).toBeUndefined();
+    expect(json.model.terrainHorizonMethod).toBe(dynamicMask.method);
+    expect(json.model.terrainHorizonDebug).not.toBeNull();
+    expect(json.model.terrainHorizonDebug?.ridgePoints.length).toBeGreaterThan(0);
+    expect(json.model.terrainHorizonDebug?.ridgePoints[0]?.azimuthDeg).toBe(90);
   });
 });
