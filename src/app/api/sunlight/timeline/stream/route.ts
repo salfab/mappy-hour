@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { buildGridFromBbox } from "@/lib/geo/grid";
+import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
 import { evaluateInstantSunlight } from "@/lib/sun/solar";
 import { getZonedDayRangeUtc } from "@/lib/time/zoned-date";
@@ -156,13 +157,44 @@ export async function GET(request: Request) {
           let terrainMethod = "none";
           let buildingsMethod = "none";
           const preparationStartedAt = performance.now();
+          const preparationTotalSteps = grid.length + 1;
           const prepProgressInterval = Math.max(1, Math.floor(grid.length / 200));
+          let terrainHorizonOverride:
+            | Awaited<ReturnType<typeof buildDynamicHorizonMask>>
+            | undefined;
 
           sendEvent("progress", {
             phase: "preparing",
             done: 0,
-            total: grid.length,
+            total: preparationTotalSteps,
             percent: 0,
+            etaSeconds: null,
+          });
+          await yieldToEventLoop();
+
+          try {
+            const dynamicMask = await buildDynamicHorizonMask({
+              lat: (query.minLat + query.maxLat) / 2,
+              lon: (query.minLon + query.maxLon) / 2,
+            });
+            if (dynamicMask) {
+              terrainHorizonOverride = dynamicMask;
+              terrainMethod = dynamicMask.method;
+            } else {
+              warnings.push(
+                "Dynamic terrain horizon unavailable for this area center. Falling back to preprocessed Lausanne horizon mask when available.",
+              );
+            }
+          } catch (error) {
+            warnings.push(
+              `Dynamic terrain horizon build failed (${error instanceof Error ? error.message : "unknown error"}). Falling back to preprocessed Lausanne horizon mask when available.`,
+            );
+          }
+          sendEvent("progress", {
+            phase: "preparing",
+            done: 1,
+            total: preparationTotalSteps,
+            percent: Math.round(percent(1, preparationTotalSteps) * 10) / 10,
             etaSeconds: null,
           });
           await yieldToEventLoop();
@@ -175,6 +207,7 @@ export async function GET(request: Request) {
             const point = grid[gridIndex];
             const context = await buildPointEvaluationContext(point.lat, point.lon, {
               skipTerrainSamplingWhenIndoor: true,
+              terrainHorizonOverride: terrainHorizonOverride ?? undefined,
             });
             terrainMethod = context.terrainHorizonMethod;
             buildingsMethod = context.buildingsShadowMethod;
@@ -212,15 +245,20 @@ export async function GET(request: Request) {
               prepDone % prepProgressInterval === 0
             ) {
               const elapsedMs = performance.now() - preparationStartedAt;
-              const donePercent = percent(prepDone, grid.length);
+              const preparationDoneSteps = prepDone + 1;
+              const donePercent = percent(
+                preparationDoneSteps,
+                preparationTotalSteps,
+              );
               const etaMs =
-                prepDone > 0
-                  ? (elapsedMs / prepDone) * Math.max(grid.length - prepDone, 0)
+                preparationDoneSteps > 0
+                  ? (elapsedMs / preparationDoneSteps) *
+                    Math.max(preparationTotalSteps - preparationDoneSteps, 0)
                   : null;
               sendEvent("progress", {
                 phase: "preparing",
-                done: prepDone,
-                total: grid.length,
+                done: preparationDoneSteps,
+                total: preparationTotalSteps,
                 percent: Math.round(donePercent * 10) / 10,
                 etaSeconds:
                   etaMs === null ? null : Math.max(0, Math.round(etaMs / 1000)),

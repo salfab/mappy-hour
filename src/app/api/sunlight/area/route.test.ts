@@ -37,6 +37,10 @@ vi.mock("@/lib/sun/evaluation-context", () => ({
   ),
 }));
 
+vi.mock("@/lib/sun/dynamic-horizon-mask", () => ({
+  buildDynamicHorizonMask: vi.fn(async () => null),
+}));
+
 describe("POST /api/sunlight/area", () => {
   it("returns a valid daily area payload without running a web server", async () => {
     vi.mocked(buildPointEvaluationContext).mockImplementation(async (lat, lon) =>

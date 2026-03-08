@@ -25,6 +25,10 @@ vi.mock("@/lib/sun/evaluation-context", () => ({
   ),
 }));
 
+vi.mock("@/lib/sun/dynamic-horizon-mask", () => ({
+  buildDynamicHorizonMask: vi.fn(async () => null),
+}));
+
 describe("GET /api/sunlight/timeline/stream", () => {
   it("streams timeline events successfully without running a web server", async () => {
     const request = new Request(

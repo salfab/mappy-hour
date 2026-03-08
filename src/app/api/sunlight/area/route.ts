@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { buildGridFromBbox } from "@/lib/geo/grid";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
+import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import {
   evaluateInstantSunlight,
   evaluatePointSunlight,
@@ -106,6 +107,28 @@ export async function POST(request: Request) {
     let pointsWithElevation = 0;
     let indoorPointsExcluded = 0;
     let outdoorPointCount = 0;
+    let terrainHorizonOverride:
+      | Awaited<ReturnType<typeof buildDynamicHorizonMask>>
+      | undefined;
+
+    try {
+      const dynamicMask = await buildDynamicHorizonMask({
+        lat: (minLat + maxLat) / 2,
+        lon: (minLon + maxLon) / 2,
+      });
+      if (dynamicMask) {
+        terrainHorizonOverride = dynamicMask;
+        terrainMethod = dynamicMask.method;
+      } else {
+        warnings.push(
+          "Dynamic terrain horizon unavailable for this area center. Falling back to preprocessed Lausanne horizon mask when available.",
+        );
+      }
+    } catch (error) {
+      warnings.push(
+        `Dynamic terrain horizon build failed (${error instanceof Error ? error.message : "unknown error"}). Falling back to preprocessed Lausanne horizon mask when available.`,
+      );
+    }
 
     if (parsed.data.mode === "instant") {
       const utcDate = zonedDateTimeToUtc(
@@ -134,6 +157,7 @@ export async function POST(request: Request) {
       for (const point of grid) {
         const context = await buildPointEvaluationContext(point.lat, point.lon, {
           skipTerrainSamplingWhenIndoor: true,
+          terrainHorizonOverride: terrainHorizonOverride ?? undefined,
         });
         terrainMethod = context.terrainHorizonMethod;
         buildingsMethod = context.buildingsShadowMethod;
@@ -239,6 +263,7 @@ export async function POST(request: Request) {
     for (const point of grid) {
       const context = await buildPointEvaluationContext(point.lat, point.lon, {
         skipTerrainSamplingWhenIndoor: true,
+        terrainHorizonOverride: terrainHorizonOverride ?? undefined,
       });
       terrainMethod = context.terrainHorizonMethod;
       buildingsMethod = context.buildingsShadowMethod;

@@ -4,11 +4,12 @@ import {
   findContainingBuilding,
   loadBuildingsObstacleIndex,
 } from "@/lib/sun/buildings-shadow";
-import { loadLausanneHorizonMask } from "@/lib/sun/horizon-mask";
+import { HorizonMask, loadLausanneHorizonMask } from "@/lib/sun/horizon-mask";
 import { sampleSwissTerrainElevationLv95 } from "@/lib/terrain/swiss-terrain";
 
 export interface BuildPointEvaluationContextOptions {
   skipTerrainSamplingWhenIndoor?: boolean;
+  terrainHorizonOverride?: HorizonMask;
 }
 
 export interface PointEvaluationContext {
@@ -38,10 +39,11 @@ export async function buildPointEvaluationContext(
   options: BuildPointEvaluationContextOptions = {},
 ): Promise<PointEvaluationContext> {
   const pointLv95 = wgs84ToLv95(lon, lat);
-  const [horizonMask, buildingsIndex] = await Promise.all([
+  const [lausanneHorizonMask, buildingsIndex] = await Promise.all([
     loadLausanneHorizonMask(),
     loadBuildingsObstacleIndex(),
   ]);
+  const horizonMask = options.terrainHorizonOverride ?? lausanneHorizonMask;
 
   const containment = buildingsIndex
     ? findContainingBuilding(
