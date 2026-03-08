@@ -368,6 +368,45 @@ function classifyRidgeDistance(
     : "DEM local (colline du terrain de la ville)";
 }
 
+function selectPrimaryShadowCause(input: {
+  aboveAstronomicalHorizon: boolean;
+  terrainBlocked: boolean;
+  buildingsBlocked: boolean;
+  terrainSource: "DEM local (colline du terrain de la ville)" | "montagnes" | null;
+  isSunny: boolean;
+}): { primary: string; secondary: string[] } {
+  if (input.isSunny) {
+    return { primary: "aucune (point ensoleille)", secondary: [] };
+  }
+
+  const causes = new Set<string>();
+  if (!input.aboveAstronomicalHorizon) {
+    causes.add("courbure de la terre");
+  }
+  if (input.terrainBlocked) {
+    causes.add(input.terrainSource ?? "terrain/horizon");
+  }
+  if (input.buildingsBlocked) {
+    causes.add("batiment");
+  }
+
+  const priority = [
+    "courbure de la terre",
+    "montagnes",
+    "DEM local (colline du terrain de la ville)",
+    "terrain/horizon",
+    "batiment",
+  ];
+  for (const candidate of priority) {
+    if (causes.has(candidate)) {
+      const secondary = Array.from(causes).filter((cause) => cause !== candidate);
+      return { primary: candidate, secondary };
+    }
+  }
+
+  return { primary: "inconnu", secondary: Array.from(causes) };
+}
+
 function zurichNowDateAndTime(): { date: string; time: string } {
   const now = new Date();
   const parts = new Intl.DateTimeFormat("sv-SE", {
@@ -810,22 +849,15 @@ export function SunlightMapClient() {
       ) ??
       null;
 
-    const shadowSources: string[] = [];
-    if (!json.sample.aboveAstronomicalHorizon) {
-      shadowSources.push("courbure de la terre");
-    }
-    if (json.pointContext.insideBuilding || json.sample.buildingsBlocked) {
-      shadowSources.push("batiment");
-    }
-    if (json.sample.terrainBlocked) {
-      shadowSources.push(terrainSource ?? "terrain/horizon");
-    }
-    if (shadowSources.length === 0) {
-      shadowSources.push("aucune (point ensoleille)");
-    }
-
-    const primarySource = shadowSources[0];
-    const secondarySources = shadowSources.slice(1);
+    const { primary: primarySource, secondary: secondarySources } =
+      selectPrimaryShadowCause({
+        aboveAstronomicalHorizon: json.sample.aboveAstronomicalHorizon,
+        terrainBlocked: json.sample.terrainBlocked,
+        buildingsBlocked:
+          json.sample.buildingsBlocked || json.pointContext.insideBuilding,
+        terrainSource,
+        isSunny: json.sample.isSunny,
+      });
 
     console.groupCollapsed(
       `[Mappy Hour][click] lat=${payload.lat.toFixed(6)} lon=${payload.lon.toFixed(6)} ` +
