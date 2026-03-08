@@ -1210,6 +1210,7 @@ export function SunlightMapClient() {
   const timelineStreamRef = useRef<EventSource | null>(null);
   const timelineCancelledRef = useRef(false);
   const decodedTimelineMaskCacheRef = useRef<Map<string, Uint8Array>>(new Map());
+  const ignoreVegetationShadowRef = useRef(false);
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
   const vegetationLayerRef = useRef<LayerGroup | null>(null);
@@ -1416,8 +1417,13 @@ export function SunlightMapClient() {
     };
   }, [activeFrameTime, date, localTime, mode, sampleEveryMinutes]);
 
+  useEffect(() => {
+    ignoreVegetationShadowRef.current = ignoreVegetationShadow;
+  }, [ignoreVegetationShadow]);
+
   const runPointClickDiagnostics = useCallback(async (lat: number, lon: number) => {
     const params = clickDebugParamsRef.current;
+    const ignoreVegetationForUi = ignoreVegetationShadowRef.current;
     const localTimeForDiagnostic =
       params.mode === "daily"
         ? (extractTimeFromLocalDateTime(params.activeFrameTime) ?? params.localTime)
@@ -1453,25 +1459,55 @@ export function SunlightMapClient() {
         (point) => point.azimuthDeg === normalizeAzimuth(json.sample.azimuthDeg),
       ) ??
       null;
+    const buildingsBlocked = json.sample.buildingsBlocked || json.pointContext.insideBuilding;
+    const vegetationBlockedRaw = json.sample.vegetationBlocked ?? false;
 
-    const { primary: primarySource, secondary: secondarySources } =
+    const { primary: primarySourceRaw, secondary: secondarySourcesRaw } =
       selectPrimaryShadowCause({
         aboveAstronomicalHorizon: json.sample.aboveAstronomicalHorizon,
         terrainBlocked: json.sample.terrainBlocked,
-        vegetationBlocked: json.sample.vegetationBlocked ?? false,
-        buildingsBlocked:
-          json.sample.buildingsBlocked || json.pointContext.insideBuilding,
+        vegetationBlocked: vegetationBlockedRaw,
+        buildingsBlocked,
         terrainSource,
         isSunny: json.sample.isSunny,
+      });
+    const vegetationBlockedEffective = ignoreVegetationForUi
+      ? false
+      : vegetationBlockedRaw;
+    const isSunnyEffective =
+      json.sample.aboveAstronomicalHorizon &&
+      !json.sample.terrainBlocked &&
+      !buildingsBlocked &&
+      !vegetationBlockedEffective;
+    const { primary: primarySourceEffective, secondary: secondarySourcesEffective } =
+      selectPrimaryShadowCause({
+        aboveAstronomicalHorizon: json.sample.aboveAstronomicalHorizon,
+        terrainBlocked: json.sample.terrainBlocked,
+        vegetationBlocked: vegetationBlockedEffective,
+        buildingsBlocked,
+        terrainSource,
+        isSunny: isSunnyEffective,
       });
 
     console.groupCollapsed(
       `[Mappy Hour][click] lat=${payload.lat.toFixed(6)} lon=${payload.lon.toFixed(6)} ` +
-        `-> ${primarySource}`,
+        `-> ${primarySourceEffective}`,
     );
-    console.log("Cause principale:", primarySource);
-    if (secondarySources.length > 0) {
-      console.log("Causes secondaires:", secondarySources.join(", "));
+    console.log("Cause principale (mode brut):", primarySourceRaw);
+    if (secondarySourcesRaw.length > 0) {
+      console.log("Causes secondaires (mode brut):", secondarySourcesRaw.join(", "));
+    }
+    console.log(
+      "Cause principale (avec toggle UI ignore vegetation =",
+      ignoreVegetationForUi,
+      "):",
+      primarySourceEffective,
+    );
+    if (secondarySourcesEffective.length > 0) {
+      console.log(
+        "Causes secondaires (avec toggle UI):",
+        secondarySourcesEffective.join(", "),
+      );
     }
     console.log("Indoor/Outdoor:", json.pointContext.insideBuilding ? "indoor" : "outdoor");
     console.log("Date/Heure locale:", `${json.date} ${json.localTime}`, "| UTC:", json.utcTime);
