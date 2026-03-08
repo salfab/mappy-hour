@@ -7,9 +7,11 @@ import {
   PROCESSED_BUILDINGS_INDEX_PATH,
   PROCESSED_HORIZON_MASK_PATH,
   PROCESSED_LAUSANNE_PLACES_PATH,
+  PROCESSED_NYON_PLACES_PATH,
   RAW_BUILDINGS_DIR,
   RAW_HORIZON_DEM_DIR,
   RAW_LAUSANNE_PLACES_PATH,
+  RAW_NYON_PLACES_PATH,
   RAW_TERRAIN_CH_DIR,
   RAW_VEGETATION_SURFACE_DIR,
 } from "@/lib/storage/data-paths";
@@ -55,6 +57,8 @@ export async function GET() {
     buildingsIndexExists,
     rawPlacesExists,
     processedPlacesExists,
+    rawNyonPlacesExists,
+    processedNyonPlacesExists,
   ] = await Promise.all([
     countFilesRecursively(RAW_BUILDINGS_DIR),
     countFilesRecursively(RAW_TERRAIN_CH_DIR),
@@ -64,6 +68,8 @@ export async function GET() {
     fileExists(PROCESSED_BUILDINGS_INDEX_PATH),
     fileExists(RAW_LAUSANNE_PLACES_PATH),
     fileExists(PROCESSED_LAUSANNE_PLACES_PATH),
+    fileExists(RAW_NYON_PLACES_PATH),
+    fileExists(PROCESSED_NYON_PLACES_PATH),
   ]);
 
   return NextResponse.json({
@@ -100,6 +106,14 @@ export async function GET() {
       placesProcessed: {
         filePath: PROCESSED_LAUSANNE_PLACES_PATH,
         exists: processedPlacesExists,
+      },
+      nyonPlacesRaw: {
+        filePath: RAW_NYON_PLACES_PATH,
+        exists: rawNyonPlacesExists,
+      },
+      nyonPlacesProcessed: {
+        filePath: PROCESSED_NYON_PLACES_PATH,
+        exists: processedNyonPlacesExists,
       },
     },
   });

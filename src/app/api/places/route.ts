@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { loadLausannePlaces } from "@/lib/places/lausanne-places";
+import { loadAllPlaces } from "@/lib/places/lausanne-places";
 
 export const runtime = "nodejs";
 
@@ -15,12 +15,12 @@ export async function GET(request: Request) {
         ? Math.min(Math.floor(limitParam), 2000)
         : 500;
 
-    const placesFile = await loadLausannePlaces();
+    const placesFile = await loadAllPlaces();
     if (!placesFile) {
       return NextResponse.json(
         {
           error:
-            "No places dataset found. Run ingest:lausanne:places to fetch OSM places.",
+            "No places dataset found. Run ingest:lausanne:places and/or ingest:nyon:places to fetch OSM places.",
         },
         { status: 404 },
       );

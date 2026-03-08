@@ -220,12 +220,12 @@ export async function GET(request: Request) {
               terrainMethod = dynamicMask.method;
             } else {
               warnings.push(
-                "Dynamic terrain horizon unavailable for this area center. Falling back to preprocessed Lausanne horizon mask when available.",
+                "Dynamic terrain horizon unavailable for this area center. Falling back to preprocessed horizon mask when available.",
               );
             }
           } catch (error) {
             warnings.push(
-              `Dynamic terrain horizon build failed (${error instanceof Error ? error.message : "unknown error"}). Falling back to preprocessed Lausanne horizon mask when available.`,
+              `Dynamic terrain horizon build failed (${error instanceof Error ? error.message : "unknown error"}). Falling back to preprocessed horizon mask when available.`,
             );
           }
           const terrainHorizonDebug = extractTerrainHorizonDebug(

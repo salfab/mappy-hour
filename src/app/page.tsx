@@ -5,7 +5,7 @@ export default function Home() {
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-10 md:px-10">
       <header className="space-y-3">
         <p className="inline-flex rounded-full border border-white/20 px-3 py-1 text-xs tracking-wide text-sky-200">
-          Mappy Hour - Lausanne
+          Mappy Hour - Lausanne + Nyon
         </p>
         <h1 className="text-4xl font-semibold tracking-tight md:text-5xl">
           Carte d&apos;ensoleillement relief + batiments

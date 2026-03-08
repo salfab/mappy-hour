@@ -28,6 +28,10 @@ export const RAW_LAUSANNE_PLACES_PATH = path.join(
   RAW_OSM_ROOT,
   "lausanne-places-overpass.json",
 );
+export const RAW_NYON_PLACES_PATH = path.join(
+  RAW_OSM_ROOT,
+  "nyon-places-overpass.json",
+);
 
 export const PROCESSED_ROOT = path.join(DATA_ROOT, "processed");
 export const PROCESSED_HORIZON_DIR = path.join(PROCESSED_ROOT, "horizon");
@@ -44,4 +48,8 @@ export const PROCESSED_PLACES_DIR = path.join(PROCESSED_ROOT, "places");
 export const PROCESSED_LAUSANNE_PLACES_PATH = path.join(
   PROCESSED_PLACES_DIR,
   "lausanne-places.json",
+);
+export const PROCESSED_NYON_PLACES_PATH = path.join(
+  PROCESSED_PLACES_DIR,
+  "nyon-places.json",
 );

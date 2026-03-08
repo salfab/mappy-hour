@@ -17,9 +17,15 @@
     "ingest:lausanne:vegetation:surface": "tsx scripts/ingest/download-lausanne-vegetation-surface.ts",
     "ingest:lausanne:terrain:horizon": "tsx scripts/ingest/download-lausanne-horizon-dem.ts",
     "ingest:lausanne:places": "tsx scripts/ingest/download-lausanne-places-osm.ts",
+    "ingest:nyon:buildings": "tsx scripts/ingest/download-nyon-buildings.ts",
+    "ingest:nyon:terrain:ch": "tsx scripts/ingest/download-nyon-terrain-ch.ts",
+    "ingest:nyon:vegetation:surface": "tsx scripts/ingest/download-nyon-vegetation-surface.ts",
+    "ingest:nyon:terrain:horizon": "tsx scripts/ingest/download-nyon-horizon-dem.ts",
+    "ingest:nyon:places": "tsx scripts/ingest/download-nyon-places-osm.ts",
     "preprocess:lausanne:buildings": "tsx scripts/preprocess/build-lausanne-buildings-index.ts",
     "preprocess:lausanne:horizon": "tsx scripts/preprocess/build-lausanne-horizon-mask.ts",
-    "fetch:lausanne:3d": "pnpm run ingest:lausanne:buildings && pnpm run ingest:lausanne:terrain:ch && pnpm run ingest:lausanne:vegetation:surface && pnpm run ingest:lausanne:terrain:horizon && pnpm run preprocess:lausanne:buildings && pnpm run preprocess:lausanne:horizon"
+    "fetch:lausanne:3d": "pnpm run ingest:lausanne:buildings && pnpm run ingest:lausanne:terrain:ch && pnpm run ingest:lausanne:vegetation:surface && pnpm run ingest:lausanne:terrain:horizon && pnpm run preprocess:lausanne:buildings && pnpm run preprocess:lausanne:horizon",
+    "fetch:nyon:3d": "pnpm run ingest:nyon:buildings && pnpm run ingest:nyon:terrain:ch && pnpm run ingest:nyon:vegetation:surface && pnpm run ingest:nyon:terrain:horizon && pnpm run preprocess:lausanne:buildings"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",

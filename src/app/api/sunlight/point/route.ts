@@ -86,12 +86,12 @@ export async function POST(request: Request) {
         terrainHorizonOverride = dynamicMask;
       } else {
         warnings.push(
-          "Dynamic terrain horizon unavailable for this point. Falling back to preprocessed Lausanne horizon mask when available.",
+          "Dynamic terrain horizon unavailable for this point. Falling back to preprocessed horizon mask when available.",
         );
       }
     } catch (error) {
       warnings.push(
-        `Dynamic terrain horizon build failed (${error instanceof Error ? error.message : "unknown error"}). Falling back to preprocessed Lausanne horizon mask when available.`,
+        `Dynamic terrain horizon build failed (${error instanceof Error ? error.message : "unknown error"}). Falling back to preprocessed horizon mask when available.`,
       );
     }
 

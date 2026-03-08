@@ -122,17 +122,17 @@ export async function buildPointEvaluationContext(
   const warnings: string[] = [];
   if (!horizonMask) {
     warnings.push(
-      "No horizon mask found. Run preprocess:lausanne:horizon to enable terrain blocking.",
+      "No horizon mask found. Run preprocess:lausanne:horizon (fallback) and ingest terrain horizon DEM tiles for your target area.",
     );
   }
   if (!buildingsIndex) {
     warnings.push(
-      "No buildings obstacle index found. Run preprocess:lausanne:buildings to enable building shadow blocking.",
+      "No buildings obstacle index found. Run preprocess:lausanne:buildings after ingesting buildings data for your target area.",
     );
   }
   if (vegetationSurfaceTiles === null) {
     warnings.push(
-      "No vegetation surface raster found. Run ingest:lausanne:vegetation:surface to enable vegetation shadow blocking.",
+      "No vegetation surface raster found. Run ingest:lausanne:vegetation:surface and/or ingest:nyon:vegetation:surface to enable vegetation shadow blocking.",
     );
   }
   if (pointElevationMeters === null && !shouldSkipTerrainSampling) {

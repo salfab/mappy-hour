@@ -3,7 +3,7 @@ import { performance } from "node:perf_hooks";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { loadLausannePlaces } from "@/lib/places/lausanne-places";
+import { loadAllPlaces } from "@/lib/places/lausanne-places";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { evaluateInstantSunlight } from "@/lib/sun/solar";
@@ -400,12 +400,12 @@ export async function POST(request: Request) {
       observerHeightMeters: parsed.data.observerHeightMeters,
       buildingHeightBiasMeters: parsed.data.buildingHeightBiasMeters,
     });
-    const placesFile = await loadLausannePlaces();
+    const placesFile = await loadAllPlaces();
     if (!placesFile) {
       return NextResponse.json(
         {
           error:
-            "No places dataset found. Run ingest:lausanne:places to fetch OSM places.",
+            "No places dataset found. Run ingest:lausanne:places and/or ingest:nyon:places to fetch OSM places.",
         },
         { status: 404 },
       );
