@@ -1,8 +1,15 @@
 import path from "node:path";
 
 const PROJECT_ROOT = process.cwd();
+const ENV_DATA_ROOT = process.env.MAPPY_DATA_ROOT?.trim();
+const RESOLVED_ENV_DATA_ROOT =
+  ENV_DATA_ROOT && ENV_DATA_ROOT.length > 0
+    ? path.isAbsolute(ENV_DATA_ROOT)
+      ? ENV_DATA_ROOT
+      : path.resolve(PROJECT_ROOT, ENV_DATA_ROOT)
+    : null;
 
-export const DATA_ROOT = path.join(PROJECT_ROOT, "data");
+export const DATA_ROOT = RESOLVED_ENV_DATA_ROOT ?? path.join(PROJECT_ROOT, "data");
 
 export const RAW_DATA_ROOT = path.join(DATA_ROOT, "raw");
 export const RAW_SWISSTOPO_ROOT = path.join(RAW_DATA_ROOT, "swisstopo");

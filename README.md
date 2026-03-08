@@ -32,6 +32,19 @@ pnpm install
 pnpm dev
 ```
 
+Option Windows (recommande quand beaucoup de fichiers DEM/3D):
+
+```powershell
+$env:MAPPY_DATA_ROOT='D:\mappy-hour-data'
+pnpm dev
+```
+
+Alternative webpack (ignore explicite `data/**` via `next.config.ts`):
+
+```bash
+pnpm dev:webpack
+```
+
 ## Recuperer tous les jeux 3D/DEM (script unique)
 
 Les gros fichiers 3D/DEM sont ignores par git (`data/raw/...`) pour eviter de saturer le repo
@@ -47,6 +60,7 @@ Ce script execute :
 
 - `ingest:lausanne:buildings`
 - `ingest:lausanne:terrain:ch`
+- `ingest:lausanne:vegetation:surface`
 - `ingest:lausanne:terrain:horizon`
 - `preprocess:lausanne:buildings`
 - `preprocess:lausanne:horizon`

@@ -15,7 +15,7 @@ et proposer des moyens concrets pour les traiter.
 |---|---|---|
 | 1. Explosion du volume de donnees (DSM/DTM/batiments) | temps ingest et preprocess trop longs, stockage lourd | ingestion par tuiles + manifests + reprise incrémentale + compression index |
 | 2. Temps de calcul daily sur grandes bbox | UX lente, timeouts | limites `maxPoints`, streaming SSE, precompute partiel, cache par cellule/heure |
-| 3. Filewatcher/FD sur Windows | dev server instable | ignorer `data/raw/**` et `data/processed/**` dans watch; scripts batch hors `next dev` |
+| 3. Filewatcher/FD sur Windows | dev server instable | stocker les donnees hors repo via `MAPPY_DATA_ROOT`; fallback `pnpm dev:webpack` avec `watchOptions.ignored` sur `data/**` |
 | 4. Donnees multi-dates (2017, 2019, etc.) | incoherences ombres vs realite actuelle | ajouter metadata temporelle dans manifests + avertissements UI |
 | 5. Differencier vegetation vs batiments dans un DSM | faux blocages vegetation | derive nDSM (`DSM-DTM`) + soustraction footprints batiments + seuils de hauteur |
 | 6. Couverture/holes selon zones | points sans elevation ou sans vegetation | fallback clair, warnings explicites, couche QA coverage |

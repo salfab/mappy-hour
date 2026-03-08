@@ -5,6 +5,7 @@
   "packageManager": "pnpm@9.0.6",
   "scripts": {
     "dev": "next dev",
+    "dev:webpack": "next dev --webpack",
     "build": "next build",
     "start": "next start",
     "test": "vitest run",
