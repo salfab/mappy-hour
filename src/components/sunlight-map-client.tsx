@@ -111,6 +111,7 @@ const METERS_PER_DEGREE_LAT = 111_320;
 const DEFAULT_MAP_CENTER: [number, number] = [46.5197, 6.6323];
 const DEFAULT_MAP_ZOOM = 13;
 const MAP_VIEW_STORAGE_KEY = "mappy-hour:map:view";
+const UI_PARAMS_STORAGE_KEY = "mappy-hour:ui:params";
 type XY = [number, number];
 type Ring = XY[];
 type Polygon = Ring[];
@@ -128,6 +129,17 @@ interface StoredMapView {
   lat: number;
   lon: number;
   zoom: number;
+}
+
+interface StoredUiParams {
+  mode: AreaMode;
+  date: string;
+  localTime: string;
+  gridStepMeters: number;
+  sampleEveryMinutes: number;
+  showSunny: boolean;
+  showShadow: boolean;
+  showBuildings: boolean;
 }
 
 function loadStoredMapView(): StoredMapView | null {
@@ -171,6 +183,67 @@ function persistMapView(view: StoredMapView): void {
     globalThis.localStorage.setItem(MAP_VIEW_STORAGE_KEY, JSON.stringify(view));
   } catch {
     // Ignore storage errors to avoid blocking map interactions.
+  }
+}
+
+function loadStoredUiParams(): StoredUiParams | null {
+  try {
+    const raw = globalThis.localStorage.getItem(UI_PARAMS_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<StoredUiParams>;
+    const mode = parsed.mode;
+    const date = parsed.date;
+    const localTime = parsed.localTime;
+    const gridStepMeters = parsed.gridStepMeters;
+    const sampleEveryMinutes = parsed.sampleEveryMinutes;
+    const showSunny = parsed.showSunny;
+    const showShadow = parsed.showShadow;
+    const showBuildings = parsed.showBuildings;
+
+    const valid =
+      (mode === "instant" || mode === "daily") &&
+      typeof date === "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(date) &&
+      typeof localTime === "string" &&
+      /^\d{2}:\d{2}$/.test(localTime) &&
+      typeof gridStepMeters === "number" &&
+      Number.isFinite(gridStepMeters) &&
+      gridStepMeters >= 1 &&
+      gridStepMeters <= 2000 &&
+      typeof sampleEveryMinutes === "number" &&
+      Number.isFinite(sampleEveryMinutes) &&
+      sampleEveryMinutes >= 1 &&
+      sampleEveryMinutes <= 60 &&
+      typeof showSunny === "boolean" &&
+      typeof showShadow === "boolean" &&
+      typeof showBuildings === "boolean";
+    if (!valid) {
+      return null;
+    }
+
+    return {
+      mode,
+      date,
+      localTime,
+      gridStepMeters,
+      sampleEveryMinutes,
+      showSunny,
+      showShadow,
+      showBuildings,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistUiParams(params: StoredUiParams): void {
+  try {
+    globalThis.localStorage.setItem(UI_PARAMS_STORAGE_KEY, JSON.stringify(params));
+  } catch {
+    // Ignore storage errors to avoid blocking interactions.
   }
 }
 
@@ -459,6 +532,7 @@ export function SunlightMapClient() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
   const timelineStreamRef = useRef<EventSource | null>(null);
+  const timelineCancelledRef = useRef(false);
   const decodedTimelineMaskCacheRef = useRef<Map<number, Uint8Array>>(new Map());
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
@@ -485,6 +559,7 @@ export function SunlightMapClient() {
   const [showSunny, setShowSunny] = useState(true);
   const [showShadow, setShowShadow] = useState(true);
   const [showBuildings, setShowBuildings] = useState(true);
+  const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
 
   const visualAreaResponse = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
@@ -536,6 +611,48 @@ export function SunlightMapClient() {
     const buildingCount = lastBuildings?.count ?? 0;
     return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, batiments: ${buildingCount}, warnings: ${lastResult.warnings.length}`;
   }, [dailyTimeline, lastBuildings?.count, lastResult, mode]);
+
+  useEffect(() => {
+    const stored = loadStoredUiParams();
+    if (stored) {
+      setMode(stored.mode);
+      setDate(stored.date);
+      setLocalTime(stored.localTime);
+      setGridStepMeters(stored.gridStepMeters);
+      setSampleEveryMinutes(stored.sampleEveryMinutes);
+      setShowSunny(stored.showSunny);
+      setShowShadow(stored.showShadow);
+      setShowBuildings(stored.showBuildings);
+    }
+    setUiParamsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!uiParamsHydrated) {
+      return;
+    }
+
+    persistUiParams({
+      mode,
+      date,
+      localTime,
+      gridStepMeters,
+      sampleEveryMinutes,
+      showSunny,
+      showShadow,
+      showBuildings,
+    });
+  }, [
+    date,
+    gridStepMeters,
+    localTime,
+    mode,
+    sampleEveryMinutes,
+    showBuildings,
+    showShadow,
+    showSunny,
+    uiParamsHydrated,
+  ]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -591,6 +708,7 @@ export function SunlightMapClient() {
     return () => {
       isCancelled = true;
       if (timelineStreamRef.current) {
+        timelineCancelledRef.current = true;
         timelineStreamRef.current.close();
         timelineStreamRef.current = null;
       }
@@ -703,10 +821,33 @@ export function SunlightMapClient() {
     }
 
     if (timelineStreamRef.current) {
+      timelineCancelledRef.current = true;
       timelineStreamRef.current.close();
       timelineStreamRef.current = null;
       setIsLoading(false);
     }
+  }, [mode]);
+
+  const cancelDailyCalculation = useCallback(() => {
+    if (mode !== "daily") {
+      return;
+    }
+
+    timelineCancelledRef.current = true;
+    if (timelineStreamRef.current) {
+      timelineCancelledRef.current = true;
+      timelineStreamRef.current.close();
+      timelineStreamRef.current = null;
+    }
+    timelineCancelledRef.current = false;
+    setIsLoading(false);
+    setDailyProgress((previous) => ({
+      phase: "cancelled",
+      done: previous?.done ?? 0,
+      total: previous?.total ?? 0,
+      percent: previous?.percent ?? 0,
+      etaSeconds: null,
+    }));
   }, [mode]);
 
   const loadBuildingsLayer = useCallback(async (bbox: [number, number, number, number]) => {
@@ -896,6 +1037,9 @@ export function SunlightMapClient() {
     timelineStreamRef.current = timelineStream;
 
     timelineStream.addEventListener("start", (event) => {
+      if (timelineCancelledRef.current) {
+        return;
+      }
       const data = JSON.parse((event as MessageEvent).data) as {
         date: string;
         timezone: string;
@@ -928,11 +1072,17 @@ export function SunlightMapClient() {
     });
 
     timelineStream.addEventListener("progress", (event) => {
+      if (timelineCancelledRef.current) {
+        return;
+      }
       const data = JSON.parse((event as MessageEvent).data) as TimelineProgress;
       setDailyProgress(data);
     });
 
     timelineStream.addEventListener("frame", (event) => {
+      if (timelineCancelledRef.current) {
+        return;
+      }
       const data = JSON.parse((event as MessageEvent).data) as TimelineFrame;
       setDailyTimeline((previous) => {
         if (!previous) {
@@ -949,6 +1099,14 @@ export function SunlightMapClient() {
     });
 
     timelineStream.addEventListener("done", (event) => {
+      if (timelineCancelledRef.current) {
+        timelineStream.close();
+        if (timelineStreamRef.current === timelineStream) {
+          timelineStreamRef.current = null;
+        }
+        setIsLoading(false);
+        return;
+      }
       const data = JSON.parse((event as MessageEvent).data) as {
         stats: NonNullable<DailyTimelineState["stats"]>;
         warnings: string[];
@@ -981,6 +1139,14 @@ export function SunlightMapClient() {
     });
 
     timelineStream.addEventListener("error", (event) => {
+      if (timelineCancelledRef.current) {
+        timelineStream.close();
+        if (timelineStreamRef.current === timelineStream) {
+          timelineStreamRef.current = null;
+        }
+        setIsLoading(false);
+        return;
+      }
       if (streamFailed || streamFinished) {
         return;
       }
@@ -1065,18 +1231,19 @@ export function SunlightMapClient() {
           />
         </label>
 
-        <label className="grid gap-1 text-sm">
-          <span>Sample (min)</span>
-          <input
-            type="number"
-            min={1}
-            max={60}
-            value={sampleEveryMinutes}
-            className="w-28 rounded border border-white/20 bg-black/40 px-2 py-1"
-            onChange={(event) => setSampleEveryMinutes(Number(event.target.value))}
-            disabled={mode !== "daily"}
-          />
-        </label>
+        {mode === "daily" ? (
+          <label className="grid gap-1 text-sm">
+            <span>Sample (min)</span>
+            <input
+              type="number"
+              min={1}
+              max={60}
+              value={sampleEveryMinutes}
+              className="w-28 rounded border border-white/20 bg-black/40 px-2 py-1"
+              onChange={(event) => setSampleEveryMinutes(Number(event.target.value))}
+            />
+          </label>
+        ) : null}
 
         <button
           type="button"
@@ -1090,6 +1257,15 @@ export function SunlightMapClient() {
               ? "Calculer timeline"
               : "Calculer zone visible"}
         </button>
+        {mode === "daily" && isLoading ? (
+          <button
+            type="button"
+            className="rounded bg-rose-500 px-4 py-2 font-semibold text-white transition hover:bg-rose-400"
+            onClick={cancelDailyCalculation}
+          >
+            Interrompre
+          </button>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap items-center gap-4 rounded-lg border border-white/15 bg-black/20 px-3 py-2 text-sm">
