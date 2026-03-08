@@ -165,6 +165,15 @@ interface DailyTimelineState {
   } | null;
 }
 
+interface DailyExposurePoint {
+  id: string;
+  lat: number;
+  lon: number;
+  sunnyFrames: number;
+  totalFrames: number;
+  exposureRatio: number;
+}
+
 interface TimelineProgress {
   phase: string;
   done: number;
@@ -207,6 +216,7 @@ interface StoredUiParams {
   showShadow: boolean;
   showBuildings: boolean;
   showTerrain: boolean;
+  showHeatmap: boolean;
 }
 
 function loadStoredMapView(): StoredMapView | null {
@@ -270,6 +280,7 @@ function loadStoredUiParams(): StoredUiParams | null {
     const showShadow = parsed.showShadow;
     const showBuildings = parsed.showBuildings;
     const showTerrain = parsed.showTerrain;
+    const showHeatmap = parsed.showHeatmap;
 
     const valid =
       (mode === "instant" || mode === "daily") &&
@@ -288,7 +299,8 @@ function loadStoredUiParams(): StoredUiParams | null {
       typeof showSunny === "boolean" &&
       typeof showShadow === "boolean" &&
       typeof showBuildings === "boolean" &&
-      (typeof showTerrain === "boolean" || showTerrain === undefined);
+      (typeof showTerrain === "boolean" || showTerrain === undefined) &&
+      (typeof showHeatmap === "boolean" || showHeatmap === undefined);
     if (!valid) {
       return null;
     }
@@ -303,6 +315,7 @@ function loadStoredUiParams(): StoredUiParams | null {
       showShadow,
       showBuildings,
       showTerrain: showTerrain ?? true,
+      showHeatmap: showHeatmap ?? true,
     };
   } catch {
     return null;
@@ -701,6 +714,48 @@ function toInstantAreaResponseFromTimeline(
   };
 }
 
+function buildDailyExposurePoints(
+  timeline: DailyTimelineState,
+  decodedMaskCache: Map<number, Uint8Array>,
+): DailyExposurePoint[] {
+  if (timeline.points.length === 0 || timeline.frames.length === 0) {
+    return [];
+  }
+
+  const sunnyFrames = new Uint16Array(timeline.points.length);
+  for (const frame of timeline.frames) {
+    let mask = decodedMaskCache.get(frame.index);
+    if (!mask) {
+      mask = decodeBase64ToBytes(frame.sunMaskBase64);
+      decodedMaskCache.set(frame.index, mask);
+    }
+    for (let pointIndex = 0; pointIndex < timeline.points.length; pointIndex += 1) {
+      if (((mask[pointIndex >> 3] >> (pointIndex & 7)) & 1) === 1) {
+        sunnyFrames[pointIndex] += 1;
+      }
+    }
+  }
+
+  return timeline.points.map((point, index) => {
+    const totalFrames = timeline.frames.length;
+    const pointSunnyFrames = sunnyFrames[index] ?? 0;
+    return {
+      id: point.id,
+      lat: point.lat,
+      lon: point.lon,
+      sunnyFrames: pointSunnyFrames,
+      totalFrames,
+      exposureRatio: totalFrames === 0 ? 0 : pointSunnyFrames / totalFrames,
+    };
+  });
+}
+
+function exposureRatioToColor(exposureRatio: number): string {
+  const clamped = Math.max(0, Math.min(1, exposureRatio));
+  const hue = 220 - 220 * clamped;
+  return `hsl(${hue}, 88%, 54%)`;
+}
+
 export function SunlightMapClient() {
   const defaultNow = useMemo(() => zurichNowDateAndTime(), []);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -712,6 +767,7 @@ export function SunlightMapClient() {
   const shadowLayerRef = useRef<LayerGroup | null>(null);
   const buildingsLayerRef = useRef<LayerGroup | null>(null);
   const terrainLayerRef = useRef<LayerGroup | null>(null);
+  const heatmapLayerRef = useRef<LayerGroup | null>(null);
   const leafletModuleRef = useRef<typeof import("leaflet") | null>(null);
   const clickDebugParamsRef = useRef<{
     mode: AreaMode;
@@ -748,6 +804,7 @@ export function SunlightMapClient() {
   const [showShadow, setShowShadow] = useState(true);
   const [showBuildings, setShowBuildings] = useState(true);
   const [showTerrain, setShowTerrain] = useState(true);
+  const [showHeatmap, setShowHeatmap] = useState(true);
   const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
 
   const visualAreaResponse = useMemo(() => {
@@ -761,6 +818,29 @@ export function SunlightMapClient() {
 
     return lastResult;
   }, [dailyFrameIndex, dailyTimeline, lastResult, mode]);
+
+  const dailyExposurePoints = useMemo(() => {
+    if (
+      mode !== "daily" ||
+      !dailyTimeline ||
+      !dailyTimeline.stats ||
+      dailyTimeline.frames.length === 0
+    ) {
+      return null;
+    }
+
+    return buildDailyExposurePoints(dailyTimeline, decodedTimelineMaskCacheRef.current);
+  }, [dailyTimeline, mode]);
+
+  const dailyExposureHotspot = useMemo(() => {
+    if (!dailyExposurePoints || dailyExposurePoints.length === 0) {
+      return null;
+    }
+
+    return dailyExposurePoints.reduce((best, current) =>
+      current.exposureRatio > best.exposureRatio ? current : best,
+    );
+  }, [dailyExposurePoints]);
 
   const activeWarnings = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
@@ -782,6 +862,14 @@ export function SunlightMapClient() {
     return dailyTimeline.frames[safeIndex]?.localTime ?? null;
   }, [dailyFrameIndex, dailyTimeline]);
 
+  const canShowHeatmap = useMemo(
+    () =>
+      mode === "daily" &&
+      Boolean(dailyTimeline?.stats) &&
+      Boolean(dailyExposurePoints && dailyExposurePoints.length > 0),
+    [dailyExposurePoints, dailyTimeline?.stats, mode],
+  );
+
   const helperText = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
       const stats = dailyTimeline.stats;
@@ -790,7 +878,12 @@ export function SunlightMapClient() {
         return `${base}, calcul timeline en cours...`;
       }
 
-      return `${base}, ${stats.elapsedMs} ms, evaluations: ${stats.totalEvaluations}`;
+      if (!dailyExposureHotspot) {
+        return `${base}, ${stats.elapsedMs} ms, evaluations: ${stats.totalEvaluations}`;
+      }
+
+      const exposurePercent = Math.round(dailyExposureHotspot.exposureRatio * 100);
+      return `${base}, ${stats.elapsedMs} ms, evaluations: ${stats.totalEvaluations}, hotspot: ${exposurePercent}% (${dailyExposureHotspot.lat.toFixed(5)}, ${dailyExposureHotspot.lon.toFixed(5)})`;
     }
 
     if (!lastResult) {
@@ -799,7 +892,7 @@ export function SunlightMapClient() {
     const excludedIndoor = lastResult.stats.indoorPointsExcluded ?? 0;
     const buildingCount = lastBuildings?.count ?? 0;
     return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, batiments: ${buildingCount}, warnings: ${lastResult.warnings.length}`;
-  }, [dailyTimeline, lastBuildings?.count, lastResult, mode]);
+  }, [dailyExposureHotspot, dailyTimeline, lastBuildings?.count, lastResult, mode]);
 
   useEffect(() => {
     clickDebugParamsRef.current = {
@@ -912,6 +1005,7 @@ export function SunlightMapClient() {
       setShowShadow(stored.showShadow);
       setShowBuildings(stored.showBuildings);
       setShowTerrain(stored.showTerrain);
+      setShowHeatmap(stored.showHeatmap);
     }
     setUiParamsHydrated(true);
   }, []);
@@ -931,6 +1025,7 @@ export function SunlightMapClient() {
       showShadow,
       showBuildings,
       showTerrain,
+      showHeatmap,
     });
   }, [
     date,
@@ -942,6 +1037,7 @@ export function SunlightMapClient() {
     showShadow,
     showSunny,
     showTerrain,
+    showHeatmap,
     uiParamsHydrated,
   ]);
 
@@ -978,6 +1074,7 @@ export function SunlightMapClient() {
       shadowLayerRef.current = L.layerGroup().addTo(map);
       buildingsLayerRef.current = L.layerGroup().addTo(map);
       terrainLayerRef.current = L.layerGroup().addTo(map);
+      heatmapLayerRef.current = L.layerGroup().addTo(map);
       mapRef.current = map;
 
       map.on("click", (event: LeafletMouseEvent) => {
@@ -1020,6 +1117,7 @@ export function SunlightMapClient() {
       shadowLayerRef.current = null;
       buildingsLayerRef.current = null;
       terrainLayerRef.current = null;
+      heatmapLayerRef.current = null;
       leafletModuleRef.current = null;
     };
   }, [runPointClickDiagnostics]);
@@ -1028,11 +1126,13 @@ export function SunlightMapClient() {
     (
       response: AreaApiResponse | null,
       buildings: BuildingsAreaApiResponse | null,
+      dailyExposure: DailyExposurePoint[] | null,
       visibility: {
         sunny: boolean;
         shadow: boolean;
         buildings: boolean;
         terrain: boolean;
+        heatmap: boolean;
       },
     ) => {
       const L = leafletModuleRef.current;
@@ -1040,7 +1140,8 @@ export function SunlightMapClient() {
       const shadowLayer = shadowLayerRef.current;
       const buildingsLayer = buildingsLayerRef.current;
       const terrainLayer = terrainLayerRef.current;
-      if (!L || !sunnyLayer || !shadowLayer || !buildingsLayer || !terrainLayer) {
+      const heatmapLayer = heatmapLayerRef.current;
+      if (!L || !sunnyLayer || !shadowLayer || !buildingsLayer || !terrainLayer || !heatmapLayer) {
         return;
       }
 
@@ -1048,6 +1149,7 @@ export function SunlightMapClient() {
       shadowLayer.clearLayers();
       buildingsLayer.clearLayers();
       terrainLayer.clearLayers();
+      heatmapLayer.clearLayers();
 
       const { sunnyContours, shadowContours } = response
         ? buildSunAndShadowContours(response)
@@ -1098,6 +1200,28 @@ export function SunlightMapClient() {
             opacity: 0.58,
             fillOpacity: 0.24,
           }).addTo(buildingsLayer);
+        }
+      }
+
+      if (visibility.heatmap && dailyExposure && dailyExposure.length > 0) {
+        for (const point of dailyExposure) {
+          if (point.exposureRatio <= 0) {
+            continue;
+          }
+
+          const color = exposureRatioToColor(point.exposureRatio);
+          const radius = 3 + point.exposureRatio * 7;
+          const marker = L.circleMarker([point.lat, point.lon], {
+            radius,
+            color,
+            fillColor: color,
+            weight: 0.6,
+            opacity: 0.72,
+            fillOpacity: 0.33,
+          }).addTo(heatmapLayer);
+          marker.bindTooltip(
+            `${Math.round(point.exposureRatio * 100)}% soleil (${point.sunnyFrames}/${point.totalFrames} frames)`,
+          );
         }
       }
 
@@ -1165,16 +1289,19 @@ export function SunlightMapClient() {
   );
 
   useEffect(() => {
-    renderLayers(visualAreaResponse, lastBuildings, {
+    renderLayers(visualAreaResponse, lastBuildings, dailyExposurePoints, {
       sunny: showSunny,
       shadow: showShadow,
       buildings: showBuildings,
       terrain: showTerrain,
+      heatmap: showHeatmap,
     });
   }, [
+    dailyExposurePoints,
     lastBuildings,
     renderLayers,
     showBuildings,
+    showHeatmap,
     showShadow,
     showSunny,
     showTerrain,
@@ -1673,6 +1800,17 @@ export function SunlightMapClient() {
             montagnes horizon
           </span>
         </label>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={showHeatmap}
+            onChange={(event) => setShowHeatmap(event.target.checked)}
+            disabled={!canShowHeatmap}
+          />
+          <span className="rounded bg-rose-600 px-2 py-0.5 text-white">
+            heatmap expo
+          </span>
+        </label>
       </div>
 
       {mode === "daily" ? (
@@ -1697,6 +1835,12 @@ export function SunlightMapClient() {
             Frames recues: {dailyTimeline?.frames.length ?? 0}/
             {dailyTimeline?.frameCount ?? 0}
           </p>
+          {canShowHeatmap ? (
+            <p className="text-xs text-rose-200">
+              Heatmap disponible: active &quot;heatmap expo&quot; pour voir
+              l&apos;exposition cumulee de la journee.
+            </p>
+          ) : null}
           {dailyProgress ? (
             <div className="grid gap-1">
               <div className="h-2 w-full overflow-hidden rounded bg-slate-700/70">
