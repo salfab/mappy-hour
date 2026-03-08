@@ -13,7 +13,17 @@ export interface Lv95Point {
   northing: number;
 }
 
+export interface Wgs84Point {
+  lon: number;
+  lat: number;
+}
+
 export function wgs84ToLv95(lon: number, lat: number): Lv95Point {
   const [easting, northing] = proj4(WGS84, LV95, [lon, lat]);
   return { easting, northing };
+}
+
+export function lv95ToWgs84(easting: number, northing: number): Wgs84Point {
+  const [lon, lat] = proj4(LV95, WGS84, [easting, northing]);
+  return { lon, lat };
 }
