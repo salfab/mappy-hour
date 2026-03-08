@@ -52,6 +52,12 @@ et reduire la charge du filewatcher en developpement.
 Pour tout recuperer/reconstruire en une commande :
 
 ```bash
+pnpm fetch:all:models
+```
+
+Ou par ville :
+
+```bash
 pnpm fetch:lausanne:3d
 pnpm fetch:nyon:3d
 ```

@@ -25,7 +25,8 @@
     "preprocess:lausanne:buildings": "tsx scripts/preprocess/build-lausanne-buildings-index.ts",
     "preprocess:lausanne:horizon": "tsx scripts/preprocess/build-lausanne-horizon-mask.ts",
     "fetch:lausanne:3d": "pnpm run ingest:lausanne:buildings && pnpm run ingest:lausanne:terrain:ch && pnpm run ingest:lausanne:vegetation:surface && pnpm run ingest:lausanne:terrain:horizon && pnpm run preprocess:lausanne:buildings && pnpm run preprocess:lausanne:horizon",
-    "fetch:nyon:3d": "pnpm run ingest:nyon:buildings && pnpm run ingest:nyon:terrain:ch && pnpm run ingest:nyon:vegetation:surface && pnpm run ingest:nyon:terrain:horizon && pnpm run preprocess:lausanne:buildings"
+    "fetch:nyon:3d": "pnpm run ingest:nyon:buildings && pnpm run ingest:nyon:terrain:ch && pnpm run ingest:nyon:vegetation:surface && pnpm run ingest:nyon:terrain:horizon && pnpm run preprocess:lausanne:buildings",
+    "fetch:all:models": "pnpm run ingest:lausanne:buildings && pnpm run ingest:nyon:buildings && pnpm run ingest:lausanne:terrain:ch && pnpm run ingest:nyon:terrain:ch && pnpm run ingest:lausanne:vegetation:surface && pnpm run ingest:nyon:vegetation:surface && pnpm run ingest:lausanne:terrain:horizon && pnpm run ingest:nyon:terrain:horizon && pnpm run ingest:lausanne:places && pnpm run ingest:nyon:places && pnpm run preprocess:lausanne:buildings && pnpm run preprocess:lausanne:horizon"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
