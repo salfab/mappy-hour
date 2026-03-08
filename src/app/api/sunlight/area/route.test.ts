@@ -38,6 +38,51 @@ vi.mock("@/lib/sun/evaluation-context", () => ({
 }));
 
 describe("POST /api/sunlight/area", () => {
+  it("returns a valid daily area payload without running a web server", async () => {
+    vi.mocked(buildPointEvaluationContext).mockImplementation(async (lat, lon) =>
+      createMockContext(lat, lon),
+    );
+
+    const payload = {
+      bbox: [6.599447, 46.522107, 6.601426, 46.523137],
+      date: "2026-03-08",
+      timezone: "Europe/Zurich",
+      mode: "daily",
+      sampleEveryMinutes: 30,
+      gridStepMeters: 10,
+      maxPoints: 3000,
+    };
+
+    const request = new Request("http://localhost/api/sunlight/area", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const response = await POST(request);
+    const json = (await response.json()) as {
+      error?: string;
+      mode: string;
+      pointCount: number;
+      points: Array<{
+        sunnyMinutes: number;
+      }>;
+      stats: {
+        elapsedMs: number;
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(json.error).toBeUndefined();
+    expect(json.mode).toBe("daily");
+    expect(json.pointCount).toBeGreaterThan(0);
+    expect(json.pointCount).toBe(json.points.length);
+    expect(json.points[0].sunnyMinutes).toBeGreaterThanOrEqual(0);
+    expect(json.stats.elapsedMs).toBeGreaterThanOrEqual(0);
+  });
+
   it("returns a valid instant area payload without running a web server", async () => {
     vi.mocked(buildPointEvaluationContext).mockImplementation(async (lat, lon) =>
       createMockContext(lat, lon),
