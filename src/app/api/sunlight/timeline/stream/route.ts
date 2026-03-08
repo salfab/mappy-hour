@@ -131,59 +131,6 @@ export async function GET(request: Request) {
         { status: 400 },
       );
     }
-
-    const points: PreparedPoint[] = [];
-    const warnings: string[] = [];
-    let indoorPointsExcluded = 0;
-    let pointsWithElevation = 0;
-    let terrainMethod = "none";
-    let buildingsMethod = "none";
-
-    for (const point of grid) {
-      const context = await buildPointEvaluationContext(point.lat, point.lon, {
-        skipTerrainSamplingWhenIndoor: true,
-      });
-      terrainMethod = context.terrainHorizonMethod;
-      buildingsMethod = context.buildingsShadowMethod;
-      warnings.push(...context.warnings);
-
-      if (context.insideBuilding) {
-        indoorPointsExcluded += 1;
-        continue;
-      }
-
-      if (points.length >= query.maxPoints) {
-        return NextResponse.json(
-          {
-            error: "Outdoor grid exceeds maxPoints limit.",
-            detail: `Computed more than ${query.maxPoints} outdoor points (raw: ${grid.length}, indoor excluded: ${indoorPointsExcluded}).`,
-          },
-          { status: 400 },
-        );
-      }
-
-      if (context.pointElevationMeters !== null) {
-        pointsWithElevation += 1;
-      }
-
-      points.push({
-        id: point.id,
-        lat: point.lat,
-        lon: point.lon,
-        pointLv95: context.pointLv95,
-        pointElevationMeters: context.pointElevationMeters,
-        horizonMask: context.horizonMask,
-        buildingShadowEvaluator: context.buildingShadowEvaluator,
-      });
-    }
-
-    const samples = createUtcSamples(
-      query.date,
-      query.timezone,
-      query.sampleEveryMinutes,
-    );
-    const totalEvaluations = points.length * samples.length;
-    const responseWarnings = dedupeWarnings(warnings);
     const signal = request.signal;
     let streamAborted = false;
 
@@ -202,6 +149,93 @@ export async function GET(request: Request) {
         };
 
         const run = async () => {
+          const points: PreparedPoint[] = [];
+          const warnings: string[] = [];
+          let indoorPointsExcluded = 0;
+          let pointsWithElevation = 0;
+          let terrainMethod = "none";
+          let buildingsMethod = "none";
+          const preparationStartedAt = performance.now();
+          const prepProgressInterval = Math.max(1, Math.floor(grid.length / 200));
+
+          sendEvent("progress", {
+            phase: "preparing",
+            done: 0,
+            total: grid.length,
+            percent: 0,
+            etaSeconds: null,
+          });
+          await yieldToEventLoop();
+
+          for (let gridIndex = 0; gridIndex < grid.length; gridIndex += 1) {
+            if (streamAborted) {
+              return;
+            }
+
+            const point = grid[gridIndex];
+            const context = await buildPointEvaluationContext(point.lat, point.lon, {
+              skipTerrainSamplingWhenIndoor: true,
+            });
+            terrainMethod = context.terrainHorizonMethod;
+            buildingsMethod = context.buildingsShadowMethod;
+            warnings.push(...context.warnings);
+
+            if (context.insideBuilding) {
+              indoorPointsExcluded += 1;
+            } else {
+              if (points.length >= query.maxPoints) {
+                sendEvent("error", {
+                  error: "Outdoor grid exceeds maxPoints limit.",
+                  details: `Computed more than ${query.maxPoints} outdoor points (raw: ${grid.length}, indoor excluded: ${indoorPointsExcluded}).`,
+                });
+                return;
+              }
+
+              if (context.pointElevationMeters !== null) {
+                pointsWithElevation += 1;
+              }
+
+              points.push({
+                id: point.id,
+                lat: point.lat,
+                lon: point.lon,
+                pointLv95: context.pointLv95,
+                pointElevationMeters: context.pointElevationMeters,
+                horizonMask: context.horizonMask,
+                buildingShadowEvaluator: context.buildingShadowEvaluator,
+              });
+            }
+
+            const prepDone = gridIndex + 1;
+            if (
+              prepDone === grid.length ||
+              prepDone % prepProgressInterval === 0
+            ) {
+              const elapsedMs = performance.now() - preparationStartedAt;
+              const donePercent = percent(prepDone, grid.length);
+              const etaMs =
+                prepDone > 0
+                  ? (elapsedMs / prepDone) * Math.max(grid.length - prepDone, 0)
+                  : null;
+              sendEvent("progress", {
+                phase: "preparing",
+                done: prepDone,
+                total: grid.length,
+                percent: Math.round(donePercent * 10) / 10,
+                etaSeconds:
+                  etaMs === null ? null : Math.max(0, Math.round(etaMs / 1000)),
+              });
+              await yieldToEventLoop();
+            }
+          }
+
+          const samples = createUtcSamples(
+            query.date,
+            query.timezone,
+            query.sampleEveryMinutes,
+          );
+          const totalEvaluations = points.length * samples.length;
+          const responseWarnings = dedupeWarnings(warnings);
           const evalStartedAt = performance.now();
           let evaluationsDone = 0;
 

@@ -47,7 +47,9 @@ describe("GET /api/sunlight/timeline/stream", () => {
     const firstChunk = await reader!.read();
     expect(firstChunk.done).toBe(false);
     streamText += decoder.decode(firstChunk.value, { stream: true });
-    expect(streamText).toContain("event: start");
+    expect(
+      streamText.includes("event: start") || streamText.includes("event: progress"),
+    ).toBe(true);
     expect(streamText).not.toContain("event: done");
 
     while (true) {
@@ -59,8 +61,10 @@ describe("GET /api/sunlight/timeline/stream", () => {
     }
 
     streamText += decoder.decode();
+    expect(streamText).toContain('"phase":"preparing"');
     expect(streamText).toContain("event: frame");
     expect(streamText).toContain("event: progress");
+    expect(streamText).toContain("event: start");
     expect(streamText).toContain("event: done");
   });
 });

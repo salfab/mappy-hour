@@ -26,6 +26,9 @@ We stream daily timeline frames via Server-Sent Events (SSE):
    - emit one `frame` event
 4. emit progress telemetry while computing:
    - `phase`, `done`, `total`, `percent`, `etaSeconds`
+   - phases:
+     - `preparing` (point context build + indoor exclusion)
+     - `evaluation` (sunlight per time frame)
 5. emit lifecycle events:
    - `start`, `progress`, `frame`, `done`, `error`
 
