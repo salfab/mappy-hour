@@ -1,14 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { wgs84ToLv95 } from "@/lib/geo/projection";
-import {
-  evaluateBuildingsShadow,
-  loadBuildingsObstacleIndex,
-} from "@/lib/sun/buildings-shadow";
-import { loadLausanneHorizonMask } from "@/lib/sun/horizon-mask";
+import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
 import { evaluatePointSunlight } from "@/lib/sun/solar";
-import { sampleSwissTerrainElevationLv95 } from "@/lib/terrain/swiss-terrain";
 
 export const runtime = "nodejs";
 
@@ -44,24 +38,10 @@ export async function POST(request: Request) {
   }
 
   try {
-    const pointLv95 = wgs84ToLv95(parsed.data.lon, parsed.data.lat);
-    const [horizonMask, buildingsIndex, pointElevationMeters] = await Promise.all([
-      loadLausanneHorizonMask(),
-      loadBuildingsObstacleIndex(),
-      sampleSwissTerrainElevationLv95(pointLv95.easting, pointLv95.northing),
-    ]);
-
-    const buildingShadowEvaluator =
-      buildingsIndex && pointElevationMeters !== null
-        ? (sample: { azimuthDeg: number; altitudeDeg: number }) =>
-            evaluateBuildingsShadow(buildingsIndex.obstacles, {
-              pointX: pointLv95.easting,
-              pointY: pointLv95.northing,
-              pointElevation: pointElevationMeters,
-              solarAzimuthDeg: sample.azimuthDeg,
-              solarAltitudeDeg: sample.altitudeDeg,
-            })
-        : undefined;
+    const context = await buildPointEvaluationContext(
+      parsed.data.lat,
+      parsed.data.lon,
+    );
 
     const result = evaluatePointSunlight({
       lat: parsed.data.lat,
@@ -69,39 +49,22 @@ export async function POST(request: Request) {
       date: parsed.data.date,
       timeZone: parsed.data.timezone,
       sampleEveryMinutes: parsed.data.sampleEveryMinutes,
-      horizonMask,
-      buildingShadowEvaluator,
+      horizonMask: context.horizonMask,
+      buildingShadowEvaluator: context.buildingShadowEvaluator,
     });
-
-    const warnings: string[] = [];
-    if (!horizonMask) {
-      warnings.push(
-        "No horizon mask found. Run preprocess:lausanne:horizon to enable terrain blocking.",
-      );
-    }
-    if (!buildingsIndex) {
-      warnings.push(
-        "No buildings obstacle index found. Run preprocess:lausanne:buildings to enable building shadow blocking.",
-      );
-    }
-    if (pointElevationMeters === null) {
-      warnings.push(
-        "Point elevation unavailable from swissALTI3D. Building-shadow blocking was skipped.",
-      );
-    }
 
     return NextResponse.json({
       ...result,
       model: {
-        terrainHorizonMethod: horizonMask?.method ?? "none",
-        buildingsShadowMethod: buildingsIndex?.method ?? "none",
+        terrainHorizonMethod: context.terrainHorizonMethod,
+        buildingsShadowMethod: context.buildingsShadowMethod,
       },
       pointContext: {
-        lv95Easting: Math.round(pointLv95.easting * 1000) / 1000,
-        lv95Northing: Math.round(pointLv95.northing * 1000) / 1000,
-        pointElevationMeters,
+        lv95Easting: Math.round(context.pointLv95.easting * 1000) / 1000,
+        lv95Northing: Math.round(context.pointLv95.northing * 1000) / 1000,
+        pointElevationMeters: context.pointElevationMeters,
       },
-      warnings,
+      warnings: context.warnings,
     });
   } catch (error) {
     return NextResponse.json(

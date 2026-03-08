@@ -60,6 +60,15 @@ export interface PointSunlightResult {
   samples: SunSample[];
 }
 
+export interface InstantSunlightInput {
+  lat: number;
+  lon: number;
+  utcDate: Date;
+  timeZone: string;
+  horizonMask: HorizonMask | null;
+  buildingShadowEvaluator?: PointSunlightInput["buildingShadowEvaluator"];
+}
+
 function normalizeAzimuthDegrees(azimuthDegreesFromSunCalc: number): number {
   const fromNorth = (azimuthDegreesFromSunCalc + 180) % 360;
   return fromNorth >= 0 ? fromNorth : fromNorth + 360;
@@ -142,6 +151,50 @@ function buildSunnyWindows(
   return windows;
 }
 
+export function evaluateInstantSunlight(
+  input: InstantSunlightInput,
+): SunSample {
+  const position = SunCalc.getPosition(input.utcDate, input.lat, input.lon);
+
+  const altitudeDeg = position.altitude * RAD_TO_DEG;
+  const azimuthDeg = normalizeAzimuthDegrees(position.azimuth * RAD_TO_DEG);
+  const aboveAstronomicalHorizon = altitudeDeg > 0;
+  const horizonAngleDeg = input.horizonMask
+    ? getHorizonAngleForAzimuth(input.horizonMask, azimuthDeg)
+    : null;
+  const terrainBlocked =
+    aboveAstronomicalHorizon &&
+    input.horizonMask !== null &&
+    isTerrainBlockedByHorizon(input.horizonMask, azimuthDeg, altitudeDeg);
+  const buildingShadow = input.buildingShadowEvaluator
+    ? input.buildingShadowEvaluator({
+        azimuthDeg,
+        altitudeDeg,
+        utcDate: input.utcDate,
+      })
+    : null;
+  const buildingsBlocked = aboveAstronomicalHorizon
+    ? (buildingShadow?.blocked ?? false)
+    : false;
+  const isSunny = aboveAstronomicalHorizon && !terrainBlocked && !buildingsBlocked;
+
+  return {
+    utcTime: input.utcDate.toISOString(),
+    localTime: formatDateTimeLocal(input.utcDate, input.timeZone),
+    azimuthDeg,
+    altitudeDeg,
+    horizonAngleDeg,
+    aboveAstronomicalHorizon,
+    terrainBlocked,
+    buildingsBlocked,
+    buildingBlockerId: buildingShadow?.blockerId ?? null,
+    buildingBlockerDistanceMeters: buildingShadow?.blockerDistanceMeters ?? null,
+    buildingBlockerAltitudeAngleDeg:
+      buildingShadow?.blockerAltitudeAngleDeg ?? null,
+    isSunny,
+  };
+}
+
 export function evaluatePointSunlight(
   input: PointSunlightInput,
 ): PointSunlightResult {
@@ -155,45 +208,16 @@ export function evaluatePointSunlight(
     cursor += sampleEveryMs
   ) {
     const sampleDate = new Date(cursor);
-    const position = SunCalc.getPosition(sampleDate, input.lat, input.lon);
-
-    const altitudeDeg = position.altitude * RAD_TO_DEG;
-    const azimuthDeg = normalizeAzimuthDegrees(position.azimuth * RAD_TO_DEG);
-    const aboveAstronomicalHorizon = altitudeDeg > 0;
-    const horizonAngleDeg = input.horizonMask
-      ? getHorizonAngleForAzimuth(input.horizonMask, azimuthDeg)
-      : null;
-    const terrainBlocked =
-      aboveAstronomicalHorizon &&
-      input.horizonMask !== null &&
-      isTerrainBlockedByHorizon(input.horizonMask, azimuthDeg, altitudeDeg);
-    const buildingShadow = input.buildingShadowEvaluator
-      ? input.buildingShadowEvaluator({
-          azimuthDeg,
-          altitudeDeg,
-          utcDate: sampleDate,
-        })
-      : null;
-    const buildingsBlocked = aboveAstronomicalHorizon
-      ? (buildingShadow?.blocked ?? false)
-      : false;
-    const isSunny = aboveAstronomicalHorizon && !terrainBlocked && !buildingsBlocked;
-
-    samples.push({
-      utcTime: sampleDate.toISOString(),
-      localTime: formatDateTimeLocal(sampleDate, input.timeZone),
-      azimuthDeg,
-      altitudeDeg,
-      horizonAngleDeg,
-      aboveAstronomicalHorizon,
-      terrainBlocked,
-      buildingsBlocked,
-      buildingBlockerId: buildingShadow?.blockerId ?? null,
-      buildingBlockerDistanceMeters: buildingShadow?.blockerDistanceMeters ?? null,
-      buildingBlockerAltitudeAngleDeg:
-        buildingShadow?.blockerAltitudeAngleDeg ?? null,
-      isSunny,
-    });
+    samples.push(
+      evaluateInstantSunlight({
+        lat: input.lat,
+        lon: input.lon,
+        utcDate: sampleDate,
+        timeZone: input.timeZone,
+        horizonMask: input.horizonMask,
+        buildingShadowEvaluator: input.buildingShadowEvaluator,
+      }),
+    );
   }
 
   const noonUtc = new Date((startUtc.getTime() + endUtc.getTime()) / 2);

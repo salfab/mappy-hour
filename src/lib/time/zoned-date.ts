@@ -4,6 +4,11 @@ interface DateParts {
   day: number;
 }
 
+interface TimeParts {
+  hour: number;
+  minute: number;
+}
+
 const formatterCache = new Map<string, Intl.DateTimeFormat>();
 
 function getFormatter(timeZone: string): Intl.DateTimeFormat {
@@ -48,6 +53,28 @@ function parseDateInput(value: string): DateParts {
   }
 
   return { year, month, day };
+}
+
+function parseTimeInput(value: string): TimeParts {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) {
+    throw new Error(`Invalid time format "${value}". Expected HH:MM.`);
+  }
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const valid =
+    Number.isInteger(hour) &&
+    Number.isInteger(minute) &&
+    hour >= 0 &&
+    hour <= 23 &&
+    minute >= 0 &&
+    minute <= 59;
+  if (!valid) {
+    throw new Error(`Invalid time "${value}".`);
+  }
+
+  return { hour, minute };
 }
 
 function getTimeZoneOffsetMinutes(date: Date, timeZone: string): number {
@@ -129,4 +156,23 @@ export function getZonedDayRangeUtc(
   );
 
   return { startUtc, endUtc };
+}
+
+export function zonedDateTimeToUtc(
+  dateInput: string,
+  timeInput: string,
+  timeZone: string,
+): Date {
+  const date = parseDateInput(dateInput);
+  const time = parseTimeInput(timeInput);
+
+  return zonedTimeToUtc(
+    date.year,
+    date.month,
+    date.day,
+    time.hour,
+    time.minute,
+    0,
+    timeZone,
+  );
 }
