@@ -1682,6 +1682,7 @@ export function SunlightMapClient() {
         terrain: boolean;
         heatmap: boolean;
         places: boolean;
+        ignoreVegetationShadow: boolean;
       },
     ) => {
       const L = leafletModuleRef.current;
@@ -1719,10 +1720,12 @@ export function SunlightMapClient() {
       const buildingsContours = buildBuildingsContours(buildings);
       const sunnyOutdoorContours = subtractPolygons(sunnyContours, buildingsContours);
       const shadowOutdoorContours = subtractPolygons(shadowContours, buildingsContours);
-      const vegetationContours = buildInstantBlockedContours(
-        response,
-        (point) => point.vegetationBlocked === true,
-      );
+      const vegetationContours = visibility.ignoreVegetationShadow
+        ? []
+        : buildInstantBlockedContours(
+            response,
+            (point) => point.vegetationBlocked === true,
+          );
 
       if (visibility.sunny) {
         for (const polygon of sunnyOutdoorContours) {
@@ -1929,9 +1932,11 @@ export function SunlightMapClient() {
       terrain: showTerrain,
       heatmap: showHeatmap,
       places: showPlaces,
+      ignoreVegetationShadow,
     });
   }, [
     dailyExposureCells,
+    ignoreVegetationShadow,
     lastBuildings,
     renderLayers,
     showBuildings,
