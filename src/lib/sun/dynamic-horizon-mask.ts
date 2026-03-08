@@ -49,6 +49,10 @@ function round3(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
+function round6(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
+}
+
 function normalizeLongitude(lonDeg: number): number {
   let value = lonDeg;
   while (value > 180) {
@@ -242,9 +246,17 @@ export async function buildDynamicHorizonMask(
 
   const radiusMeters = radiusKm * 1000;
   const binsDeg: number[] = [];
+  const ridgePoints: NonNullable<HorizonMask["ridgePoints"]> = [];
 
   for (let azimuthDeg = 0; azimuthDeg < 360; azimuthDeg += 1) {
     let maxElevationAngle = -90;
+    let bestPoint: {
+      lat: number;
+      lon: number;
+      distanceMeters: number;
+      horizonAngleDeg: number;
+      peakElevationMeters: number;
+    } | null = null;
 
     for (
       let distanceMeters = stepMeters;
@@ -269,10 +281,27 @@ export async function buildDynamicHorizonMask(
       const angleDeg = degrees(Math.atan2(relativeHeight, distanceMeters));
       if (angleDeg > maxElevationAngle) {
         maxElevationAngle = angleDeg;
+        bestPoint = {
+          lat: point.lat,
+          lon: point.lon,
+          distanceMeters,
+          horizonAngleDeg: angleDeg,
+          peakElevationMeters: elevation,
+        };
       }
     }
 
     binsDeg.push(round3(maxElevationAngle));
+    if (bestPoint) {
+      ridgePoints.push({
+        azimuthDeg,
+        lat: round6(bestPoint.lat),
+        lon: round6(bestPoint.lon),
+        distanceMeters: round3(bestPoint.distanceMeters),
+        horizonAngleDeg: round3(bestPoint.horizonAngleDeg),
+        peakElevationMeters: round3(bestPoint.peakElevationMeters),
+      });
+    }
   }
 
   const mask: HorizonMask = {
@@ -284,6 +313,7 @@ export async function buildDynamicHorizonMask(
     },
     radiusKm,
     binsDeg,
+    ridgePoints,
     notes: `runtime dynamic horizon (step=${stepMeters}m, k=${refractionCoefficient})`,
   };
   setMaskCache(cacheKey, mask);

@@ -31,11 +31,34 @@ interface AreaDailyPoint {
   pointElevationMeters: number | null;
 }
 
+interface TerrainHorizonRidgePoint {
+  azimuthDeg: number;
+  lat: number;
+  lon: number;
+  distanceMeters: number;
+  horizonAngleDeg: number;
+  peakElevationMeters: number;
+}
+
+interface TerrainHorizonDebug {
+  center: {
+    lat: number;
+    lon: number;
+  };
+  radiusKm: number;
+  ridgePoints: TerrainHorizonRidgePoint[];
+}
+
 interface AreaApiResponse {
   mode: AreaMode;
   gridStepMeters: number;
   pointCount: number;
   points: AreaInstantPoint[] | AreaDailyPoint[];
+  model?: {
+    terrainHorizonMethod: string;
+    buildingsShadowMethod: string;
+    terrainHorizonDebug?: TerrainHorizonDebug | null;
+  };
   warnings: string[];
   stats: {
     elapsedMs: number;
@@ -87,6 +110,11 @@ interface DailyTimelineState {
   frameCount: number;
   points: TimelinePoint[];
   frames: TimelineFrame[];
+  model: {
+    terrainHorizonMethod: string;
+    buildingsShadowMethod: string;
+    terrainHorizonDebug?: TerrainHorizonDebug | null;
+  } | null;
   warnings: string[];
   stats: {
     elapsedMs: number;
@@ -140,6 +168,7 @@ interface StoredUiParams {
   showSunny: boolean;
   showShadow: boolean;
   showBuildings: boolean;
+  showTerrain: boolean;
 }
 
 function loadStoredMapView(): StoredMapView | null {
@@ -202,6 +231,7 @@ function loadStoredUiParams(): StoredUiParams | null {
     const showSunny = parsed.showSunny;
     const showShadow = parsed.showShadow;
     const showBuildings = parsed.showBuildings;
+    const showTerrain = parsed.showTerrain;
 
     const valid =
       (mode === "instant" || mode === "daily") &&
@@ -219,7 +249,8 @@ function loadStoredUiParams(): StoredUiParams | null {
       sampleEveryMinutes <= 60 &&
       typeof showSunny === "boolean" &&
       typeof showShadow === "boolean" &&
-      typeof showBuildings === "boolean";
+      typeof showBuildings === "boolean" &&
+      (typeof showTerrain === "boolean" || showTerrain === undefined);
     if (!valid) {
       return null;
     }
@@ -233,6 +264,7 @@ function loadStoredUiParams(): StoredUiParams | null {
       showSunny,
       showShadow,
       showBuildings,
+      showTerrain: showTerrain ?? true,
     };
   } catch {
     return null;
@@ -539,6 +571,7 @@ function toInstantAreaResponseFromTimeline(
     gridStepMeters: timeline.gridStepMeters,
     pointCount: points.length,
     points,
+    model: timeline.model ?? undefined,
     warnings: timeline.warnings,
     stats: {
       elapsedMs: stats?.elapsedMs ?? 0,
@@ -559,6 +592,7 @@ export function SunlightMapClient() {
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
   const buildingsLayerRef = useRef<LayerGroup | null>(null);
+  const terrainLayerRef = useRef<LayerGroup | null>(null);
   const leafletModuleRef = useRef<typeof import("leaflet") | null>(null);
 
   const [mode, setMode] = useState<AreaMode>("instant");
@@ -581,6 +615,7 @@ export function SunlightMapClient() {
   const [showSunny, setShowSunny] = useState(true);
   const [showShadow, setShowShadow] = useState(true);
   const [showBuildings, setShowBuildings] = useState(true);
+  const [showTerrain, setShowTerrain] = useState(true);
   const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
 
   const visualAreaResponse = useMemo(() => {
@@ -645,6 +680,7 @@ export function SunlightMapClient() {
       setShowSunny(stored.showSunny);
       setShowShadow(stored.showShadow);
       setShowBuildings(stored.showBuildings);
+      setShowTerrain(stored.showTerrain);
     }
     setUiParamsHydrated(true);
   }, []);
@@ -663,6 +699,7 @@ export function SunlightMapClient() {
       showSunny,
       showShadow,
       showBuildings,
+      showTerrain,
     });
   }, [
     date,
@@ -673,6 +710,7 @@ export function SunlightMapClient() {
     showBuildings,
     showShadow,
     showSunny,
+    showTerrain,
     uiParamsHydrated,
   ]);
 
@@ -708,6 +746,7 @@ export function SunlightMapClient() {
       sunnyLayerRef.current = L.layerGroup().addTo(map);
       shadowLayerRef.current = L.layerGroup().addTo(map);
       buildingsLayerRef.current = L.layerGroup().addTo(map);
+      terrainLayerRef.current = L.layerGroup().addTo(map);
       mapRef.current = map;
 
       map.on("click", (event: LeafletMouseEvent) => {
@@ -741,6 +780,7 @@ export function SunlightMapClient() {
       sunnyLayerRef.current = null;
       shadowLayerRef.current = null;
       buildingsLayerRef.current = null;
+      terrainLayerRef.current = null;
       leafletModuleRef.current = null;
     };
   }, []);
@@ -753,19 +793,22 @@ export function SunlightMapClient() {
         sunny: boolean;
         shadow: boolean;
         buildings: boolean;
+        terrain: boolean;
       },
     ) => {
       const L = leafletModuleRef.current;
       const sunnyLayer = sunnyLayerRef.current;
       const shadowLayer = shadowLayerRef.current;
       const buildingsLayer = buildingsLayerRef.current;
-      if (!L || !sunnyLayer || !shadowLayer || !buildingsLayer) {
+      const terrainLayer = terrainLayerRef.current;
+      if (!L || !sunnyLayer || !shadowLayer || !buildingsLayer || !terrainLayer) {
         return;
       }
 
       sunnyLayer.clearLayers();
       shadowLayer.clearLayers();
       buildingsLayer.clearLayers();
+      terrainLayer.clearLayers();
 
       const { sunnyContours, shadowContours } = response
         ? buildSunAndShadowContours(response)
@@ -818,6 +861,39 @@ export function SunlightMapClient() {
           }).addTo(buildingsLayer);
         }
       }
+
+      const terrainHorizonDebug = response?.model?.terrainHorizonDebug;
+      if (visibility.terrain && terrainHorizonDebug?.ridgePoints.length) {
+        const ridgeLatLngs = [...terrainHorizonDebug.ridgePoints]
+          .sort((left, right) => left.azimuthDeg - right.azimuthDeg)
+          .map((point) => [point.lat, point.lon] as [number, number]);
+
+        L.polyline(ridgeLatLngs, {
+          color: "#b45309",
+          weight: 1.8,
+          opacity: 0.8,
+          dashArray: "6 4",
+        }).addTo(terrainLayer);
+
+        const center = terrainHorizonDebug.center;
+        L.circleMarker([center.lat, center.lon], {
+          radius: 4,
+          color: "#92400e",
+          fillColor: "#f59e0b",
+          fillOpacity: 0.85,
+          weight: 1,
+        }).addTo(terrainLayer);
+
+        for (let index = 0; index < ridgeLatLngs.length; index += 12) {
+          L.circleMarker(ridgeLatLngs[index], {
+            radius: 2,
+            color: "#92400e",
+            fillColor: "#f59e0b",
+            fillOpacity: 0.65,
+            weight: 1,
+          }).addTo(terrainLayer);
+        }
+      }
     },
     [],
   );
@@ -827,6 +903,7 @@ export function SunlightMapClient() {
       sunny: showSunny,
       shadow: showShadow,
       buildings: showBuildings,
+      terrain: showTerrain,
     });
   }, [
     lastBuildings,
@@ -834,6 +911,7 @@ export function SunlightMapClient() {
     showBuildings,
     showShadow,
     showSunny,
+    showTerrain,
     visualAreaResponse,
   ]);
 
@@ -1072,6 +1150,7 @@ export function SunlightMapClient() {
         indoorPointsExcluded: number;
         frameCount: number;
         points: TimelinePoint[];
+        model?: NonNullable<AreaApiResponse["model"]>;
         warnings: string[];
       };
 
@@ -1087,6 +1166,7 @@ export function SunlightMapClient() {
         frameCount: data.frameCount,
         points: data.points,
         frames: [],
+        model: data.model ?? null,
         warnings: data.warnings,
         stats: null,
       });
@@ -1316,6 +1396,16 @@ export function SunlightMapClient() {
             onChange={(event) => setShowBuildings(event.target.checked)}
           />
           <span className="rounded bg-blue-600 px-2 py-0.5 text-white">buildings</span>
+        </label>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={showTerrain}
+            onChange={(event) => setShowTerrain(event.target.checked)}
+          />
+          <span className="rounded bg-amber-700 px-2 py-0.5 text-white">
+            montagnes horizon
+          </span>
         </label>
       </div>
 

@@ -61,6 +61,20 @@ function dedupeWarnings(warnings: string[]): string[] {
   return Array.from(new Set(warnings));
 }
 
+function extractTerrainHorizonDebug(
+  mask: Awaited<ReturnType<typeof buildDynamicHorizonMask>> | undefined,
+) {
+  if (!mask?.ridgePoints || mask.ridgePoints.length === 0) {
+    return null;
+  }
+
+  return {
+    center: mask.center,
+    radiusKm: mask.radiusKm,
+    ridgePoints: mask.ridgePoints,
+  };
+}
+
 function createUtcSamples(
   date: string,
   timeZone: string,
@@ -190,6 +204,9 @@ export async function GET(request: Request) {
               `Dynamic terrain horizon build failed (${error instanceof Error ? error.message : "unknown error"}). Falling back to preprocessed Lausanne horizon mask when available.`,
             );
           }
+          const terrainHorizonDebug = extractTerrainHorizonDebug(
+            terrainHorizonOverride,
+          );
           sendEvent("progress", {
             phase: "preparing",
             done: 1,
@@ -294,6 +311,7 @@ export async function GET(request: Request) {
             model: {
               terrainHorizonMethod: terrainMethod,
               buildingsShadowMethod: buildingsMethod,
+              terrainHorizonDebug,
             },
             warnings: responseWarnings,
           });

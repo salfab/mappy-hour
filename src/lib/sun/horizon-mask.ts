@@ -13,6 +13,18 @@ const horizonMaskSchema = z.object({
   }),
   radiusKm: z.number(),
   binsDeg: z.array(z.number()).length(360),
+  ridgePoints: z
+    .array(
+      z.object({
+        azimuthDeg: z.number(),
+        lat: z.number(),
+        lon: z.number(),
+        distanceMeters: z.number(),
+        horizonAngleDeg: z.number(),
+        peakElevationMeters: z.number(),
+      }),
+    )
+    .optional(),
   notes: z.string().optional(),
 });
 
