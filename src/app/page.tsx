@@ -35,16 +35,16 @@ export default function Home() {
         <h2 className="text-xl font-semibold">Commandes utiles</h2>
         <div className="space-y-2 text-sm">
           <code className="block rounded bg-black/40 px-3 py-2">
-            npm run ingest:lausanne:buildings -- --dry-run --max-items=20
+            pnpm ingest:lausanne:buildings -- --dry-run --max-items=20
           </code>
           <code className="block rounded bg-black/40 px-3 py-2">
-            npm run ingest:lausanne:terrain:ch -- --dry-run --max-items=20
+            pnpm ingest:lausanne:terrain:ch -- --dry-run --max-items=20
           </code>
           <code className="block rounded bg-black/40 px-3 py-2">
-            npm run ingest:lausanne:terrain:horizon -- --dry-run
+            pnpm ingest:lausanne:terrain:horizon -- --dry-run
           </code>
           <code className="block rounded bg-black/40 px-3 py-2">
-            npm run preprocess:lausanne:horizon
+            pnpm preprocess:lausanne:horizon
           </code>
           <code className="block rounded bg-black/40 px-3 py-2">
             curl -X POST http://localhost:3000/api/sunlight/point -H
@@ -63,3 +63,4 @@ export default function Home() {
     </main>
   );
 }
+

@@ -19,13 +19,13 @@ Le calcul d'ombre des batiments sera branche dans l'iteration suivante.
 ## Prerequis
 
 - Node.js 20+
-- npm 10+
+- pnpm 9+
 
 ## Lancer l'app
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 ## Ingestion des donnees Lausanne
@@ -33,43 +33,43 @@ npm run dev
 ### 1) Batiments 3D Lausanne (swissBUILDINGS3D)
 
 ```bash
-npm run ingest:lausanne:buildings
+pnpm ingest:lausanne:buildings
 ```
 
 Test rapide :
 
 ```bash
-npm run ingest:lausanne:buildings -- --dry-run --max-items=20
+pnpm ingest:lausanne:buildings -- --dry-run --max-items=20
 ```
 
 ### 2) Terrain suisse local (swissALTI3D 2 m)
 
 ```bash
-npm run ingest:lausanne:terrain:ch
+pnpm ingest:lausanne:terrain:ch
 ```
 
 Test rapide :
 
 ```bash
-npm run ingest:lausanne:terrain:ch -- --dry-run --max-items=20
+pnpm ingest:lausanne:terrain:ch -- --dry-run --max-items=20
 ```
 
 ### 3) Terrain transfrontalier horizon (Copernicus DEM 30 m)
 
 ```bash
-npm run ingest:lausanne:terrain:horizon
+pnpm ingest:lausanne:terrain:horizon
 ```
 
 Test rapide :
 
 ```bash
-npm run ingest:lausanne:terrain:horizon -- --dry-run
+pnpm ingest:lausanne:terrain:horizon -- --dry-run
 ```
 
 ### 4) Generation du masque d'horizon (placeholder V1)
 
 ```bash
-npm run preprocess:lausanne:horizon
+pnpm preprocess:lausanne:horizon
 ```
 
 ## API
@@ -94,3 +94,4 @@ curl -X POST http://localhost:3000/api/sunlight/point \
 - `data/raw/swisstopo/swissalti3d_2m`
 - `data/raw/copernicus-dem30`
 - `data/processed/horizon/lausanne-horizon-mask.json`
+
