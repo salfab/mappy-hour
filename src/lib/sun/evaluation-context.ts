@@ -83,13 +83,14 @@ export async function buildPointEvaluationContext(
     ? null
     : await sampleSwissTerrainElevationLv95(pointLv95.easting, pointLv95.northing);
 
-  const vegetationSurfaceTiles =
-    pointElevationMeters !== null && !containment.insideBuilding
-      ? await loadVegetationSurfaceTilesForPoint(
-          pointLv95.easting,
-          pointLv95.northing,
-        )
-      : null;
+  const shouldEvaluateVegetation =
+    pointElevationMeters !== null && !containment.insideBuilding;
+  const vegetationSurfaceTiles = shouldEvaluateVegetation
+    ? await loadVegetationSurfaceTilesForPoint(
+        pointLv95.easting,
+        pointLv95.northing,
+      )
+    : null;
 
   const buildingShadowEvaluator =
     buildingsIndex && pointElevationMeters !== null && !containment.insideBuilding
@@ -130,7 +131,7 @@ export async function buildPointEvaluationContext(
       "No buildings obstacle index found. Run preprocess:lausanne:buildings after ingesting buildings data for your target area.",
     );
   }
-  if (vegetationSurfaceTiles === null) {
+  if (shouldEvaluateVegetation && vegetationSurfaceTiles === null) {
     warnings.push(
       "No vegetation surface raster found. Run ingest:lausanne:vegetation:surface and/or ingest:nyon:vegetation:surface to enable vegetation shadow blocking.",
     );
