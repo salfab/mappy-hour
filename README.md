@@ -39,11 +39,10 @@ $env:MAPPY_DATA_ROOT='D:\mappy-hour-data'
 pnpm dev
 ```
 
-Alternative webpack (ignore explicite `data/**` via `next.config.ts`):
-
-```bash
-pnpm dev:webpack
-```
+`pnpm dev` utilise webpack (plus stable avec nos ignores `data/**`).
+`pnpm dev` utilise Turbopack (Next 16 par defaut).
+En cas de probleme de filewatcher sous Windows, la solution recommandee est de
+mettre les donnees lourdes hors repo avec `MAPPY_DATA_ROOT`.
 
 ## Recuperer tous les jeux 3D/DEM (script unique)
 
