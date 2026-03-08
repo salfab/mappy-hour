@@ -18,6 +18,7 @@ interface AreaInstantPoint {
   isSunny: boolean;
   terrainBlocked: boolean;
   buildingsBlocked: boolean;
+  vegetationBlocked?: boolean;
   altitudeDeg: number;
   azimuthDeg: number;
   pointElevationMeters: number | null;
@@ -62,14 +63,20 @@ interface PointInstantApiResponse {
     aboveAstronomicalHorizon: boolean;
     terrainBlocked: boolean;
     buildingsBlocked: boolean;
+    vegetationBlocked?: boolean;
     buildingBlockerId: string | null;
     buildingBlockerDistanceMeters: number | null;
     buildingBlockerAltitudeAngleDeg: number | null;
+    vegetationBlockerDistanceMeters?: number | null;
+    vegetationBlockerAltitudeAngleDeg?: number | null;
+    vegetationBlockerSurfaceElevationMeters?: number | null;
+    vegetationBlockerClearanceMeters?: number | null;
     isSunny: boolean;
   };
   model: {
     terrainHorizonMethod: string;
     buildingsShadowMethod: string;
+    vegetationShadowMethod?: string;
     terrainHorizonDebug?: TerrainHorizonDebug | null;
   };
   pointContext: {
@@ -95,6 +102,7 @@ interface AreaApiResponse {
   model?: {
     terrainHorizonMethod: string;
     buildingsShadowMethod: string;
+    vegetationShadowMethod?: string;
     terrainHorizonDebug?: TerrainHorizonDebug | null;
   };
   warnings: string[];
@@ -151,6 +159,7 @@ interface DailyTimelineState {
   model: {
     terrainHorizonMethod: string;
     buildingsShadowMethod: string;
+    vegetationShadowMethod?: string;
     terrainHorizonDebug?: TerrainHorizonDebug | null;
   } | null;
   warnings: string[];
@@ -172,6 +181,13 @@ interface DailyExposurePoint {
   sunnyFrames: number;
   totalFrames: number;
   exposureRatio: number;
+}
+
+interface DailyExposureCell {
+  ring: Ring;
+  exposureRatio: number;
+  sunnyFrames: number;
+  totalFrames: number;
 }
 
 interface TimelineProgress {
@@ -216,6 +232,7 @@ interface StoredUiParams {
   showShadow: boolean;
   showBuildings: boolean;
   showTerrain: boolean;
+  showVegetation: boolean;
   showHeatmap: boolean;
 }
 
@@ -280,6 +297,7 @@ function loadStoredUiParams(): StoredUiParams | null {
     const showShadow = parsed.showShadow;
     const showBuildings = parsed.showBuildings;
     const showTerrain = parsed.showTerrain;
+    const showVegetation = parsed.showVegetation;
     const showHeatmap = parsed.showHeatmap;
 
     const valid =
@@ -300,6 +318,7 @@ function loadStoredUiParams(): StoredUiParams | null {
       typeof showShadow === "boolean" &&
       typeof showBuildings === "boolean" &&
       (typeof showTerrain === "boolean" || showTerrain === undefined) &&
+      (typeof showVegetation === "boolean" || showVegetation === undefined) &&
       (typeof showHeatmap === "boolean" || showHeatmap === undefined);
     if (!valid) {
       return null;
@@ -315,6 +334,7 @@ function loadStoredUiParams(): StoredUiParams | null {
       showShadow,
       showBuildings,
       showTerrain: showTerrain ?? true,
+      showVegetation: showVegetation ?? true,
       showHeatmap: showHeatmap ?? true,
     };
   } catch {
@@ -384,6 +404,7 @@ function classifyRidgeDistance(
 function selectPrimaryShadowCause(input: {
   aboveAstronomicalHorizon: boolean;
   terrainBlocked: boolean;
+  vegetationBlocked: boolean;
   buildingsBlocked: boolean;
   terrainSource: "DEM local (colline du terrain de la ville)" | "montagnes" | null;
   isSunny: boolean;
@@ -399,6 +420,9 @@ function selectPrimaryShadowCause(input: {
   if (input.terrainBlocked) {
     causes.add(input.terrainSource ?? "terrain/horizon");
   }
+  if (input.vegetationBlocked) {
+    causes.add("vegetation");
+  }
   if (input.buildingsBlocked) {
     causes.add("batiment");
   }
@@ -408,6 +432,7 @@ function selectPrimaryShadowCause(input: {
     "montagnes",
     "DEM local (colline du terrain de la ville)",
     "terrain/horizon",
+    "vegetation",
     "batiment",
   ];
   for (const candidate of priority) {
@@ -645,6 +670,108 @@ function buildSunAndShadowContours(response: AreaApiResponse): {
   };
 }
 
+function buildInstantBlockedContours(
+  response: AreaApiResponse | null,
+  predicate: (point: AreaInstantPoint) => boolean,
+): MultiPolygon {
+  if (!response || response.mode !== "instant") {
+    return [];
+  }
+
+  const points = response.points as AreaInstantPoint[];
+  if (points.length === 0) {
+    return [];
+  }
+
+  const parsed = points
+    .map((point) => {
+      const parsedId = parseGridPointId(point.id);
+      if (!parsedId) {
+        return null;
+      }
+      return {
+        row: parsedId.row,
+        col: parsedId.col,
+        lat: point.lat,
+        lon: point.lon,
+        blocked: predicate(point),
+      };
+    })
+    .filter(
+      (
+        point,
+      ): point is {
+        row: number;
+        col: number;
+        lat: number;
+        lon: number;
+        blocked: boolean;
+      } => point !== null,
+    );
+
+  if (parsed.length === 0) {
+    return [];
+  }
+
+  const rowLatMap = new Map<number, number>();
+  const colLonMap = new Map<number, number>();
+  for (const point of parsed) {
+    if (!rowLatMap.has(point.row)) {
+      rowLatMap.set(point.row, point.lat);
+    }
+    if (!colLonMap.has(point.col)) {
+      colLonMap.set(point.col, point.lon);
+    }
+  }
+
+  const sortedRows = Array.from(rowLatMap.keys()).sort((a, b) => a - b);
+  const sortedCols = Array.from(colLonMap.keys()).sort((a, b) => a - b);
+  const rowIndex = new Map<number, number>(
+    sortedRows.map((row, index) => [row, index]),
+  );
+  const colIndex = new Map<number, number>(
+    sortedCols.map((col, index) => [col, index]),
+  );
+  const latCenters = sortedRows.map((row) => rowLatMap.get(row) ?? 0);
+  const lonCenters = sortedCols.map((col) => colLonMap.get(col) ?? 0);
+  const meanLat =
+    latCenters.reduce((accumulator, value) => accumulator + value, 0) /
+    Math.max(1, latCenters.length);
+  const latHalfStepDeg = response.gridStepMeters / METERS_PER_DEGREE_LAT / 2;
+  const lonHalfStepDeg =
+    response.gridStepMeters /
+    (METERS_PER_DEGREE_LAT * Math.max(Math.cos((meanLat * Math.PI) / 180), 0.01)) /
+    2;
+  const latBounds = buildBoundsFromCenters(latCenters, latHalfStepDeg);
+  const lonBounds = buildBoundsFromCenters(lonCenters, lonHalfStepDeg);
+
+  const blockedCells: Polygon[] = [];
+  for (const point of parsed) {
+    if (!point.blocked) {
+      continue;
+    }
+    const row = rowIndex.get(point.row);
+    const col = colIndex.get(point.col);
+    if (row === undefined || col === undefined) {
+      continue;
+    }
+    if (row + 1 >= latBounds.length || col + 1 >= lonBounds.length) {
+      continue;
+    }
+
+    blockedCells.push([
+      closeRing([
+        [lonBounds[col], latBounds[row]],
+        [lonBounds[col + 1], latBounds[row]],
+        [lonBounds[col + 1], latBounds[row + 1]],
+        [lonBounds[col], latBounds[row + 1]],
+      ]),
+    ]);
+  }
+
+  return mergePolygons(blockedCells);
+}
+
 function buildBuildingsContours(buildings: BuildingsAreaApiResponse | null): MultiPolygon {
   if (!buildings || buildings.buildings.length === 0) {
     return [];
@@ -691,6 +818,7 @@ function toInstantAreaResponseFromTimeline(
       isSunny,
       terrainBlocked: false,
       buildingsBlocked: false,
+      vegetationBlocked: false,
       altitudeDeg: 0,
       azimuthDeg: 0,
       pointElevationMeters: null,
@@ -750,10 +878,115 @@ function buildDailyExposurePoints(
   });
 }
 
+function buildDailyExposureCells(
+  points: DailyExposurePoint[],
+  gridStepMeters: number,
+): DailyExposureCell[] {
+  if (points.length === 0) {
+    return [];
+  }
+
+  const parsed = points
+    .map((point) => {
+      const parsedId = parseGridPointId(point.id);
+      if (!parsedId) {
+        return null;
+      }
+      return {
+        row: parsedId.row,
+        col: parsedId.col,
+        lat: point.lat,
+        lon: point.lon,
+        exposureRatio: point.exposureRatio,
+        sunnyFrames: point.sunnyFrames,
+        totalFrames: point.totalFrames,
+      };
+    })
+    .filter(
+      (
+        point,
+      ): point is {
+        row: number;
+        col: number;
+        lat: number;
+        lon: number;
+        exposureRatio: number;
+        sunnyFrames: number;
+        totalFrames: number;
+      } => point !== null,
+    );
+
+  if (parsed.length === 0) {
+    return [];
+  }
+
+  const rowLatMap = new Map<number, number>();
+  const colLonMap = new Map<number, number>();
+  for (const point of parsed) {
+    if (!rowLatMap.has(point.row)) {
+      rowLatMap.set(point.row, point.lat);
+    }
+    if (!colLonMap.has(point.col)) {
+      colLonMap.set(point.col, point.lon);
+    }
+  }
+
+  const sortedRows = Array.from(rowLatMap.keys()).sort((a, b) => a - b);
+  const sortedCols = Array.from(colLonMap.keys()).sort((a, b) => a - b);
+  const rowIndex = new Map<number, number>(
+    sortedRows.map((row, index) => [row, index]),
+  );
+  const colIndex = new Map<number, number>(
+    sortedCols.map((col, index) => [col, index]),
+  );
+  const latCenters = sortedRows.map((row) => rowLatMap.get(row) ?? 0);
+  const lonCenters = sortedCols.map((col) => colLonMap.get(col) ?? 0);
+  const meanLat =
+    latCenters.reduce((accumulator, value) => accumulator + value, 0) /
+    Math.max(1, latCenters.length);
+  const latHalfStepDeg = gridStepMeters / METERS_PER_DEGREE_LAT / 2;
+  const lonHalfStepDeg =
+    gridStepMeters /
+    (METERS_PER_DEGREE_LAT * Math.max(Math.cos((meanLat * Math.PI) / 180), 0.01)) /
+    2;
+  const latBounds = buildBoundsFromCenters(latCenters, latHalfStepDeg);
+  const lonBounds = buildBoundsFromCenters(lonCenters, lonHalfStepDeg);
+
+  const cells: DailyExposureCell[] = [];
+  for (const point of parsed) {
+    const row = rowIndex.get(point.row);
+    const col = colIndex.get(point.col);
+    if (row === undefined || col === undefined) {
+      continue;
+    }
+    if (row + 1 >= latBounds.length || col + 1 >= lonBounds.length) {
+      continue;
+    }
+
+    cells.push({
+      ring: closeRing([
+        [lonBounds[col], latBounds[row]],
+        [lonBounds[col + 1], latBounds[row]],
+        [lonBounds[col + 1], latBounds[row + 1]],
+        [lonBounds[col], latBounds[row + 1]],
+      ]),
+      exposureRatio: point.exposureRatio,
+      sunnyFrames: point.sunnyFrames,
+      totalFrames: point.totalFrames,
+    });
+  }
+
+  return cells;
+}
+
 function exposureRatioToColor(exposureRatio: number): string {
   const clamped = Math.max(0, Math.min(1, exposureRatio));
-  const hue = 220 - 220 * clamped;
-  return `hsl(${hue}, 88%, 54%)`;
+  const cold = { r: 37, g: 99, b: 235 }; // blue
+  const hot = { r: 239, g: 68, b: 68 }; // red
+  const r = Math.round(cold.r + (hot.r - cold.r) * clamped);
+  const g = Math.round(cold.g + (hot.g - cold.g) * clamped);
+  const b = Math.round(cold.b + (hot.b - cold.b) * clamped);
+  return `rgb(${r}, ${g}, ${b})`;
 }
 
 export function SunlightMapClient() {
@@ -765,6 +998,7 @@ export function SunlightMapClient() {
   const decodedTimelineMaskCacheRef = useRef<Map<number, Uint8Array>>(new Map());
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
+  const vegetationLayerRef = useRef<LayerGroup | null>(null);
   const buildingsLayerRef = useRef<LayerGroup | null>(null);
   const terrainLayerRef = useRef<LayerGroup | null>(null);
   const heatmapLayerRef = useRef<LayerGroup | null>(null);
@@ -802,6 +1036,7 @@ export function SunlightMapClient() {
   const [buildingWarnings, setBuildingWarnings] = useState<string[]>([]);
   const [showSunny, setShowSunny] = useState(true);
   const [showShadow, setShowShadow] = useState(true);
+  const [showVegetation, setShowVegetation] = useState(true);
   const [showBuildings, setShowBuildings] = useState(true);
   const [showTerrain, setShowTerrain] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(true);
@@ -842,6 +1077,13 @@ export function SunlightMapClient() {
     );
   }, [dailyExposurePoints]);
 
+  const dailyExposureCells = useMemo(() => {
+    if (!dailyExposurePoints || !dailyTimeline) {
+      return null;
+    }
+    return buildDailyExposureCells(dailyExposurePoints, dailyTimeline.gridStepMeters);
+  }, [dailyExposurePoints, dailyTimeline]);
+
   const activeWarnings = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
       return Array.from(new Set([...dailyTimeline.warnings, ...buildingWarnings]));
@@ -866,8 +1108,8 @@ export function SunlightMapClient() {
     () =>
       mode === "daily" &&
       Boolean(dailyTimeline?.stats) &&
-      Boolean(dailyExposurePoints && dailyExposurePoints.length > 0),
-    [dailyExposurePoints, dailyTimeline?.stats, mode],
+      Boolean(dailyExposureCells && dailyExposureCells.length > 0),
+    [dailyExposureCells, dailyTimeline?.stats, mode],
   );
 
   const helperText = useMemo(() => {
@@ -946,6 +1188,7 @@ export function SunlightMapClient() {
       selectPrimaryShadowCause({
         aboveAstronomicalHorizon: json.sample.aboveAstronomicalHorizon,
         terrainBlocked: json.sample.terrainBlocked,
+        vegetationBlocked: json.sample.vegetationBlocked ?? false,
         buildingsBlocked:
           json.sample.buildingsBlocked || json.pointContext.insideBuilding,
         terrainSource,
@@ -979,10 +1222,19 @@ export function SunlightMapClient() {
     });
     console.log("Blocages:", {
       terrainBlocked: json.sample.terrainBlocked,
+      vegetationBlocked: json.sample.vegetationBlocked ?? false,
       buildingsBlocked: json.sample.buildingsBlocked,
       buildingBlockerId: json.sample.buildingBlockerId,
       buildingBlockerDistanceMeters: json.sample.buildingBlockerDistanceMeters,
       buildingBlockerAltitudeAngleDeg: json.sample.buildingBlockerAltitudeAngleDeg,
+      vegetationBlockerDistanceMeters:
+        json.sample.vegetationBlockerDistanceMeters ?? null,
+      vegetationBlockerAltitudeAngleDeg:
+        json.sample.vegetationBlockerAltitudeAngleDeg ?? null,
+      vegetationBlockerSurfaceElevationMeters:
+        json.sample.vegetationBlockerSurfaceElevationMeters ?? null,
+      vegetationBlockerClearanceMeters:
+        json.sample.vegetationBlockerClearanceMeters ?? null,
       terrainSource,
       ridgePoint,
     });
@@ -1003,6 +1255,7 @@ export function SunlightMapClient() {
       setSampleEveryMinutes(stored.sampleEveryMinutes);
       setShowSunny(stored.showSunny);
       setShowShadow(stored.showShadow);
+      setShowVegetation(stored.showVegetation);
       setShowBuildings(stored.showBuildings);
       setShowTerrain(stored.showTerrain);
       setShowHeatmap(stored.showHeatmap);
@@ -1023,6 +1276,7 @@ export function SunlightMapClient() {
       sampleEveryMinutes,
       showSunny,
       showShadow,
+      showVegetation,
       showBuildings,
       showTerrain,
       showHeatmap,
@@ -1036,6 +1290,7 @@ export function SunlightMapClient() {
     showBuildings,
     showShadow,
     showSunny,
+    showVegetation,
     showTerrain,
     showHeatmap,
     uiParamsHydrated,
@@ -1072,6 +1327,7 @@ export function SunlightMapClient() {
 
       sunnyLayerRef.current = L.layerGroup().addTo(map);
       shadowLayerRef.current = L.layerGroup().addTo(map);
+      vegetationLayerRef.current = L.layerGroup().addTo(map);
       buildingsLayerRef.current = L.layerGroup().addTo(map);
       terrainLayerRef.current = L.layerGroup().addTo(map);
       heatmapLayerRef.current = L.layerGroup().addTo(map);
@@ -1115,6 +1371,7 @@ export function SunlightMapClient() {
       }
       sunnyLayerRef.current = null;
       shadowLayerRef.current = null;
+      vegetationLayerRef.current = null;
       buildingsLayerRef.current = null;
       terrainLayerRef.current = null;
       heatmapLayerRef.current = null;
@@ -1126,10 +1383,11 @@ export function SunlightMapClient() {
     (
       response: AreaApiResponse | null,
       buildings: BuildingsAreaApiResponse | null,
-      dailyExposure: DailyExposurePoint[] | null,
+      dailyExposureCellsInput: DailyExposureCell[] | null,
       visibility: {
         sunny: boolean;
         shadow: boolean;
+        vegetation: boolean;
         buildings: boolean;
         terrain: boolean;
         heatmap: boolean;
@@ -1138,15 +1396,25 @@ export function SunlightMapClient() {
       const L = leafletModuleRef.current;
       const sunnyLayer = sunnyLayerRef.current;
       const shadowLayer = shadowLayerRef.current;
+      const vegetationLayer = vegetationLayerRef.current;
       const buildingsLayer = buildingsLayerRef.current;
       const terrainLayer = terrainLayerRef.current;
       const heatmapLayer = heatmapLayerRef.current;
-      if (!L || !sunnyLayer || !shadowLayer || !buildingsLayer || !terrainLayer || !heatmapLayer) {
+      if (
+        !L ||
+        !sunnyLayer ||
+        !shadowLayer ||
+        !vegetationLayer ||
+        !buildingsLayer ||
+        !terrainLayer ||
+        !heatmapLayer
+      ) {
         return;
       }
 
       sunnyLayer.clearLayers();
       shadowLayer.clearLayers();
+      vegetationLayer.clearLayers();
       buildingsLayer.clearLayers();
       terrainLayer.clearLayers();
       heatmapLayer.clearLayers();
@@ -1157,6 +1425,10 @@ export function SunlightMapClient() {
       const buildingsContours = buildBuildingsContours(buildings);
       const sunnyOutdoorContours = subtractPolygons(sunnyContours, buildingsContours);
       const shadowOutdoorContours = subtractPolygons(shadowContours, buildingsContours);
+      const vegetationContours = buildInstantBlockedContours(
+        response,
+        (point) => point.vegetationBlocked === true,
+      );
 
       if (visibility.sunny) {
         for (const polygon of sunnyOutdoorContours) {
@@ -1203,24 +1475,34 @@ export function SunlightMapClient() {
         }
       }
 
-      if (visibility.heatmap && dailyExposure && dailyExposure.length > 0) {
-        for (const point of dailyExposure) {
-          if (point.exposureRatio <= 0) {
-            continue;
-          }
+      if (visibility.vegetation) {
+        for (const polygon of vegetationContours) {
+          const latLngRings = polygon.map((ring) =>
+            ring.map(([lon, lat]) => [lat, lon] as [number, number]),
+          );
+          L.polygon(latLngRings, {
+            color: "#15803d",
+            fillColor: "#22c55e",
+            weight: 0.9,
+            opacity: 0.62,
+            fillOpacity: 0.28,
+          }).addTo(vegetationLayer);
+        }
+      }
 
-          const color = exposureRatioToColor(point.exposureRatio);
-          const radius = 3 + point.exposureRatio * 7;
-          const marker = L.circleMarker([point.lat, point.lon], {
-            radius,
+      if (visibility.heatmap && dailyExposureCellsInput && dailyExposureCellsInput.length > 0) {
+        for (const cell of dailyExposureCellsInput) {
+          const latLngRing = cell.ring.map(([lon, lat]) => [lat, lon] as [number, number]);
+          const color = exposureRatioToColor(cell.exposureRatio);
+          const polygon = L.polygon([latLngRing], {
             color,
             fillColor: color,
-            weight: 0.6,
-            opacity: 0.72,
-            fillOpacity: 0.33,
+            weight: 0.2,
+            opacity: 0.6,
+            fillOpacity: 0.45,
           }).addTo(heatmapLayer);
-          marker.bindTooltip(
-            `${Math.round(point.exposureRatio * 100)}% soleil (${point.sunnyFrames}/${point.totalFrames} frames)`,
+          polygon.bindTooltip(
+            `${Math.round(cell.exposureRatio * 100)}% soleil (${cell.sunnyFrames}/${cell.totalFrames} frames)`,
           );
         }
       }
@@ -1289,21 +1571,23 @@ export function SunlightMapClient() {
   );
 
   useEffect(() => {
-    renderLayers(visualAreaResponse, lastBuildings, dailyExposurePoints, {
+    renderLayers(visualAreaResponse, lastBuildings, dailyExposureCells, {
       sunny: showSunny,
       shadow: showShadow,
+      vegetation: showVegetation,
       buildings: showBuildings,
       terrain: showTerrain,
       heatmap: showHeatmap,
     });
   }, [
-    dailyExposurePoints,
+    dailyExposureCells,
     lastBuildings,
     renderLayers,
     showBuildings,
     showHeatmap,
     showShadow,
     showSunny,
+    showVegetation,
     showTerrain,
     visualAreaResponse,
   ]);
@@ -1781,6 +2065,14 @@ export function SunlightMapClient() {
             onChange={(event) => setShowShadow(event.target.checked)}
           />
           <span className="rounded bg-slate-500 px-2 py-0.5 text-white">ombre</span>
+        </label>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={showVegetation}
+            onChange={(event) => setShowVegetation(event.target.checked)}
+          />
+          <span className="rounded bg-green-700 px-2 py-0.5 text-white">vegetation</span>
         </label>
         <label className="inline-flex items-center gap-2">
           <input

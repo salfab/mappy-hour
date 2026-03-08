@@ -5,6 +5,11 @@ import {
   loadBuildingsObstacleIndex,
 } from "@/lib/sun/buildings-shadow";
 import { HorizonMask, loadLausanneHorizonMask } from "@/lib/sun/horizon-mask";
+import {
+  createVegetationShadowEvaluator,
+  loadVegetationSurfaceTiles,
+  vegetationShadowMethod,
+} from "@/lib/sun/vegetation-shadow";
 import { sampleSwissTerrainElevationLv95 } from "@/lib/terrain/swiss-terrain";
 
 export interface BuildPointEvaluationContextOptions {
@@ -22,6 +27,7 @@ export interface PointEvaluationContext {
   pointElevationMeters: number | null;
   terrainHorizonMethod: string;
   buildingsShadowMethod: string;
+  vegetationShadowMethod?: string;
   warnings: string[];
   horizonMask: Awaited<ReturnType<typeof loadLausanneHorizonMask>>;
   buildingShadowEvaluator?: (sample: { azimuthDeg: number; altitudeDeg: number }) => {
@@ -31,6 +37,14 @@ export interface PointEvaluationContext {
     blockerAltitudeAngleDeg: number | null;
     checkedObstaclesCount: number;
   };
+  vegetationShadowEvaluator?: (sample: { azimuthDeg: number; altitudeDeg: number }) => {
+    blocked: boolean;
+    blockerDistanceMeters: number | null;
+    blockerAltitudeAngleDeg: number | null;
+    blockerSurfaceElevationMeters: number | null;
+    blockerClearanceMeters: number | null;
+    checkedSamplesCount: number;
+  };
 }
 
 export async function buildPointEvaluationContext(
@@ -39,9 +53,10 @@ export async function buildPointEvaluationContext(
   options: BuildPointEvaluationContextOptions = {},
 ): Promise<PointEvaluationContext> {
   const pointLv95 = wgs84ToLv95(lon, lat);
-  const [lausanneHorizonMask, buildingsIndex] = await Promise.all([
+  const [lausanneHorizonMask, buildingsIndex, vegetationSurfaceTiles] = await Promise.all([
     loadLausanneHorizonMask(),
     loadBuildingsObstacleIndex(),
+    loadVegetationSurfaceTiles(),
   ]);
   const horizonMask = options.terrainHorizonOverride ?? lausanneHorizonMask;
 
@@ -73,6 +88,18 @@ export async function buildPointEvaluationContext(
             solarAltitudeDeg: sample.altitudeDeg,
           })
       : undefined;
+  const vegetationShadowEvaluator =
+    vegetationSurfaceTiles &&
+    vegetationSurfaceTiles.length > 0 &&
+    pointElevationMeters !== null &&
+    !containment.insideBuilding
+      ? createVegetationShadowEvaluator({
+          tiles: vegetationSurfaceTiles,
+          pointX: pointLv95.easting,
+          pointY: pointLv95.northing,
+          pointElevation: pointElevationMeters,
+        })
+      : undefined;
 
   const warnings: string[] = [];
   if (!horizonMask) {
@@ -83,6 +110,11 @@ export async function buildPointEvaluationContext(
   if (!buildingsIndex) {
     warnings.push(
       "No buildings obstacle index found. Run preprocess:lausanne:buildings to enable building shadow blocking.",
+    );
+  }
+  if (!vegetationSurfaceTiles || vegetationSurfaceTiles.length === 0) {
+    warnings.push(
+      "No vegetation surface raster found. Run ingest:lausanne:vegetation:surface to enable vegetation shadow blocking.",
     );
   }
   if (pointElevationMeters === null && !shouldSkipTerrainSampling) {
@@ -98,8 +130,13 @@ export async function buildPointEvaluationContext(
     pointElevationMeters,
     terrainHorizonMethod: horizonMask?.method ?? "none",
     buildingsShadowMethod: buildingsIndex?.method ?? "none",
+    vegetationShadowMethod:
+      vegetationSurfaceTiles && vegetationSurfaceTiles.length > 0
+        ? vegetationShadowMethod
+        : "none",
     warnings,
     horizonMask,
     buildingShadowEvaluator,
+    vegetationShadowEvaluator,
   };
 }

@@ -55,6 +55,9 @@ interface PreparedPoint {
   buildingShadowEvaluator: Awaited<
     ReturnType<typeof buildPointEvaluationContext>
   >["buildingShadowEvaluator"];
+  vegetationShadowEvaluator: Awaited<
+    ReturnType<typeof buildPointEvaluationContext>
+  >["vegetationShadowEvaluator"];
 }
 
 function dedupeWarnings(warnings: string[]): string[] {
@@ -170,6 +173,7 @@ export async function GET(request: Request) {
           let pointsWithElevation = 0;
           let terrainMethod = "none";
           let buildingsMethod = "none";
+          let vegetationMethod = "none";
           const preparationStartedAt = performance.now();
           const preparationTotalSteps = grid.length + 1;
           const prepProgressInterval = Math.max(1, Math.floor(grid.length / 200));
@@ -228,6 +232,7 @@ export async function GET(request: Request) {
             });
             terrainMethod = context.terrainHorizonMethod;
             buildingsMethod = context.buildingsShadowMethod;
+            vegetationMethod = context.vegetationShadowMethod ?? "none";
             warnings.push(...context.warnings);
 
             if (context.insideBuilding) {
@@ -253,6 +258,7 @@ export async function GET(request: Request) {
                 pointElevationMeters: context.pointElevationMeters,
                 horizonMask: context.horizonMask,
                 buildingShadowEvaluator: context.buildingShadowEvaluator,
+                vegetationShadowEvaluator: context.vegetationShadowEvaluator,
               });
             }
 
@@ -311,6 +317,7 @@ export async function GET(request: Request) {
             model: {
               terrainHorizonMethod: terrainMethod,
               buildingsShadowMethod: buildingsMethod,
+              vegetationShadowMethod: vegetationMethod,
               terrainHorizonDebug,
             },
             warnings: responseWarnings,
@@ -336,6 +343,7 @@ export async function GET(request: Request) {
                 timeZone: query.timezone,
                 horizonMask: point.horizonMask,
                 buildingShadowEvaluator: point.buildingShadowEvaluator,
+                vegetationShadowEvaluator: point.vegetationShadowEvaluator,
               });
               if (!localTime) {
                 localTime = sample.localTime;

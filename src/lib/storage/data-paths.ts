@@ -12,6 +12,10 @@ export const RAW_BUILDINGS_DIR = path.join(
   "swissbuildings3d_2",
 );
 export const RAW_TERRAIN_CH_DIR = path.join(RAW_SWISSTOPO_ROOT, "swissalti3d_2m");
+export const RAW_VEGETATION_SURFACE_DIR = path.join(
+  RAW_SWISSTOPO_ROOT,
+  "swisssurface3d_raster",
+);
 export const RAW_HORIZON_DEM_DIR = path.join(RAW_DATA_ROOT, "copernicus-dem30");
 export const RAW_LAUSANNE_PLACES_PATH = path.join(
   RAW_OSM_ROOT,

@@ -27,6 +27,18 @@ export interface PointSunlightInput {
     blockerAltitudeAngleDeg: number | null;
     checkedObstaclesCount: number;
   };
+  vegetationShadowEvaluator?: (sample: {
+    azimuthDeg: number;
+    altitudeDeg: number;
+    utcDate: Date;
+  }) => {
+    blocked: boolean;
+    blockerDistanceMeters: number | null;
+    blockerAltitudeAngleDeg: number | null;
+    blockerSurfaceElevationMeters: number | null;
+    blockerClearanceMeters: number | null;
+    checkedSamplesCount: number;
+  };
 }
 
 export interface SunSample {
@@ -38,9 +50,14 @@ export interface SunSample {
   aboveAstronomicalHorizon: boolean;
   terrainBlocked: boolean;
   buildingsBlocked: boolean;
+  vegetationBlocked: boolean;
   buildingBlockerId: string | null;
   buildingBlockerDistanceMeters: number | null;
   buildingBlockerAltitudeAngleDeg: number | null;
+  vegetationBlockerDistanceMeters: number | null;
+  vegetationBlockerAltitudeAngleDeg: number | null;
+  vegetationBlockerSurfaceElevationMeters: number | null;
+  vegetationBlockerClearanceMeters: number | null;
   isSunny: boolean;
 }
 
@@ -67,6 +84,7 @@ export interface InstantSunlightInput {
   timeZone: string;
   horizonMask: HorizonMask | null;
   buildingShadowEvaluator?: PointSunlightInput["buildingShadowEvaluator"];
+  vegetationShadowEvaluator?: PointSunlightInput["vegetationShadowEvaluator"];
 }
 
 function normalizeAzimuthDegrees(azimuthDegreesFromSunCalc: number): number {
@@ -176,7 +194,21 @@ export function evaluateInstantSunlight(
   const buildingsBlocked = aboveAstronomicalHorizon
     ? (buildingShadow?.blocked ?? false)
     : false;
-  const isSunny = aboveAstronomicalHorizon && !terrainBlocked && !buildingsBlocked;
+  const vegetationShadow = input.vegetationShadowEvaluator
+    ? input.vegetationShadowEvaluator({
+        azimuthDeg,
+        altitudeDeg,
+        utcDate: input.utcDate,
+      })
+    : null;
+  const vegetationBlocked = aboveAstronomicalHorizon
+    ? (vegetationShadow?.blocked ?? false)
+    : false;
+  const isSunny =
+    aboveAstronomicalHorizon &&
+    !terrainBlocked &&
+    !buildingsBlocked &&
+    !vegetationBlocked;
 
   return {
     utcTime: input.utcDate.toISOString(),
@@ -187,10 +219,19 @@ export function evaluateInstantSunlight(
     aboveAstronomicalHorizon,
     terrainBlocked,
     buildingsBlocked,
+    vegetationBlocked,
     buildingBlockerId: buildingShadow?.blockerId ?? null,
     buildingBlockerDistanceMeters: buildingShadow?.blockerDistanceMeters ?? null,
     buildingBlockerAltitudeAngleDeg:
       buildingShadow?.blockerAltitudeAngleDeg ?? null,
+    vegetationBlockerDistanceMeters:
+      vegetationShadow?.blockerDistanceMeters ?? null,
+    vegetationBlockerAltitudeAngleDeg:
+      vegetationShadow?.blockerAltitudeAngleDeg ?? null,
+    vegetationBlockerSurfaceElevationMeters:
+      vegetationShadow?.blockerSurfaceElevationMeters ?? null,
+    vegetationBlockerClearanceMeters:
+      vegetationShadow?.blockerClearanceMeters ?? null,
     isSunny,
   };
 }
@@ -216,6 +257,7 @@ export function evaluatePointSunlight(
         timeZone: input.timeZone,
         horizonMask: input.horizonMask,
         buildingShadowEvaluator: input.buildingShadowEvaluator,
+        vegetationShadowEvaluator: input.vegetationShadowEvaluator,
       }),
     );
   }

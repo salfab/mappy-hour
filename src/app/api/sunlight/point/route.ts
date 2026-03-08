@@ -102,6 +102,7 @@ export async function POST(request: Request) {
     const model = {
       terrainHorizonMethod: context.terrainHorizonMethod,
       buildingsShadowMethod: context.buildingsShadowMethod,
+      vegetationShadowMethod: context.vegetationShadowMethod ?? "none",
       terrainHorizonDebug,
     };
 
@@ -118,6 +119,7 @@ export async function POST(request: Request) {
         timeZone: parsed.data.timezone,
         horizonMask: context.horizonMask,
         buildingShadowEvaluator: context.buildingShadowEvaluator,
+        vegetationShadowEvaluator: context.vegetationShadowEvaluator,
       });
       const ridgePoint = terrainHorizonOverride?.ridgePoints?.find(
         (point) => point.azimuthDeg === normalizeAzimuth(sample.azimuthDeg),
@@ -147,6 +149,7 @@ export async function POST(request: Request) {
       sampleEveryMinutes: parsed.data.sampleEveryMinutes,
       horizonMask: context.horizonMask,
       buildingShadowEvaluator: context.buildingShadowEvaluator,
+      vegetationShadowEvaluator: context.vegetationShadowEvaluator,
     });
 
     return NextResponse.json({

@@ -75,6 +75,7 @@ export async function POST(request: Request) {
     const warnings: string[] = [];
     let terrainMethod = "none";
     let buildingsMethod = "none";
+    let vegetationMethod = "none";
 
     const placesWithWindows: Array<{
       id: string;
@@ -100,6 +101,7 @@ export async function POST(request: Request) {
       const context = await buildPointEvaluationContext(place.lat, place.lon);
       terrainMethod = context.terrainHorizonMethod;
       buildingsMethod = context.buildingsShadowMethod;
+      vegetationMethod = context.vegetationShadowMethod ?? "none";
       warnings.push(...context.warnings);
 
       const sunlight = evaluatePointSunlight({
@@ -110,6 +112,7 @@ export async function POST(request: Request) {
         sampleEveryMinutes: parsed.data.sampleEveryMinutes,
         horizonMask: context.horizonMask,
         buildingShadowEvaluator: context.buildingShadowEvaluator,
+        vegetationShadowEvaluator: context.vegetationShadowEvaluator,
       });
 
       const sunnyMinutes = sunlight.sunnyWindows.reduce(
@@ -144,6 +147,7 @@ export async function POST(request: Request) {
       model: {
         terrainHorizonMethod: terrainMethod,
         buildingsShadowMethod: buildingsMethod,
+        vegetationShadowMethod: vegetationMethod,
       },
       warnings: dedupeWarnings(warnings),
       stats: {

@@ -11,6 +11,7 @@ import {
   RAW_HORIZON_DEM_DIR,
   RAW_LAUSANNE_PLACES_PATH,
   RAW_TERRAIN_CH_DIR,
+  RAW_VEGETATION_SURFACE_DIR,
 } from "@/lib/storage/data-paths";
 
 export const runtime = "nodejs";
@@ -48,6 +49,7 @@ export async function GET() {
   const [
     buildingsFiles,
     terrainFiles,
+    vegetationSurfaceFiles,
     horizonDemFiles,
     horizonMaskExists,
     buildingsIndexExists,
@@ -56,6 +58,7 @@ export async function GET() {
   ] = await Promise.all([
     countFilesRecursively(RAW_BUILDINGS_DIR),
     countFilesRecursively(RAW_TERRAIN_CH_DIR),
+    countFilesRecursively(RAW_VEGETATION_SURFACE_DIR),
     countFilesRecursively(RAW_HORIZON_DEM_DIR),
     fileExists(PROCESSED_HORIZON_MASK_PATH),
     fileExists(PROCESSED_BUILDINGS_INDEX_PATH),
@@ -73,6 +76,10 @@ export async function GET() {
       swissTerrainLocal: {
         directory: RAW_TERRAIN_CH_DIR,
         fileCount: terrainFiles,
+      },
+      swissSurfaceVegetation: {
+        directory: RAW_VEGETATION_SURFACE_DIR,
+        fileCount: vegetationSurfaceFiles,
       },
       transborderHorizonDem: {
         directory: RAW_HORIZON_DEM_DIR,

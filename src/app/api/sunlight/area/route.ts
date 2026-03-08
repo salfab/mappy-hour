@@ -118,6 +118,7 @@ export async function POST(request: Request) {
     const warnings: string[] = [];
     let terrainMethod = "none";
     let buildingsMethod = "none";
+    let vegetationMethod = "none";
     let pointsWithElevation = 0;
     let indoorPointsExcluded = 0;
     let outdoorPointCount = 0;
@@ -161,6 +162,7 @@ export async function POST(request: Request) {
         isSunny: boolean;
         terrainBlocked: boolean;
         buildingsBlocked: boolean;
+        vegetationBlocked: boolean;
         altitudeDeg: number;
         azimuthDeg: number;
         horizonAngleDeg: number | null;
@@ -176,6 +178,7 @@ export async function POST(request: Request) {
         });
         terrainMethod = context.terrainHorizonMethod;
         buildingsMethod = context.buildingsShadowMethod;
+        vegetationMethod = context.vegetationShadowMethod ?? "none";
         warnings.push(...context.warnings);
 
         if (context.insideBuilding) {
@@ -202,6 +205,7 @@ export async function POST(request: Request) {
           timeZone: parsed.data.timezone,
           horizonMask: context.horizonMask,
           buildingShadowEvaluator: context.buildingShadowEvaluator,
+          vegetationShadowEvaluator: context.vegetationShadowEvaluator,
         });
 
         points.push({
@@ -214,6 +218,7 @@ export async function POST(request: Request) {
           isSunny: sample.isSunny,
           terrainBlocked: sample.terrainBlocked,
           buildingsBlocked: sample.buildingsBlocked,
+          vegetationBlocked: sample.vegetationBlocked,
           altitudeDeg: Math.round(sample.altitudeDeg * 1000) / 1000,
           azimuthDeg: Math.round(sample.azimuthDeg * 1000) / 1000,
           horizonAngleDeg:
@@ -245,6 +250,7 @@ export async function POST(request: Request) {
         model: {
           terrainHorizonMethod: terrainMethod,
           buildingsShadowMethod: buildingsMethod,
+          vegetationShadowMethod: vegetationMethod,
           terrainHorizonDebug,
         },
         warnings: dedupeWarnings(warnings),
@@ -283,6 +289,7 @@ export async function POST(request: Request) {
       });
       terrainMethod = context.terrainHorizonMethod;
       buildingsMethod = context.buildingsShadowMethod;
+      vegetationMethod = context.vegetationShadowMethod ?? "none";
       warnings.push(...context.warnings);
 
       if (context.insideBuilding) {
@@ -310,6 +317,7 @@ export async function POST(request: Request) {
         sampleEveryMinutes: parsed.data.sampleEveryMinutes,
         horizonMask: context.horizonMask,
         buildingShadowEvaluator: context.buildingShadowEvaluator,
+        vegetationShadowEvaluator: context.vegetationShadowEvaluator,
       });
 
       const sunnyMinutes = daily.sunnyWindows.reduce(
@@ -351,6 +359,7 @@ export async function POST(request: Request) {
       model: {
         terrainHorizonMethod: terrainMethod,
         buildingsShadowMethod: buildingsMethod,
+        vegetationShadowMethod: vegetationMethod,
         terrainHorizonDebug,
       },
       warnings: dedupeWarnings(warnings),
