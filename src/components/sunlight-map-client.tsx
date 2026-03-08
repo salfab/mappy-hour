@@ -171,7 +171,9 @@ interface TimelineFrame {
   index: number;
   localTime: string;
   sunnyCount: number;
+  sunnyCountNoVegetation?: number;
   sunMaskBase64: string;
+  sunMaskNoVegetationBase64?: string;
 }
 
 interface DailyTimelineState {
@@ -310,6 +312,7 @@ interface StoredUiParams {
   dailyEndLocalTime: string;
   gridStepMeters: number;
   sampleEveryMinutes: number;
+  ignoreVegetationShadow: boolean;
   showSunny: boolean;
   showShadow: boolean;
   showBuildings: boolean;
@@ -378,6 +381,7 @@ function loadStoredUiParams(): StoredUiParams | null {
     const dailyEndLocalTime = parsed.dailyEndLocalTime;
     const gridStepMeters = parsed.gridStepMeters;
     const sampleEveryMinutes = parsed.sampleEveryMinutes;
+    const ignoreVegetationShadow = parsed.ignoreVegetationShadow;
     const showSunny = parsed.showSunny;
     const showShadow = parsed.showShadow;
     const showBuildings = parsed.showBuildings;
@@ -406,6 +410,8 @@ function loadStoredUiParams(): StoredUiParams | null {
       Number.isFinite(sampleEveryMinutes) &&
       sampleEveryMinutes >= 1 &&
       sampleEveryMinutes <= 60 &&
+      (typeof ignoreVegetationShadow === "boolean" ||
+        ignoreVegetationShadow === undefined) &&
       typeof showSunny === "boolean" &&
       typeof showShadow === "boolean" &&
       typeof showBuildings === "boolean" &&
@@ -425,6 +431,7 @@ function loadStoredUiParams(): StoredUiParams | null {
       dailyEndLocalTime: dailyEndLocalTime ?? "21:00",
       gridStepMeters,
       sampleEveryMinutes,
+      ignoreVegetationShadow: ignoreVegetationShadow ?? false,
       showSunny,
       showShadow,
       showBuildings,
@@ -908,10 +915,47 @@ function buildBuildingsContours(buildings: BuildingsAreaApiResponse | null): Mul
   return mergePolygons(polygons);
 }
 
+function timelineMaskCacheKey(frameIndex: number, ignoreVegetation: boolean): string {
+  return `${frameIndex}:${ignoreVegetation ? "no-veg" : "full"}`;
+}
+
+function selectTimelineMaskBase64(
+  frame: TimelineFrame,
+  ignoreVegetation: boolean,
+): string {
+  if (ignoreVegetation && frame.sunMaskNoVegetationBase64) {
+    return frame.sunMaskNoVegetationBase64;
+  }
+  return frame.sunMaskBase64;
+}
+
+function isPointSunnyIgnoringVegetation(point: AreaInstantPoint): boolean {
+  return point.altitudeDeg > 0 && !point.terrainBlocked && !point.buildingsBlocked;
+}
+
+function deriveInstantResponseWithoutVegetation(
+  response: AreaApiResponse,
+): AreaApiResponse {
+  if (response.mode !== "instant") {
+    return response;
+  }
+
+  const points = (response.points as AreaInstantPoint[]).map((point) => ({
+    ...point,
+    isSunny: isPointSunnyIgnoringVegetation(point),
+  }));
+
+  return {
+    ...response,
+    points,
+  };
+}
+
 function toInstantAreaResponseFromTimeline(
   timeline: DailyTimelineState,
   frameIndex: number,
-  decodedMaskCache: Map<number, Uint8Array>,
+  decodedMaskCache: Map<string, Uint8Array>,
+  ignoreVegetation: boolean,
 ): AreaApiResponse | null {
   if (timeline.frames.length === 0 || timeline.points.length === 0) {
     return null;
@@ -919,10 +963,11 @@ function toInstantAreaResponseFromTimeline(
 
   const safeIndex = Math.max(0, Math.min(frameIndex, timeline.frames.length - 1));
   const frame = timeline.frames[safeIndex];
-  let mask = decodedMaskCache.get(frame.index);
+  const cacheKey = timelineMaskCacheKey(frame.index, ignoreVegetation);
+  let mask = decodedMaskCache.get(cacheKey);
   if (!mask) {
-    mask = decodeBase64ToBytes(frame.sunMaskBase64);
-    decodedMaskCache.set(frame.index, mask);
+    mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+    decodedMaskCache.set(cacheKey, mask);
   }
 
   const points: AreaInstantPoint[] = timeline.points.map((point, index) => {
@@ -960,7 +1005,8 @@ function toInstantAreaResponseFromTimeline(
 
 function buildDailyExposurePoints(
   timeline: DailyTimelineState,
-  decodedMaskCache: Map<number, Uint8Array>,
+  decodedMaskCache: Map<string, Uint8Array>,
+  ignoreVegetation: boolean,
 ): DailyExposurePoint[] {
   if (timeline.points.length === 0 || timeline.frames.length === 0) {
     return [];
@@ -968,10 +1014,11 @@ function buildDailyExposurePoints(
 
   const sunnyFrames = new Uint16Array(timeline.points.length);
   for (const frame of timeline.frames) {
-    let mask = decodedMaskCache.get(frame.index);
+    const cacheKey = timelineMaskCacheKey(frame.index, ignoreVegetation);
+    let mask = decodedMaskCache.get(cacheKey);
     if (!mask) {
-      mask = decodeBase64ToBytes(frame.sunMaskBase64);
-      decodedMaskCache.set(frame.index, mask);
+      mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+      decodedMaskCache.set(cacheKey, mask);
     }
     for (let pointIndex = 0; pointIndex < timeline.points.length; pointIndex += 1) {
       if (((mask[pointIndex >> 3] >> (pointIndex & 7)) & 1) === 1) {
@@ -1162,7 +1209,7 @@ export function SunlightMapClient() {
   const instantCancelledRef = useRef(false);
   const timelineStreamRef = useRef<EventSource | null>(null);
   const timelineCancelledRef = useRef(false);
-  const decodedTimelineMaskCacheRef = useRef<Map<number, Uint8Array>>(new Map());
+  const decodedTimelineMaskCacheRef = useRef<Map<string, Uint8Array>>(new Map());
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
   const vegetationLayerRef = useRef<LayerGroup | null>(null);
@@ -1193,6 +1240,7 @@ export function SunlightMapClient() {
   const [dailyEndLocalTime, setDailyEndLocalTime] = useState("21:00");
   const [gridStepMeters, setGridStepMeters] = useState(200);
   const [sampleEveryMinutes, setSampleEveryMinutes] = useState(15);
+  const [ignoreVegetationShadow, setIgnoreVegetationShadow] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<AreaApiResponse | null>(null);
@@ -1227,11 +1275,22 @@ export function SunlightMapClient() {
         dailyTimeline,
         dailyFrameIndex,
         decodedTimelineMaskCacheRef.current,
+        ignoreVegetationShadow,
       );
     }
 
+    if (mode === "instant" && lastResult && ignoreVegetationShadow) {
+      return deriveInstantResponseWithoutVegetation(lastResult);
+    }
+
     return lastResult;
-  }, [dailyFrameIndex, dailyTimeline, lastResult, mode]);
+  }, [
+    dailyFrameIndex,
+    dailyTimeline,
+    ignoreVegetationShadow,
+    lastResult,
+    mode,
+  ]);
 
   const dailyExposurePoints = useMemo(() => {
     if (
@@ -1243,8 +1302,12 @@ export function SunlightMapClient() {
       return null;
     }
 
-    return buildDailyExposurePoints(dailyTimeline, decodedTimelineMaskCacheRef.current);
-  }, [dailyTimeline, mode]);
+    return buildDailyExposurePoints(
+      dailyTimeline,
+      decodedTimelineMaskCacheRef.current,
+      ignoreVegetationShadow,
+    );
+  }, [dailyTimeline, ignoreVegetationShadow, mode]);
 
   const dailyExposureHotspot = useMemo(() => {
     if (!dailyExposurePoints || dailyExposurePoints.length === 0) {
@@ -1462,6 +1525,7 @@ export function SunlightMapClient() {
       setDailyEndLocalTime(stored.dailyEndLocalTime);
       setGridStepMeters(stored.gridStepMeters);
       setSampleEveryMinutes(stored.sampleEveryMinutes);
+      setIgnoreVegetationShadow(stored.ignoreVegetationShadow);
       setShowSunny(stored.showSunny);
       setShowShadow(stored.showShadow);
       setShowVegetation(stored.showVegetation);
@@ -1486,6 +1550,7 @@ export function SunlightMapClient() {
       dailyEndLocalTime,
       gridStepMeters,
       sampleEveryMinutes,
+      ignoreVegetationShadow,
       showSunny,
       showShadow,
       showVegetation,
@@ -1502,6 +1567,7 @@ export function SunlightMapClient() {
     dailyStartLocalTime,
     mode,
     sampleEveryMinutes,
+    ignoreVegetationShadow,
     showBuildings,
     showShadow,
     showSunny,
@@ -1958,6 +2024,7 @@ export function SunlightMapClient() {
         category: "terrace_candidate" as const,
         outdoorOnly: true,
         includeNonSunny: false,
+        ignoreVegetation: ignoreVegetationShadow,
         foodTypes: ["restaurant", "bar", "snack", "foodtruck"] as const,
         bbox,
         limit: 400,
@@ -1995,6 +2062,7 @@ export function SunlightMapClient() {
       dailyEndLocalTime,
       dailyStartLocalTime,
       date,
+      ignoreVegetationShadow,
       localTime,
       mode,
       sampleEveryMinutes,
@@ -2653,6 +2721,16 @@ export function SunlightMapClient() {
           />
           <span className="rounded bg-red-600 px-2 py-0.5 text-white">
             terrasses soleil
+          </span>
+        </label>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={ignoreVegetationShadow}
+            onChange={(event) => setIgnoreVegetationShadow(event.target.checked)}
+          />
+          <span className="rounded bg-emerald-800 px-2 py-0.5 text-white">
+            ignorer ombre vegetation
           </span>
         </label>
       </div>

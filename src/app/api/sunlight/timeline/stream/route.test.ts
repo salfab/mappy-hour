@@ -16,9 +16,11 @@ function createMockContext(lat: number, lon: number) {
     pointElevationMeters: 520,
     terrainHorizonMethod: "mock-terrain",
     buildingsShadowMethod: "mock-buildings",
+    vegetationShadowMethod: "mock-vegetation",
     warnings: [],
     horizonMask: null,
     buildingShadowEvaluator: undefined,
+    vegetationShadowEvaluator: undefined,
   };
 }
 
@@ -68,6 +70,10 @@ function parseAllSseEventData(streamText: string, eventName: string): unknown[] 
   }
 
   return payloads;
+}
+
+function decodeBase64Bytes(base64: string): Uint8Array {
+  return Uint8Array.from(Buffer.from(base64, "base64"));
 }
 
 vi.mock("@/lib/sun/evaluation-context", () => ({
@@ -233,6 +239,47 @@ describe("GET /api/sunlight/timeline/stream", () => {
     expect(startPayload?.startLocalTime).toBe("07:00");
     expect(startPayload?.endLocalTime).toBe("09:00");
     expect(startPayload?.frameCount).toBe(2);
+  });
+
+  it("emits both full and no-vegetation masks in frame payloads", async () => {
+    const request = new Request(
+      "http://localhost/api/sunlight/timeline/stream?minLon=6.599447&minLat=46.522107&maxLon=6.600200&maxLat=46.522700&date=2026-03-08&timezone=Europe/Zurich&sampleEveryMinutes=60&gridStepMeters=20&maxPoints=3000",
+      {
+        method: "GET",
+      },
+    );
+
+    const response = await GET(request);
+    expect(response.status).toBe(200);
+
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    const decoder = new TextDecoder();
+    let streamText = "";
+    while (true) {
+      const chunk = await reader!.read();
+      if (chunk.done) {
+        break;
+      }
+      streamText += decoder.decode(chunk.value, { stream: true });
+    }
+    streamText += decoder.decode();
+
+    const framePayloads = parseAllSseEventData(streamText, "frame") as Array<{
+      index: number;
+      sunMaskBase64?: string;
+      sunMaskNoVegetationBase64?: string;
+    }>;
+    expect(framePayloads.length).toBeGreaterThan(0);
+    const firstFrame = framePayloads[0];
+    expect(firstFrame.sunMaskBase64).toBeTypeOf("string");
+    expect(firstFrame.sunMaskNoVegetationBase64).toBeTypeOf("string");
+
+    const fullMask = decodeBase64Bytes(firstFrame.sunMaskBase64 ?? "");
+    const noVegetationMask = decodeBase64Bytes(
+      firstFrame.sunMaskNoVegetationBase64 ?? "",
+    );
+    expect(noVegetationMask.length).toBe(fullMask.length);
   });
 
   it("emits an error event when daily range has no samples", async () => {

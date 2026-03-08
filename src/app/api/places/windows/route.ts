@@ -31,6 +31,7 @@ const requestSchema = z
       .optional(),
     outdoorOnly: z.boolean().default(false),
     includeNonSunny: z.boolean().default(false),
+    ignoreVegetation: z.boolean().default(false),
     bbox: z
       .tuple([z.number(), z.number(), z.number(), z.number()])
       .optional(),
@@ -173,6 +174,26 @@ function buildSunnyWindows(
   }
 
   return windows;
+}
+
+function isSampleSunny(
+  sample: {
+    isSunny: boolean;
+    aboveAstronomicalHorizon: boolean;
+    terrainBlocked: boolean;
+    buildingsBlocked: boolean;
+  },
+  ignoreVegetation: boolean,
+): boolean {
+  if (!ignoreVegetation) {
+    return sample.isSunny;
+  }
+
+  return (
+    sample.aboveAstronomicalHorizon &&
+    !sample.terrainBlocked &&
+    !sample.buildingsBlocked
+  );
 }
 
 function classifyVenueType(place: {
@@ -485,7 +506,8 @@ export async function POST(request: Request) {
           buildingShadowEvaluator: context.buildingShadowEvaluator,
           vegetationShadowEvaluator: context.vegetationShadowEvaluator,
         });
-        if (!parsed.data.includeNonSunny && !sample.isSunny) {
+        const isSunny = isSampleSunny(sample, parsed.data.ignoreVegetation);
+        if (!parsed.data.includeNonSunny && !isSunny) {
           continue;
         }
 
@@ -505,9 +527,9 @@ export async function POST(request: Request) {
           selectionOffsetMeters: selectedPoint.offsetMeters,
           pointElevationMeters: context.pointElevationMeters,
           insideBuilding: context.insideBuilding,
-          isSunnyNow: sample.isSunny,
-          sunnyMinutes: sample.isSunny ? parsed.data.sampleEveryMinutes : 0,
-          sunnyWindows: sample.isSunny
+          isSunnyNow: isSunny,
+          sunnyMinutes: isSunny ? parsed.data.sampleEveryMinutes : 0,
+          sunnyWindows: isSunny
             ? [
                 {
                   startLocalTime: clock,
@@ -516,8 +538,8 @@ export async function POST(request: Request) {
                 },
               ]
             : [],
-          sunlightStartLocalTime: sample.isSunny ? clock : null,
-          sunlightEndLocalTime: sample.isSunny ? clock : null,
+          sunlightStartLocalTime: isSunny ? clock : null,
+          sunlightEndLocalTime: isSunny ? clock : null,
           warnings: context.warnings,
         });
         continue;
@@ -536,7 +558,7 @@ export async function POST(request: Request) {
       );
       const sunnyWindows = buildSunnyWindows(
         samples.map((sample) => ({
-          isSunny: sample.isSunny,
+          isSunny: isSampleSunny(sample, parsed.data.ignoreVegetation),
           localTime: sample.localTime,
           utcTime: sample.utcTime,
         })),
@@ -605,6 +627,7 @@ export async function POST(request: Request) {
       startLocalTime: parsed.data.startLocalTime,
       endLocalTime: parsed.data.endLocalTime,
       sampleEveryMinutes: parsed.data.sampleEveryMinutes,
+      ignoreVegetation: parsed.data.ignoreVegetation,
       count: placesWithWindows.length,
       places: placesWithWindows,
       model: {

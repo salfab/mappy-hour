@@ -355,7 +355,11 @@ export async function GET(request: Request) {
 
             const sampleDate = samples[sampleIndex];
             const sunnyMask = new Uint8Array(Math.ceil(points.length / 8));
+            const sunnyMaskNoVegetation = new Uint8Array(
+              Math.ceil(points.length / 8),
+            );
             let sunnyCount = 0;
+            let sunnyCountNoVegetation = 0;
             let localTime = "";
 
             for (let pointIndex = 0; pointIndex < points.length; pointIndex += 1) {
@@ -373,6 +377,15 @@ export async function GET(request: Request) {
                 localTime = sample.localTime;
               }
 
+              const isSunnyNoVegetation =
+                sample.aboveAstronomicalHorizon &&
+                !sample.terrainBlocked &&
+                !sample.buildingsBlocked;
+              if (isSunnyNoVegetation) {
+                sunnyMaskNoVegetation[pointIndex >> 3] |= 1 << (pointIndex & 7);
+                sunnyCountNoVegetation += 1;
+              }
+
               if (sample.isSunny) {
                 sunnyMask[pointIndex >> 3] |= 1 << (pointIndex & 7);
                 sunnyCount += 1;
@@ -385,7 +398,11 @@ export async function GET(request: Request) {
               index: sampleIndex,
               localTime,
               sunnyCount,
+              sunnyCountNoVegetation,
               sunMaskBase64: Buffer.from(sunnyMask).toString("base64"),
+              sunMaskNoVegetationBase64: Buffer.from(
+                sunnyMaskNoVegetation,
+              ).toString("base64"),
             });
 
             const elapsedMs = performance.now() - evalStartedAt;

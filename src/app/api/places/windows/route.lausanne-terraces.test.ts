@@ -41,6 +41,7 @@ describeIfPlaces("POST /api/places/windows (Lausanne terraces)", () => {
           outdoorOnly: true,
           foodTypes: ["restaurant", "bar", "snack", "foodtruck"],
           includeNonSunny: true,
+          ignoreVegetation: true,
           limit: 10,
         }),
       });
@@ -49,6 +50,7 @@ describeIfPlaces("POST /api/places/windows (Lausanne terraces)", () => {
       const json = (await response.json()) as {
         error?: string;
         mode: string;
+        ignoreVegetation?: boolean;
         count: number;
         places: Array<{
           id: string;
@@ -65,6 +67,7 @@ describeIfPlaces("POST /api/places/windows (Lausanne terraces)", () => {
       expect(response.status).toBe(200);
       expect(json.error).toBeUndefined();
       expect(json.mode).toBe("daily");
+      expect(json.ignoreVegetation).toBe(true);
       expect(json.count).toBe(2);
 
       const byId = new Map(json.places.map((place) => [place.id, place]));
