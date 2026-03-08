@@ -88,6 +88,7 @@ export async function POST(request: Request) {
     let terrainMethod = "none";
     let buildingsMethod = "none";
     let pointsWithElevation = 0;
+    let indoorPointsExcluded = 0;
 
     if (parsed.data.mode === "instant") {
       const utcDate = zonedDateTimeToUtc(
@@ -109,13 +110,22 @@ export async function POST(request: Request) {
         azimuthDeg: number;
         horizonAngleDeg: number | null;
         buildingBlockerId: string | null;
+        insideBuilding: boolean;
+        indoorBuildingId: string | null;
       }> = [];
 
       for (const point of grid) {
-        const context = await buildPointEvaluationContext(point.lat, point.lon);
+        const context = await buildPointEvaluationContext(point.lat, point.lon, {
+          skipTerrainSamplingWhenIndoor: true,
+        });
         terrainMethod = context.terrainHorizonMethod;
         buildingsMethod = context.buildingsShadowMethod;
         warnings.push(...context.warnings);
+
+        if (context.insideBuilding) {
+          indoorPointsExcluded += 1;
+          continue;
+        }
         if (context.pointElevationMeters !== null) {
           pointsWithElevation += 1;
         }
@@ -146,6 +156,8 @@ export async function POST(request: Request) {
               ? null
               : Math.round(sample.horizonAngleDeg * 1000) / 1000,
           buildingBlockerId: sample.buildingBlockerId,
+          insideBuilding: false,
+          indoorBuildingId: null,
         });
       }
 
@@ -163,6 +175,7 @@ export async function POST(request: Request) {
         },
         gridStepMeters: parsed.data.gridStepMeters,
         pointCount: points.length,
+        gridPointCount: grid.length,
         points,
         model: {
           terrainHorizonMethod: terrainMethod,
@@ -173,6 +186,7 @@ export async function POST(request: Request) {
           elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
           pointsWithElevation,
           pointsWithoutElevation: points.length - pointsWithElevation,
+          indoorPointsExcluded,
         },
       });
     }
@@ -192,13 +206,22 @@ export async function POST(request: Request) {
         endLocalTime: string;
         durationMinutes: number;
       }>;
+      insideBuilding: boolean;
+      indoorBuildingId: string | null;
     }> = [];
 
     for (const point of grid) {
-      const context = await buildPointEvaluationContext(point.lat, point.lon);
+      const context = await buildPointEvaluationContext(point.lat, point.lon, {
+        skipTerrainSamplingWhenIndoor: true,
+      });
       terrainMethod = context.terrainHorizonMethod;
       buildingsMethod = context.buildingsShadowMethod;
       warnings.push(...context.warnings);
+
+      if (context.insideBuilding) {
+        indoorPointsExcluded += 1;
+        continue;
+      }
       if (context.pointElevationMeters !== null) {
         pointsWithElevation += 1;
       }
@@ -229,6 +252,8 @@ export async function POST(request: Request) {
         sunsetLocalTime: daily.sunsetLocalTime,
         sunnyMinutes,
         sunnyWindows: daily.sunnyWindows,
+        insideBuilding: false,
+        indoorBuildingId: null,
       });
     }
 
@@ -245,6 +270,7 @@ export async function POST(request: Request) {
       gridStepMeters: parsed.data.gridStepMeters,
       sampleEveryMinutes: parsed.data.sampleEveryMinutes,
       pointCount: points.length,
+      gridPointCount: grid.length,
       points,
       model: {
         terrainHorizonMethod: terrainMethod,
@@ -255,6 +281,7 @@ export async function POST(request: Request) {
         elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
         pointsWithElevation,
         pointsWithoutElevation: points.length - pointsWithElevation,
+        indoorPointsExcluded,
       },
     });
   } catch (error) {

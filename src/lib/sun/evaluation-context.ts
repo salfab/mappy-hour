@@ -1,16 +1,23 @@
 import { wgs84ToLv95 } from "@/lib/geo/projection";
 import {
   evaluateBuildingsShadow,
+  findContainingBuilding,
   loadBuildingsObstacleIndex,
 } from "@/lib/sun/buildings-shadow";
 import { loadLausanneHorizonMask } from "@/lib/sun/horizon-mask";
 import { sampleSwissTerrainElevationLv95 } from "@/lib/terrain/swiss-terrain";
+
+export interface BuildPointEvaluationContextOptions {
+  skipTerrainSamplingWhenIndoor?: boolean;
+}
 
 export interface PointEvaluationContext {
   pointLv95: {
     easting: number;
     northing: number;
   };
+  insideBuilding: boolean;
+  indoorBuildingId: string | null;
   pointElevationMeters: number | null;
   terrainHorizonMethod: string;
   buildingsShadowMethod: string;
@@ -28,16 +35,33 @@ export interface PointEvaluationContext {
 export async function buildPointEvaluationContext(
   lat: number,
   lon: number,
+  options: BuildPointEvaluationContextOptions = {},
 ): Promise<PointEvaluationContext> {
   const pointLv95 = wgs84ToLv95(lon, lat);
-  const [horizonMask, buildingsIndex, pointElevationMeters] = await Promise.all([
+  const [horizonMask, buildingsIndex] = await Promise.all([
     loadLausanneHorizonMask(),
     loadBuildingsObstacleIndex(),
-    sampleSwissTerrainElevationLv95(pointLv95.easting, pointLv95.northing),
   ]);
 
+  const containment = buildingsIndex
+    ? findContainingBuilding(
+        buildingsIndex.obstacles,
+        pointLv95.easting,
+        pointLv95.northing,
+      )
+    : {
+        insideBuilding: false,
+        buildingId: null,
+      };
+
+  const shouldSkipTerrainSampling =
+    options.skipTerrainSamplingWhenIndoor && containment.insideBuilding;
+  const pointElevationMeters = shouldSkipTerrainSampling
+    ? null
+    : await sampleSwissTerrainElevationLv95(pointLv95.easting, pointLv95.northing);
+
   const buildingShadowEvaluator =
-    buildingsIndex && pointElevationMeters !== null
+    buildingsIndex && pointElevationMeters !== null && !containment.insideBuilding
       ? (sample: { azimuthDeg: number; altitudeDeg: number }) =>
           evaluateBuildingsShadow(buildingsIndex.obstacles, {
             pointX: pointLv95.easting,
@@ -59,7 +83,7 @@ export async function buildPointEvaluationContext(
       "No buildings obstacle index found. Run preprocess:lausanne:buildings to enable building shadow blocking.",
     );
   }
-  if (pointElevationMeters === null) {
+  if (pointElevationMeters === null && !shouldSkipTerrainSampling) {
     warnings.push(
       "Point elevation unavailable from swissALTI3D. Building-shadow blocking was skipped.",
     );
@@ -67,6 +91,8 @@ export async function buildPointEvaluationContext(
 
   return {
     pointLv95,
+    insideBuilding: containment.insideBuilding,
+    indoorBuildingId: containment.buildingId,
     pointElevationMeters,
     terrainHorizonMethod: horizonMask?.method ?? "none",
     buildingsShadowMethod: buildingsIndex?.method ?? "none",

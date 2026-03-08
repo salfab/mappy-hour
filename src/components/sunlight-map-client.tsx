@@ -39,6 +39,7 @@ interface AreaApiResponse {
     elapsedMs: number;
     pointsWithElevation: number;
     pointsWithoutElevation: number;
+    indoorPointsExcluded?: number;
   };
 }
 
@@ -112,7 +113,8 @@ export function SunlightMapClient() {
     if (!lastResult) {
       return "Aucun calcul encore lance.";
     }
-    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, warnings: ${lastResult.warnings.length}`;
+    const excludedIndoor = lastResult.stats.indoorPointsExcluded ?? 0;
+    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, warnings: ${lastResult.warnings.length}`;
   }, [lastResult]);
 
   useEffect(() => {

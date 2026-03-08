@@ -57,6 +57,18 @@ This separates two concepts:
 - "blocked outdoor point"
 - "indoor sample (not relevant for outdoor sunshine map)"
 
+### Current implementation status
+
+Implemented on `2026-03-08` for `POST /api/sunlight/area`:
+
+- each grid point is tested against building footprints first
+- indoor points are excluded before solar evaluation
+- response stats now expose `indoorPointsExcluded`
+
+Result:
+- no more "false red" points caused by indoor samples
+- less compute work because excluded indoor points skip sunlight evaluation
+
 ### Alternative strategies
 
 1. Cell representative point:

@@ -58,6 +58,11 @@ export interface BuildingShadowResult {
   checkedObstaclesCount: number;
 }
 
+export interface BuildingContainmentResult {
+  insideBuilding: boolean;
+  buildingId: string | null;
+}
+
 let obstacleIndexCache: BuildingObstacleIndex | null | undefined;
 
 export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleIndex | null> {
@@ -220,6 +225,49 @@ function rayBoxIntersectionDistance(
   }
 
   return Math.max(0, tMin);
+}
+
+function isPointInsideBoundingBox(
+  pointX: number,
+  pointY: number,
+  obstacle: BuildingObstacle,
+): boolean {
+  return (
+    pointX >= obstacle.minX &&
+    pointX <= obstacle.maxX &&
+    pointY >= obstacle.minY &&
+    pointY <= obstacle.maxY
+  );
+}
+
+export function findContainingBuilding(
+  obstacles: BuildingObstacle[],
+  pointX: number,
+  pointY: number,
+): BuildingContainmentResult {
+  for (const obstacle of obstacles) {
+    if (!isPointInsideBoundingBox(pointX, pointY, obstacle)) {
+      continue;
+    }
+
+    if (
+      obstacle.footprint &&
+      obstacle.footprint.length >= 3 &&
+      !pointInPolygon(pointX, pointY, obstacle.footprint)
+    ) {
+      continue;
+    }
+
+    return {
+      insideBuilding: true,
+      buildingId: obstacle.id,
+    };
+  }
+
+  return {
+    insideBuilding: false,
+    buildingId: null,
+  };
 }
 
 export function evaluateBuildingsShadow(
