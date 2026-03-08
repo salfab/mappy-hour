@@ -12,6 +12,7 @@ import {
 import { zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
 export const runtime = "nodejs";
+const MAX_RAW_GRID_POINTS = 20_000;
 
 const requestSchema = z
   .object({
@@ -41,6 +42,21 @@ const requestSchema = z
 
 function dedupeWarnings(warnings: string[]): string[] {
   return Array.from(new Set(warnings));
+}
+
+function maxPointsExceededResponse(params: {
+  maxPoints: number;
+  gridPointCount: number;
+  indoorPointsExcluded: number;
+  outdoorPointCount: number;
+}) {
+  return NextResponse.json(
+    {
+      error: "Outdoor grid exceeds maxPoints limit.",
+      detail: `Computed ${params.outdoorPointCount} outdoor points (from ${params.gridPointCount} raw points and ${params.indoorPointsExcluded} indoor exclusions), but maxPoints is ${params.maxPoints}.`,
+    },
+    { status: 400 },
+  );
 }
 
 export async function POST(request: Request) {
@@ -74,11 +90,11 @@ export async function POST(request: Request) {
       parsed.data.gridStepMeters,
     );
 
-    if (grid.length > parsed.data.maxPoints) {
+    if (grid.length > MAX_RAW_GRID_POINTS) {
       return NextResponse.json(
         {
-          error: "Grid exceeds maxPoints limit.",
-          detail: `Computed ${grid.length} points, but maxPoints is ${parsed.data.maxPoints}.`,
+          error: "Grid exceeds raw safety limit.",
+          detail: `Computed ${grid.length} raw points, but hard limit is ${MAX_RAW_GRID_POINTS}. Increase gridStepMeters or reduce bbox.`,
         },
         { status: 400 },
       );
@@ -89,6 +105,7 @@ export async function POST(request: Request) {
     let buildingsMethod = "none";
     let pointsWithElevation = 0;
     let indoorPointsExcluded = 0;
+    let outdoorPointCount = 0;
 
     if (parsed.data.mode === "instant") {
       const utcDate = zonedDateTimeToUtc(
@@ -125,6 +142,15 @@ export async function POST(request: Request) {
         if (context.insideBuilding) {
           indoorPointsExcluded += 1;
           continue;
+        }
+        outdoorPointCount += 1;
+        if (outdoorPointCount > parsed.data.maxPoints) {
+          return maxPointsExceededResponse({
+            maxPoints: parsed.data.maxPoints,
+            gridPointCount: grid.length,
+            indoorPointsExcluded,
+            outdoorPointCount,
+          });
         }
         if (context.pointElevationMeters !== null) {
           pointsWithElevation += 1;
@@ -221,6 +247,15 @@ export async function POST(request: Request) {
       if (context.insideBuilding) {
         indoorPointsExcluded += 1;
         continue;
+      }
+      outdoorPointCount += 1;
+      if (outdoorPointCount > parsed.data.maxPoints) {
+        return maxPointsExceededResponse({
+          maxPoints: parsed.data.maxPoints,
+          gridPointCount: grid.length,
+          indoorPointsExcluded,
+          outdoorPointCount,
+        });
       }
       if (context.pointElevationMeters !== null) {
         pointsWithElevation += 1;

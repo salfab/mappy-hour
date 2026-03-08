@@ -1,26 +1,48 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
+
 import { POST } from "./route";
 
-vi.mock("@/lib/sun/evaluation-context", () => ({
-  buildPointEvaluationContext: vi.fn(async (lat: number, lon: number) => ({
+interface MockContextOverrides {
+  insideBuilding?: boolean;
+  indoorBuildingId?: string | null;
+  pointElevationMeters?: number | null;
+}
+
+function createMockContext(
+  lat: number,
+  lon: number,
+  overrides: MockContextOverrides = {},
+) {
+  return {
     pointLv95: {
       easting: lon * 100_000,
       northing: lat * 100_000,
     },
-    insideBuilding: false,
-    indoorBuildingId: null,
-    pointElevationMeters: 520,
+    insideBuilding: overrides.insideBuilding ?? false,
+    indoorBuildingId: overrides.indoorBuildingId ?? null,
+    pointElevationMeters: overrides.pointElevationMeters ?? 520,
     terrainHorizonMethod: "mock-terrain",
     buildingsShadowMethod: "mock-buildings",
     warnings: [],
     horizonMask: null,
     buildingShadowEvaluator: undefined,
-  })),
+  };
+}
+
+vi.mock("@/lib/sun/evaluation-context", () => ({
+  buildPointEvaluationContext: vi.fn(async (lat: number, lon: number) =>
+    createMockContext(lat, lon),
+  ),
 }));
 
 describe("POST /api/sunlight/area", () => {
   it("returns a valid instant area payload without running a web server", async () => {
+    vi.mocked(buildPointEvaluationContext).mockImplementation(async (lat, lon) =>
+      createMockContext(lat, lon),
+    );
+
     const payload = {
       bbox: [6.599447, 46.522107, 6.601426, 46.523137],
       date: "2026-03-08",
@@ -49,7 +71,9 @@ describe("POST /api/sunlight/area", () => {
       utcTime: string;
       stats: {
         elapsedMs: number;
+        indoorPointsExcluded: number;
       };
+      gridPointCount: number;
     };
 
     expect(response.status).toBe(200);
@@ -58,6 +82,96 @@ describe("POST /api/sunlight/area", () => {
     expect(Array.isArray(json.points)).toBe(true);
     expect(json.pointCount).toBeGreaterThan(0);
     expect(json.pointCount).toBe(json.points.length);
+    expect(json.gridPointCount).toBeGreaterThanOrEqual(json.pointCount);
     expect(json.stats.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(json.stats.indoorPointsExcluded).toBeGreaterThanOrEqual(0);
+  });
+
+  it("does not reject when raw grid is large but outdoor points stay under maxPoints", async () => {
+    let contextCallCount = 0;
+    vi.mocked(buildPointEvaluationContext).mockImplementation(async (lat, lon) => {
+      const currentCall = contextCallCount;
+      contextCallCount += 1;
+
+      if (currentCall >= 8) {
+        return createMockContext(lat, lon, {
+          insideBuilding: true,
+          indoorBuildingId: `building-${currentCall}`,
+          pointElevationMeters: null,
+        });
+      }
+
+      return createMockContext(lat, lon);
+    });
+
+    const payload = {
+      bbox: [6.599447, 46.522107, 6.601426, 46.523137],
+      date: "2026-03-08",
+      timezone: "Europe/Zurich",
+      mode: "instant",
+      localTime: "09:19",
+      sampleEveryMinutes: 15,
+      gridStepMeters: 5,
+      maxPoints: 10,
+    };
+
+    const request = new Request("http://localhost/api/sunlight/area", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const response = await POST(request);
+    const json = (await response.json()) as {
+      error?: string;
+      pointCount: number;
+      gridPointCount: number;
+      stats: {
+        indoorPointsExcluded: number;
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(json.error).toBeUndefined();
+    expect(json.gridPointCount).toBeGreaterThan(json.pointCount);
+    expect(json.pointCount).toBe(8);
+    expect(json.stats.indoorPointsExcluded).toBeGreaterThan(0);
+  });
+
+  it("rejects only when outdoor points exceed maxPoints", async () => {
+    vi.mocked(buildPointEvaluationContext).mockImplementation(async (lat, lon) =>
+      createMockContext(lat, lon),
+    );
+
+    const payload = {
+      bbox: [6.599447, 46.522107, 6.601426, 46.523137],
+      date: "2026-03-08",
+      timezone: "Europe/Zurich",
+      mode: "instant",
+      localTime: "09:19",
+      sampleEveryMinutes: 15,
+      gridStepMeters: 5,
+      maxPoints: 5,
+    };
+
+    const request = new Request("http://localhost/api/sunlight/area", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const response = await POST(request);
+    const json = (await response.json()) as {
+      error: string;
+      detail: string;
+    };
+
+    expect(response.status).toBe(400);
+    expect(json.error).toContain("Outdoor grid exceeds maxPoints limit");
+    expect(json.detail).toContain("outdoor points");
   });
 });
