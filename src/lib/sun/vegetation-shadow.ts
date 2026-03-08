@@ -7,11 +7,15 @@ import { RAW_VEGETATION_SURFACE_DIR } from "@/lib/storage/data-paths";
 
 type TypedRaster = Float32Array | Int16Array | Uint16Array | Int32Array | Uint32Array;
 
-interface VegetationSurfaceTile {
+interface VegetationSurfaceTileMetadata {
+  filePath: string;
   minX: number;
   minY: number;
   maxX: number;
   maxY: number;
+}
+
+interface VegetationSurfaceTile extends VegetationSurfaceTileMetadata {
   width: number;
   height: number;
   nodata: number | null;
@@ -40,8 +44,15 @@ const METHOD = "swisssurface3d-raster-step-ray-v1";
 const DEFAULT_MAX_DISTANCE_METERS = 120;
 const DEFAULT_STEP_METERS = 2;
 const DEFAULT_MIN_CLEARANCE_METERS = 4;
+const VEGETATION_TILE_SIZE_METERS = 1000;
 
-let vegetationTilesCachePromise: Promise<VegetationSurfaceTile[] | null> | null = null;
+let vegetationTileMetadataCachePromise:
+  | Promise<VegetationSurfaceTileMetadata[] | null>
+  | null = null;
+const vegetationTileRasterCache = new Map<
+  string,
+  Promise<VegetationSurfaceTile>
+>();
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -52,6 +63,48 @@ function valueIsNoData(value: number, nodata: number | null): boolean {
     return false;
   }
   return Math.abs(value - nodata) < 1e-6;
+}
+
+function boundsIntersect(
+  bounds: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  },
+  tile: VegetationSurfaceTileMetadata,
+): boolean {
+  return !(
+    tile.maxX < bounds.minX ||
+    tile.minX > bounds.maxX ||
+    tile.maxY < bounds.minY ||
+    tile.minY > bounds.maxY
+  );
+}
+
+function parseTileBoundsFromFilename(
+  filePath: string,
+): Pick<VegetationSurfaceTileMetadata, "minX" | "minY" | "maxX" | "maxY"> | null {
+  const fileName = path.basename(filePath);
+  const match = /_(\d+)-(\d+)_0(?:\.0|\.5)?_2056_5728\.tif$/i.exec(fileName);
+  if (!match) {
+    return null;
+  }
+
+  const tileEastingKm = Number(match[1]);
+  const tileNorthingKm = Number(match[2]);
+  if (!Number.isFinite(tileEastingKm) || !Number.isFinite(tileNorthingKm)) {
+    return null;
+  }
+
+  const minX = tileEastingKm * 1000;
+  const minY = tileNorthingKm * 1000;
+  return {
+    minX,
+    minY,
+    maxX: minX + VEGETATION_TILE_SIZE_METERS,
+    maxY: minY + VEGETATION_TILE_SIZE_METERS,
+  };
 }
 
 async function listTifsRecursively(rootDirectory: string): Promise<string[]> {
@@ -79,12 +132,14 @@ async function listTifsRecursively(rootDirectory: string): Promise<string[]> {
   return result;
 }
 
-export async function loadVegetationSurfaceTiles(): Promise<VegetationSurfaceTile[] | null> {
-  if (vegetationTilesCachePromise) {
-    return vegetationTilesCachePromise;
+async function loadVegetationTileMetadata(): Promise<
+  VegetationSurfaceTileMetadata[] | null
+> {
+  if (vegetationTileMetadataCachePromise) {
+    return vegetationTileMetadataCachePromise;
   }
 
-  vegetationTilesCachePromise = (async () => {
+  vegetationTileMetadataCachePromise = (async () => {
     try {
       await fs.access(RAW_VEGETATION_SURFACE_DIR);
     } catch {
@@ -96,37 +151,111 @@ export async function loadVegetationSurfaceTiles(): Promise<VegetationSurfaceTil
       return null;
     }
 
-    const tiles: VegetationSurfaceTile[] = [];
+    const metadata: VegetationSurfaceTileMetadata[] = [];
     for (const filePath of tifFiles) {
+      const parsedBounds = parseTileBoundsFromFilename(filePath);
+      if (parsedBounds) {
+        metadata.push({
+          filePath,
+          ...parsedBounds,
+        });
+        continue;
+      }
+
+      // Fallback when filename doesn't follow expected swisssurface3d pattern.
       const tiff = await fromFile(filePath);
       const image = await tiff.getImage();
       const bbox = image.getBoundingBox();
-      const raster = (await image.readRasters({
-        interleave: true,
-        pool: null,
-      })) as TypedRaster;
-      const noDataRaw = image.getGDALNoData();
-      const noDataParsed =
-        noDataRaw === null || noDataRaw === undefined
-          ? null
-          : Number.parseFloat(String(noDataRaw));
-
-      tiles.push({
+      metadata.push({
+        filePath,
         minX: bbox[0],
         minY: bbox[1],
         maxX: bbox[2],
         maxY: bbox[3],
-        width: image.getWidth(),
-        height: image.getHeight(),
-        nodata: Number.isFinite(noDataParsed) ? noDataParsed : null,
-        raster,
       });
     }
 
-    return tiles;
+    return metadata;
   })();
 
-  return vegetationTilesCachePromise;
+  return vegetationTileMetadataCachePromise;
+}
+
+async function loadVegetationTileRaster(
+  metadata: VegetationSurfaceTileMetadata,
+): Promise<VegetationSurfaceTile> {
+  const cachedPromise = vegetationTileRasterCache.get(metadata.filePath);
+  if (cachedPromise) {
+    return cachedPromise;
+  }
+
+  const rasterPromise = (async () => {
+    const tiff = await fromFile(metadata.filePath);
+    const image = await tiff.getImage();
+    const raster = (await image.readRasters({
+      interleave: true,
+      pool: null,
+    })) as TypedRaster;
+    const noDataRaw = image.getGDALNoData();
+    const noDataParsed =
+      noDataRaw === null || noDataRaw === undefined
+        ? null
+        : Number.parseFloat(String(noDataRaw));
+
+    return {
+      ...metadata,
+      width: image.getWidth(),
+      height: image.getHeight(),
+      nodata: Number.isFinite(noDataParsed) ? noDataParsed : null,
+      raster,
+    };
+  })();
+
+  vegetationTileRasterCache.set(metadata.filePath, rasterPromise);
+  return rasterPromise;
+}
+
+async function loadVegetationSurfaceTilesInBounds(bounds: {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}): Promise<VegetationSurfaceTile[] | null> {
+  const metadata = await loadVegetationTileMetadata();
+  if (!metadata || metadata.length === 0) {
+    return null;
+  }
+
+  const selectedMetadata = metadata.filter((tile) => boundsIntersect(bounds, tile));
+  if (selectedMetadata.length === 0) {
+    return [];
+  }
+
+  return Promise.all(selectedMetadata.map((tile) => loadVegetationTileRaster(tile)));
+}
+
+export async function loadVegetationSurfaceTiles(): Promise<
+  VegetationSurfaceTile[] | null
+> {
+  const metadata = await loadVegetationTileMetadata();
+  if (!metadata || metadata.length === 0) {
+    return null;
+  }
+
+  return Promise.all(metadata.map((tile) => loadVegetationTileRaster(tile)));
+}
+
+export async function loadVegetationSurfaceTilesForPoint(
+  pointX: number,
+  pointY: number,
+  maxDistanceMeters = DEFAULT_MAX_DISTANCE_METERS,
+): Promise<VegetationSurfaceTile[] | null> {
+  return loadVegetationSurfaceTilesInBounds({
+    minX: pointX - maxDistanceMeters,
+    maxX: pointX + maxDistanceMeters,
+    minY: pointY - maxDistanceMeters,
+    maxY: pointY + maxDistanceMeters,
+  });
 }
 
 function sampleSurfaceElevationLv95(

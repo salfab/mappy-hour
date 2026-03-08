@@ -7,7 +7,7 @@ import {
 import { HorizonMask, loadLausanneHorizonMask } from "@/lib/sun/horizon-mask";
 import {
   createVegetationShadowEvaluator,
-  loadVegetationSurfaceTiles,
+  loadVegetationSurfaceTilesForPoint,
   vegetationShadowMethod,
 } from "@/lib/sun/vegetation-shadow";
 import { sampleSwissTerrainElevationLv95 } from "@/lib/terrain/swiss-terrain";
@@ -53,10 +53,9 @@ export async function buildPointEvaluationContext(
   options: BuildPointEvaluationContextOptions = {},
 ): Promise<PointEvaluationContext> {
   const pointLv95 = wgs84ToLv95(lon, lat);
-  const [lausanneHorizonMask, buildingsIndex, vegetationSurfaceTiles] = await Promise.all([
+  const [lausanneHorizonMask, buildingsIndex] = await Promise.all([
     loadLausanneHorizonMask(),
     loadBuildingsObstacleIndex(),
-    loadVegetationSurfaceTiles(),
   ]);
   const horizonMask = options.terrainHorizonOverride ?? lausanneHorizonMask;
 
@@ -76,6 +75,14 @@ export async function buildPointEvaluationContext(
   const pointElevationMeters = shouldSkipTerrainSampling
     ? null
     : await sampleSwissTerrainElevationLv95(pointLv95.easting, pointLv95.northing);
+
+  const vegetationSurfaceTiles =
+    pointElevationMeters !== null && !containment.insideBuilding
+      ? await loadVegetationSurfaceTilesForPoint(
+          pointLv95.easting,
+          pointLv95.northing,
+        )
+      : null;
 
   const buildingShadowEvaluator =
     buildingsIndex && pointElevationMeters !== null && !containment.insideBuilding
@@ -112,7 +119,7 @@ export async function buildPointEvaluationContext(
       "No buildings obstacle index found. Run preprocess:lausanne:buildings to enable building shadow blocking.",
     );
   }
-  if (!vegetationSurfaceTiles || vegetationSurfaceTiles.length === 0) {
+  if (vegetationSurfaceTiles === null) {
     warnings.push(
       "No vegetation surface raster found. Run ingest:lausanne:vegetation:surface to enable vegetation shadow blocking.",
     );
