@@ -44,3 +44,8 @@ next-env.d.ts
 /data/raw/
 /data/processed/
 /data/tmp/
+
+# Explicit heavy 3D/DEM dataset paths (kept out of git and ignored by dev file watchers)
+/data/raw/swisstopo/swissbuildings3d_2/
+/data/raw/swisstopo/swissalti3d_2m/
+/data/raw/copernicus-dem30/

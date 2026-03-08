@@ -16,7 +16,8 @@
     "ingest:lausanne:terrain:horizon": "tsx scripts/ingest/download-lausanne-horizon-dem.ts",
     "ingest:lausanne:places": "tsx scripts/ingest/download-lausanne-places-osm.ts",
     "preprocess:lausanne:buildings": "tsx scripts/preprocess/build-lausanne-buildings-index.ts",
-    "preprocess:lausanne:horizon": "tsx scripts/preprocess/build-lausanne-horizon-mask.ts"
+    "preprocess:lausanne:horizon": "tsx scripts/preprocess/build-lausanne-horizon-mask.ts",
+    "fetch:lausanne:3d": "pnpm run ingest:lausanne:buildings && pnpm run ingest:lausanne:terrain:ch && pnpm run ingest:lausanne:terrain:horizon && pnpm run preprocess:lausanne:buildings && pnpm run preprocess:lausanne:horizon"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",

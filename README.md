@@ -32,6 +32,25 @@ pnpm install
 pnpm dev
 ```
 
+## Recuperer tous les jeux 3D/DEM (script unique)
+
+Les gros fichiers 3D/DEM sont ignores par git (`data/raw/...`) pour eviter de saturer le repo
+et reduire la charge du filewatcher en developpement.
+
+Pour tout recuperer/reconstruire en une commande :
+
+```bash
+pnpm fetch:lausanne:3d
+```
+
+Ce script execute :
+
+- `ingest:lausanne:buildings`
+- `ingest:lausanne:terrain:ch`
+- `ingest:lausanne:terrain:horizon`
+- `preprocess:lausanne:buildings`
+- `preprocess:lausanne:horizon`
+
 ## Ingestion des donnees Lausanne
 
 ### 1) Batiments 3D Lausanne (swissBUILDINGS3D)
