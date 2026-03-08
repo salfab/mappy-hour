@@ -1488,6 +1488,24 @@ export function SunlightMapClient() {
         terrainSource,
         isSunny: isSunnyEffective,
       });
+    const buildingShadowBudget =
+      json.sample.buildingBlockerDistanceMeters !== null &&
+      json.sample.buildingBlockerAltitudeAngleDeg !== null
+        ? (() => {
+            const distanceMeters = json.sample.buildingBlockerDistanceMeters!;
+            const blockerClearanceMeters =
+              Math.tan((json.sample.buildingBlockerAltitudeAngleDeg! * Math.PI) / 180) *
+              distanceMeters;
+            const requiredClearanceMeters =
+              Math.tan((json.sample.altitudeDeg * Math.PI) / 180) * distanceMeters;
+            const deficitMeters = blockerClearanceMeters - requiredClearanceMeters;
+            return {
+              blockerClearanceMeters: Number(blockerClearanceMeters.toFixed(3)),
+              requiredClearanceMeters: Number(requiredClearanceMeters.toFixed(3)),
+              deficitMeters: Number(deficitMeters.toFixed(3)),
+            };
+          })()
+        : null;
 
     console.groupCollapsed(
       `[Mappy Hour][click] lat=${payload.lat.toFixed(6)} lon=${payload.lon.toFixed(6)} ` +
@@ -1533,6 +1551,7 @@ export function SunlightMapClient() {
       buildingBlockerId: json.sample.buildingBlockerId,
       buildingBlockerDistanceMeters: json.sample.buildingBlockerDistanceMeters,
       buildingBlockerAltitudeAngleDeg: json.sample.buildingBlockerAltitudeAngleDeg,
+      buildingShadowBudget,
       vegetationBlockerDistanceMeters:
         json.sample.vegetationBlockerDistanceMeters ?? null,
       vegetationBlockerAltitudeAngleDeg:
