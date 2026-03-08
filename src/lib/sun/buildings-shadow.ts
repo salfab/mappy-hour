@@ -4,6 +4,11 @@ import { z } from "zod";
 
 import { PROCESSED_BUILDINGS_INDEX_PATH } from "@/lib/storage/data-paths";
 
+const footprintPointSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+});
+
 const obstacleSchema = z.object({
   id: z.string(),
   minX: z.number(),
@@ -16,6 +21,8 @@ const obstacleSchema = z.object({
   centerX: z.number(),
   centerY: z.number(),
   halfDiagonal: z.number(),
+  footprint: z.array(footprintPointSchema).optional(),
+  footprintArea: z.number().optional(),
   sourceZip: z.string(),
 });
 
@@ -32,6 +39,7 @@ const buildingIndexSchema = z.object({
 
 type BuildingObstacle = z.infer<typeof obstacleSchema>;
 type BuildingObstacleIndex = z.infer<typeof buildingIndexSchema>;
+type FootprintPoint = z.infer<typeof footprintPointSchema>;
 
 export interface BuildingShadowInput {
   pointX: number;
@@ -74,6 +82,90 @@ export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleInde
 
     throw error;
   }
+}
+
+function cross(ax: number, ay: number, bx: number, by: number): number {
+  return ax * by - ay * bx;
+}
+
+function pointInPolygon(pointX: number, pointY: number, polygon: FootprintPoint[]): boolean {
+  let inside = false;
+
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const xi = polygon[i].x;
+    const yi = polygon[i].y;
+    const xj = polygon[j].x;
+    const yj = polygon[j].y;
+
+    const intersects =
+      yi > pointY !== yj > pointY &&
+      pointX < ((xj - xi) * (pointY - yi)) / Math.max(yj - yi, 1e-12) + xi;
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+
+  return inside;
+}
+
+function raySegmentIntersectionDistance(
+  pointX: number,
+  pointY: number,
+  dirX: number,
+  dirY: number,
+  a: FootprintPoint,
+  b: FootprintPoint,
+): number | null {
+  const segX = b.x - a.x;
+  const segY = b.y - a.y;
+  const denominator = cross(dirX, dirY, segX, segY);
+
+  if (Math.abs(denominator) < 1e-9) {
+    return null;
+  }
+
+  const ax = a.x - pointX;
+  const ay = a.y - pointY;
+  const t = cross(ax, ay, segX, segY) / denominator;
+  const u = cross(ax, ay, dirX, dirY) / denominator;
+
+  if (t >= 0 && u >= 0 && u <= 1) {
+    return t;
+  }
+
+  return null;
+}
+
+function rayPolygonIntersectionDistance(
+  pointX: number,
+  pointY: number,
+  dirX: number,
+  dirY: number,
+  polygon: FootprintPoint[],
+): number | null {
+  if (polygon.length < 3) {
+    return null;
+  }
+
+  if (pointInPolygon(pointX, pointY, polygon)) {
+    return 0;
+  }
+
+  let minDistance: number | null = null;
+  for (let i = 0; i < polygon.length; i += 1) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    const distance = raySegmentIntersectionDistance(pointX, pointY, dirX, dirY, a, b);
+    if (distance === null) {
+      continue;
+    }
+
+    if (minDistance === null || distance < minDistance) {
+      minDistance = distance;
+    }
+  }
+
+  return minDistance;
 }
 
 function rayBoxIntersectionDistance(
@@ -160,13 +252,16 @@ export function evaluateBuildingsShadow(
 
     checkedObstaclesCount += 1;
 
-    const intersectionDistance = rayBoxIntersectionDistance(
-      input.pointX,
-      input.pointY,
-      dirX,
-      dirY,
-      obstacle,
-    );
+    const intersectionDistance =
+      obstacle.footprint && obstacle.footprint.length >= 3
+        ? rayPolygonIntersectionDistance(
+            input.pointX,
+            input.pointY,
+            dirX,
+            dirY,
+            obstacle.footprint,
+          )
+        : rayBoxIntersectionDistance(input.pointX, input.pointY, dirX, dirY, obstacle);
 
     if (intersectionDistance === null || intersectionDistance > maxDistanceMeters) {
       continue;

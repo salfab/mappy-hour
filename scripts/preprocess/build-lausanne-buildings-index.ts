@@ -9,6 +9,17 @@ import {
   RAW_BUILDINGS_DIR,
 } from "../../src/lib/storage/data-paths";
 
+interface Point2D {
+  x: number;
+  y: number;
+}
+
+interface Point3D {
+  x: number;
+  y: number;
+  z: number;
+}
+
 interface BuildingObstacle {
   id: string;
   minX: number;
@@ -21,17 +32,13 @@ interface BuildingObstacle {
   centerX: number;
   centerY: number;
   halfDiagonal: number;
+  footprint: Point2D[];
+  footprintArea: number;
   sourceZip: string;
 }
 
 interface PolylineAccumulator {
-  minX: number;
-  minY: number;
-  minZ: number;
-  maxX: number;
-  maxY: number;
-  maxZ: number;
-  vertexCount: number;
+  vertices: Point3D[];
 }
 
 interface VertexAccumulator {
@@ -49,14 +56,63 @@ function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+function cross(o: Point2D, a: Point2D, b: Point2D): number {
+  return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+}
+
+function convexHull(points: Point2D[]): Point2D[] {
+  if (points.length <= 1) {
+    return points;
+  }
+
+  const sorted = [...points].sort((a, b) => {
+    if (a.x !== b.x) {
+      return a.x - b.x;
+    }
+    return a.y - b.y;
+  });
+
+  const lower: Point2D[] = [];
+  for (const point of sorted) {
+    while (lower.length >= 2 && cross(lower.at(-2)!, lower.at(-1)!, point) <= 0) {
+      lower.pop();
+    }
+    lower.push(point);
+  }
+
+  const upper: Point2D[] = [];
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const point = sorted[i];
+    while (upper.length >= 2 && cross(upper.at(-2)!, upper.at(-1)!, point) <= 0) {
+      upper.pop();
+    }
+    upper.push(point);
+  }
+
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
+function polygonArea(points: Point2D[]): number {
+  if (points.length < 3) {
+    return 0;
+  }
+
+  let sum = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    sum += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(sum) / 2;
+}
+
 function obstacleKey(obstacle: BuildingObstacle): string {
-  return [
-    round1(obstacle.minX),
-    round1(obstacle.minY),
-    round1(obstacle.maxX),
-    round1(obstacle.maxY),
-    round1(obstacle.maxZ),
-  ].join("|");
+  const footprintKey = obstacle.footprint
+    .map((point) => `${round1(point.x)},${round1(point.y)}`)
+    .join(";");
+  return `${footprintKey}|${round1(obstacle.maxZ)}`;
 }
 
 async function listZipFilesRecursively(rootDirectory: string): Promise<string[]> {
@@ -100,13 +156,7 @@ function isCoordinateVertexFlag(flag: number | undefined): boolean {
 
 function emptyPolylineAccumulator(): PolylineAccumulator {
   return {
-    minX: Number.POSITIVE_INFINITY,
-    minY: Number.POSITIVE_INFINITY,
-    minZ: Number.POSITIVE_INFINITY,
-    maxX: Number.NEGATIVE_INFINITY,
-    maxY: Number.NEGATIVE_INFINITY,
-    maxZ: Number.NEGATIVE_INFINITY,
-    vertexCount: 0,
+    vertices: [],
   };
 }
 
@@ -115,33 +165,66 @@ function polylineToObstacle(
   sourceZip: string,
   obstacleId: number,
 ): BuildingObstacle | null {
-  if (polyline.vertexCount < 3) {
+  if (polyline.vertices.length < 4) {
     return null;
   }
 
-  const width = polyline.maxX - polyline.minX;
-  const depth = polyline.maxY - polyline.minY;
-  const height = polyline.maxZ - polyline.minZ;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+
+  for (const vertex of polyline.vertices) {
+    minX = Math.min(minX, vertex.x);
+    minY = Math.min(minY, vertex.y);
+    minZ = Math.min(minZ, vertex.z);
+    maxX = Math.max(maxX, vertex.x);
+    maxY = Math.max(maxY, vertex.y);
+    maxZ = Math.max(maxZ, vertex.z);
+  }
+
+  const width = maxX - minX;
+  const depth = maxY - minY;
+  const height = maxZ - minZ;
   if (width < 1 || depth < 1 || height < 1) {
     return null;
   }
 
-  const centerX = (polyline.minX + polyline.maxX) / 2;
-  const centerY = (polyline.minY + polyline.maxY) / 2;
+  const footprintHull = convexHull(
+    polyline.vertices.map((vertex) => ({ x: vertex.x, y: vertex.y })),
+  );
+  if (footprintHull.length < 3) {
+    return null;
+  }
+
+  const area = polygonArea(footprintHull);
+  if (area < 4) {
+    return null;
+  }
+
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
   const halfDiagonal = Math.hypot(width, depth) / 2;
 
   return {
     id: `obs-${obstacleId}`,
-    minX: round3(polyline.minX),
-    minY: round3(polyline.minY),
-    maxX: round3(polyline.maxX),
-    maxY: round3(polyline.maxY),
-    minZ: round3(polyline.minZ),
-    maxZ: round3(polyline.maxZ),
+    minX: round3(minX),
+    minY: round3(minY),
+    maxX: round3(maxX),
+    maxY: round3(maxY),
+    minZ: round3(minZ),
+    maxZ: round3(maxZ),
     height: round3(height),
     centerX: round3(centerX),
     centerY: round3(centerY),
     halfDiagonal: round3(halfDiagonal),
+    footprint: footprintHull.map((point) => ({
+      x: round3(point.x),
+      y: round3(point.y),
+    })),
+    footprintArea: round3(area),
     sourceZip: path.basename(sourceZip),
   };
 }
@@ -182,13 +265,11 @@ function parseZipObstacles(
       currentVertex.y !== undefined &&
       currentVertex.z !== undefined
     ) {
-      currentPolyline.minX = Math.min(currentPolyline.minX, currentVertex.x);
-      currentPolyline.minY = Math.min(currentPolyline.minY, currentVertex.y);
-      currentPolyline.minZ = Math.min(currentPolyline.minZ, currentVertex.z);
-      currentPolyline.maxX = Math.max(currentPolyline.maxX, currentVertex.x);
-      currentPolyline.maxY = Math.max(currentPolyline.maxY, currentVertex.y);
-      currentPolyline.maxZ = Math.max(currentPolyline.maxZ, currentVertex.z);
-      currentPolyline.vertexCount += 1;
+      currentPolyline.vertices.push({
+        x: currentVertex.x,
+        y: currentVertex.y,
+        z: currentVertex.z,
+      });
     }
 
     currentVertex = null;
@@ -349,7 +430,7 @@ async function main() {
   const elapsedSeconds = round3((performance.now() - startedAt) / 1000);
   const payload = {
     generatedAt: new Date().toISOString(),
-    method: "dxf-polyline-bbox-v1",
+    method: "dxf-footprint-prism-v1",
     sourceDirectory: RAW_BUILDINGS_DIR,
     zipFilesProcessed: zipFiles.length,
     rawObstaclesCount,
