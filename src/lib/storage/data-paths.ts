@@ -19,3 +19,8 @@ export const PROCESSED_HORIZON_MASK_PATH = path.join(
   PROCESSED_HORIZON_DIR,
   "lausanne-horizon-mask.json",
 );
+export const PROCESSED_BUILDINGS_DIR = path.join(PROCESSED_ROOT, "buildings");
+export const PROCESSED_BUILDINGS_INDEX_PATH = path.join(
+  PROCESSED_BUILDINGS_DIR,
+  "lausanne-buildings-index.json",
+);

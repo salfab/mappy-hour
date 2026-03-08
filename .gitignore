@@ -43,3 +43,4 @@ next-env.d.ts
 # project data
 /data/raw/
 /data/processed/
+/data/tmp/

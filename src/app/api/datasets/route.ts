@@ -4,6 +4,7 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 
 import {
+  PROCESSED_BUILDINGS_INDEX_PATH,
   PROCESSED_HORIZON_MASK_PATH,
   RAW_BUILDINGS_DIR,
   RAW_HORIZON_DEM_DIR,
@@ -42,13 +43,19 @@ async function countFilesRecursively(directory: string): Promise<number> {
 }
 
 export async function GET() {
-  const [buildingsFiles, terrainFiles, horizonDemFiles, horizonMaskExists] =
-    await Promise.all([
-      countFilesRecursively(RAW_BUILDINGS_DIR),
-      countFilesRecursively(RAW_TERRAIN_CH_DIR),
-      countFilesRecursively(RAW_HORIZON_DEM_DIR),
-      fileExists(PROCESSED_HORIZON_MASK_PATH),
-    ]);
+  const [
+    buildingsFiles,
+    terrainFiles,
+    horizonDemFiles,
+    horizonMaskExists,
+    buildingsIndexExists,
+  ] = await Promise.all([
+    countFilesRecursively(RAW_BUILDINGS_DIR),
+    countFilesRecursively(RAW_TERRAIN_CH_DIR),
+    countFilesRecursively(RAW_HORIZON_DEM_DIR),
+    fileExists(PROCESSED_HORIZON_MASK_PATH),
+    fileExists(PROCESSED_BUILDINGS_INDEX_PATH),
+  ]);
 
   return NextResponse.json({
     generatedAt: new Date().toISOString(),
@@ -68,6 +75,10 @@ export async function GET() {
       horizonMask: {
         filePath: PROCESSED_HORIZON_MASK_PATH,
         exists: horizonMaskExists,
+      },
+      buildingsIndex: {
+        filePath: PROCESSED_BUILDINGS_INDEX_PATH,
+        exists: buildingsIndexExists,
       },
     },
   });

@@ -12,10 +12,14 @@
     "ingest:lausanne:buildings": "tsx scripts/ingest/download-lausanne-buildings.ts",
     "ingest:lausanne:terrain:ch": "tsx scripts/ingest/download-lausanne-terrain-ch.ts",
     "ingest:lausanne:terrain:horizon": "tsx scripts/ingest/download-lausanne-horizon-dem.ts",
+    "preprocess:lausanne:buildings": "tsx scripts/preprocess/build-lausanne-buildings-index.ts",
     "preprocess:lausanne:horizon": "tsx scripts/preprocess/build-lausanne-horizon-mask.ts"
   },
   "dependencies": {
+    "adm-zip": "^0.5.16",
+    "geotiff": "^3.0.4",
     "next": "16.1.6",
+    "proj4": "^2.20.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "suncalc": "^1.9.0",
@@ -23,6 +27,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/adm-zip": "^0.5.7",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

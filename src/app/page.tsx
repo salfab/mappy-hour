@@ -44,6 +44,9 @@ export default function Home() {
             pnpm ingest:lausanne:terrain:horizon -- --dry-run
           </code>
           <code className="block rounded bg-black/40 px-3 py-2">
+            pnpm preprocess:lausanne:buildings
+          </code>
+          <code className="block rounded bg-black/40 px-3 py-2">
             pnpm preprocess:lausanne:horizon
           </code>
           <code className="block rounded bg-black/40 px-3 py-2">
@@ -56,8 +59,8 @@ export default function Home() {
       <section className="grid gap-2 rounded-2xl border border-amber-300/40 bg-amber-200/10 p-5 text-sm text-amber-100">
         <h2 className="text-base font-semibold">Statut V1</h2>
         <p>
-          Le calcul d&apos;ombres batiments n&apos;est pas encore branche. Cette
-          etape est prevue juste apres l&apos;ingestion complete de Lausanne.
+          Le calcul d&apos;ombres batiments est actif avec une approximation
+          bbox 3D sur index pretraite.
         </p>
       </section>
     </main>

@@ -10,11 +10,12 @@ Application Next.js pour calculer l'ensoleillement d'une zone urbaine avec un mo
 - Ingestion automatisee des batiments Lausanne via STAC swisstopo
 - Ingestion automatisee du terrain suisse local (swissALTI3D, 2 m)
 - Ingestion automatisee d'un DEM transfrontalier (Copernicus DEM 30 m) pour l'horizon lointain
+- Pretraitement DEM transfrontalier -> masque d'horizon reel (`copernicus-dem30-raycast-v1`)
+- Pretraitement batiments DXF -> index d'obstacles 3D simplifie
 - API `POST /api/sunlight/point` pour un calcul d'ensoleillement journalier a un point
 - Endpoint `GET /api/datasets` pour verifier la presence des donnees
 
-Le masque d'horizon est encore un placeholder (`flat-placeholder`) tant que la phase de pretraitement DEM -> horizon n'est pas branchee.
-Le calcul d'ombre des batiments sera branche dans l'iteration suivante.
+Le calcul batiments utilise une approximation bbox 3D des polylines DXF (rapide, mais pas encore un lancer de rayon exact sur maillage).
 
 ## Prerequis
 
@@ -66,7 +67,13 @@ Test rapide :
 pnpm ingest:lausanne:terrain:horizon -- --dry-run
 ```
 
-### 4) Generation du masque d'horizon (placeholder V1)
+### 4) Generation de l'index d'obstacles batiments
+
+```bash
+pnpm preprocess:lausanne:buildings
+```
+
+### 5) Generation du masque d'horizon DEM
 
 ```bash
 pnpm preprocess:lausanne:horizon
@@ -93,5 +100,6 @@ curl -X POST http://localhost:3000/api/sunlight/point \
 - `data/raw/swisstopo/swissbuildings3d_2`
 - `data/raw/swisstopo/swissalti3d_2m`
 - `data/raw/copernicus-dem30`
+- `data/processed/buildings/lausanne-buildings-index.json`
 - `data/processed/horizon/lausanne-horizon-mask.json`
 

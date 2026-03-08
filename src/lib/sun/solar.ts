@@ -16,6 +16,17 @@ export interface PointSunlightInput {
   timeZone: string;
   sampleEveryMinutes: number;
   horizonMask: HorizonMask | null;
+  buildingShadowEvaluator?: (sample: {
+    azimuthDeg: number;
+    altitudeDeg: number;
+    utcDate: Date;
+  }) => {
+    blocked: boolean;
+    blockerId: string | null;
+    blockerDistanceMeters: number | null;
+    blockerAltitudeAngleDeg: number | null;
+    checkedObstaclesCount: number;
+  };
 }
 
 export interface SunSample {
@@ -26,6 +37,10 @@ export interface SunSample {
   horizonAngleDeg: number | null;
   aboveAstronomicalHorizon: boolean;
   terrainBlocked: boolean;
+  buildingsBlocked: boolean;
+  buildingBlockerId: string | null;
+  buildingBlockerDistanceMeters: number | null;
+  buildingBlockerAltitudeAngleDeg: number | null;
   isSunny: boolean;
 }
 
@@ -152,7 +167,17 @@ export function evaluatePointSunlight(
       aboveAstronomicalHorizon &&
       input.horizonMask !== null &&
       isTerrainBlockedByHorizon(input.horizonMask, azimuthDeg, altitudeDeg);
-    const isSunny = aboveAstronomicalHorizon && !terrainBlocked;
+    const buildingShadow = input.buildingShadowEvaluator
+      ? input.buildingShadowEvaluator({
+          azimuthDeg,
+          altitudeDeg,
+          utcDate: sampleDate,
+        })
+      : null;
+    const buildingsBlocked = aboveAstronomicalHorizon
+      ? (buildingShadow?.blocked ?? false)
+      : false;
+    const isSunny = aboveAstronomicalHorizon && !terrainBlocked && !buildingsBlocked;
 
     samples.push({
       utcTime: sampleDate.toISOString(),
@@ -162,6 +187,11 @@ export function evaluatePointSunlight(
       horizonAngleDeg,
       aboveAstronomicalHorizon,
       terrainBlocked,
+      buildingsBlocked,
+      buildingBlockerId: buildingShadow?.blockerId ?? null,
+      buildingBlockerDistanceMeters: buildingShadow?.blockerDistanceMeters ?? null,
+      buildingBlockerAltitudeAngleDeg:
+        buildingShadow?.blockerAltitudeAngleDeg ?? null,
       isSunny,
     });
   }
