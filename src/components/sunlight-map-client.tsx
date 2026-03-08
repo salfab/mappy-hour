@@ -1830,9 +1830,18 @@ export function SunlightMapClient() {
                 : "ombre maintenant"
               : `${place.sunlightStartLocalTime ?? "--:--"} -> ${place.sunlightEndLocalTime ?? "--:--"} (${place.sunnyMinutes} min)`;
 
-          marker.bindTooltip(
+          marker.bindTooltip(place.name, {
+            permanent: true,
+            direction: "top",
+            offset: [0, -8],
+            className: "sunlit-place-label",
+            opacity: 0.95,
+          });
+
+          marker.bindPopup(
             `${place.name} (${venueTypeBadgeLabel(place.venueType)})<br/>${sunlightHint}<br/>${terraceHint}`,
           );
+
           marker.on("click", (event: LeafletMouseEvent) => {
             L.DomEvent.stopPropagation(event);
             void runPointClickDiagnostics(
