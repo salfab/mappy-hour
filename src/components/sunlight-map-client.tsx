@@ -49,6 +49,44 @@ interface TerrainHorizonDebug {
   ridgePoints: TerrainHorizonRidgePoint[];
 }
 
+interface PointInstantApiResponse {
+  mode: "instant";
+  date: string;
+  timezone: string;
+  localTime: string;
+  utcTime: string;
+  sample: {
+    azimuthDeg: number;
+    altitudeDeg: number;
+    horizonAngleDeg: number | null;
+    aboveAstronomicalHorizon: boolean;
+    terrainBlocked: boolean;
+    buildingsBlocked: boolean;
+    buildingBlockerId: string | null;
+    buildingBlockerDistanceMeters: number | null;
+    buildingBlockerAltitudeAngleDeg: number | null;
+    isSunny: boolean;
+  };
+  model: {
+    terrainHorizonMethod: string;
+    buildingsShadowMethod: string;
+    terrainHorizonDebug?: TerrainHorizonDebug | null;
+  };
+  pointContext: {
+    lv95Easting: number;
+    lv95Northing: number;
+    pointElevationMeters: number | null;
+    insideBuilding: boolean;
+    indoorBuildingId: string | null;
+  };
+  diagnostics?: {
+    terrainRidgePoint?: TerrainHorizonRidgePoint | null;
+  };
+  warnings: string[];
+  error?: string;
+  details?: string;
+}
+
 interface AreaApiResponse {
   mode: AreaMode;
   gridStepMeters: number;
@@ -286,6 +324,48 @@ function decodeBase64ToBytes(base64: string): Uint8Array {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
+}
+
+function normalizeAzimuth(azimuthDeg: number): number {
+  const rounded = Math.round(azimuthDeg) % 360;
+  return rounded >= 0 ? rounded : rounded + 360;
+}
+
+function extractTimeFromLocalDateTime(localDateTime: string | null): string | null {
+  if (!localDateTime) {
+    return null;
+  }
+  const match = /\b(\d{2}:\d{2})(?::\d{2})?\b/.exec(localDateTime);
+  return match ? match[1] : null;
+}
+
+function classifyTerrainSource(
+  response: PointInstantApiResponse,
+): "DEM local (colline du terrain de la ville)" | "montagnes" | null {
+  if (!response.sample.terrainBlocked) {
+    return null;
+  }
+
+  const ridgePoint =
+    response.diagnostics?.terrainRidgePoint ??
+    response.model.terrainHorizonDebug?.ridgePoints.find(
+      (point) => point.azimuthDeg === normalizeAzimuth(response.sample.azimuthDeg),
+    ) ??
+    null;
+
+  if (!ridgePoint) {
+    return null;
+  }
+
+  return classifyRidgeDistance(ridgePoint.distanceMeters);
+}
+
+function classifyRidgeDistance(
+  distanceMeters: number,
+): "DEM local (colline du terrain de la ville)" | "montagnes" {
+  return distanceMeters >= 20_000
+    ? "montagnes"
+    : "DEM local (colline du terrain de la ville)";
 }
 
 function zurichNowDateAndTime(): { date: string; time: string } {
@@ -594,6 +674,19 @@ export function SunlightMapClient() {
   const buildingsLayerRef = useRef<LayerGroup | null>(null);
   const terrainLayerRef = useRef<LayerGroup | null>(null);
   const leafletModuleRef = useRef<typeof import("leaflet") | null>(null);
+  const clickDebugParamsRef = useRef<{
+    mode: AreaMode;
+    date: string;
+    localTime: string;
+    activeFrameTime: string | null;
+    sampleEveryMinutes: number;
+  }>({
+    mode: "instant",
+    date: defaultNow.date,
+    localTime: defaultNow.time,
+    activeFrameTime: null,
+    sampleEveryMinutes: 15,
+  });
 
   const [mode, setMode] = useState<AreaMode>("instant");
   const [date, setDate] = useState(defaultNow.date);
@@ -668,6 +761,112 @@ export function SunlightMapClient() {
     const buildingCount = lastBuildings?.count ?? 0;
     return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, batiments: ${buildingCount}, warnings: ${lastResult.warnings.length}`;
   }, [dailyTimeline, lastBuildings?.count, lastResult, mode]);
+
+  useEffect(() => {
+    clickDebugParamsRef.current = {
+      mode,
+      date,
+      localTime,
+      activeFrameTime,
+      sampleEveryMinutes,
+    };
+  }, [activeFrameTime, date, localTime, mode, sampleEveryMinutes]);
+
+  const runPointClickDiagnostics = useCallback(async (lat: number, lon: number) => {
+    const params = clickDebugParamsRef.current;
+    const localTimeForDiagnostic =
+      params.mode === "daily"
+        ? (extractTimeFromLocalDateTime(params.activeFrameTime) ?? params.localTime)
+        : params.localTime;
+
+    const payload = {
+      lat: Number(lat.toFixed(6)),
+      lon: Number(lon.toFixed(6)),
+      date: params.date,
+      timezone: "Europe/Zurich",
+      mode: "instant" as const,
+      localTime: localTimeForDiagnostic,
+      sampleEveryMinutes: params.sampleEveryMinutes,
+    };
+
+    const response = await fetch("/api/sunlight/point", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const json = (await response.json()) as PointInstantApiResponse;
+    if (!response.ok || json.error) {
+      throw new Error(json.details ?? json.error ?? "Point diagnostic failed.");
+    }
+
+    const terrainSource = classifyTerrainSource(json);
+    const ridgePoint =
+      json.diagnostics?.terrainRidgePoint ??
+      json.model.terrainHorizonDebug?.ridgePoints.find(
+        (point) => point.azimuthDeg === normalizeAzimuth(json.sample.azimuthDeg),
+      ) ??
+      null;
+
+    const shadowSources: string[] = [];
+    if (!json.sample.aboveAstronomicalHorizon) {
+      shadowSources.push("courbure de la terre");
+    }
+    if (json.pointContext.insideBuilding || json.sample.buildingsBlocked) {
+      shadowSources.push("batiment");
+    }
+    if (json.sample.terrainBlocked) {
+      shadowSources.push(terrainSource ?? "terrain/horizon");
+    }
+    if (shadowSources.length === 0) {
+      shadowSources.push("aucune (point ensoleille)");
+    }
+
+    const primarySource = shadowSources[0];
+    const secondarySources = shadowSources.slice(1);
+
+    console.groupCollapsed(
+      `[Mappy Hour][click] lat=${payload.lat.toFixed(6)} lon=${payload.lon.toFixed(6)} ` +
+        `-> ${primarySource}`,
+    );
+    console.log("Cause principale:", primarySource);
+    if (secondarySources.length > 0) {
+      console.log("Causes secondaires:", secondarySources.join(", "));
+    }
+    console.log("Indoor/Outdoor:", json.pointContext.insideBuilding ? "indoor" : "outdoor");
+    console.log("Date/Heure locale:", `${json.date} ${json.localTime}`, "| UTC:", json.utcTime);
+    console.log("Coordonnees LV95:", {
+      easting: json.pointContext.lv95Easting,
+      northing: json.pointContext.lv95Northing,
+    });
+    console.log("Altitude point (m):", json.pointContext.pointElevationMeters);
+    console.log("Soleil:", {
+      azimuthDeg: Number(json.sample.azimuthDeg.toFixed(3)),
+      altitudeDeg: Number(json.sample.altitudeDeg.toFixed(3)),
+      horizonAngleDeg:
+        json.sample.horizonAngleDeg === null
+          ? null
+          : Number(json.sample.horizonAngleDeg.toFixed(3)),
+      aboveAstronomicalHorizon: json.sample.aboveAstronomicalHorizon,
+      isSunny: json.sample.isSunny,
+    });
+    console.log("Blocages:", {
+      terrainBlocked: json.sample.terrainBlocked,
+      buildingsBlocked: json.sample.buildingsBlocked,
+      buildingBlockerId: json.sample.buildingBlockerId,
+      buildingBlockerDistanceMeters: json.sample.buildingBlockerDistanceMeters,
+      buildingBlockerAltitudeAngleDeg: json.sample.buildingBlockerAltitudeAngleDeg,
+      terrainSource,
+      ridgePoint,
+    });
+    console.log("Modeles:", json.model);
+    if (json.warnings.length > 0) {
+      console.warn("Warnings:", json.warnings);
+    }
+    console.groupEnd();
+  }, []);
 
   useEffect(() => {
     const stored = loadStoredUiParams();
@@ -752,6 +951,14 @@ export function SunlightMapClient() {
       map.on("click", (event: LeafletMouseEvent) => {
         const message = `Lat ${event.latlng.lat.toFixed(5)}, Lon ${event.latlng.lng.toFixed(5)}`;
         map.attributionControl.setPrefix(`Mappy Hour - ${message}`);
+        void runPointClickDiagnostics(event.latlng.lat, event.latlng.lng).catch(
+          (error) => {
+            console.error(
+              "[Mappy Hour][click] Point diagnostic failed:",
+              error instanceof Error ? error.message : error,
+            );
+          },
+        );
       });
 
       map.on("moveend", () => {
@@ -783,7 +990,7 @@ export function SunlightMapClient() {
       terrainLayerRef.current = null;
       leafletModuleRef.current = null;
     };
-  }, []);
+  }, [runPointClickDiagnostics]);
 
   const renderLayers = useCallback(
     (
@@ -884,18 +1091,45 @@ export function SunlightMapClient() {
           weight: 1,
         }).addTo(terrainLayer);
 
-        for (let index = 0; index < ridgeLatLngs.length; index += 12) {
-          L.circleMarker(ridgeLatLngs[index], {
+        const sortedRidgePoints = [...terrainHorizonDebug.ridgePoints].sort(
+          (left, right) => left.azimuthDeg - right.azimuthDeg,
+        );
+        for (let index = 0; index < sortedRidgePoints.length; index += 12) {
+          const ridgePoint = sortedRidgePoints[index];
+          const marker = L.circleMarker([ridgePoint.lat, ridgePoint.lon], {
             radius: 2,
             color: "#92400e",
             fillColor: "#f59e0b",
             fillOpacity: 0.65,
             weight: 1,
           }).addTo(terrainLayer);
+          marker.bindTooltip(
+            `az ${ridgePoint.azimuthDeg}deg | d ${Math.round(ridgePoint.distanceMeters)}m`,
+          );
+          marker.on("click", (event: LeafletMouseEvent) => {
+            L.DomEvent.stopPropagation(event);
+            const terrainSource = classifyRidgeDistance(ridgePoint.distanceMeters);
+            console.groupCollapsed(
+              `[Mappy Hour][ridge] az=${ridgePoint.azimuthDeg}deg -> ${terrainSource}`,
+            );
+            console.log("Terrain source:", terrainSource);
+            console.log("Ridge point:", ridgePoint);
+            console.log("Horizon center:", terrainHorizonDebug.center);
+            console.log("Horizon radius (km):", terrainHorizonDebug.radiusKm);
+            console.groupEnd();
+            void runPointClickDiagnostics(ridgePoint.lat, ridgePoint.lon).catch(
+              (error) => {
+                console.error(
+                  "[Mappy Hour][ridge] Point diagnostic failed:",
+                  error instanceof Error ? error.message : error,
+                );
+              },
+            );
+          });
         }
       }
     },
-    [],
+    [runPointClickDiagnostics],
   );
 
   useEffect(() => {
