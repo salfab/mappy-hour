@@ -16,10 +16,25 @@ interface TerrainTileMetadata {
   nodata: number | null;
 }
 
+type TerrainRaster = Float32Array | Int16Array | Uint16Array | Int32Array | Uint32Array;
+
+interface TerrainTileRaster {
+  nodata: number | null;
+  raster: TerrainRaster;
+}
+
 let metadataCache: Promise<TerrainTileMetadata[]> | null = null;
+const terrainRasterCache = new Map<string, Promise<TerrainTileRaster>>();
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+async function closeGeoTiff(tiff: Awaited<ReturnType<typeof fromFile>>): Promise<void> {
+  const closeFn = (tiff as { close?: () => false | Promise<void> }).close;
+  if (typeof closeFn === "function") {
+    await closeFn.call(tiff);
+  }
 }
 
 async function listTerrainTifsRecursively(rootDirectory: string): Promise<string[]> {
@@ -58,24 +73,28 @@ async function loadTerrainMetadata(): Promise<TerrainTileMetadata[]> {
 
     for (const filePath of tifs) {
       const tiff = await fromFile(filePath);
-      const image = await tiff.getImage();
-      const bbox = image.getBoundingBox();
-      const noDataRaw = image.getGDALNoData();
-      const noDataParsed =
-        noDataRaw === null || noDataRaw === undefined
-          ? null
-          : Number.parseFloat(String(noDataRaw));
+      try {
+        const image = await tiff.getImage();
+        const bbox = image.getBoundingBox();
+        const noDataRaw = image.getGDALNoData();
+        const noDataParsed =
+          noDataRaw === null || noDataRaw === undefined
+            ? null
+            : Number.parseFloat(String(noDataRaw));
 
-      metadata.push({
-        filePath,
-        minX: bbox[0],
-        minY: bbox[1],
-        maxX: bbox[2],
-        maxY: bbox[3],
-        width: image.getWidth(),
-        height: image.getHeight(),
-        nodata: Number.isFinite(noDataParsed) ? noDataParsed : null,
-      });
+        metadata.push({
+          filePath,
+          minX: bbox[0],
+          minY: bbox[1],
+          maxX: bbox[2],
+          maxY: bbox[3],
+          width: image.getWidth(),
+          height: image.getHeight(),
+          nodata: Number.isFinite(noDataParsed) ? noDataParsed : null,
+        });
+      } finally {
+        await closeGeoTiff(tiff);
+      }
     }
 
     return metadata;
@@ -111,6 +130,41 @@ function findContainingTile(
   return null;
 }
 
+async function loadTerrainTileRaster(
+  tile: TerrainTileMetadata,
+): Promise<TerrainTileRaster> {
+  const cached = terrainRasterCache.get(tile.filePath);
+  if (cached) {
+    return cached;
+  }
+
+  const rasterPromise = (async () => {
+    const tiff = await fromFile(tile.filePath);
+    try {
+      const image = await tiff.getImage();
+      const raster = (await image.readRasters({
+        interleave: true,
+        pool: null,
+      })) as TerrainRaster;
+      const noDataRaw = image.getGDALNoData();
+      const noDataParsed =
+        noDataRaw === null || noDataRaw === undefined
+          ? null
+          : Number.parseFloat(String(noDataRaw));
+
+      return {
+        raster,
+        nodata: Number.isFinite(noDataParsed) ? noDataParsed : tile.nodata,
+      };
+    } finally {
+      await closeGeoTiff(tiff);
+    }
+  })();
+
+  terrainRasterCache.set(tile.filePath, rasterPromise);
+  return rasterPromise;
+}
+
 export async function sampleSwissTerrainElevationLv95(
   easting: number,
   northing: number,
@@ -126,16 +180,10 @@ export async function sampleSwissTerrainElevationLv95(
   const x = clamp(Math.floor(xRatio * tile.width), 0, tile.width - 1);
   const y = clamp(Math.floor(yRatio * tile.height), 0, tile.height - 1);
 
-  const tiff = await fromFile(tile.filePath);
-  const image = await tiff.getImage();
-  const raster = (await image.readRasters({
-    window: [x, y, x + 1, y + 1],
-    interleave: true,
-    pool: null,
-  })) as Float32Array | Int16Array | Uint16Array | Int32Array | Uint32Array;
-
-  const value = Number(raster[0]);
-  if (!Number.isFinite(value) || valueIsNoData(value, tile.nodata)) {
+  const terrainTile = await loadTerrainTileRaster(tile);
+  const index = y * tile.width + x;
+  const value = Number(terrainTile.raster[index]);
+  if (!Number.isFinite(value) || valueIsNoData(value, terrainTile.nodata)) {
     return null;
   }
 

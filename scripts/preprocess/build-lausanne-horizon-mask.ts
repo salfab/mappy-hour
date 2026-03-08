@@ -45,6 +45,13 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+async function closeGeoTiff(tiff: Awaited<ReturnType<typeof fromFile>>): Promise<void> {
+  const closeFn = (tiff as { close?: () => false | Promise<void> }).close;
+  if (typeof closeFn === "function") {
+    await closeFn.call(tiff);
+  }
+}
+
 function parseCliArgs(argv: string[]): BuildArgs {
   let stepMeters = 250;
   let radiusKm = LAUSANNE_HORIZON_RADIUS_KM;
@@ -151,30 +158,34 @@ async function loadDemTiles(directoryPath: string): Promise<DemTile[]> {
 
   for (const filePath of tifFiles) {
     const tiff = await fromFile(filePath);
-    const image = await tiff.getImage();
-    const bbox = image.getBoundingBox();
-    const raster = (await image.readRasters({
-      interleave: true,
-      pool: null,
-    })) as DemTile["raster"];
-    const nodataRaw = image.getGDALNoData();
-    const nodata =
-      nodataRaw === null || nodataRaw === undefined
-        ? null
-        : Number.parseFloat(String(nodataRaw));
+    try {
+      const image = await tiff.getImage();
+      const bbox = image.getBoundingBox();
+      const raster = (await image.readRasters({
+        interleave: true,
+        pool: null,
+      })) as DemTile["raster"];
+      const nodataRaw = image.getGDALNoData();
+      const nodata =
+        nodataRaw === null || nodataRaw === undefined
+          ? null
+          : Number.parseFloat(String(nodataRaw));
 
-    tiles.push({
-      name: path.basename(filePath),
-      filePath,
-      minLon: bbox[0],
-      minLat: bbox[1],
-      maxLon: bbox[2],
-      maxLat: bbox[3],
-      width: image.getWidth(),
-      height: image.getHeight(),
-      nodata: Number.isFinite(nodata) ? nodata : null,
-      raster,
-    });
+      tiles.push({
+        name: path.basename(filePath),
+        filePath,
+        minLon: bbox[0],
+        minLat: bbox[1],
+        maxLon: bbox[2],
+        maxLat: bbox[3],
+        width: image.getWidth(),
+        height: image.getHeight(),
+        nodata: Number.isFinite(nodata) ? nodata : null,
+        raster,
+      });
+    } finally {
+      await closeGeoTiff(tiff);
+    }
   }
 
   return tiles;

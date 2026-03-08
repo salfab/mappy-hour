@@ -58,6 +58,13 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+async function closeGeoTiff(tiff: Awaited<ReturnType<typeof fromFile>>): Promise<void> {
+  const closeFn = (tiff as { close?: () => false | Promise<void> }).close;
+  if (typeof closeFn === "function") {
+    await closeFn.call(tiff);
+  }
+}
+
 function valueIsNoData(value: number, nodata: number | null): boolean {
   if (nodata === null) {
     return false;
@@ -169,15 +176,19 @@ async function loadVegetationTileMetadata(): Promise<
 
       // Fallback when filename doesn't follow expected swisssurface3d pattern.
       const tiff = await fromFile(filePath);
-      const image = await tiff.getImage();
-      const bbox = image.getBoundingBox();
-      metadata.push({
-        filePath,
-        minX: bbox[0],
-        minY: bbox[1],
-        maxX: bbox[2],
-        maxY: bbox[3],
-      });
+      try {
+        const image = await tiff.getImage();
+        const bbox = image.getBoundingBox();
+        metadata.push({
+          filePath,
+          minX: bbox[0],
+          minY: bbox[1],
+          maxX: bbox[2],
+          maxY: bbox[3],
+        });
+      } finally {
+        await closeGeoTiff(tiff);
+      }
     }
 
     return metadata;
@@ -203,24 +214,28 @@ async function loadVegetationTileRaster(
 
   const rasterPromise = (async () => {
     const tiff = await fromFile(metadata.filePath);
-    const image = await tiff.getImage();
-    const raster = (await image.readRasters({
-      interleave: true,
-      pool: null,
-    })) as TypedRaster;
-    const noDataRaw = image.getGDALNoData();
-    const noDataParsed =
-      noDataRaw === null || noDataRaw === undefined
-        ? null
-        : Number.parseFloat(String(noDataRaw));
+    try {
+      const image = await tiff.getImage();
+      const raster = (await image.readRasters({
+        interleave: true,
+        pool: null,
+      })) as TypedRaster;
+      const noDataRaw = image.getGDALNoData();
+      const noDataParsed =
+        noDataRaw === null || noDataRaw === undefined
+          ? null
+          : Number.parseFloat(String(noDataRaw));
 
-    return {
-      ...metadata,
-      width: image.getWidth(),
-      height: image.getHeight(),
-      nodata: Number.isFinite(noDataParsed) ? noDataParsed : null,
-      raster,
-    };
+      return {
+        ...metadata,
+        width: image.getWidth(),
+        height: image.getHeight(),
+        nodata: Number.isFinite(noDataParsed) ? noDataParsed : null,
+        raster,
+      };
+    } finally {
+      await closeGeoTiff(tiff);
+    }
   })();
 
   vegetationTileRasterCache.set(metadata.filePath, rasterPromise);
