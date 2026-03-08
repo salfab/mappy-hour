@@ -48,6 +48,8 @@ export interface BuildingShadowInput {
   solarAzimuthDeg: number;
   solarAltitudeDeg: number;
   maxDistanceMeters?: number;
+  observerHeightMeters?: number;
+  buildingHeightBiasMeters?: number;
 }
 
 export interface BuildingShadowResult {
@@ -285,6 +287,9 @@ export function evaluateBuildingsShadow(
   }
 
   const maxDistanceMeters = input.maxDistanceMeters ?? 2500;
+  const observerHeightMeters = input.observerHeightMeters ?? 0;
+  const buildingHeightBiasMeters = input.buildingHeightBiasMeters ?? 0;
+  const effectivePointElevation = input.pointElevation + observerHeightMeters;
   const azimuthRad = (input.solarAzimuthDeg * Math.PI) / 180;
   const dirX = Math.sin(azimuthRad);
   const dirY = Math.cos(azimuthRad);
@@ -320,7 +325,8 @@ export function evaluateBuildingsShadow(
       continue;
     }
 
-    const verticalClearance = obstacle.maxZ - input.pointElevation;
+    const effectiveObstacleTop = obstacle.maxZ + buildingHeightBiasMeters;
+    const verticalClearance = effectiveObstacleTop - effectivePointElevation;
     if (verticalClearance <= 0) {
       continue;
     }

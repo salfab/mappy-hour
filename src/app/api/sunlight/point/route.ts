@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
+import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { evaluateInstantSunlight, evaluatePointSunlight } from "@/lib/sun/solar";
 import { zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
@@ -16,6 +17,8 @@ const requestSchema = z.object({
   mode: z.enum(["instant", "daily"]).default("instant"),
   localTime: z.string().regex(/^\d{2}:\d{2}$/).default("12:00"),
   sampleEveryMinutes: z.number().int().min(1).max(60).default(15),
+  observerHeightMeters: z.number().min(-5).max(20).optional(),
+  buildingHeightBiasMeters: z.number().min(-20).max(20).optional(),
 });
 
 function dedupeWarnings(warnings: string[]): string[] {
@@ -66,6 +69,10 @@ export async function POST(request: Request) {
 
   try {
     const warnings: string[] = [];
+    const shadowCalibration = normalizeShadowCalibration({
+      observerHeightMeters: parsed.data.observerHeightMeters,
+      buildingHeightBiasMeters: parsed.data.buildingHeightBiasMeters,
+    });
     let terrainHorizonOverride:
       | Awaited<ReturnType<typeof buildDynamicHorizonMask>>
       | undefined;
@@ -90,6 +97,7 @@ export async function POST(request: Request) {
 
     const context = await buildPointEvaluationContext(parsed.data.lat, parsed.data.lon, {
       terrainHorizonOverride: terrainHorizonOverride ?? undefined,
+      shadowCalibration,
     });
     const terrainHorizonDebug = extractTerrainHorizonDebug(terrainHorizonOverride);
     const pointContext = {
@@ -104,6 +112,7 @@ export async function POST(request: Request) {
       buildingsShadowMethod: context.buildingsShadowMethod,
       vegetationShadowMethod: context.vegetationShadowMethod ?? "none",
       terrainHorizonDebug,
+      shadowCalibration,
     };
 
     if (parsed.data.mode === "instant") {

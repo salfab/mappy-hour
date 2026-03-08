@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { loadLausannePlaces } from "@/lib/places/lausanne-places";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
+import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { evaluateInstantSunlight } from "@/lib/sun/solar";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
@@ -32,6 +33,8 @@ const requestSchema = z
     outdoorOnly: z.boolean().default(false),
     includeNonSunny: z.boolean().default(false),
     ignoreVegetation: z.boolean().default(false),
+    observerHeightMeters: z.number().min(-5).max(20).optional(),
+    buildingHeightBiasMeters: z.number().min(-20).max(20).optional(),
     bbox: z
       .tuple([z.number(), z.number(), z.number(), z.number()])
       .optional(),
@@ -298,6 +301,12 @@ async function pickOutdoorEvaluationPoint(
     lon: number;
     hasOutdoorSeating: boolean;
   },
+  options: {
+    shadowCalibration: {
+      observerHeightMeters: number;
+      buildingHeightBiasMeters: number;
+    };
+  },
 ) {
   const candidates = place.hasOutdoorSeating
     ? buildTerraceCandidates(place.lat, place.lon)
@@ -314,6 +323,7 @@ async function pickOutdoorEvaluationPoint(
   for (const candidate of candidates) {
     const context = await buildPointEvaluationContext(candidate.lat, candidate.lon, {
       skipTerrainSamplingWhenIndoor: true,
+      shadowCalibration: options.shadowCalibration,
     });
     if (!fallback) {
       fallback = { ...candidate, context };
@@ -330,6 +340,7 @@ async function pickOutdoorEvaluationPoint(
   if (!fallback) {
     const context = await buildPointEvaluationContext(place.lat, place.lon, {
       skipTerrainSamplingWhenIndoor: true,
+      shadowCalibration: options.shadowCalibration,
     });
     return {
       lat: place.lat,
@@ -385,6 +396,10 @@ export async function POST(request: Request) {
 
   try {
     const started = performance.now();
+    const shadowCalibration = normalizeShadowCalibration({
+      observerHeightMeters: parsed.data.observerHeightMeters,
+      buildingHeightBiasMeters: parsed.data.buildingHeightBiasMeters,
+    });
     const placesFile = await loadLausannePlaces();
     if (!placesFile) {
       return NextResponse.json(
@@ -488,7 +503,9 @@ export async function POST(request: Request) {
         : null;
 
     for (const place of places) {
-      const selectedPoint = await pickOutdoorEvaluationPoint(place);
+      const selectedPoint = await pickOutdoorEvaluationPoint(place, {
+        shadowCalibration,
+      });
       const context = selectedPoint.context;
       terrainMethod = context.terrainHorizonMethod;
       buildingsMethod = context.buildingsShadowMethod;
@@ -628,6 +645,7 @@ export async function POST(request: Request) {
       endLocalTime: parsed.data.endLocalTime,
       sampleEveryMinutes: parsed.data.sampleEveryMinutes,
       ignoreVegetation: parsed.data.ignoreVegetation,
+      shadowCalibration,
       count: placesWithWindows.length,
       places: placesWithWindows,
       model: {

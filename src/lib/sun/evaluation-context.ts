@@ -6,6 +6,10 @@ import {
 } from "@/lib/sun/buildings-shadow";
 import { HorizonMask, loadLausanneHorizonMask } from "@/lib/sun/horizon-mask";
 import {
+  DEFAULT_SHADOW_CALIBRATION,
+  ShadowCalibration,
+} from "@/lib/sun/shadow-calibration";
+import {
   createVegetationShadowEvaluator,
   loadVegetationSurfaceTilesForPoint,
   vegetationShadowMethod,
@@ -15,6 +19,7 @@ import { sampleSwissTerrainElevationLv95 } from "@/lib/terrain/swiss-terrain";
 export interface BuildPointEvaluationContextOptions {
   skipTerrainSamplingWhenIndoor?: boolean;
   terrainHorizonOverride?: HorizonMask;
+  shadowCalibration?: ShadowCalibration;
 }
 
 export interface PointEvaluationContext {
@@ -52,6 +57,8 @@ export async function buildPointEvaluationContext(
   lon: number,
   options: BuildPointEvaluationContextOptions = {},
 ): Promise<PointEvaluationContext> {
+  const shadowCalibration =
+    options.shadowCalibration ?? DEFAULT_SHADOW_CALIBRATION;
   const pointLv95 = wgs84ToLv95(lon, lat);
   const [lausanneHorizonMask, buildingsIndex] = await Promise.all([
     loadLausanneHorizonMask(),
@@ -91,6 +98,9 @@ export async function buildPointEvaluationContext(
             pointX: pointLv95.easting,
             pointY: pointLv95.northing,
             pointElevation: pointElevationMeters,
+            observerHeightMeters: shadowCalibration.observerHeightMeters,
+            buildingHeightBiasMeters:
+              shadowCalibration.buildingHeightBiasMeters,
             solarAzimuthDeg: sample.azimuthDeg,
             solarAltitudeDeg: sample.altitudeDeg,
           })
@@ -104,7 +114,8 @@ export async function buildPointEvaluationContext(
           tiles: vegetationSurfaceTiles,
           pointX: pointLv95.easting,
           pointY: pointLv95.northing,
-          pointElevation: pointElevationMeters,
+          pointElevation:
+            pointElevationMeters + shadowCalibration.observerHeightMeters,
         })
       : undefined;
 

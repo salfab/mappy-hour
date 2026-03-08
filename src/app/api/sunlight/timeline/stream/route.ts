@@ -6,6 +6,7 @@ import { z } from "zod";
 import { buildGridFromBbox } from "@/lib/geo/grid";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
+import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { evaluateInstantSunlight } from "@/lib/sun/solar";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
@@ -26,6 +27,8 @@ const querySchema = z
     sampleEveryMinutes: z.coerce.number().int().min(1).max(60).default(15),
     gridStepMeters: z.coerce.number().int().min(1).max(2000).default(250),
     maxPoints: z.coerce.number().int().min(1).max(5000).default(3000),
+    observerHeightMeters: z.coerce.number().min(-5).max(20).default(0),
+    buildingHeightBiasMeters: z.coerce.number().min(-20).max(20).default(0),
   })
   .refine(
     (value) =>
@@ -143,6 +146,10 @@ export async function GET(request: Request) {
   try {
     const started = performance.now();
     const query = parsed.data;
+    const shadowCalibration = normalizeShadowCalibration({
+      observerHeightMeters: query.observerHeightMeters,
+      buildingHeightBiasMeters: query.buildingHeightBiasMeters,
+    });
     const grid = buildGridFromBbox(
       {
         minLon: query.minLon,
@@ -242,6 +249,7 @@ export async function GET(request: Request) {
             const context = await buildPointEvaluationContext(point.lat, point.lon, {
               skipTerrainSamplingWhenIndoor: true,
               terrainHorizonOverride: terrainHorizonOverride ?? undefined,
+              shadowCalibration,
             });
             terrainMethod = context.terrainHorizonMethod;
             buildingsMethod = context.buildingsShadowMethod;
@@ -343,6 +351,7 @@ export async function GET(request: Request) {
               buildingsShadowMethod: buildingsMethod,
               vegetationShadowMethod: vegetationMethod,
               terrainHorizonDebug,
+              shadowCalibration,
             },
             warnings: responseWarnings,
           });

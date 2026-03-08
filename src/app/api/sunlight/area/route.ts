@@ -6,6 +6,7 @@ import { z } from "zod";
 import { buildGridFromBbox } from "@/lib/geo/grid";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
+import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import {
   evaluateInstantSunlight,
   evaluatePointSunlight,
@@ -25,6 +26,8 @@ const requestSchema = z
     sampleEveryMinutes: z.number().int().min(1).max(60).default(15),
     gridStepMeters: z.number().int().min(1).max(2000).default(250),
     maxPoints: z.number().int().min(1).max(5000).default(900),
+    observerHeightMeters: z.number().min(-5).max(20).optional(),
+    buildingHeightBiasMeters: z.number().min(-20).max(20).optional(),
   })
   .refine(
     (value) =>
@@ -100,6 +103,10 @@ export async function POST(request: Request) {
   try {
     const started = performance.now();
     const [minLon, minLat, maxLon, maxLat] = parsed.data.bbox;
+    const shadowCalibration = normalizeShadowCalibration({
+      observerHeightMeters: parsed.data.observerHeightMeters,
+      buildingHeightBiasMeters: parsed.data.buildingHeightBiasMeters,
+    });
     const grid = buildGridFromBbox(
       { minLon, minLat, maxLon, maxLat },
       parsed.data.gridStepMeters,
@@ -175,6 +182,7 @@ export async function POST(request: Request) {
         const context = await buildPointEvaluationContext(point.lat, point.lon, {
           skipTerrainSamplingWhenIndoor: true,
           terrainHorizonOverride: terrainHorizonOverride ?? undefined,
+          shadowCalibration,
         });
         terrainMethod = context.terrainHorizonMethod;
         buildingsMethod = context.buildingsShadowMethod;
@@ -252,6 +260,7 @@ export async function POST(request: Request) {
           buildingsShadowMethod: buildingsMethod,
           vegetationShadowMethod: vegetationMethod,
           terrainHorizonDebug,
+          shadowCalibration,
         },
         warnings: dedupeWarnings(warnings),
         stats: {
@@ -286,6 +295,7 @@ export async function POST(request: Request) {
       const context = await buildPointEvaluationContext(point.lat, point.lon, {
         skipTerrainSamplingWhenIndoor: true,
         terrainHorizonOverride: terrainHorizonOverride ?? undefined,
+        shadowCalibration,
       });
       terrainMethod = context.terrainHorizonMethod;
       buildingsMethod = context.buildingsShadowMethod;
@@ -361,6 +371,7 @@ export async function POST(request: Request) {
         buildingsShadowMethod: buildingsMethod,
         vegetationShadowMethod: vegetationMethod,
         terrainHorizonDebug,
+        shadowCalibration,
       },
       warnings: dedupeWarnings(warnings),
       stats: {

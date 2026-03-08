@@ -312,6 +312,8 @@ interface StoredUiParams {
   dailyEndLocalTime: string;
   gridStepMeters: number;
   sampleEveryMinutes: number;
+  observerHeightMeters: number;
+  buildingHeightBiasMeters: number;
   ignoreVegetationShadow: boolean;
   showSunny: boolean;
   showShadow: boolean;
@@ -381,6 +383,8 @@ function loadStoredUiParams(): StoredUiParams | null {
     const dailyEndLocalTime = parsed.dailyEndLocalTime;
     const gridStepMeters = parsed.gridStepMeters;
     const sampleEveryMinutes = parsed.sampleEveryMinutes;
+    const observerHeightMeters = parsed.observerHeightMeters;
+    const buildingHeightBiasMeters = parsed.buildingHeightBiasMeters;
     const ignoreVegetationShadow = parsed.ignoreVegetationShadow;
     const showSunny = parsed.showSunny;
     const showShadow = parsed.showShadow;
@@ -410,6 +414,16 @@ function loadStoredUiParams(): StoredUiParams | null {
       Number.isFinite(sampleEveryMinutes) &&
       sampleEveryMinutes >= 1 &&
       sampleEveryMinutes <= 60 &&
+      (typeof observerHeightMeters === "number"
+        ? Number.isFinite(observerHeightMeters) &&
+          observerHeightMeters >= -5 &&
+          observerHeightMeters <= 20
+        : observerHeightMeters === undefined) &&
+      (typeof buildingHeightBiasMeters === "number"
+        ? Number.isFinite(buildingHeightBiasMeters) &&
+          buildingHeightBiasMeters >= -20 &&
+          buildingHeightBiasMeters <= 20
+        : buildingHeightBiasMeters === undefined) &&
       (typeof ignoreVegetationShadow === "boolean" ||
         ignoreVegetationShadow === undefined) &&
       typeof showSunny === "boolean" &&
@@ -431,6 +445,8 @@ function loadStoredUiParams(): StoredUiParams | null {
       dailyEndLocalTime: dailyEndLocalTime ?? "21:00",
       gridStepMeters,
       sampleEveryMinutes,
+      observerHeightMeters: observerHeightMeters ?? 0,
+      buildingHeightBiasMeters: buildingHeightBiasMeters ?? 0,
       ignoreVegetationShadow: ignoreVegetationShadow ?? false,
       showSunny,
       showShadow,
@@ -1226,12 +1242,16 @@ export function SunlightMapClient() {
     localTime: string;
     activeFrameTime: string | null;
     sampleEveryMinutes: number;
+    observerHeightMeters: number;
+    buildingHeightBiasMeters: number;
   }>({
     mode: "instant",
     date: defaultNow.date,
     localTime: defaultNow.time,
     activeFrameTime: null,
     sampleEveryMinutes: 15,
+    observerHeightMeters: 0,
+    buildingHeightBiasMeters: 0,
   });
 
   const [mode, setMode] = useState<AreaMode>("instant");
@@ -1241,6 +1261,8 @@ export function SunlightMapClient() {
   const [dailyEndLocalTime, setDailyEndLocalTime] = useState("21:00");
   const [gridStepMeters, setGridStepMeters] = useState(200);
   const [sampleEveryMinutes, setSampleEveryMinutes] = useState(15);
+  const [observerHeightMeters, setObserverHeightMeters] = useState(0);
+  const [buildingHeightBiasMeters, setBuildingHeightBiasMeters] = useState(0);
   const [ignoreVegetationShadow, setIgnoreVegetationShadow] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1374,7 +1396,7 @@ export function SunlightMapClient() {
   const helperText = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
       const stats = dailyTimeline.stats;
-      const base = `${dailyTimeline.pointCount} points, frames: ${dailyTimeline.frames.length}/${dailyTimeline.frameCount}, plage: ${dailyTimeline.startLocalTime}-${dailyTimeline.endLocalTime}, indoor exclus: ${dailyTimeline.indoorPointsExcluded}, terrasses soleil: ${sunlitPlaces.length}`;
+      const base = `${dailyTimeline.pointCount} points, frames: ${dailyTimeline.frames.length}/${dailyTimeline.frameCount}, plage: ${dailyTimeline.startLocalTime}-${dailyTimeline.endLocalTime}, indoor exclus: ${dailyTimeline.indoorPointsExcluded}, terrasses soleil: ${sunlitPlaces.length}, obs+${observerHeightMeters.toFixed(1)}m, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m`;
       if (!stats) {
         return `${base}, calcul timeline en cours...`;
       }
@@ -1395,15 +1417,17 @@ export function SunlightMapClient() {
     ).length;
     const excludedIndoor = lastResult.stats.indoorPointsExcluded ?? 0;
     const buildingCount = lastBuildings?.count ?? 0;
-    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, batiments: ${buildingCount}, terrasses soleil: ${sunlitPlaces.length}, warnings: ${warningCount}`;
+    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, batiments: ${buildingCount}, terrasses soleil: ${sunlitPlaces.length}, obs+${observerHeightMeters.toFixed(1)}m, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m, warnings: ${warningCount}`;
   }, [
     buildingWarnings,
+    buildingHeightBiasMeters,
     dailyExposureHotspot,
     dailyTimeline,
     lastBuildings?.count,
     lastResult,
     mode,
     placesWarnings,
+    observerHeightMeters,
     sunlitPlaces.length,
   ]);
 
@@ -1414,8 +1438,18 @@ export function SunlightMapClient() {
       localTime,
       activeFrameTime,
       sampleEveryMinutes,
+      observerHeightMeters,
+      buildingHeightBiasMeters,
     };
-  }, [activeFrameTime, date, localTime, mode, sampleEveryMinutes]);
+  }, [
+    activeFrameTime,
+    buildingHeightBiasMeters,
+    date,
+    localTime,
+    mode,
+    observerHeightMeters,
+    sampleEveryMinutes,
+  ]);
 
   useEffect(() => {
     ignoreVegetationShadowRef.current = ignoreVegetationShadow;
@@ -1437,6 +1471,8 @@ export function SunlightMapClient() {
       mode: "instant" as const,
       localTime: localTimeForDiagnostic,
       sampleEveryMinutes: params.sampleEveryMinutes,
+      observerHeightMeters: params.observerHeightMeters,
+      buildingHeightBiasMeters: params.buildingHeightBiasMeters,
     };
 
     const response = await fetch("/api/sunlight/point", {
@@ -1564,6 +1600,11 @@ export function SunlightMapClient() {
       ridgePoint,
     });
     console.log("Modeles:", json.model);
+    console.log("Calibration active:", {
+      observerHeightMeters: payload.observerHeightMeters,
+      buildingHeightBiasMeters: payload.buildingHeightBiasMeters,
+      ignoreVegetationForUi,
+    });
     if (json.warnings.length > 0) {
       console.warn("Warnings:", json.warnings);
     }
@@ -1580,6 +1621,8 @@ export function SunlightMapClient() {
       setDailyEndLocalTime(stored.dailyEndLocalTime);
       setGridStepMeters(stored.gridStepMeters);
       setSampleEveryMinutes(stored.sampleEveryMinutes);
+      setObserverHeightMeters(stored.observerHeightMeters);
+      setBuildingHeightBiasMeters(stored.buildingHeightBiasMeters);
       setIgnoreVegetationShadow(stored.ignoreVegetationShadow);
       setShowSunny(stored.showSunny);
       setShowShadow(stored.showShadow);
@@ -1605,6 +1648,8 @@ export function SunlightMapClient() {
       dailyEndLocalTime,
       gridStepMeters,
       sampleEveryMinutes,
+      observerHeightMeters,
+      buildingHeightBiasMeters,
       ignoreVegetationShadow,
       showSunny,
       showShadow,
@@ -1622,6 +1667,8 @@ export function SunlightMapClient() {
     dailyStartLocalTime,
     mode,
     sampleEveryMinutes,
+    observerHeightMeters,
+    buildingHeightBiasMeters,
     ignoreVegetationShadow,
     showBuildings,
     showShadow,
@@ -2090,6 +2137,8 @@ export function SunlightMapClient() {
         startLocalTime: dailyStartLocalTime,
         endLocalTime: dailyEndLocalTime,
         sampleEveryMinutes,
+        observerHeightMeters,
+        buildingHeightBiasMeters,
         category: "terrace_candidate" as const,
         outdoorOnly: true,
         includeNonSunny: false,
@@ -2134,6 +2183,8 @@ export function SunlightMapClient() {
       ignoreVegetationShadow,
       localTime,
       mode,
+      observerHeightMeters,
+      buildingHeightBiasMeters,
       sampleEveryMinutes,
     ],
   );
@@ -2256,6 +2307,8 @@ export function SunlightMapClient() {
         localTime,
         gridStepMeters: String(gridStepMeters),
         maxPoints: "3000",
+        observerHeightMeters: String(observerHeightMeters),
+        buildingHeightBiasMeters: String(buildingHeightBiasMeters),
       });
 
       instantCancelledRef.current = false;
@@ -2453,6 +2506,8 @@ export function SunlightMapClient() {
       sampleEveryMinutes: String(sampleEveryMinutes),
       gridStepMeters: String(gridStepMeters),
       maxPoints: "3000",
+      observerHeightMeters: String(observerHeightMeters),
+      buildingHeightBiasMeters: String(buildingHeightBiasMeters),
     });
 
     timelineCancelledRef.current = false;
@@ -2604,6 +2659,7 @@ export function SunlightMapClient() {
       finalizeIfDone();
     });
   }, [
+    buildingHeightBiasMeters,
     date,
     dailyEndLocalTime,
     dailyStartLocalTime,
@@ -2613,6 +2669,7 @@ export function SunlightMapClient() {
     loadSunlitPlaces,
     localTime,
     mode,
+    observerHeightMeters,
     sampleEveryMinutes,
   ]);
 
@@ -2662,6 +2719,34 @@ export function SunlightMapClient() {
             value={gridStepMeters}
             className="w-28 rounded border border-white/20 bg-black/40 px-2 py-1"
             onChange={(event) => setGridStepMeters(Number(event.target.value))}
+          />
+        </label>
+
+        <label className="grid gap-1 text-sm">
+          <span>Obs +m (exp)</span>
+          <input
+            type="number"
+            min={-5}
+            max={20}
+            step={0.1}
+            value={observerHeightMeters}
+            className="w-28 rounded border border-white/20 bg-black/40 px-2 py-1"
+            onChange={(event) => setObserverHeightMeters(Number(event.target.value))}
+          />
+        </label>
+
+        <label className="grid gap-1 text-sm">
+          <span>Toit bias m (exp)</span>
+          <input
+            type="number"
+            min={-20}
+            max={20}
+            step={0.1}
+            value={buildingHeightBiasMeters}
+            className="w-32 rounded border border-white/20 bg-black/40 px-2 py-1"
+            onChange={(event) =>
+              setBuildingHeightBiasMeters(Number(event.target.value))
+            }
           />
         </label>
 
