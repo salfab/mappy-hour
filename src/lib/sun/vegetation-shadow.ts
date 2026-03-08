@@ -136,10 +136,15 @@ async function loadVegetationTileMetadata(): Promise<
   VegetationSurfaceTileMetadata[] | null
 > {
   if (vegetationTileMetadataCachePromise) {
-    return vegetationTileMetadataCachePromise;
+    const cached = await vegetationTileMetadataCachePromise;
+    if (cached) {
+      return cached;
+    }
+    // Retry on next call when previous attempt found no data.
+    vegetationTileMetadataCachePromise = null;
   }
 
-  vegetationTileMetadataCachePromise = (async () => {
+  const loadPromise = (async () => {
     try {
       await fs.access(RAW_VEGETATION_SURFACE_DIR);
     } catch {
@@ -177,8 +182,15 @@ async function loadVegetationTileMetadata(): Promise<
 
     return metadata;
   })();
+  vegetationTileMetadataCachePromise = loadPromise;
 
-  return vegetationTileMetadataCachePromise;
+  const loaded = await loadPromise;
+  if (loaded === null) {
+    // Do not keep a permanent null cache to allow late ingestion without restart.
+    vegetationTileMetadataCachePromise = null;
+  }
+
+  return loaded;
 }
 
 async function loadVegetationTileRaster(
