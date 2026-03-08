@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import polygonClipping from "polygon-clipping";
 import type {
   LayerGroup,
   LeafletMouseEvent,
@@ -63,6 +64,18 @@ interface BuildingsAreaApiResponse {
 }
 
 const METERS_PER_DEGREE_LAT = 111_320;
+type XY = [number, number];
+type Ring = XY[];
+type Polygon = Ring[];
+type MultiPolygon = Polygon[];
+
+interface ParsedPoint {
+  row: number;
+  col: number;
+  lat: number;
+  lon: number;
+  isSunny: boolean;
+}
 
 function zurichNowDateAndTime(): { date: string; time: string } {
   const now = new Date();
@@ -88,23 +101,203 @@ function zurichNowDateAndTime(): { date: string; time: string } {
   return { date, time };
 }
 
-function buildCellPolygon(
-  lat: number,
-  lon: number,
-  gridStepMeters: number,
-): Array<[number, number]> {
-  const halfLatDeg = gridStepMeters / METERS_PER_DEGREE_LAT / 2;
-  const halfLonDeg =
-    gridStepMeters /
-    (METERS_PER_DEGREE_LAT * Math.max(Math.cos((lat * Math.PI) / 180), 0.01)) /
-    2;
+function parseGridPointId(id: string): { row: number; col: number } | null {
+  const match = /^r(\d+)c(\d+)$/.exec(id);
+  if (!match) {
+    return null;
+  }
 
-  return [
-    [lat - halfLatDeg, lon - halfLonDeg],
-    [lat - halfLatDeg, lon + halfLonDeg],
-    [lat + halfLatDeg, lon + halfLonDeg],
-    [lat + halfLatDeg, lon - halfLonDeg],
-  ];
+  const row = Number(match[1]);
+  const col = Number(match[2]);
+  if (!Number.isInteger(row) || !Number.isInteger(col)) {
+    return null;
+  }
+
+  return { row, col };
+}
+
+function buildBoundsFromCenters(centers: number[], fallbackHalfStep: number): number[] {
+  if (centers.length === 0) {
+    return [];
+  }
+  if (centers.length === 1) {
+    return [centers[0] - fallbackHalfStep, centers[0] + fallbackHalfStep];
+  }
+
+  const bounds: number[] = new Array(centers.length + 1);
+  bounds[0] = centers[0] - (centers[1] - centers[0]) / 2;
+  bounds[centers.length] =
+    centers[centers.length - 1] +
+    (centers[centers.length - 1] - centers[centers.length - 2]) / 2;
+
+  for (let i = 1; i < centers.length; i += 1) {
+    bounds[i] = (centers[i - 1] + centers[i]) / 2;
+  }
+
+  return bounds;
+}
+
+function closeRing(ring: Ring): Ring {
+  if (ring.length < 3) {
+    return ring;
+  }
+
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (first[0] === last[0] && first[1] === last[1]) {
+    return ring;
+  }
+
+  return [...ring, first];
+}
+
+function mergePolygons(polygons: Polygon[]): MultiPolygon {
+  if (polygons.length === 0) {
+    return [];
+  }
+
+  const [first, ...rest] = polygons;
+  const merged = polygonClipping.union(first, ...rest);
+  return Array.isArray(merged) ? (merged as MultiPolygon) : [];
+}
+
+function subtractPolygons(base: MultiPolygon, mask: MultiPolygon): MultiPolygon {
+  if (base.length === 0 || mask.length === 0) {
+    return base;
+  }
+
+  const difference = polygonClipping.difference(base, mask);
+  return Array.isArray(difference) ? (difference as MultiPolygon) : [];
+}
+
+function parsePointsForContours(response: AreaApiResponse): ParsedPoint[] {
+  if (response.mode === "instant") {
+    return (response.points as AreaInstantPoint[])
+      .map((point) => {
+        const parsedId = parseGridPointId(point.id);
+        if (!parsedId) {
+          return null;
+        }
+        return {
+          row: parsedId.row,
+          col: parsedId.col,
+          lat: point.lat,
+          lon: point.lon,
+          isSunny: point.isSunny,
+        };
+      })
+      .filter((point): point is ParsedPoint => point !== null);
+  }
+
+  return (response.points as AreaDailyPoint[])
+    .map((point) => {
+      const parsedId = parseGridPointId(point.id);
+      if (!parsedId) {
+        return null;
+      }
+      return {
+        row: parsedId.row,
+        col: parsedId.col,
+        lat: point.lat,
+        lon: point.lon,
+        isSunny: point.sunnyMinutes > 0,
+      };
+    })
+    .filter((point): point is ParsedPoint => point !== null);
+}
+
+function buildSunAndShadowContours(response: AreaApiResponse): {
+  sunnyContours: MultiPolygon;
+  shadowContours: MultiPolygon;
+} {
+  const parsedPoints = parsePointsForContours(response);
+  if (parsedPoints.length === 0) {
+    return { sunnyContours: [], shadowContours: [] };
+  }
+
+  const rowLatMap = new Map<number, number>();
+  const colLonMap = new Map<number, number>();
+  for (const point of parsedPoints) {
+    if (!rowLatMap.has(point.row)) {
+      rowLatMap.set(point.row, point.lat);
+    }
+    if (!colLonMap.has(point.col)) {
+      colLonMap.set(point.col, point.lon);
+    }
+  }
+
+  const sortedRows = Array.from(rowLatMap.keys()).sort((a, b) => a - b);
+  const sortedCols = Array.from(colLonMap.keys()).sort((a, b) => a - b);
+  const rowIndex = new Map<number, number>(
+    sortedRows.map((row, index) => [row, index]),
+  );
+  const colIndex = new Map<number, number>(
+    sortedCols.map((col, index) => [col, index]),
+  );
+  const latCenters = sortedRows.map((row) => rowLatMap.get(row) ?? 0);
+  const lonCenters = sortedCols.map((col) => colLonMap.get(col) ?? 0);
+  const meanLat =
+    latCenters.reduce((accumulator, value) => accumulator + value, 0) /
+    Math.max(1, latCenters.length);
+  const latHalfStepDeg = response.gridStepMeters / METERS_PER_DEGREE_LAT / 2;
+  const lonHalfStepDeg =
+    response.gridStepMeters /
+    (METERS_PER_DEGREE_LAT * Math.max(Math.cos((meanLat * Math.PI) / 180), 0.01)) /
+    2;
+  const latBounds = buildBoundsFromCenters(latCenters, latHalfStepDeg);
+  const lonBounds = buildBoundsFromCenters(lonCenters, lonHalfStepDeg);
+
+  const sunnyCells: Polygon[] = [];
+  const shadowCells: Polygon[] = [];
+
+  for (const point of parsedPoints) {
+    const row = rowIndex.get(point.row);
+    const col = colIndex.get(point.col);
+    if (row === undefined || col === undefined) {
+      continue;
+    }
+    if (row + 1 >= latBounds.length || col + 1 >= lonBounds.length) {
+      continue;
+    }
+
+    const ring: Ring = closeRing([
+      [lonBounds[col], latBounds[row]],
+      [lonBounds[col + 1], latBounds[row]],
+      [lonBounds[col + 1], latBounds[row + 1]],
+      [lonBounds[col], latBounds[row + 1]],
+    ]);
+    const polygon: Polygon = [ring];
+    if (point.isSunny) {
+      sunnyCells.push(polygon);
+    } else {
+      shadowCells.push(polygon);
+    }
+  }
+
+  return {
+    sunnyContours: mergePolygons(sunnyCells),
+    shadowContours: mergePolygons(shadowCells),
+  };
+}
+
+function buildBuildingsContours(buildings: BuildingsAreaApiResponse | null): MultiPolygon {
+  if (!buildings || buildings.buildings.length === 0) {
+    return [];
+  }
+
+  const polygons: Polygon[] = [];
+  for (const building of buildings.buildings) {
+    if (building.footprint.length < 3) {
+      continue;
+    }
+    polygons.push([
+      closeRing(
+        building.footprint.map((vertex) => [vertex.lon, vertex.lat] as XY),
+      ),
+    ]);
+  }
+
+  return mergePolygons(polygons);
 }
 
 export function SunlightMapClient() {
@@ -211,84 +404,54 @@ export function SunlightMapClient() {
       shadowLayer.clearLayers();
       buildingsLayer.clearLayers();
 
-      if (response.mode === "instant") {
-        for (const point of response.points as AreaInstantPoint[]) {
-          const isSunny = point.isSunny;
-          if ((isSunny && !visibility.sunny) || (!isSunny && !visibility.shadow)) {
-            continue;
-          }
+      const { sunnyContours, shadowContours } = buildSunAndShadowContours(response);
+      const buildingsContours = buildBuildingsContours(buildings);
+      const sunnyOutdoorContours = subtractPolygons(sunnyContours, buildingsContours);
+      const shadowOutdoorContours = subtractPolygons(shadowContours, buildingsContours);
 
-          const polygon = L.polygon(
-            buildCellPolygon(point.lat, point.lon, response.gridStepMeters),
-            {
-              color: isSunny ? "#eab308" : "#6b7280",
-              fillColor: isSunny ? "#facc15" : "#64748b",
-              weight: 0.5,
-              opacity: 0.45,
-              fillOpacity: 0.35,
-            },
+      if (visibility.sunny) {
+        for (const polygon of sunnyOutdoorContours) {
+          const latLngRings = polygon.map((ring) =>
+            ring.map(([lon, lat]) => [lat, lon] as [number, number]),
           );
-          polygon.bindTooltip(
-            [
-              `id: ${point.id}`,
-              `sunny: ${point.isSunny}`,
-              `terrainBlocked: ${point.terrainBlocked}`,
-              `buildingsBlocked: ${point.buildingsBlocked}`,
-              `alt: ${point.altitudeDeg.toFixed(2)} deg`,
-              `az: ${point.azimuthDeg.toFixed(2)} deg`,
-            ].join("<br/>"),
-          );
-          polygon.addTo(isSunny ? sunnyLayer : shadowLayer);
-        }
-      } else {
-        for (const point of response.points as AreaDailyPoint[]) {
-          const isSunny = point.sunnyMinutes > 0;
-          if ((isSunny && !visibility.sunny) || (!isSunny && !visibility.shadow)) {
-            continue;
-          }
-
-          const polygon = L.polygon(
-            buildCellPolygon(point.lat, point.lon, response.gridStepMeters),
-            {
-              color: isSunny ? "#eab308" : "#6b7280",
-              fillColor: isSunny ? "#facc15" : "#64748b",
-              weight: 0.5,
-              opacity: 0.45,
-              fillOpacity: 0.35,
-            },
-          );
-          polygon.bindTooltip(
-            [
-              `id: ${point.id}`,
-              `sunnyMinutes: ${point.sunnyMinutes}`,
-              `sunnyHours: ${(point.sunnyMinutes / 60).toFixed(2)}`,
-            ].join("<br/>"),
-          );
-          polygon.addTo(isSunny ? sunnyLayer : shadowLayer);
+          L.polygon(latLngRings, {
+            color: "#eab308",
+            fillColor: "#facc15",
+            weight: 0.9,
+            opacity: 0.5,
+            fillOpacity: 0.32,
+          }).addTo(sunnyLayer);
         }
       }
 
-      if (!visibility.buildings || !buildings) {
-        return;
+      if (visibility.shadow) {
+        for (const polygon of shadowOutdoorContours) {
+          const latLngRings = polygon.map((ring) =>
+            ring.map(([lon, lat]) => [lat, lon] as [number, number]),
+          );
+          L.polygon(latLngRings, {
+            color: "#6b7280",
+            fillColor: "#64748b",
+            weight: 0.9,
+            opacity: 0.5,
+            fillOpacity: 0.32,
+          }).addTo(shadowLayer);
+        }
       }
 
-      for (const building of buildings.buildings) {
-        if (building.footprint.length < 3) {
-          continue;
-        }
-
-        const polygon = L.polygon(
-          building.footprint.map((vertex) => [vertex.lat, vertex.lon]),
-          {
+      if (visibility.buildings) {
+        for (const polygon of buildingsContours) {
+          const latLngRings = polygon.map((ring) =>
+            ring.map(([lon, lat]) => [lat, lon] as [number, number]),
+          );
+          L.polygon(latLngRings, {
             color: "#2563eb",
             fillColor: "#2563eb",
-            weight: 0.8,
-            opacity: 0.55,
+            weight: 0.9,
+            opacity: 0.58,
             fillOpacity: 0.24,
-          },
-        );
-        polygon.bindTooltip(`building: ${building.id}`);
-        polygon.addTo(buildingsLayer);
+          }).addTo(buildingsLayer);
+        }
       }
     },
     [],

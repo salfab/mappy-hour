@@ -64,10 +64,13 @@ Implemented on `2026-03-08` for `POST /api/sunlight/area`:
 - each grid point is tested against building footprints first
 - indoor points are excluded before solar evaluation
 - response stats now expose `indoorPointsExcluded`
+- map rendering now uses merged contours (union of grid cells), not per-point markers
+- sun/shadow contours are clipped by building polygons to avoid visible overlap artifacts
 
 Result:
 - no more "false red" points caused by indoor samples
 - less compute work because excluded indoor points skip sunlight evaluation
+- cleaner UX with continuous polygons for sunlight/shadow layers
 
 ### Alternative strategies
 
