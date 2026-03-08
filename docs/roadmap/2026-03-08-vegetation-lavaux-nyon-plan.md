@@ -121,3 +121,12 @@ Criteres d'acceptation:
 
 Mitigations detaillees:
 - voir `docs/architecture/lavaux-nyon-scaling-challenges.md`
+
+## Prochaines etapes (court terme)
+
+- Ajouter un toggle UI: "Ignorer ombre vegetation"
+  - Objectif: comparer rapidement la carte avec/sans vegetation.
+  - Cible technique:
+    - `instant`: pas de recalcul complet (recomposition client a partir des flags deja fournis).
+    - `daily`: envoyer deux masques par frame (normal + sans vegetation) dans le meme stream SSE.
+  - Etat: reporte volontairement (post-MVP actuel).
