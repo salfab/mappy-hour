@@ -55,9 +55,9 @@ function buildOverpassQuery(): string {
   node["leisure"="park"](${bbox});
   way["leisure"="park"](${bbox});
   relation["leisure"="park"](${bbox});
-  node["amenity"~"^(cafe|bar|pub|restaurant|biergarten)$"](${bbox});
-  way["amenity"~"^(cafe|bar|pub|restaurant|biergarten)$"](${bbox});
-  relation["amenity"~"^(cafe|bar|pub|restaurant|biergarten)$"](${bbox});
+  node["amenity"~"^(cafe|bar|pub|restaurant|biergarten|fast_food|food_court)$"](${bbox});
+  way["amenity"~"^(cafe|bar|pub|restaurant|biergarten|fast_food|food_court)$"](${bbox});
+  relation["amenity"~"^(cafe|bar|pub|restaurant|biergarten|fast_food|food_court)$"](${bbox});
 );
 out center tags;
   `.trim();
@@ -93,7 +93,9 @@ function normalizePlace(element: OverpassElement): NormalizedPlace | null {
     amenity === "bar" ||
     amenity === "pub" ||
     amenity === "restaurant" ||
-    amenity === "biergarten"
+    amenity === "biergarten" ||
+    amenity === "fast_food" ||
+    amenity === "food_court"
   ) {
     category = "terrace_candidate";
     subcategory = amenity;
