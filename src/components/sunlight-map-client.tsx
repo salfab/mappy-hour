@@ -132,6 +132,35 @@ interface BuildingsAreaApiResponse {
   };
 }
 
+type FoodVenueType = "restaurant" | "bar" | "snack" | "foodtruck" | "other";
+
+interface SunlitPlaceEntry {
+  id: string;
+  name: string;
+  category: string;
+  subcategory: string;
+  venueType: FoodVenueType;
+  hasOutdoorSeating: boolean;
+  lat: number;
+  lon: number;
+  evaluationLat: number;
+  evaluationLon: number;
+  selectionStrategy: "original" | "terrace_offset" | "indoor_fallback";
+  selectionOffsetMeters: number;
+  pointElevationMeters: number | null;
+  insideBuilding: boolean;
+  isSunnyNow: boolean | null;
+  sunnyMinutes: number;
+  sunnyWindows: Array<{
+    startLocalTime: string;
+    endLocalTime: string;
+    durationMinutes: number;
+  }>;
+  sunlightStartLocalTime: string | null;
+  sunlightEndLocalTime: string | null;
+  warnings: string[];
+}
+
 interface TimelinePoint {
   id: string;
   lat: number;
@@ -287,6 +316,7 @@ interface StoredUiParams {
   showTerrain: boolean;
   showVegetation: boolean;
   showHeatmap: boolean;
+  showPlaces: boolean;
 }
 
 function loadStoredMapView(): StoredMapView | null {
@@ -354,6 +384,7 @@ function loadStoredUiParams(): StoredUiParams | null {
     const showTerrain = parsed.showTerrain;
     const showVegetation = parsed.showVegetation;
     const showHeatmap = parsed.showHeatmap;
+    const showPlaces = parsed.showPlaces;
 
     const valid =
       (mode === "instant" || mode === "daily") &&
@@ -380,7 +411,8 @@ function loadStoredUiParams(): StoredUiParams | null {
       typeof showBuildings === "boolean" &&
       (typeof showTerrain === "boolean" || showTerrain === undefined) &&
       (typeof showVegetation === "boolean" || showVegetation === undefined) &&
-      (typeof showHeatmap === "boolean" || showHeatmap === undefined);
+      (typeof showHeatmap === "boolean" || showHeatmap === undefined) &&
+      (typeof showPlaces === "boolean" || showPlaces === undefined);
     if (!valid) {
       return null;
     }
@@ -399,6 +431,7 @@ function loadStoredUiParams(): StoredUiParams | null {
       showTerrain: showTerrain ?? true,
       showVegetation: showVegetation ?? true,
       showHeatmap: showHeatmap ?? true,
+      showPlaces: showPlaces ?? true,
     };
   } catch {
     return null;
@@ -1072,6 +1105,36 @@ function exposureRatioToColor(exposureRatio: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
+function venueTypeBadgeLabel(venueType: FoodVenueType): string {
+  switch (venueType) {
+    case "restaurant":
+      return "restaurant";
+    case "bar":
+      return "bar";
+    case "snack":
+      return "snack";
+    case "foodtruck":
+      return "foodtruck";
+    default:
+      return "other";
+  }
+}
+
+function venueTypeColor(venueType: FoodVenueType): string {
+  switch (venueType) {
+    case "restaurant":
+      return "#dc2626";
+    case "bar":
+      return "#0f766e";
+    case "snack":
+      return "#ea580c";
+    case "foodtruck":
+      return "#0891b2";
+    default:
+      return "#475569";
+  }
+}
+
 function createEmptyInstantAreaResult(
   start: InstantStreamStartPayload,
 ): AreaApiResponse {
@@ -1106,7 +1169,9 @@ export function SunlightMapClient() {
   const buildingsLayerRef = useRef<LayerGroup | null>(null);
   const terrainLayerRef = useRef<LayerGroup | null>(null);
   const heatmapLayerRef = useRef<LayerGroup | null>(null);
+  const placesLayerRef = useRef<LayerGroup | null>(null);
   const leafletModuleRef = useRef<typeof import("leaflet") | null>(null);
+  const placesRequestIdRef = useRef(0);
   const clickDebugParamsRef = useRef<{
     mode: AreaMode;
     date: string;
@@ -1134,6 +1199,10 @@ export function SunlightMapClient() {
   const [lastBuildings, setLastBuildings] = useState<BuildingsAreaApiResponse | null>(
     null,
   );
+  const [sunlitPlaces, setSunlitPlaces] = useState<SunlitPlaceEntry[]>([]);
+  const [placesWarnings, setPlacesWarnings] = useState<string[]>([]);
+  const [placesError, setPlacesError] = useState<string | null>(null);
+  const [isPlacesLoading, setIsPlacesLoading] = useState(false);
   const [dailyTimeline, setDailyTimeline] = useState<DailyTimelineState | null>(
     null,
   );
@@ -1149,6 +1218,7 @@ export function SunlightMapClient() {
   const [showBuildings, setShowBuildings] = useState(true);
   const [showTerrain, setShowTerrain] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(true);
+  const [showPlaces, setShowPlaces] = useState(true);
   const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
 
   const visualAreaResponse = useMemo(() => {
@@ -1195,11 +1265,15 @@ export function SunlightMapClient() {
 
   const activeWarnings = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
-      return Array.from(new Set([...dailyTimeline.warnings, ...buildingWarnings]));
+      return Array.from(
+        new Set([...dailyTimeline.warnings, ...buildingWarnings, ...placesWarnings]),
+      );
     }
 
-    return Array.from(new Set([...(lastResult?.warnings ?? []), ...buildingWarnings]));
-  }, [buildingWarnings, dailyTimeline, lastResult, mode]);
+    return Array.from(
+      new Set([...(lastResult?.warnings ?? []), ...buildingWarnings, ...placesWarnings]),
+    );
+  }, [buildingWarnings, dailyTimeline, lastResult, mode, placesWarnings]);
 
   const activeFrameTime = useMemo(() => {
     if (!dailyTimeline || dailyTimeline.frames.length === 0) {
@@ -1236,7 +1310,7 @@ export function SunlightMapClient() {
   const helperText = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
       const stats = dailyTimeline.stats;
-      const base = `${dailyTimeline.pointCount} points, frames: ${dailyTimeline.frames.length}/${dailyTimeline.frameCount}, plage: ${dailyTimeline.startLocalTime}-${dailyTimeline.endLocalTime}, indoor exclus: ${dailyTimeline.indoorPointsExcluded}`;
+      const base = `${dailyTimeline.pointCount} points, frames: ${dailyTimeline.frames.length}/${dailyTimeline.frameCount}, plage: ${dailyTimeline.startLocalTime}-${dailyTimeline.endLocalTime}, indoor exclus: ${dailyTimeline.indoorPointsExcluded}, terrasses soleil: ${sunlitPlaces.length}`;
       if (!stats) {
         return `${base}, calcul timeline en cours...`;
       }
@@ -1253,11 +1327,11 @@ export function SunlightMapClient() {
       return "Aucun calcul encore lance.";
     }
     const warningCount = Array.from(
-      new Set([...(lastResult.warnings ?? []), ...buildingWarnings]),
+      new Set([...(lastResult.warnings ?? []), ...buildingWarnings, ...placesWarnings]),
     ).length;
     const excludedIndoor = lastResult.stats.indoorPointsExcluded ?? 0;
     const buildingCount = lastBuildings?.count ?? 0;
-    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, batiments: ${buildingCount}, warnings: ${warningCount}`;
+    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, batiments: ${buildingCount}, terrasses soleil: ${sunlitPlaces.length}, warnings: ${warningCount}`;
   }, [
     buildingWarnings,
     dailyExposureHotspot,
@@ -1265,6 +1339,8 @@ export function SunlightMapClient() {
     lastBuildings?.count,
     lastResult,
     mode,
+    placesWarnings,
+    sunlitPlaces.length,
   ]);
 
   useEffect(() => {
@@ -1392,6 +1468,7 @@ export function SunlightMapClient() {
       setShowBuildings(stored.showBuildings);
       setShowTerrain(stored.showTerrain);
       setShowHeatmap(stored.showHeatmap);
+      setShowPlaces(stored.showPlaces);
     }
     setUiParamsHydrated(true);
   }, []);
@@ -1415,6 +1492,7 @@ export function SunlightMapClient() {
       showBuildings,
       showTerrain,
       showHeatmap,
+      showPlaces,
     });
   }, [
     date,
@@ -1430,6 +1508,7 @@ export function SunlightMapClient() {
     showVegetation,
     showTerrain,
     showHeatmap,
+    showPlaces,
     uiParamsHydrated,
   ]);
 
@@ -1457,9 +1536,9 @@ export function SunlightMapClient() {
         storedView?.zoom ?? DEFAULT_MAP_ZOOM,
       );
 
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png", {
         maxZoom: 19,
-        attribution: "&copy; OpenStreetMap contributors",
+        attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
       }).addTo(map);
 
       sunnyLayerRef.current = L.layerGroup().addTo(map);
@@ -1468,6 +1547,7 @@ export function SunlightMapClient() {
       buildingsLayerRef.current = L.layerGroup().addTo(map);
       terrainLayerRef.current = L.layerGroup().addTo(map);
       heatmapLayerRef.current = L.layerGroup().addTo(map);
+      placesLayerRef.current = L.layerGroup().addTo(map);
       mapRef.current = map;
 
       map.on("click", (event: LeafletMouseEvent) => {
@@ -1517,6 +1597,7 @@ export function SunlightMapClient() {
       buildingsLayerRef.current = null;
       terrainLayerRef.current = null;
       heatmapLayerRef.current = null;
+      placesLayerRef.current = null;
       leafletModuleRef.current = null;
     };
   }, [runPointClickDiagnostics]);
@@ -1525,6 +1606,7 @@ export function SunlightMapClient() {
     (
       response: AreaApiResponse | null,
       buildings: BuildingsAreaApiResponse | null,
+      places: SunlitPlaceEntry[],
       dailyExposureCellsInput: DailyExposureCell[] | null,
       visibility: {
         sunny: boolean;
@@ -1533,6 +1615,7 @@ export function SunlightMapClient() {
         buildings: boolean;
         terrain: boolean;
         heatmap: boolean;
+        places: boolean;
       },
     ) => {
       const L = leafletModuleRef.current;
@@ -1542,6 +1625,7 @@ export function SunlightMapClient() {
       const buildingsLayer = buildingsLayerRef.current;
       const terrainLayer = terrainLayerRef.current;
       const heatmapLayer = heatmapLayerRef.current;
+      const placesLayer = placesLayerRef.current;
       if (
         !L ||
         !sunnyLayer ||
@@ -1549,7 +1633,8 @@ export function SunlightMapClient() {
         !vegetationLayer ||
         !buildingsLayer ||
         !terrainLayer ||
-        !heatmapLayer
+        !heatmapLayer ||
+        !placesLayer
       ) {
         return;
       }
@@ -1560,6 +1645,7 @@ export function SunlightMapClient() {
       buildingsLayer.clearLayers();
       terrainLayer.clearLayers();
       heatmapLayer.clearLayers();
+      placesLayer.clearLayers();
 
       const { sunnyContours, shadowContours } = response
         ? buildSunAndShadowContours(response)
@@ -1649,6 +1735,53 @@ export function SunlightMapClient() {
         }
       }
 
+      if (visibility.places) {
+        for (const place of places) {
+          const baseColor = venueTypeColor(place.venueType);
+          const sunny =
+            place.isSunnyNow === true || (place.isSunnyNow === null && place.sunnyMinutes > 0);
+          const marker = L.circleMarker(
+            [place.evaluationLat ?? place.lat, place.evaluationLon ?? place.lon],
+            {
+              radius: sunny ? 5 : 4,
+              color: baseColor,
+              fillColor: sunny ? "#fde047" : baseColor,
+              fillOpacity: sunny ? 0.9 : 0.6,
+              weight: 1.2,
+            },
+          ).addTo(placesLayer);
+
+          const terraceHint =
+            place.selectionStrategy === "terrace_offset"
+              ? `terrasse offset ${place.selectionOffsetMeters}m`
+              : place.selectionStrategy === "indoor_fallback"
+                ? "point indoor fallback"
+                : "point original";
+          const sunlightHint =
+            place.isSunnyNow !== null
+              ? place.isSunnyNow
+                ? "soleil maintenant"
+                : "ombre maintenant"
+              : `${place.sunlightStartLocalTime ?? "--:--"} -> ${place.sunlightEndLocalTime ?? "--:--"} (${place.sunnyMinutes} min)`;
+
+          marker.bindTooltip(
+            `${place.name} (${venueTypeBadgeLabel(place.venueType)})<br/>${sunlightHint}<br/>${terraceHint}`,
+          );
+          marker.on("click", (event: LeafletMouseEvent) => {
+            L.DomEvent.stopPropagation(event);
+            void runPointClickDiagnostics(
+              place.evaluationLat ?? place.lat,
+              place.evaluationLon ?? place.lon,
+            ).catch((error) => {
+              console.error(
+                "[Mappy Hour][place] Point diagnostic failed:",
+                error instanceof Error ? error.message : error,
+              );
+            });
+          });
+        }
+      }
+
       const terrainHorizonDebug = response?.model?.terrainHorizonDebug;
       if (visibility.terrain && terrainHorizonDebug?.ridgePoints.length) {
         const ridgeLatLngs = [...terrainHorizonDebug.ridgePoints]
@@ -1713,13 +1846,14 @@ export function SunlightMapClient() {
   );
 
   useEffect(() => {
-    renderLayers(visualAreaResponse, lastBuildings, dailyExposureCells, {
+    renderLayers(visualAreaResponse, lastBuildings, sunlitPlaces, dailyExposureCells, {
       sunny: showSunny,
       shadow: showShadow,
       vegetation: showVegetation,
       buildings: showBuildings,
       terrain: showTerrain,
       heatmap: showHeatmap,
+      places: showPlaces,
     });
   }, [
     dailyExposureCells,
@@ -1727,10 +1861,12 @@ export function SunlightMapClient() {
     renderLayers,
     showBuildings,
     showHeatmap,
+    showPlaces,
     showShadow,
     showSunny,
     showVegetation,
     showTerrain,
+    sunlitPlaces,
     visualAreaResponse,
   ]);
 
@@ -1809,6 +1945,62 @@ export function SunlightMapClient() {
     } satisfies BuildingsAreaApiResponse;
   }, []);
 
+  const loadSunlitPlaces = useCallback(
+    async (bbox: [number, number, number, number]) => {
+      const placesPayload = {
+        date,
+        timezone: "Europe/Zurich",
+        mode,
+        localTime,
+        startLocalTime: dailyStartLocalTime,
+        endLocalTime: dailyEndLocalTime,
+        sampleEveryMinutes,
+        category: "terrace_candidate" as const,
+        outdoorOnly: true,
+        includeNonSunny: false,
+        foodTypes: ["restaurant", "bar", "snack", "foodtruck"] as const,
+        bbox,
+        limit: 400,
+      };
+
+      const placesResponse = await fetch("/api/places/windows", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(placesPayload),
+      });
+      const placesJson = (await placesResponse.json().catch(() => null)) as
+        | {
+            error?: string;
+            detail?: string;
+            warnings?: string[];
+            places?: SunlitPlaceEntry[];
+          }
+        | null;
+      if (!placesResponse.ok) {
+        throw new Error(
+          placesJson?.detail ??
+            placesJson?.error ??
+            "Failed to compute sunlit terraces.",
+        );
+      }
+
+      return {
+        places: placesJson?.places ?? [],
+        warnings: placesJson?.warnings ?? [],
+      };
+    },
+    [
+      dailyEndLocalTime,
+      dailyStartLocalTime,
+      date,
+      localTime,
+      mode,
+      sampleEveryMinutes,
+    ],
+  );
+
   const runAreaCalculation = useCallback(async () => {
     const map = mapRef.current;
     if (!map) {
@@ -1842,7 +2034,39 @@ export function SunlightMapClient() {
     setIsLoading(true);
     setError(null);
     setBuildingWarnings([]);
+    setPlacesWarnings([]);
+    setPlacesError(null);
+    setSunlitPlaces([]);
+    setIsPlacesLoading(true);
+    const placesRequestId = placesRequestIdRef.current + 1;
+    placesRequestIdRef.current = placesRequestId;
     decodedTimelineMaskCacheRef.current.clear();
+
+    void loadSunlitPlaces(bbox)
+      .then((placesResult) => {
+        if (placesRequestIdRef.current !== placesRequestId) {
+          return;
+        }
+        setSunlitPlaces(placesResult.places);
+        setPlacesWarnings(placesResult.warnings);
+      })
+      .catch((placesRequestError) => {
+        if (placesRequestIdRef.current !== placesRequestId) {
+          return;
+        }
+        setSunlitPlaces([]);
+        setPlacesError(
+          placesRequestError instanceof Error
+            ? placesRequestError.message
+            : "Failed to load sunlit terraces.",
+        );
+      })
+      .finally(() => {
+        if (placesRequestIdRef.current !== placesRequestId) {
+          return;
+        }
+        setIsPlacesLoading(false);
+      });
 
     if (mode === "instant") {
       setDailyTimeline(null);
@@ -2249,6 +2473,7 @@ export function SunlightMapClient() {
     gridStepMeters,
     isDailyRangeInvalid,
     loadBuildingsLayer,
+    loadSunlitPlaces,
     localTime,
     mode,
     sampleEveryMinutes,
@@ -2420,6 +2645,16 @@ export function SunlightMapClient() {
             heatmap expo
           </span>
         </label>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={showPlaces}
+            onChange={(event) => setShowPlaces(event.target.checked)}
+          />
+          <span className="rounded bg-red-600 px-2 py-0.5 text-white">
+            terrasses soleil
+          </span>
+        </label>
       </div>
 
       {mode === "daily" ? (
@@ -2510,8 +2745,75 @@ export function SunlightMapClient() {
         </div>
       ) : null}
 
-      <div className="h-[560px] w-full overflow-hidden rounded-xl border border-white/20">
-        <div ref={mapContainerRef} className="h-full w-full" />
+      {placesError ? (
+        <p className="rounded border border-red-300/40 bg-red-500/20 px-3 py-2 text-sm text-red-100">
+          Terrasses: {placesError}
+        </p>
+      ) : null}
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="h-[560px] w-full overflow-hidden rounded-xl border border-white/20">
+          <div ref={mapContainerRef} className="h-full w-full" />
+        </div>
+        <aside className="h-[560px] overflow-hidden rounded-xl border border-white/20 bg-black/20">
+          <div className="border-b border-white/15 px-3 py-2">
+            <p className="text-sm font-semibold">Bars / restos au soleil</p>
+            <p className="text-xs text-slate-300">
+              {isPlacesLoading
+                ? "Calcul terrasses en cours..."
+                : `${sunlitPlaces.length} etablissements visibles`}
+            </p>
+          </div>
+          <div className="h-[calc(560px-56px)] overflow-y-auto px-2 py-2">
+            {sunlitPlaces.length === 0 && !isPlacesLoading ? (
+              <p className="px-2 py-2 text-xs text-slate-300">
+                Aucun etablissement ensoleille pour les filtres actuels.
+              </p>
+            ) : null}
+            <div className="grid gap-2">
+              {sunlitPlaces.map((place) => (
+                <button
+                  key={place.id}
+                  type="button"
+                  className="grid gap-1 rounded border border-white/15 bg-white/5 px-2 py-2 text-left text-sm hover:bg-white/10"
+                  onClick={() => {
+                    const map = mapRef.current;
+                    if (!map) {
+                      return;
+                    }
+                    map.setView(
+                      [place.evaluationLat ?? place.lat, place.evaluationLon ?? place.lon],
+                      Math.max(map.getZoom(), 16),
+                      { animate: true },
+                    );
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate font-medium">{place.name}</span>
+                    <span
+                      className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-white"
+                      style={{ background: venueTypeColor(place.venueType) }}
+                    >
+                      {venueTypeBadgeLabel(place.venueType)}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-300">
+                    {mode === "instant"
+                      ? place.isSunnyNow
+                        ? `Soleil maintenant (${localTime})`
+                        : "A l'ombre maintenant"
+                      : `${place.sunlightStartLocalTime ?? "--:--"} -> ${place.sunlightEndLocalTime ?? "--:--"} (${place.sunnyMinutes} min)`}
+                  </div>
+                  {place.selectionStrategy !== "original" ? (
+                    <div className="text-[11px] text-amber-200">
+                      Terrasse decalee ({place.selectionOffsetMeters}m) pour eviter un point indoor.
+                    </div>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          </div>
+        </aside>
       </div>
     </section>
   );
