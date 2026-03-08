@@ -1,0 +1,21 @@
+import path from "node:path";
+
+const PROJECT_ROOT = process.cwd();
+
+export const DATA_ROOT = path.join(PROJECT_ROOT, "data");
+
+export const RAW_DATA_ROOT = path.join(DATA_ROOT, "raw");
+export const RAW_SWISSTOPO_ROOT = path.join(RAW_DATA_ROOT, "swisstopo");
+export const RAW_BUILDINGS_DIR = path.join(
+  RAW_SWISSTOPO_ROOT,
+  "swissbuildings3d_2",
+);
+export const RAW_TERRAIN_CH_DIR = path.join(RAW_SWISSTOPO_ROOT, "swissalti3d_2m");
+export const RAW_HORIZON_DEM_DIR = path.join(RAW_DATA_ROOT, "copernicus-dem30");
+
+export const PROCESSED_ROOT = path.join(DATA_ROOT, "processed");
+export const PROCESSED_HORIZON_DIR = path.join(PROCESSED_ROOT, "horizon");
+export const PROCESSED_HORIZON_MASK_PATH = path.join(
+  PROCESSED_HORIZON_DIR,
+  "lausanne-horizon-mask.json",
+);

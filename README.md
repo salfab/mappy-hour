@@ -1,36 +1,96 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Mappy Hour (Lausanne)
 
-## Getting Started
+Application Next.js pour calculer l'ensoleillement d'une zone urbaine avec un modele a deux niveaux :
 
-First, run the development server:
+1. Relief (montagnes, collines, horizon lointain transfrontalier Suisse + France)
+2. Batiments 3D (swissBUILDINGS3D pour Lausanne)
+
+## Etat actuel
+
+- Ingestion automatisee des batiments Lausanne via STAC swisstopo
+- Ingestion automatisee du terrain suisse local (swissALTI3D, 2 m)
+- Ingestion automatisee d'un DEM transfrontalier (Copernicus DEM 30 m) pour l'horizon lointain
+- API `POST /api/sunlight/point` pour un calcul d'ensoleillement journalier a un point
+- Endpoint `GET /api/datasets` pour verifier la presence des donnees
+
+Le masque d'horizon est encore un placeholder (`flat-placeholder`) tant que la phase de pretraitement DEM -> horizon n'est pas branchee.
+Le calcul d'ombre des batiments sera branche dans l'iteration suivante.
+
+## Prerequis
+
+- Node.js 20+
+- npm 10+
+
+## Lancer l'app
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Ingestion des donnees Lausanne
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 1) Batiments 3D Lausanne (swissBUILDINGS3D)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run ingest:lausanne:buildings
+```
 
-## Learn More
+Test rapide :
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run ingest:lausanne:buildings -- --dry-run --max-items=20
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### 2) Terrain suisse local (swissALTI3D 2 m)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm run ingest:lausanne:terrain:ch
+```
 
-## Deploy on Vercel
+Test rapide :
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npm run ingest:lausanne:terrain:ch -- --dry-run --max-items=20
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### 3) Terrain transfrontalier horizon (Copernicus DEM 30 m)
+
+```bash
+npm run ingest:lausanne:terrain:horizon
+```
+
+Test rapide :
+
+```bash
+npm run ingest:lausanne:terrain:horizon -- --dry-run
+```
+
+### 4) Generation du masque d'horizon (placeholder V1)
+
+```bash
+npm run preprocess:lausanne:horizon
+```
+
+## API
+
+### Verifier les datasets
+
+```bash
+curl http://localhost:3000/api/datasets
+```
+
+### Calcul d'ensoleillement a un point
+
+```bash
+curl -X POST http://localhost:3000/api/sunlight/point \
+  -H "Content-Type: application/json" \
+  -d "{\"lat\":46.5197,\"lon\":6.6323,\"date\":\"2026-06-21\",\"timezone\":\"Europe/Zurich\",\"sampleEveryMinutes\":15}"
+```
+
+## Arborescence donnees
+
+- `data/raw/swisstopo/swissbuildings3d_2`
+- `data/raw/swisstopo/swissalti3d_2m`
+- `data/raw/copernicus-dem30`
+- `data/processed/horizon/lausanne-horizon-mask.json`

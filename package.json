@@ -6,21 +6,30 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "ingest:lausanne:buildings": "tsx scripts/ingest/download-lausanne-buildings.ts",
+    "ingest:lausanne:terrain:ch": "tsx scripts/ingest/download-lausanne-terrain-ch.ts",
+    "ingest:lausanne:terrain:horizon": "tsx scripts/ingest/download-lausanne-horizon-dem.ts",
+    "preprocess:lausanne:horizon": "tsx scripts/preprocess/build-lausanne-horizon-mask.ts"
   },
   "dependencies": {
     "next": "16.1.6",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "suncalc": "^1.9.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/suncalc": "^1.9.2",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }
