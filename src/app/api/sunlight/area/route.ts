@@ -22,7 +22,7 @@ const requestSchema = z
     mode: z.enum(["instant", "daily"]).default("instant"),
     localTime: z.string().regex(/^\d{2}:\d{2}$/).default("12:00"),
     sampleEveryMinutes: z.number().int().min(1).max(60).default(15),
-    gridStepMeters: z.number().int().min(5).max(2000).default(250),
+    gridStepMeters: z.number().int().min(1).max(2000).default(250),
     maxPoints: z.number().int().min(1).max(5000).default(900),
   })
   .refine(

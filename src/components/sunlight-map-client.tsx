@@ -495,7 +495,7 @@ export function SunlightMapClient() {
         localTime,
         sampleEveryMinutes,
         gridStepMeters,
-        maxPoints: 2000,
+        maxPoints: 3000,
       };
       const buildingsPayload = {
         bbox,
@@ -632,9 +632,9 @@ export function SunlightMapClient() {
           <span>Grille (m)</span>
           <input
             type="number"
-            min={5}
+            min={1}
             max={2000}
-            step={10}
+            step={1}
             value={gridStepMeters}
             className="w-28 rounded border border-white/20 bg-black/40 px-2 py-1"
             onChange={(event) => setGridStepMeters(Number(event.target.value))}
