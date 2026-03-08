@@ -1515,7 +1515,7 @@ export function SunlightMapClient() {
       easting: json.pointContext.lv95Easting,
       northing: json.pointContext.lv95Northing,
     });
-    console.log("Altitude point (m):", json.pointContext.pointElevationMeters);
+    console.log("Altitude terrain DEM (m):", json.pointContext.pointElevationMeters);
     console.log("Soleil:", {
       azimuthDeg: Number(json.sample.azimuthDeg.toFixed(3)),
       altitudeDeg: Number(json.sample.altitudeDeg.toFixed(3)),
