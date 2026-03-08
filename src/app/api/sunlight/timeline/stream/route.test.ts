@@ -37,9 +37,28 @@ describe("GET /api/sunlight/timeline/stream", () => {
     const response = await GET(request);
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Type")).toContain("text/event-stream");
+    expect(response.headers.get("X-Accel-Buffering")).toBe("no");
 
-    const streamText = await response.text();
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    const decoder = new TextDecoder();
+    let streamText = "";
+
+    const firstChunk = await reader!.read();
+    expect(firstChunk.done).toBe(false);
+    streamText += decoder.decode(firstChunk.value, { stream: true });
     expect(streamText).toContain("event: start");
+    expect(streamText).not.toContain("event: done");
+
+    while (true) {
+      const chunk = await reader!.read();
+      if (chunk.done) {
+        break;
+      }
+      streamText += decoder.decode(chunk.value, { stream: true });
+    }
+
+    streamText += decoder.decode();
     expect(streamText).toContain("event: frame");
     expect(streamText).toContain("event: progress");
     expect(streamText).toContain("event: done");

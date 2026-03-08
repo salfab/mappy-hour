@@ -88,6 +88,12 @@ function percent(done: number, total: number): number {
   return Math.max(0, Math.min(100, (done / total) * 100));
 }
 
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const rawQuery = Object.fromEntries(url.searchParams.entries());
@@ -219,6 +225,7 @@ export async function GET(request: Request) {
             },
             warnings: responseWarnings,
           });
+          await yieldToEventLoop();
 
           for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
             if (streamAborted) {
@@ -275,6 +282,7 @@ export async function GET(request: Request) {
               etaSeconds:
                 etaMs === null ? null : Math.max(0, Math.round(etaMs / 1000)),
             });
+            await yieldToEventLoop();
           }
 
           sendEvent("done", {
@@ -312,6 +320,8 @@ export async function GET(request: Request) {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+        "Content-Encoding": "none",
       },
     });
   } catch (error) {
