@@ -10,12 +10,15 @@ Application Next.js pour calculer l'ensoleillement d'une zone urbaine avec un mo
 - Ingestion automatisee des batiments Lausanne via STAC swisstopo
 - Ingestion automatisee du terrain suisse local (swissALTI3D, 2 m)
 - Ingestion automatisee d'un DEM transfrontalier (Copernicus DEM 30 m) pour l'horizon lointain
+- Ingestion automatisee des lieux OSM Lausanne (parcs + terrasses candidates)
 - Pretraitement DEM transfrontalier -> masque d'horizon reel (`copernicus-dem30-raycast-v1`)
-- Pretraitement batiments DXF -> index d'obstacles 3D simplifie
+- Pretraitement batiments DXF -> index d'obstacles footprint/prism (`dxf-footprint-prism-v1`)
 - API `POST /api/sunlight/point` pour un calcul d'ensoleillement journalier a un point
+- API `POST /api/sunlight/area` pour calculer une grille soleil/ombre sur bbox
+- API `GET /api/places` + `POST /api/places/windows` pour les fenetres d'ensoleillement des lieux
 - Endpoint `GET /api/datasets` pour verifier la presence des donnees
 
-Le calcul batiments utilise une approximation bbox 3D des polylines DXF (rapide, mais pas encore un lancer de rayon exact sur maillage).
+Le calcul batiments utilise des empreintes polygonales 2D extrudees en prismes verticaux.
 
 ## Prerequis
 
@@ -67,13 +70,19 @@ Test rapide :
 pnpm ingest:lausanne:terrain:horizon -- --dry-run
 ```
 
-### 4) Generation de l'index d'obstacles batiments
+### 4) Lieux OSM (parcs + terrasses candidates)
+
+```bash
+pnpm ingest:lausanne:places
+```
+
+### 5) Generation de l'index d'obstacles batiments
 
 ```bash
 pnpm preprocess:lausanne:buildings
 ```
 
-### 5) Generation du masque d'horizon DEM
+### 6) Generation du masque d'horizon DEM
 
 ```bash
 pnpm preprocess:lausanne:horizon
@@ -95,11 +104,35 @@ curl -X POST http://localhost:3000/api/sunlight/point \
   -d "{\"lat\":46.5197,\"lon\":6.6323,\"date\":\"2026-06-21\",\"timezone\":\"Europe/Zurich\",\"sampleEveryMinutes\":15}"
 ```
 
+### Calcul d'ensoleillement sur zone (bbox)
+
+```bash
+curl -X POST http://localhost:3000/api/sunlight/area \
+  -H "Content-Type: application/json" \
+  -d "{\"bbox\":[6.61,46.51,6.65,46.53],\"date\":\"2026-06-21\",\"timezone\":\"Europe/Zurich\",\"mode\":\"instant\",\"localTime\":\"12:00\",\"gridStepMeters\":200}"
+```
+
+### Lister les lieux OSM
+
+```bash
+curl "http://localhost:3000/api/places?category=terrace_candidate&limit=20"
+```
+
+### Fenetres d'ensoleillement pour lieux
+
+```bash
+curl -X POST http://localhost:3000/api/places/windows \
+  -H "Content-Type: application/json" \
+  -d "{\"date\":\"2026-06-21\",\"timezone\":\"Europe/Zurich\",\"category\":\"park\",\"limit\":10,\"sampleEveryMinutes\":15}"
+```
+
 ## Arborescence donnees
 
 - `data/raw/swisstopo/swissbuildings3d_2`
 - `data/raw/swisstopo/swissalti3d_2m`
 - `data/raw/copernicus-dem30`
+- `data/raw/osm/lausanne-places-overpass.json`
 - `data/processed/buildings/lausanne-buildings-index.json`
 - `data/processed/horizon/lausanne-horizon-mask.json`
+- `data/processed/places/lausanne-places.json`
 

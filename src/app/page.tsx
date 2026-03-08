@@ -31,6 +31,12 @@ export default function Home() {
           <code className="block rounded bg-black/40 px-3 py-2">
             GET /api/datasets
           </code>
+          <code className="block rounded bg-black/40 px-3 py-2">
+            GET /api/places
+          </code>
+          <code className="block rounded bg-black/40 px-3 py-2">
+            POST /api/places/windows
+          </code>
         </div>
       </section>
     </main>
