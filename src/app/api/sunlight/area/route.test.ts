@@ -19,38 +19,6 @@ vi.mock("@/lib/sun/evaluation-context", () => ({
   })),
 }));
 
-vi.mock("@/lib/sun/solar", () => ({
-  evaluateInstantSunlight: vi.fn(() => ({
-    utcTime: "2026-03-08T08:19:00.000Z",
-    localTime: "2026-03-08 09:19:00",
-    azimuthDeg: 145,
-    altitudeDeg: 22,
-    horizonAngleDeg: null,
-    aboveAstronomicalHorizon: true,
-    terrainBlocked: false,
-    buildingsBlocked: false,
-    buildingBlockerId: null,
-    buildingBlockerDistanceMeters: null,
-    buildingBlockerAltitudeAngleDeg: null,
-    isSunny: true,
-  })),
-  evaluatePointSunlight: vi.fn(() => ({
-    date: "2026-03-08",
-    timeZone: "Europe/Zurich",
-    sampleEveryMinutes: 15,
-    sunriseLocalTime: "2026-03-08 06:56:00",
-    sunsetLocalTime: "2026-03-08 18:19:00",
-    sunnyWindows: [
-      {
-        startLocalTime: "2026-03-08 09:00:00",
-        endLocalTime: "2026-03-08 10:00:00",
-        durationMinutes: 60,
-      },
-    ],
-    samples: [],
-  })),
-}));
-
 describe("POST /api/sunlight/area", () => {
   it("returns a valid instant area payload without running a web server", async () => {
     const payload = {
@@ -78,6 +46,7 @@ describe("POST /api/sunlight/area", () => {
       mode: string;
       pointCount: number;
       points: unknown[];
+      utcTime: string;
       stats: {
         elapsedMs: number;
       };
