@@ -108,6 +108,116 @@ function polygonArea(points: Point2D[]): number {
   return Math.abs(sum) / 2;
 }
 
+function pointsAreEqual(a: Point2D, b: Point2D, epsilon = 1e-6): boolean {
+  return Math.abs(a.x - b.x) <= epsilon && Math.abs(a.y - b.y) <= epsilon;
+}
+
+function simplifyRingPoints(points: Point2D[]): Point2D[] {
+  const simplified: Point2D[] = [];
+  for (const point of points) {
+    const previous = simplified.at(-1);
+    if (!previous || !pointsAreEqual(previous, point)) {
+      simplified.push(point);
+    }
+  }
+
+  if (simplified.length > 1 && pointsAreEqual(simplified[0], simplified.at(-1)!)) {
+    simplified.pop();
+  }
+
+  return simplified;
+}
+
+function orientation(a: Point2D, b: Point2D, c: Point2D): number {
+  const value = cross(a, b, c);
+  if (Math.abs(value) < 1e-9) {
+    return 0;
+  }
+
+  return value > 0 ? 1 : -1;
+}
+
+function onSegment(a: Point2D, b: Point2D, c: Point2D): boolean {
+  return (
+    Math.min(a.x, c.x) - 1e-9 <= b.x &&
+    b.x <= Math.max(a.x, c.x) + 1e-9 &&
+    Math.min(a.y, c.y) - 1e-9 <= b.y &&
+    b.y <= Math.max(a.y, c.y) + 1e-9
+  );
+}
+
+function segmentsIntersect(a: Point2D, b: Point2D, c: Point2D, d: Point2D): boolean {
+  const o1 = orientation(a, b, c);
+  const o2 = orientation(a, b, d);
+  const o3 = orientation(c, d, a);
+  const o4 = orientation(c, d, b);
+
+  if (o1 !== o2 && o3 !== o4) {
+    return true;
+  }
+
+  if (o1 === 0 && onSegment(a, c, b)) {
+    return true;
+  }
+  if (o2 === 0 && onSegment(a, d, b)) {
+    return true;
+  }
+  if (o3 === 0 && onSegment(c, a, d)) {
+    return true;
+  }
+  if (o4 === 0 && onSegment(c, b, d)) {
+    return true;
+  }
+
+  return false;
+}
+
+function isSimplePolygon(points: Point2D[]): boolean {
+  if (points.length < 3) {
+    return false;
+  }
+
+  for (let i = 0; i < points.length; i += 1) {
+    const a1 = points[i];
+    const a2 = points[(i + 1) % points.length];
+    for (let j = i + 1; j < points.length; j += 1) {
+      const b1 = points[j];
+      const b2 = points[(j + 1) % points.length];
+
+      const sharesEndpoint =
+        i === j ||
+        (i + 1) % points.length === j ||
+        i === (j + 1) % points.length;
+      if (sharesEndpoint) {
+        continue;
+      }
+
+      if (segmentsIntersect(a1, a2, b1, b2)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function extractGroundFootprint(vertices: Point3D[], minZ: number): Point2D[] | null {
+  const groundToleranceMeters = 0.6;
+  const groundVertices = vertices
+    .filter((vertex) => Math.abs(vertex.z - minZ) <= groundToleranceMeters)
+    .map((vertex) => ({ x: vertex.x, y: vertex.y }));
+  const footprint = simplifyRingPoints(groundVertices);
+
+  if (footprint.length < 3) {
+    return null;
+  }
+  if (!isSimplePolygon(footprint)) {
+    return null;
+  }
+
+  return footprint;
+}
+
 function obstacleKey(obstacle: BuildingObstacle): string {
   const footprintKey = obstacle.footprint
     .map((point) => `${round1(point.x)},${round1(point.y)}`)
@@ -192,14 +302,19 @@ function polylineToObstacle(
     return null;
   }
 
-  const footprintHull = convexHull(
+  const convexFootprintHull = convexHull(
     polyline.vertices.map((vertex) => ({ x: vertex.x, y: vertex.y })),
   );
-  if (footprintHull.length < 3) {
+  if (convexFootprintHull.length < 3) {
     return null;
   }
 
-  const area = polygonArea(footprintHull);
+  const groundFootprint = extractGroundFootprint(polyline.vertices, minZ);
+  const footprint =
+    groundFootprint && polygonArea(groundFootprint) >= 4
+      ? groundFootprint
+      : convexFootprintHull;
+  const area = polygonArea(footprint);
   if (area < 4) {
     return null;
   }
@@ -220,7 +335,7 @@ function polylineToObstacle(
     centerX: round3(centerX),
     centerY: round3(centerY),
     halfDiagonal: round3(halfDiagonal),
-    footprint: footprintHull.map((point) => ({
+    footprint: footprint.map((point) => ({
       x: round3(point.x),
       y: round3(point.y),
     })),
