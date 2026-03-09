@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "benchmark:precompute:lausanne": "tsx scripts/benchmark/precompute-lausanne-benchmark.ts",
     "ingest:lausanne:buildings": "tsx scripts/ingest/download-lausanne-buildings.ts",
     "ingest:lausanne:terrain:ch": "tsx scripts/ingest/download-lausanne-terrain-ch.ts",
     "ingest:lausanne:vegetation:surface": "tsx scripts/ingest/download-lausanne-vegetation-surface.ts",

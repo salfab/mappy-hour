@@ -1,0 +1,77 @@
+{
+  "generatedAt": "2026-03-09T07:32:44.582Z",
+  "benchmarkVersion": "v1",
+  "largeVsTiled": {
+    "args": {
+      "startDate": "2026-03-08",
+      "days": 1,
+      "localTime": "17:00",
+      "gridStepMeters": 250,
+      "tileCols": 4,
+      "tileRows": 4
+    },
+    "large": {
+      "requestCount": 1,
+      "totalWallMs": 1198811.723,
+      "totalApiElapsedMs": 1198798.576,
+      "totalPoints": 3417,
+      "totalIndoorExcluded": 179,
+      "pointsPerSecond": 2.85
+    },
+    "tiled": {
+      "requestCount": 16,
+      "tileCountPerDay": 16,
+      "totalWallMs": 23302.201,
+      "totalApiElapsedMs": 23278.449,
+      "totalPoints": 3630,
+      "totalIndoorExcluded": 210,
+      "pointsPerSecond": 155.779
+    },
+    "ratios": {
+      "tiledVsLargeWallTime": 0.019,
+      "tiledVsLargeThroughput": 54.653,
+      "tiledVsLargePointCount": 1.062
+    }
+  },
+  "parallax": {
+    "scenario": {
+      "point": {
+        "lat": 46.3833,
+        "lon": 6.239
+      },
+      "date": "2026-03-08",
+      "localTime": "17:00",
+      "timezone": "Europe/Zurich"
+    },
+    "nyonPointComparedMasks": {
+      "withLausanneCenteredMask": {
+        "terrainBlocked": false,
+        "horizonAngleDeg": 0.917,
+        "isSunny": true,
+        "ridgeDistanceMeters": 53000
+      },
+      "withNyonCenteredMask": {
+        "terrainBlocked": false,
+        "horizonAngleDeg": 3.18,
+        "isSunny": true,
+        "ridgeDistanceMeters": 21000
+      },
+      "deltas": {
+        "horizonAngleDeg": 2.263
+      }
+    },
+    "nyon100mArea": {
+      "wallMs": 1769.137,
+      "pointCount": 77,
+      "nearestPoint": {
+        "lat": 46.3833,
+        "lon": 6.239,
+        "distanceToCenterMeters": 0,
+        "terrainBlockedWithLocalAreaCenterMask": false,
+        "horizonAngleDegWithLocalAreaCenterMask": 3.18,
+        "terrainBlockedWithLausanneCenteredMask": false,
+        "horizonAngleDegWithLausanneCenteredMask": 0.917
+      }
+    }
+  }
+}
