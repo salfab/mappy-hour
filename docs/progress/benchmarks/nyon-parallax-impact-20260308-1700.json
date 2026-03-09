@@ -1,0 +1,70 @@
+{
+  "generatedAt": "2026-03-09T08:03:14.066Z",
+  "benchmarkVersion": "v1",
+  "inputs": {
+    "date": "2026-03-08",
+    "timezone": "Europe/Zurich",
+    "localTime": "17:00",
+    "sampleStepMinutes": 1
+  },
+  "baseline": {
+    "lausanneCenter": {
+      "lat": 46.5197,
+      "lon": 6.6323
+    },
+    "nyonCenter": {
+      "lat": 46.3833,
+      "lon": 6.239
+    },
+    "centerDistanceMeters": 33770.602
+  },
+  "referenceTimeSample": {
+    "localTime": "17:00",
+    "nyonPointWithLausanneMask": {
+      "terrainBlocked": false,
+      "horizonAngleDeg": 0.917,
+      "altitudeDeg": 14.223986994443397,
+      "azimuthDeg": 246.84108361070955,
+      "ridgeDistanceMeters": 53000
+    },
+    "nyonPointWithNyonMask": {
+      "terrainBlocked": false,
+      "horizonAngleDeg": 3.18,
+      "altitudeDeg": 14.223986994443397,
+      "azimuthDeg": 246.84108361070955,
+      "ridgeDistanceMeters": 21000
+    },
+    "deltas": {
+      "horizonAngleDeg": 2.263,
+      "ridgeDistanceMeters": 32000
+    },
+    "equivalentShadowLengthDeltaMeters": {
+      "obstacleHeight5m": 222.387,
+      "obstacleHeight10m": 444.774,
+      "obstacleHeight20m": 889.548
+    }
+  },
+  "dailyTerrainOnlyDisagreement": {
+    "mismatchMinutes": 18,
+    "mismatchPctOfDay": 1.25,
+    "eveningOnsetLocalTime": {
+      "withLausanneMask": "18:19",
+      "withNyonMask": "18:06"
+    },
+    "eveningOnsetDeltaMinutes": -13,
+    "morningReleaseLocalTime": {
+      "withLausanneMask": "07:24",
+      "withNyonMask": "07:19"
+    },
+    "morningReleaseDeltaMinutes": -5
+  },
+  "nyon100mPointImpact": {
+    "gridStepMeters": 10,
+    "pointCount": 121,
+    "maxDisagreementPointsAtOneMinute": 121,
+    "maxDisagreementAreaM2": 12100,
+    "maxDisagreementLocalTime": "07:19",
+    "totalPointMinutesInDisagreement": 2178,
+    "equivalentPointHoursInDisagreement": 36.3
+  }
+}

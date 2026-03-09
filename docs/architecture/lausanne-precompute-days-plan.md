@@ -47,7 +47,12 @@ Resultats bruts:
 
 Interpretation pratique:
 
-- Dans ce run, le tuilage est massivement plus performant.
+- Ici, "massivement plus performant" parle explicitement de performance de calcul
+  (temps mur et throughput), pas de precision geometrique.
+- La comparaison est bien faite a surface equivalente:
+  - 1 grande requete sur toute la bbox Lausanne
+  - 16 tuiles qui couvrent exactement la meme bbox Lausanne
+  - et les chiffres ci-dessus sont deja agreges sur l'ensemble des 16 tuiles.
 - Pour un precompute en production, il faut traiter Lausanne par tuiles et non par une seule grosse requete.
 - Les resultats confirment qu'une "grosse bbox unique" n'est pas un chemin fiable a grande echelle.
 
@@ -66,6 +71,33 @@ Mesures:
 - Horizon angle avec masque centre Nyon: `3.18 deg`
 - Ecart: `+2.263 deg` (non negligeable)
 - Zone 100 m autour de Nyon: le point central retrouve `3.18 deg` avec masque local
+- Distance entre centres Lausanne/Nyon: `33,770.602 m`
+- Difference de "ridge distance" sur le meme azimut: `32,000 m` (53 km vs 21 km)
+
+### 2.3 Impact chiffrable en metres et en points (plus interpretable)
+
+Script:
+
+```bash
+pnpm --dir mappy-hour run benchmark:parallax:nyon -- \
+  --date=2026-03-08 \
+  --local-time=17:00 \
+  --sample-step-minutes=1
+```
+
+Resultats bruts:
+
+- Fichier JSON: `docs/progress/benchmarks/nyon-parallax-impact-20260308-1700.json`
+- Ecart equivalent de longueur d'ombre (reference 17:00):
+  - obstacle 5 m: `222.387 m`
+  - obstacle 10 m: `444.774 m`
+  - obstacle 20 m: `889.548 m`
+- Derive temporelle du blocage terrain (point Nyon):
+  - debut ombre du soir: `18:06` (masque Nyon) vs `18:19` (masque Lausanne) -> `13 min` d'ecart
+  - fin ombre du matin: `07:19` (masque Nyon) vs `07:24` (masque Lausanne) -> `5 min` d'ecart
+- Impact sur les points calcules (grille 100 m x 100 m, pas 10 m, 121 points):
+  - desaccord max: `121 / 121 points` en meme temps (`12,100 m2`)
+  - total journalier: `2,178 point-minutes` (`36.3 point-heures`) en desaccord
 
 Conclusion:
 
@@ -150,6 +182,9 @@ Phase D (qualite et validation terrain):
 
 Avec les mesures actuelles: **pas negligeable**.
 
-- Sur Nyon, utiliser un masque centre Lausanne donne un ecart de `2.263 deg` sur l'angle d'horizon.
-- Cet ordre de grandeur peut changer la frontiere soleil/ombre autour des heures basses (matin/soir).
+- Sur Nyon, utiliser un masque centre Lausanne donne:
+  - un ecart d'angle de `2.263 deg`,
+  - un ecart de distance de ridge de `32 km`,
+  - jusqu'a `12,100 m2` de points simultanement en desaccord sur un carre de 100 m.
+- Cet ordre de grandeur change effectivement la frontiere soleil/ombre (matin/soir) et pas seulement un indicateur "interne".
 - Pour un precompute fiable a l'echelle Lausanne et au-dela: **masque local par tuile obligatoire**.

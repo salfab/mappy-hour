@@ -17,6 +17,8 @@ Benchmark artifacts:
 
 - script: `scripts/benchmark/precompute-lausanne-benchmark.ts`
 - output: `docs/progress/benchmarks/precompute-lausanne-2026-03-08-d1-g250.json`
+- script: `scripts/benchmark/nyon-parallax-impact.ts`
+- output: `docs/progress/benchmarks/nyon-parallax-impact-20260308-1700.json`
 
 ## Benchmark protocol
 
@@ -40,6 +42,7 @@ Compared scenarios:
    - horizon mask centered on Lausanne
    - horizon mask centered on Nyon
 4. Nyon 100m local area for local-center reference
+5. Nyon parallax impact in daily timeline (1-minute sampling)
 
 ## Results
 
@@ -60,11 +63,32 @@ Observed ratio:
 - tiled wall time / large wall time: `0.019`
 - tiled throughput / large throughput: `54.653x`
 
+Important clarification:
+
+- "More performant" here means runtime/throughput only.
+- This comparison is already normalized on the same covered surface (single large bbox vs full 4x4 tile cover of that same bbox).
+
 Parallax check (Nyon point, 2026-03-08 17:00 Europe/Zurich):
 
 - horizon angle with Lausanne-centered mask: `0.917 deg`
 - horizon angle with Nyon-centered mask: `3.18 deg`
 - delta: `+2.263 deg`
+- center distance Lausanne->Nyon: `33,770.602 m`
+- ridge distance delta on same azimuth: `32,000 m`
+
+Point-impact metrics (more interpretable than angles):
+
+- equivalent shadow-length delta at 17:00:
+  - 5m obstacle: `222.387 m`
+  - 10m obstacle: `444.774 m`
+  - 20m obstacle: `889.548 m`
+- daily terrain-only disagreement (Nyon point):
+  - mismatch: `18 minutes/day` (`1.25%`)
+  - evening shadow onset: `18:06` (Nyon mask) vs `18:19` (Lausanne mask), delta `13 min`
+  - morning release: `07:19` (Nyon mask) vs `07:24` (Lausanne mask), delta `5 min`
+- 100m x 100m grid around Nyon (121 points, 10m step):
+  - max simultaneous disagreement: `121 points` (`12,100 m2`)
+  - total disagreement: `2,178 point-minutes` (`36.3 point-hours`)
 
 ## Decision
 
@@ -89,7 +113,7 @@ Reliability:
 
 1. Enforce a mask reuse distance guardrail (start with `<= 5 km`).
 2. Log horizon-angle deltas on spot checks to detect geometry drift.
-3. Keep a validation suite with fixed Lausanne/Nyon control points.
+3. Keep a validation suite with fixed Lausanne/Nyon control points and point-disagreement metrics.
 
 Performance:
 
