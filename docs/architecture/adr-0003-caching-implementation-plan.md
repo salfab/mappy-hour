@@ -90,6 +90,67 @@ pointctx:v1:{
 }
 ```
 
+## Spatial normalization (to maximize precompute reuse)
+
+This is the critical rule to avoid "few centimeters off" cache misses.
+
+### Canonical spatial frame
+
+Use LV95 metric coordinates as canonical space for precompute storage and lookup.
+
+- never key precomputed points by raw lat/lon float
+- use integer grid indices in meters (or integer sub-meter if needed later)
+
+### Canonical 1m point identity
+
+For a point in LV95:
+
+- `ix = floor(easting_m)`
+- `iy = floor(northing_m)`
+- canonical point key: `(tile_id, ix, iy)`
+
+Equivalent center coordinate for rendering/debug:
+
+- `(ix + 0.5, iy + 0.5)` meters in LV95, then projected to WGS84
+
+Consequence:
+
+- any user click/request falling inside the same 1m cell maps to the same precomputed key
+- centimeter-level floating differences do not create cache fragmentation
+
+### Tile identity (deterministic)
+
+Given a fixed tile size in meters (example 100m or 250m):
+
+- `tile_x = floor(ix / tile_size_m)`
+- `tile_y = floor(iy / tile_size_m)`
+- `tile_id = "{tile_x}_{tile_y}"`
+
+The same geographic area always resolves to the same tile set.
+
+### BBox normalization
+
+Incoming bbox must be normalized before cache lookup:
+
+1. project bbox corners to LV95
+2. convert to integer cell ranges `[ix_min..ix_max]`, `[iy_min..iy_max]`
+3. derive deterministic tile set from these ranges
+4. sort tile ids and hash the ordered list for request-level key material
+
+This ensures:
+
+- no miss due to tiny bbox float drift
+- maximal reuse of already precomputed tiles/points
+
+### Query-time selection behavior
+
+For display/API response:
+
+- return all canonical points whose cell centers fall in requested bbox/polygon
+- optional strict clipping at geometry boundary if needed
+
+No nearest-neighbor fallback should be needed for 1m grid retrieval; lookup is exact by canonical cell identity.
+
 ## model_version_hash rules
 
 Build from immutable inputs used by the solver:
