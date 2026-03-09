@@ -56,6 +56,19 @@ Interpretation pratique:
 - Pour un precompute en production, il faut traiter Lausanne par tuiles et non par une seule grosse requete.
 - Les resultats confirment qu'une "grosse bbox unique" n'est pas un chemin fiable a grande echelle.
 
+Pourquoi ce resultat est contre-intuitif (overhead par tuile):
+
+- Oui, il existe un overhead par requete/tuile (validation, serialisation, initialisation).
+- Mais dans l'implementation actuelle, le cout dominant vient surtout:
+  - du chargement a froid des donnees (DEM/vegetation/index),
+  - et de boucles CPU lourdes par point.
+- Sur un run "a chaud", la meme grande zone est deja beaucoup plus rapide:
+  - run-1: `275,556.919 ms`
+  - run-2: `14,424.242 ms`
+- Donc:
+  - le tuilage reste utile pour la robustesse et la parallelisation,
+  - mais le ratio `54.653x` mesure dans le premier benchmark est aussi influence par l'effet cache (scenario froid vs chaud), pas uniquement par la geometrie de tuilage.
+
 ### 2.2 Impact parallax horizon (Lausanne vs Nyon)
 
 Test demande:
@@ -188,3 +201,41 @@ Avec les mesures actuelles: **pas negligeable**.
   - jusqu'a `12,100 m2` de points simultanement en desaccord sur un carre de 100 m.
 - Cet ordre de grandeur change effectivement la frontiere soleil/ombre (matin/soir) et pas seulement un indicateur "interne".
 - Pour un precompute fiable a l'echelle Lausanne et au-dela: **masque local par tuile obligatoire**.
+
+## 6) Exigence ajoutee: precompute daily a granularite 1 metre
+
+Tu as demande explicitement une granularite 1 m en mode daily.
+Cette exigence est prise en compte ici.
+
+Hypothese de surface Lausanne (`LAUSANNE_LOCAL_BBOX`):
+
+- largeur ~ `15,310 m`
+- hauteur ~ `14,472 m`
+- surface ~ `221,560,436 m2` (ordre de grandeur)
+- donc ~ `221.6 millions` de points a 1 m
+
+Volume de donnees brut (bitset soleil/ombre, avant compression, sans metadata):
+
+- daily 15 min (96 frames): ~ `2.48 GB / jour`
+- daily 5 min (288 frames): ~ `7.43 GB / jour`
+- daily 1 min (1440 frames): ~ `37.14 GB / jour`
+
+Implication:
+
+- Precompute 1 m daily sur toute Lausanne est faisable seulement avec
+  orchestration lourde (jobs distribues + stockage optimise + compaction).
+- En one-shot, c'est non fiable / non economique avec l'approche point-par-point actuelle.
+
+Adaptation du plan (obligatoire pour 1 m):
+
+1. Tuilage micro (ex: 100 m x 100 m ou 250 m x 250 m) avec precompute batch.
+2. Concurrence worker controlee + reprise sur erreur par tuile.
+3. Stockage compresse par tuile/jour:
+   - bitsets delta entre frames,
+   - compression (RLE/zstd),
+   - retention selective.
+4. Priorisation des zones:
+   - niveau 1: zones frequentes (terrasses/parcs) en 1 m,
+   - niveau 2: reste de la ville en 5-10 m,
+   - affinement 1 m a la demande.
+5. Masque horizon local par tuile (pas de masque global centre Lausanne).

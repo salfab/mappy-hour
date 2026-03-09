@@ -67,6 +67,10 @@ Important clarification:
 
 - "More performant" here means runtime/throughput only.
 - This comparison is already normalized on the same covered surface (single large bbox vs full 4x4 tile cover of that same bbox).
+- Additional cold/warm check on the same large bbox (same payload, same process):
+  - run-1: `275,556.919 ms`
+  - run-2: `14,424.242 ms`
+- Therefore the large-vs-tiled gap is real for operations, but the first measured ratio is also influenced by cache warm-up effects.
 
 Parallax check (Nyon point, 2026-03-08 17:00 Europe/Zurich):
 
@@ -90,6 +94,14 @@ Point-impact metrics (more interpretable than angles):
   - max simultaneous disagreement: `121 points` (`12,100 m2`)
   - total disagreement: `2,178 point-minutes` (`36.3 point-hours`)
 
+1m daily precompute envelope (Lausanne bbox, raw upper bound):
+
+- approx points at 1m: `221.6M`
+- raw bitset footprint per day:
+  - 96 frames (15 min): `~2.48 GB/day`
+  - 288 frames (5 min): `~7.43 GB/day`
+  - 1440 frames (1 min): `~37.14 GB/day`
+
 ## Decision
 
 Adopt tile-based precompute as the default strategy for Lausanne and larger regions.
@@ -100,6 +112,7 @@ Mandatory rules:
 2. Use fixed geographic tiles for precompute jobs.
 3. Build/use local horizon masks per tile (or near-tile macro-cell).
 4. Do not reuse a horizon mask beyond a strict distance threshold.
+5. 1m daily precompute must be tile-based and compressed by design.
 
 ## Recommendations
 
@@ -120,6 +133,7 @@ Performance:
 1. Scale horizontally by tile-job parallelism (controlled worker pool).
 2. Keep interactive APIs for small bbox; route large requests to precomputed data.
 3. Maintain periodic benchmark runs (1, 7, 30 days) to track regressions.
+4. Track cold-vs-warm benchmarks separately; never infer capacity from one mixed run.
 
 ## Consequences
 
