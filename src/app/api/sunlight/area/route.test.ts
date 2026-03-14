@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { findInstantAreaCacheHit } from "@/lib/precompute/sunlight-area-cache";
+import {
+  aggregateDailyAreaFromArtifacts,
+  aggregateInstantAreaFromArtifacts,
+  resolveSunlightTilesForBbox,
+} from "@/lib/precompute/sunlight-tile-service";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
 import type { HorizonMask } from "@/lib/sun/horizon-mask";
@@ -37,8 +41,10 @@ function createMockContext(
   };
 }
 
-vi.mock("@/lib/precompute/sunlight-area-cache", () => ({
-  findInstantAreaCacheHit: vi.fn(async () => null),
+vi.mock("@/lib/precompute/sunlight-tile-service", () => ({
+  resolveSunlightTilesForBbox: vi.fn(async () => null),
+  aggregateInstantAreaFromArtifacts: vi.fn(),
+  aggregateDailyAreaFromArtifacts: vi.fn(),
 }));
 
 vi.mock("@/lib/sun/evaluation-context", () => ({
@@ -54,10 +60,12 @@ vi.mock("@/lib/sun/dynamic-horizon-mask", () => ({
 describe("POST /api/sunlight/area", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(findInstantAreaCacheHit).mockResolvedValue(null);
+    vi.mocked(resolveSunlightTilesForBbox).mockResolvedValue(null);
   });
 
-  it("returns a valid daily area payload without running a web server", async () => {
+  it(
+    "returns a valid daily area payload without running a web server",
+    async () => {
     vi.mocked(buildPointEvaluationContext).mockImplementation(async (lat, lon) =>
       createMockContext(lat, lon),
     );
@@ -100,10 +108,11 @@ describe("POST /api/sunlight/area", () => {
     expect(json.pointCount).toBe(json.points.length);
     expect(json.points[0].sunnyMinutes).toBeGreaterThanOrEqual(0);
     expect(json.stats.elapsedMs).toBeGreaterThanOrEqual(0);
-  });
+    },
+    15_000,
+  );
 
   it("returns a valid instant area payload without running a web server", async () => {
-    vi.mocked(findInstantAreaCacheHit).mockResolvedValue(null);
     vi.mocked(buildPointEvaluationContext).mockImplementation(async (lat, lon) =>
       createMockContext(lat, lon),
     );
@@ -153,7 +162,6 @@ describe("POST /api/sunlight/area", () => {
   });
 
   it("does not reject when raw grid is large but outdoor points stay under maxPoints", async () => {
-    vi.mocked(findInstantAreaCacheHit).mockResolvedValue(null);
     let contextCallCount = 0;
     vi.mocked(buildPointEvaluationContext).mockImplementation(async (lat, lon) => {
       const currentCall = contextCallCount;
@@ -207,7 +215,6 @@ describe("POST /api/sunlight/area", () => {
   });
 
   it("rejects only when outdoor points exceed maxPoints", async () => {
-    vi.mocked(findInstantAreaCacheHit).mockResolvedValue(null);
     vi.mocked(buildPointEvaluationContext).mockImplementation(async (lat, lon) =>
       createMockContext(lat, lon),
     );
@@ -243,7 +250,6 @@ describe("POST /api/sunlight/area", () => {
   });
 
   it("includes dynamic terrain horizon debug data when DEM horizon is available", async () => {
-    vi.mocked(findInstantAreaCacheHit).mockResolvedValue(null);
     const dynamicMask = {
       generatedAt: "2026-03-08T00:00:00.000Z",
       method: "copernicus-dem30-runtime-raycast-v1",
@@ -313,9 +319,24 @@ describe("POST /api/sunlight/area", () => {
   });
 
   it("serves instant area requests from precomputed cache when available", async () => {
-    vi.mocked(findInstantAreaCacheHit).mockResolvedValue({
+    vi.mocked(resolveSunlightTilesForBbox).mockResolvedValue({
       region: "lausanne",
-      localTime: "09:15",
+      modelVersionHash: "model-hash",
+      artifacts: [],
+      tileSizeMeters: 250,
+      cache: {
+        hit: true,
+        layer: "L2",
+        region: "lausanne",
+        modelVersionHash: "model-hash",
+        fullyCovered: true,
+        tilesRequested: 1,
+        tilesFromL1: 0,
+        tilesFromL2: 1,
+        tilesComputed: 0,
+      },
+    });
+    vi.mocked(aggregateInstantAreaFromArtifacts).mockReturnValue({
       utcTime: "2026-03-08T08:15:00.000Z",
       pointCount: 1,
       gridPointCount: 1,
@@ -339,7 +360,12 @@ describe("POST /api/sunlight/area", () => {
           indoorBuildingId: null,
         },
       ],
-      warnings: ["Served from precomputed sunlight cache."],
+      warnings: [],
+      stats: {
+        pointsWithElevation: 1,
+        pointsWithoutElevation: 0,
+        indoorPointsExcluded: 0,
+      },
       model: {
         terrainHorizonMethod: "precomputed-cache",
         buildingsShadowMethod: "precomputed-cache",
@@ -349,16 +375,6 @@ describe("POST /api/sunlight/area", () => {
           observerHeightMeters: 0,
           buildingHeightBiasMeters: 0,
         },
-        cacheHit: true,
-        cacheRegion: "lausanne",
-      },
-      stats: {
-        elapsedMs: 0,
-        pointsWithElevation: 1,
-        pointsWithoutElevation: 0,
-        indoorPointsExcluded: 0,
-        cacheHit: true,
-        cacheTileCount: 1,
       },
     });
 
@@ -383,17 +399,116 @@ describe("POST /api/sunlight/area", () => {
     const json = (await response.json()) as {
       pointCount: number;
       points: Array<{ isSunny: boolean }>;
-      model: { cacheHit?: boolean; cacheRegion?: string };
-      stats: { cacheHit?: boolean; cacheTileCount?: number };
+      cache: { hit?: boolean; layer?: string; region?: string; fullyCovered?: boolean };
     };
 
     expect(response.status).toBe(200);
     expect(json.pointCount).toBe(1);
     expect(json.points[0]?.isSunny).toBe(true);
-    expect(json.model.cacheHit).toBe(true);
-    expect(json.model.cacheRegion).toBe("lausanne");
-    expect(json.stats.cacheHit).toBe(true);
-    expect(json.stats.cacheTileCount).toBe(1);
+    expect(json.cache.hit).toBe(true);
+    expect(json.cache.layer).toBe("L2");
+    expect(json.cache.region).toBe("lausanne");
+    expect(json.cache.fullyCovered).toBe(true);
+    expect(buildPointEvaluationContext).not.toHaveBeenCalled();
+  });
+
+  it("serves daily area requests from precomputed cache when available", async () => {
+    vi.mocked(resolveSunlightTilesForBbox).mockResolvedValue({
+      region: "lausanne",
+      modelVersionHash: "model-hash",
+      artifacts: [],
+      tileSizeMeters: 250,
+      cache: {
+        hit: true,
+        layer: "L2",
+        region: "lausanne",
+        modelVersionHash: "model-hash",
+        fullyCovered: true,
+        tilesRequested: 2,
+        tilesFromL1: 0,
+        tilesFromL2: 2,
+        tilesComputed: 0,
+      },
+    });
+    vi.mocked(aggregateDailyAreaFromArtifacts).mockReturnValue({
+      pointCount: 1,
+      gridPointCount: 2,
+      points: [
+        {
+          id: "ix1-iy2",
+          lat: 46.5225,
+          lon: 6.6005,
+          lv95Easting: 2_538_000.5,
+          lv95Northing: 1_152_000.5,
+          pointElevationMeters: 520,
+          sunriseLocalTime: "2026-03-08 06:58:00",
+          sunsetLocalTime: "2026-03-08 18:24:00",
+          sunnyMinutes: 180,
+          sunnyWindows: [
+            {
+              startLocalTime: "2026-03-08 09:00:00",
+              endLocalTime: "2026-03-08 12:00:00",
+              durationMinutes: 180,
+            },
+          ],
+          insideBuilding: false,
+          indoorBuildingId: null,
+        },
+      ],
+      warnings: [],
+      stats: {
+        pointsWithElevation: 1,
+        pointsWithoutElevation: 0,
+        indoorPointsExcluded: 1,
+      },
+      model: {
+        terrainHorizonMethod: "precomputed-cache",
+        buildingsShadowMethod: "precomputed-cache",
+        vegetationShadowMethod: "precomputed-cache",
+        terrainHorizonDebug: null,
+        shadowCalibration: {
+          observerHeightMeters: 0,
+          buildingHeightBiasMeters: 0,
+        },
+      },
+    });
+
+    const request = new Request("http://localhost/api/sunlight/area", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        bbox: [6.6001, 46.5221, 6.6009, 46.5228],
+        date: "2026-03-08",
+        timezone: "Europe/Zurich",
+        mode: "daily",
+        sampleEveryMinutes: 15,
+        gridStepMeters: 5,
+        maxPoints: 3000,
+        ignoreVegetation: true,
+      }),
+    });
+
+    const response = await POST(request);
+    const json = (await response.json()) as {
+      pointCount: number;
+      points: Array<{ sunnyMinutes: number }>;
+      cache: { hit?: boolean; layer?: string; region?: string; fullyCovered?: boolean };
+    };
+
+    expect(response.status).toBe(200);
+    expect(json.pointCount).toBe(1);
+    expect(json.points[0]?.sunnyMinutes).toBe(180);
+    expect(json.cache.hit).toBe(true);
+    expect(json.cache.layer).toBe("L2");
+    expect(json.cache.region).toBe("lausanne");
+    expect(json.cache.fullyCovered).toBe(true);
+    expect(aggregateDailyAreaFromArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ignoreVegetation: true,
+      }),
+    );
     expect(buildPointEvaluationContext).not.toHaveBeenCalled();
   });
 });

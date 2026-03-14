@@ -1,10 +1,16 @@
-import fs from "node:fs/promises";
+import { promisify } from "node:util";
+import { gzip as gzipCallback, gunzip as gunzipCallback } from "node:zlib";
 import path from "node:path";
 
 import { LAUSANNE_CONFIG } from "@/lib/config/lausanne";
 import { NYON_CONFIG } from "@/lib/config/nyon";
 import { lv95ToWgs84, wgs84ToLv95 } from "@/lib/geo/projection";
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
+import { getSunlightCacheStorage } from "./sunlight-cache-storage";
+import { SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "./model-version";
+
+const gzip = promisify(gzipCallback);
+const gunzip = promisify(gunzipCallback);
 
 export type PrecomputedRegionName = "lausanne" | "nyon";
 
@@ -33,7 +39,17 @@ export interface PrecomputedSunlightPoint {
   lv95Northing: number;
   ix: number;
   iy: number;
+  insideBuilding: boolean;
+  indoorBuildingId: string | null;
+  outdoorIndex: number | null;
   pointElevationMeters: number | null;
+}
+
+export interface PrecomputedSunlightFrameDiagnostics {
+  horizonAngleDegByPoint: Array<number | null>;
+  buildingBlockerIdByPoint: Array<string | null>;
+  buildingBlockerDistanceMetersByPoint: Array<number | null>;
+  vegetationBlockerDistanceMetersByPoint: Array<number | null>;
 }
 
 export interface PrecomputedSunlightFrame {
@@ -47,11 +63,13 @@ export interface PrecomputedSunlightFrame {
   terrainBlockedMaskBase64: string;
   buildingsBlockedMaskBase64: string;
   vegetationBlockedMaskBase64: string;
+  diagnostics: PrecomputedSunlightFrameDiagnostics;
 }
 
 export interface PrecomputedSunlightTileArtifact {
-  version: 1;
+  artifactFormatVersion: number;
   region: PrecomputedRegionName;
+  modelVersionHash: string;
   date: string;
   timezone: string;
   gridStepMeters: number;
@@ -65,6 +83,7 @@ export interface PrecomputedSunlightTileArtifact {
     terrainHorizonMethod: string;
     buildingsShadowMethod: string;
     vegetationShadowMethod: string;
+    algorithmVersion: string;
     shadowCalibration: {
       observerHeightMeters: number;
       buildingHeightBiasMeters: number;
@@ -83,8 +102,9 @@ export interface PrecomputedSunlightTileArtifact {
 }
 
 export interface PrecomputedSunlightManifest {
-  version: 1;
+  artifactFormatVersion: number;
   region: PrecomputedRegionName;
+  modelVersionHash: string;
   date: string;
   timezone: string;
   gridStepMeters: number;
@@ -96,6 +116,7 @@ export interface PrecomputedSunlightManifest {
   failedTileIds: string[];
   bbox: RegionBbox;
   generatedAt: string;
+  complete: boolean;
 }
 
 const REGION_BBOXES: Record<PrecomputedRegionName, RegionBbox> = {
@@ -128,49 +149,76 @@ export function bboxContains(container: RegionBbox, inner: RegionBbox): boolean 
 
 function createCacheRunKey(params: {
   region: PrecomputedRegionName;
+  modelVersionHash: string;
   date: string;
   gridStepMeters: number;
   sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
 }): string {
   return path.join(
     CACHE_SUNLIGHT_DIR,
     params.region,
+    params.modelVersionHash,
     `g${params.gridStepMeters}`,
     `m${params.sampleEveryMinutes}`,
     params.date,
+    `t${params.startLocalTime.replace(":", "")}-${params.endLocalTime.replace(":", "")}`,
   );
 }
 
 export function getPrecomputedSunlightManifestPath(params: {
   region: PrecomputedRegionName;
+  modelVersionHash: string;
   date: string;
   gridStepMeters: number;
   sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
 }): string {
   return path.join(createCacheRunKey(params), "manifest.json");
 }
 
 export function getPrecomputedSunlightTilePath(params: {
   region: PrecomputedRegionName;
+  modelVersionHash: string;
   date: string;
   gridStepMeters: number;
   sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
   tileId: string;
 }): string {
-  return path.join(createCacheRunKey(params), "tiles", `${params.tileId}.json`);
+  return path.join(createCacheRunKey(params), "tiles", `${params.tileId}.json.gz`);
+}
+
+async function readCompressedJson<T>(filePath: string): Promise<T> {
+  const storage = getSunlightCacheStorage();
+  const compressed = await storage.readBuffer(filePath);
+  const jsonBuffer = await gunzip(compressed);
+  return JSON.parse(jsonBuffer.toString("utf8")) as T;
+}
+
+async function writeCompressedJson<T>(filePath: string, value: T): Promise<void> {
+  const storage = getSunlightCacheStorage();
+  const compressed = await gzip(Buffer.from(JSON.stringify(value)));
+  await storage.writeBuffer(filePath, Buffer.from(compressed));
 }
 
 export async function writePrecomputedSunlightManifest(
   manifest: PrecomputedSunlightManifest,
 ): Promise<void> {
+  const storage = getSunlightCacheStorage();
   const targetPath = getPrecomputedSunlightManifestPath({
     region: manifest.region,
+    modelVersionHash: manifest.modelVersionHash,
     date: manifest.date,
     gridStepMeters: manifest.gridStepMeters,
     sampleEveryMinutes: manifest.sampleEveryMinutes,
+    startLocalTime: manifest.startLocalTime,
+    endLocalTime: manifest.endLocalTime,
   });
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await fs.writeFile(targetPath, JSON.stringify(manifest, null, 2), "utf8");
+  await storage.writeText(targetPath, JSON.stringify(manifest, null, 2));
 }
 
 export async function writePrecomputedSunlightTile(
@@ -178,25 +226,38 @@ export async function writePrecomputedSunlightTile(
 ): Promise<void> {
   const targetPath = getPrecomputedSunlightTilePath({
     region: artifact.region,
+    modelVersionHash: artifact.modelVersionHash,
     date: artifact.date,
     gridStepMeters: artifact.gridStepMeters,
     sampleEveryMinutes: artifact.sampleEveryMinutes,
+    startLocalTime: artifact.startLocalTime,
+    endLocalTime: artifact.endLocalTime,
     tileId: artifact.tile.tileId,
   });
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await fs.writeFile(targetPath, JSON.stringify(artifact), "utf8");
+  await writeCompressedJson(targetPath, artifact);
 }
 
 export async function loadPrecomputedSunlightManifest(params: {
   region: PrecomputedRegionName;
+  modelVersionHash: string;
   date: string;
   gridStepMeters: number;
   sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
 }): Promise<PrecomputedSunlightManifest | null> {
+  const storage = getSunlightCacheStorage();
   const targetPath = getPrecomputedSunlightManifestPath(params);
   try {
-    const raw = await fs.readFile(targetPath, "utf8");
-    return JSON.parse(raw) as PrecomputedSunlightManifest;
+    const raw = await storage.readText(targetPath);
+    const parsed = JSON.parse(raw) as PrecomputedSunlightManifest;
+    if (parsed.artifactFormatVersion !== SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION) {
+      return null;
+    }
+    if (parsed.modelVersionHash !== params.modelVersionHash) {
+      return null;
+    }
+    return parsed;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return null;
@@ -207,15 +268,24 @@ export async function loadPrecomputedSunlightManifest(params: {
 
 export async function loadPrecomputedSunlightTile(params: {
   region: PrecomputedRegionName;
+  modelVersionHash: string;
   date: string;
   gridStepMeters: number;
   sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
   tileId: string;
 }): Promise<PrecomputedSunlightTileArtifact | null> {
   const targetPath = getPrecomputedSunlightTilePath(params);
   try {
-    const raw = await fs.readFile(targetPath, "utf8");
-    return JSON.parse(raw) as PrecomputedSunlightTileArtifact;
+    const parsed = await readCompressedJson<PrecomputedSunlightTileArtifact>(targetPath);
+    if (parsed.artifactFormatVersion !== SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION) {
+      return null;
+    }
+    if (parsed.modelVersionHash !== params.modelVersionHash) {
+      return null;
+    }
+    return parsed;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return null;
@@ -298,7 +368,7 @@ export function buildRegionTiles(
 }
 
 export function buildTilePoints(tile: RegionTileSpec, gridStepMeters: number) {
-  const points: Array<PrecomputedSunlightPoint> = [];
+  const points: Array<Omit<PrecomputedSunlightPoint, "insideBuilding" | "indoorBuildingId" | "outdoorIndex">> = [];
   const startIx = Math.floor(tile.minEasting / gridStepMeters);
   const endIxExclusive = Math.ceil(tile.maxEasting / gridStepMeters);
   const startIy = Math.floor(tile.minNorthing / gridStepMeters);

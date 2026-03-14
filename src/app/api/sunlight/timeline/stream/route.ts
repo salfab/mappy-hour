@@ -4,6 +4,10 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { buildGridFromBbox } from "@/lib/geo/grid";
+import {
+  buildTimelineFromArtifacts,
+  resolveSunlightTilesForBbox,
+} from "@/lib/precompute/sunlight-tile-service";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
@@ -128,6 +132,16 @@ function yieldToEventLoop(): Promise<void> {
   });
 }
 
+function buildCacheMissMetadata() {
+  return {
+    hit: false,
+    layer: "MISS" as const,
+    region: null,
+    modelVersionHash: null,
+    fullyCovered: false,
+  };
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const rawQuery = Object.fromEntries(url.searchParams.entries());
@@ -187,6 +201,101 @@ export async function GET(request: Request) {
         };
 
         const run = async () => {
+          const cacheResolved = await resolveSunlightTilesForBbox({
+            bbox: {
+              minLon: query.minLon,
+              minLat: query.minLat,
+              maxLon: query.maxLon,
+              maxLat: query.maxLat,
+            },
+            date: query.date,
+            timezone: query.timezone,
+            sampleEveryMinutes: query.sampleEveryMinutes,
+            gridStepMeters: query.gridStepMeters,
+            startLocalTime: query.startLocalTime,
+            endLocalTime: query.endLocalTime,
+            shadowCalibration,
+            persistMissingTiles: true,
+          });
+
+          if (cacheResolved) {
+            const timeline = buildTimelineFromArtifacts({
+              artifacts: cacheResolved.artifacts,
+              bbox: {
+                minLon: query.minLon,
+                minLat: query.minLat,
+                maxLon: query.maxLon,
+                maxLat: query.maxLat,
+              },
+              timezone: query.timezone,
+            });
+            if (timeline.pointCount > query.maxPoints) {
+              sendEvent("error", {
+                error: "Outdoor grid exceeds maxPoints limit.",
+                details: `Computed more than ${query.maxPoints} outdoor points (raw: ${timeline.gridPointCount}, indoor excluded: ${timeline.indoorPointsExcluded}).`,
+              });
+              return;
+            }
+
+            sendEvent("progress", {
+              phase: "cache-read",
+              done: cacheResolved.cache.tilesRequested,
+              total: cacheResolved.cache.tilesRequested,
+              percent: 100,
+              etaSeconds: 0,
+            });
+            await yieldToEventLoop();
+
+            sendEvent("start", {
+              date: query.date,
+              timezone: query.timezone,
+              startLocalTime: query.startLocalTime,
+              endLocalTime: query.endLocalTime,
+              sampleEveryMinutes: query.sampleEveryMinutes,
+              gridStepMeters: query.gridStepMeters,
+              gridPointCount: timeline.gridPointCount,
+              pointCount: timeline.pointCount,
+              indoorPointsExcluded: timeline.indoorPointsExcluded,
+              frameCount: timeline.frames.length,
+              points: timeline.points,
+              model: timeline.model,
+              cache: cacheResolved.cache,
+              warnings: timeline.warnings,
+            });
+            await yieldToEventLoop();
+
+            for (let frameIndex = 0; frameIndex < timeline.frames.length; frameIndex += 1) {
+              sendEvent("frame", timeline.frames[frameIndex]);
+              sendEvent("progress", {
+                phase: "cache-playback",
+                done: frameIndex + 1,
+                total: timeline.frames.length,
+                percent:
+                  timeline.frames.length === 0
+                    ? 100
+                    : Math.round((((frameIndex + 1) / timeline.frames.length) * 1000)) /
+                      10,
+                etaSeconds: 0,
+              });
+              await yieldToEventLoop();
+            }
+
+            sendEvent("done", {
+              stats: {
+                elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
+                evaluationElapsedMs: 0,
+                pointsWithElevation: timeline.pointsWithElevation,
+                pointsWithoutElevation: timeline.pointsWithoutElevation,
+                indoorPointsExcluded: timeline.indoorPointsExcluded,
+                frameCount: timeline.frames.length,
+                totalEvaluations: timeline.pointCount * timeline.frames.length,
+              },
+              cache: cacheResolved.cache,
+              warnings: timeline.warnings,
+            });
+            return;
+          }
+
           const points: PreparedPoint[] = [];
           const warnings: string[] = [];
           let indoorPointsExcluded = 0;
@@ -353,6 +462,7 @@ export async function GET(request: Request) {
               terrainHorizonDebug,
               shadowCalibration,
             },
+            cache: buildCacheMissMetadata(),
             warnings: responseWarnings,
           });
           await yieldToEventLoop();
@@ -444,6 +554,7 @@ export async function GET(request: Request) {
               frameCount: samples.length,
               totalEvaluations,
             },
+            cache: buildCacheMissMetadata(),
             warnings: responseWarnings,
           });
         };

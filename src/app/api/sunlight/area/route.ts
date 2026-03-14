@@ -4,7 +4,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { buildGridFromBbox } from "@/lib/geo/grid";
-import { findInstantAreaCacheHit } from "@/lib/precompute/sunlight-area-cache";
+import {
+  aggregateDailyAreaFromArtifacts,
+  aggregateInstantAreaFromArtifacts,
+  resolveSunlightTilesForBbox,
+} from "@/lib/precompute/sunlight-tile-service";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
@@ -27,6 +31,7 @@ const requestSchema = z
     sampleEveryMinutes: z.number().int().min(1).max(60).default(15),
     gridStepMeters: z.number().int().min(1).max(2000).default(250),
     maxPoints: z.number().int().min(1).max(5000).default(900),
+    ignoreVegetation: z.boolean().default(false),
     observerHeightMeters: z.number().min(-5).max(20).optional(),
     buildingHeightBiasMeters: z.number().min(-20).max(20).optional(),
   })
@@ -78,6 +83,76 @@ function maxPointsExceededResponse(params: {
   );
 }
 
+function buildSunnyWindowsFromSamples(
+  samples: Array<{ localTime: string; isSunny: boolean; utcTime: string }>,
+  sampleEveryMinutes: number,
+  timeZone: string,
+) {
+  const windows: Array<{
+    startLocalTime: string;
+    endLocalTime: string;
+    durationMinutes: number;
+  }> = [];
+  let currentStart: string | null = null;
+  let currentDuration = 0;
+
+  for (const sample of samples) {
+    if (sample.isSunny) {
+      if (!currentStart) {
+        currentStart = sample.localTime;
+      }
+      currentDuration += sampleEveryMinutes;
+      continue;
+    }
+
+    if (currentStart) {
+      windows.push({
+        startLocalTime: currentStart,
+        endLocalTime: sample.localTime,
+        durationMinutes: currentDuration,
+      });
+      currentStart = null;
+      currentDuration = 0;
+    }
+  }
+
+  if (currentStart) {
+    const lastSample = samples.at(-1);
+    const endLocalTime = lastSample
+      ? new Intl.DateTimeFormat("sv-SE", {
+          timeZone,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        }).format(
+          new Date(Date.parse(lastSample.utcTime) + sampleEveryMinutes * 60_000),
+        )
+      : currentStart;
+
+    windows.push({
+      startLocalTime: currentStart,
+      endLocalTime,
+      durationMinutes: currentDuration,
+    });
+  }
+
+  return windows;
+}
+
+function buildCacheMissMetadata() {
+  return {
+    hit: false,
+    layer: "MISS" as const,
+    region: null,
+    modelVersionHash: null,
+    fullyCovered: false,
+  };
+}
+
 export async function POST(request: Request) {
   let payload: unknown;
 
@@ -109,47 +184,111 @@ export async function POST(request: Request) {
       buildingHeightBiasMeters: parsed.data.buildingHeightBiasMeters,
     });
 
-    if (parsed.data.mode === "instant") {
-      const cacheHit = await findInstantAreaCacheHit({
-        bbox: {
-          minLon,
-          minLat,
-          maxLon,
-          maxLat,
-        },
-        date: parsed.data.date,
-        timezone: parsed.data.timezone,
-        localTime: parsed.data.localTime,
-        sampleEveryMinutes: parsed.data.sampleEveryMinutes,
-        gridStepMeters: parsed.data.gridStepMeters,
-        maxPoints: parsed.data.maxPoints,
-        shadowCalibration,
-      });
+    const resolvedTiles = await resolveSunlightTilesForBbox({
+      bbox: {
+        minLon,
+        minLat,
+        maxLon,
+        maxLat,
+      },
+      date: parsed.data.date,
+      timezone: parsed.data.timezone,
+      sampleEveryMinutes: parsed.data.sampleEveryMinutes,
+      gridStepMeters: parsed.data.gridStepMeters,
+      startLocalTime: "00:00",
+      endLocalTime: "23:59",
+      shadowCalibration,
+      persistMissingTiles: true,
+    });
 
-      if (cacheHit) {
-        return NextResponse.json({
-          mode: parsed.data.mode,
-          date: parsed.data.date,
-          timezone: parsed.data.timezone,
-          localTime: parsed.data.localTime,
-          utcTime: cacheHit.utcTime,
+    if (resolvedTiles) {
+      if (parsed.data.mode === "instant") {
+        const aggregated = aggregateInstantAreaFromArtifacts({
+          artifacts: resolvedTiles.artifacts,
           bbox: {
             minLon,
             minLat,
             maxLon,
             maxLat,
           },
-          gridStepMeters: parsed.data.gridStepMeters,
-          pointCount: cacheHit.pointCount,
-          gridPointCount: cacheHit.gridPointCount,
-          points: cacheHit.points,
-          model: cacheHit.model,
-          warnings: cacheHit.warnings,
-          stats: {
-            ...cacheHit.stats,
-            elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
-          },
+          date: parsed.data.date,
+          timezone: parsed.data.timezone,
+          localTime: parsed.data.localTime,
+          maxPoints: parsed.data.maxPoints,
+          ignoreVegetation: parsed.data.ignoreVegetation,
         });
+        if (aggregated && "error" in aggregated) {
+          return NextResponse.json(aggregated, { status: 400 });
+        }
+        if (aggregated) {
+          return NextResponse.json({
+            mode: parsed.data.mode,
+            date: parsed.data.date,
+            timezone: parsed.data.timezone,
+            localTime: parsed.data.localTime,
+            utcTime: aggregated.utcTime,
+            bbox: {
+              minLon,
+              minLat,
+              maxLon,
+              maxLat,
+            },
+            gridStepMeters: parsed.data.gridStepMeters,
+            pointCount: aggregated.pointCount,
+            gridPointCount: aggregated.gridPointCount,
+            points: aggregated.points,
+            model: aggregated.model,
+            cache: resolvedTiles.cache,
+            warnings: aggregated.warnings,
+            stats: {
+              ...aggregated.stats,
+              elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
+            },
+          });
+        }
+      } else {
+        const aggregated = aggregateDailyAreaFromArtifacts({
+          artifacts: resolvedTiles.artifacts,
+          bbox: {
+            minLon,
+            minLat,
+            maxLon,
+            maxLat,
+          },
+          date: parsed.data.date,
+          timezone: parsed.data.timezone,
+          sampleEveryMinutes: parsed.data.sampleEveryMinutes,
+          maxPoints: parsed.data.maxPoints,
+          ignoreVegetation: parsed.data.ignoreVegetation,
+        });
+        if (aggregated && "error" in aggregated) {
+          return NextResponse.json(aggregated, { status: 400 });
+        }
+        if (aggregated) {
+          return NextResponse.json({
+            mode: parsed.data.mode,
+            date: parsed.data.date,
+            timezone: parsed.data.timezone,
+            bbox: {
+              minLon,
+              minLat,
+              maxLon,
+              maxLat,
+            },
+            gridStepMeters: parsed.data.gridStepMeters,
+            sampleEveryMinutes: parsed.data.sampleEveryMinutes,
+            pointCount: aggregated.pointCount,
+            gridPointCount: aggregated.gridPointCount,
+            points: aggregated.points,
+            model: aggregated.model,
+            cache: resolvedTiles.cache,
+            warnings: aggregated.warnings,
+            stats: {
+              ...aggregated.stats,
+              elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
+            },
+          });
+        }
       }
     }
 
@@ -269,10 +408,16 @@ export async function POST(request: Request) {
           lv95Easting: Math.round(context.pointLv95.easting * 1000) / 1000,
           lv95Northing: Math.round(context.pointLv95.northing * 1000) / 1000,
           pointElevationMeters: context.pointElevationMeters,
-          isSunny: sample.isSunny,
+          isSunny: parsed.data.ignoreVegetation
+            ? sample.aboveAstronomicalHorizon &&
+              !sample.terrainBlocked &&
+              !sample.buildingsBlocked
+            : sample.isSunny,
           terrainBlocked: sample.terrainBlocked,
           buildingsBlocked: sample.buildingsBlocked,
-          vegetationBlocked: sample.vegetationBlocked,
+          vegetationBlocked: parsed.data.ignoreVegetation
+            ? false
+            : sample.vegetationBlocked,
           altitudeDeg: Math.round(sample.altitudeDeg * 1000) / 1000,
           azimuthDeg: Math.round(sample.azimuthDeg * 1000) / 1000,
           horizonAngleDeg:
@@ -301,6 +446,7 @@ export async function POST(request: Request) {
         pointCount: points.length,
         gridPointCount: grid.length,
         points,
+        cache: buildCacheMissMetadata(),
         model: {
           terrainHorizonMethod: terrainMethod,
           buildingsShadowMethod: buildingsMethod,
@@ -376,7 +522,28 @@ export async function POST(request: Request) {
         vegetationShadowEvaluator: context.vegetationShadowEvaluator,
       });
 
-      const sunnyMinutes = daily.sunnyWindows.reduce(
+      const effectiveSamples = parsed.data.ignoreVegetation
+        ? daily.samples.map((sample) => ({
+            localTime: sample.localTime,
+            utcTime: sample.utcTime,
+            isSunny:
+              sample.aboveAstronomicalHorizon &&
+              !sample.terrainBlocked &&
+              !sample.buildingsBlocked,
+          }))
+        : daily.samples.map((sample) => ({
+            localTime: sample.localTime,
+            utcTime: sample.utcTime,
+            isSunny: sample.isSunny,
+          }));
+      const sunnyWindows = parsed.data.ignoreVegetation
+        ? buildSunnyWindowsFromSamples(
+            effectiveSamples,
+            parsed.data.sampleEveryMinutes,
+            parsed.data.timezone,
+          )
+        : daily.sunnyWindows;
+      const sunnyMinutes = sunnyWindows.reduce(
         (total, window) => total + window.durationMinutes,
         0,
       );
@@ -391,7 +558,7 @@ export async function POST(request: Request) {
         sunriseLocalTime: daily.sunriseLocalTime,
         sunsetLocalTime: daily.sunsetLocalTime,
         sunnyMinutes,
-        sunnyWindows: daily.sunnyWindows,
+        sunnyWindows,
         insideBuilding: false,
         indoorBuildingId: null,
       });
@@ -412,6 +579,7 @@ export async function POST(request: Request) {
       pointCount: points.length,
       gridPointCount: grid.length,
       points,
+      cache: buildCacheMissMetadata(),
       model: {
         terrainHorizonMethod: terrainMethod,
         buildingsShadowMethod: buildingsMethod,

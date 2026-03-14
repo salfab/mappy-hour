@@ -1,0 +1,59 @@
+{
+  "generatedAt": "2026-03-14T09:39:47.313Z",
+  "benchmarkVersion": "v1",
+  "args": {
+    "bbox": [
+      6.6001,
+      46.5221,
+      6.6002,
+      46.5222
+    ],
+    "date": "2026-03-08",
+    "timezone": "Europe/Zurich",
+    "mode": "instant",
+    "localTime": "09:15",
+    "sampleEveryMinutes": 15,
+    "gridStepMeters": 20,
+    "maxPoints": 100,
+    "ignoreVegetation": false,
+    "outputName": "smoke-cache-benchmark"
+  },
+  "cold": {
+    "wallMs": 1384.085,
+    "cache": {
+      "hit": true,
+      "layer": "L2",
+      "region": "lausanne",
+      "modelVersionHash": "1aead7ba2238b854",
+      "fullyCovered": true,
+      "tilesRequested": 1,
+      "tilesFromL1": 0,
+      "tilesFromL2": 1,
+      "tilesComputed": 0
+    },
+    "pointCount": 0,
+    "gridPointCount": 0,
+    "elapsedMs": 1378.412
+  },
+  "warm": {
+    "wallMs": 73.934,
+    "cache": {
+      "hit": true,
+      "layer": "L1",
+      "region": "lausanne",
+      "modelVersionHash": "1aead7ba2238b854",
+      "fullyCovered": true,
+      "tilesRequested": 1,
+      "tilesFromL1": 1,
+      "tilesFromL2": 0,
+      "tilesComputed": 0
+    },
+    "pointCount": 0,
+    "gridPointCount": 0,
+    "elapsedMs": 72.906
+  },
+  "ratios": {
+    "warmVsColdWallTime": 0.053,
+    "warmVsColdApiElapsed": 0.053
+  }
+}

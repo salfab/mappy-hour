@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  buildTimelineFromArtifacts,
+  resolveSunlightTilesForBbox,
+} from "@/lib/precompute/sunlight-tile-service";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
 
@@ -82,11 +86,21 @@ vi.mock("@/lib/sun/evaluation-context", () => ({
   ),
 }));
 
+vi.mock("@/lib/precompute/sunlight-tile-service", () => ({
+  resolveSunlightTilesForBbox: vi.fn(async () => null),
+  buildTimelineFromArtifacts: vi.fn(),
+}));
+
 vi.mock("@/lib/sun/dynamic-horizon-mask", () => ({
   buildDynamicHorizonMask: vi.fn(async () => null),
 }));
 
 describe("GET /api/sunlight/timeline/stream", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(resolveSunlightTilesForBbox).mockResolvedValue(null);
+  });
+
   it("streams timeline events successfully without running a web server", async () => {
     const request = new Request(
       "http://localhost/api/sunlight/timeline/stream?minLon=6.599447&minLat=46.522107&maxLon=6.600200&maxLat=46.522700&date=2026-03-08&timezone=Europe/Zurich&sampleEveryMinutes=60&gridStepMeters=20&maxPoints=3000",
@@ -312,5 +326,89 @@ describe("GET /api/sunlight/timeline/stream", () => {
     }>;
     expect(errorPayloads.length).toBeGreaterThan(0);
     expect(errorPayloads[0]?.error).toContain("Invalid daily time range");
+  });
+
+  it("streams cached timeline frames when precomputed tiles cover the bbox", async () => {
+    vi.mocked(resolveSunlightTilesForBbox).mockResolvedValue({
+      region: "lausanne",
+      modelVersionHash: "model-hash",
+      artifacts: [],
+      tileSizeMeters: 250,
+      cache: {
+        hit: true,
+        layer: "L2",
+        region: "lausanne",
+        modelVersionHash: "model-hash",
+        fullyCovered: true,
+        tilesRequested: 1,
+        tilesFromL1: 0,
+        tilesFromL2: 1,
+        tilesComputed: 0,
+      },
+    });
+    vi.mocked(buildTimelineFromArtifacts).mockReturnValue({
+      gridPointCount: 2,
+      pointCount: 1,
+      indoorPointsExcluded: 1,
+      pointsWithElevation: 1,
+      pointsWithoutElevation: 0,
+      points: [{ id: "ix1-iy2", lat: 46.5225, lon: 6.6005 }],
+      frames: [
+        {
+          index: 0,
+          localTime: "09:15",
+          sunnyCount: 1,
+          sunnyCountNoVegetation: 1,
+          sunMaskBase64: "AQ==",
+          sunMaskNoVegetationBase64: "AQ==",
+        },
+      ],
+      warnings: [],
+      model: {
+        terrainHorizonMethod: "precomputed-cache",
+        buildingsShadowMethod: "precomputed-cache",
+        vegetationShadowMethod: "precomputed-cache",
+        terrainHorizonDebug: null,
+        shadowCalibration: {
+          observerHeightMeters: 0,
+          buildingHeightBiasMeters: 0,
+        },
+      },
+    });
+
+    const request = new Request(
+      "http://localhost/api/sunlight/timeline/stream?minLon=6.599447&minLat=46.522107&maxLon=6.600200&maxLat=46.522700&date=2026-03-08&timezone=Europe/Zurich&sampleEveryMinutes=60&gridStepMeters=20&maxPoints=3000",
+      { method: "GET" },
+    );
+
+    const response = await GET(request);
+    expect(response.status).toBe(200);
+
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    const decoder = new TextDecoder();
+    let streamText = "";
+    while (true) {
+      const chunk = await reader!.read();
+      if (chunk.done) {
+        break;
+      }
+      streamText += decoder.decode(chunk.value, { stream: true });
+    }
+    streamText += decoder.decode();
+
+    const startPayload = parseSseEventData(streamText, "start") as
+      | { cache?: { hit?: boolean; layer?: string; region?: string } }
+      | null;
+    const donePayload = parseSseEventData(streamText, "done") as
+      | { cache?: { hit?: boolean; fullyCovered?: boolean } }
+      | null;
+
+    expect(startPayload?.cache?.hit).toBe(true);
+    expect(startPayload?.cache?.layer).toBe("L2");
+    expect(startPayload?.cache?.region).toBe("lausanne");
+    expect(donePayload?.cache?.fullyCovered).toBe(true);
+    expect(streamText).toContain('"phase":"cache-read"');
+    expect(streamText).toContain('"phase":"cache-playback"');
   });
 });
