@@ -202,7 +202,7 @@ export function CacheAdminClient() {
   const [preRegion, setPreRegion] = useState<"lausanne" | "nyon">("lausanne");
   const [preStartDate, setPreStartDate] = useState("2026-03-08");
   const [preDays, setPreDays] = useState(1);
-  const [preGridStep, setPreGridStep] = useState(5);
+  const [preGridStep, setPreGridStep] = useState(1);
   const [preSampleEvery, setPreSampleEvery] = useState(15);
   const [preStartLocalTime, setPreStartLocalTime] = useState("00:00");
   const [preEndLocalTime, setPreEndLocalTime] = useState("23:59");

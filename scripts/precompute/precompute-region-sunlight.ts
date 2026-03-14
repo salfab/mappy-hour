@@ -29,7 +29,7 @@ const DEFAULT_ARGS: ParsedArgs = {
   days: 1,
   timezone: "Europe/Zurich",
   sampleEveryMinutes: 15,
-  gridStepMeters: 5,
+  gridStepMeters: 1,
   startLocalTime: "00:00",
   endLocalTime: "23:59",
   observerHeightMeters: 0,

@@ -27,7 +27,7 @@ const bodySchema = z.object({
       days: z.number().int().min(1).max(31).default(1),
       timezone: z.string().default("Europe/Zurich"),
       sampleEveryMinutes: z.number().int().min(1).max(60).default(15),
-      gridStepMeters: z.number().int().min(1).max(2000).default(5),
+      gridStepMeters: z.number().int().min(1).max(2000).default(1),
       startLocalTime: z.string().regex(/^\d{2}:\d{2}$/).default("00:00"),
       endLocalTime: z.string().regex(/^\d{2}:\d{2}$/).default("23:59"),
       skipExisting: z.boolean().default(true),
