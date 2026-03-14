@@ -1,0 +1,173 @@
+{
+  "generatedAt": "2026-03-14T19:49:11.025Z",
+  "benchmarkVersion": "v1",
+  "scenario": {
+    "name": "lausanne-far-tiles",
+    "clusters": [
+      {
+        "name": "lausanne-ouest",
+        "lat": 46.52,
+        "lon": 6.56
+      },
+      {
+        "name": "lausanne-est",
+        "lat": 46.52,
+        "lon": 6.72
+      },
+      {
+        "name": "lausanne-nord",
+        "lat": 46.6,
+        "lon": 6.63
+      },
+      {
+        "name": "lausanne-sud",
+        "lat": 46.495,
+        "lon": 6.63
+      }
+    ],
+    "tileSizeMeters": 250,
+    "pointStepMeters": 25,
+    "pointCountTotal": 484,
+    "pointCountPerCluster": 121,
+    "maxDistanceFromLausanneCenterMeters": 9067.907
+  },
+  "args": {
+    "date": "2026-03-08",
+    "timezone": "Europe/Zurich",
+    "localTime": "17:00",
+    "sampleStepMinutes": 5,
+    "tileSizeMeters": 250,
+    "pointStepMeters": 25
+  },
+  "maskBuild": {
+    "bootstrapFirstMaskMs": 25857.774,
+    "localPerPoint": {
+      "maskCount": 484,
+      "buildMs": 1463.955
+    },
+    "tilePerCluster": {
+      "maskCount": 4,
+      "buildMs": 98.637,
+      "speedupVsLocal": 14.842
+    },
+    "globalSingleMask": {
+      "maskCount": 1,
+      "buildMs": 25857.774,
+      "speedupVsLocal": 0.057
+    }
+  },
+  "reference": {
+    "strategy": "local-per-point",
+    "sampleCountPerPoint": 288,
+    "sampleStepMinutes": 5,
+    "checkAtLocalTime": "17:00"
+  },
+  "comparisons": [
+    {
+      "strategy": "tile-mask",
+      "qualityVsLocal": {
+        "pointsWithAnyMismatch": 220,
+        "pointsWithAnyMismatchPct": 45.455,
+        "maxMismatchMinutesPerPoint": 10,
+        "avgMismatchMinutesPerPoint": 2.51,
+        "mismatchComparisons": 243,
+        "mismatchPctComparisons": 0.174,
+        "mismatchPointMinutes": 1215,
+        "mismatchPointHours": 20.25
+      },
+      "checkAt": {
+        "localTime": "17:00",
+        "differentTerrainBlockedPointCount": 0,
+        "horizonAngleDeltaAbsMeanDeg": 0.016322,
+        "horizonAngleDeltaAbsMaxDeg": 0.081
+      },
+      "byCluster": [
+        {
+          "cluster": "lausanne-ouest",
+          "points": 121,
+          "pointsWithAnyMismatch": 82,
+          "pointsWithAnyMismatchPct": 67.769,
+          "avgMismatchMinutesPerPoint": 3.884,
+          "maxMismatchMinutesPerPoint": 10
+        },
+        {
+          "cluster": "lausanne-est",
+          "points": 121,
+          "pointsWithAnyMismatch": 49,
+          "pointsWithAnyMismatchPct": 40.496,
+          "avgMismatchMinutesPerPoint": 2.149,
+          "maxMismatchMinutesPerPoint": 10
+        },
+        {
+          "cluster": "lausanne-nord",
+          "points": 121,
+          "pointsWithAnyMismatch": 44,
+          "pointsWithAnyMismatchPct": 36.364,
+          "avgMismatchMinutesPerPoint": 2.149,
+          "maxMismatchMinutesPerPoint": 10
+        },
+        {
+          "cluster": "lausanne-sud",
+          "points": 121,
+          "pointsWithAnyMismatch": 45,
+          "pointsWithAnyMismatchPct": 37.19,
+          "avgMismatchMinutesPerPoint": 1.86,
+          "maxMismatchMinutesPerPoint": 5
+        }
+      ]
+    },
+    {
+      "strategy": "global-mask",
+      "qualityVsLocal": {
+        "pointsWithAnyMismatch": 297,
+        "pointsWithAnyMismatchPct": 61.364,
+        "maxMismatchMinutesPerPoint": 10,
+        "avgMismatchMinutesPerPoint": 4.101,
+        "mismatchComparisons": 397,
+        "mismatchPctComparisons": 0.285,
+        "mismatchPointMinutes": 1985,
+        "mismatchPointHours": 33.083
+      },
+      "checkAt": {
+        "localTime": "17:00",
+        "differentTerrainBlockedPointCount": 0,
+        "horizonAngleDeltaAbsMeanDeg": 0.267006,
+        "horizonAngleDeltaAbsMaxDeg": 0.424
+      },
+      "byCluster": [
+        {
+          "cluster": "lausanne-ouest",
+          "points": 121,
+          "pointsWithAnyMismatch": 82,
+          "pointsWithAnyMismatchPct": 67.769,
+          "avgMismatchMinutesPerPoint": 3.884,
+          "maxMismatchMinutesPerPoint": 10
+        },
+        {
+          "cluster": "lausanne-est",
+          "points": 121,
+          "pointsWithAnyMismatch": 49,
+          "pointsWithAnyMismatchPct": 40.496,
+          "avgMismatchMinutesPerPoint": 2.149,
+          "maxMismatchMinutesPerPoint": 10
+        },
+        {
+          "cluster": "lausanne-nord",
+          "points": 121,
+          "pointsWithAnyMismatch": 121,
+          "pointsWithAnyMismatchPct": 100,
+          "avgMismatchMinutesPerPoint": 8.512,
+          "maxMismatchMinutesPerPoint": 10
+        },
+        {
+          "cluster": "lausanne-sud",
+          "points": 121,
+          "pointsWithAnyMismatch": 45,
+          "pointsWithAnyMismatchPct": 37.19,
+          "avgMismatchMinutesPerPoint": 1.86,
+          "maxMismatchMinutesPerPoint": 5
+        }
+      ]
+    }
+  ]
+}

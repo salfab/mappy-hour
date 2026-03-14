@@ -1,0 +1,177 @@
+{
+  "generatedAt": "2026-03-14T19:45:45.934Z",
+  "benchmarkVersion": "v1",
+  "area": {
+    "name": "lausanne-local-bbox",
+    "bbox": {
+      "minLon": 6.54,
+      "minLat": 46.49,
+      "maxLon": 6.74,
+      "maxLat": 46.62
+    },
+    "center": {
+      "lat": 46.5197,
+      "lon": 6.6323
+    },
+    "pointCount": 220,
+    "maxDistanceFromCenterMeters": 12615.953
+  },
+  "args": {
+    "date": "2026-03-08",
+    "timezone": "Europe/Zurich",
+    "localTime": "17:00",
+    "sampleStepMinutes": 5,
+    "pointGridStepMeters": 500,
+    "maxPoints": 220,
+    "macroCellSizesMeters": [
+      250,
+      500,
+      1000,
+      2000
+    ]
+  },
+  "maskBuild": {
+    "bootstrapFirstMaskMs": 25852.077,
+    "referenceLocalMasksCount": 220,
+    "referenceLocalMasksBuildMs": 5560.986,
+    "notes": "bootstrapFirstMaskMs captures DEM load + first mask build. Strategy buildMs includes all distinct centers required by the strategy."
+  },
+  "reference": {
+    "strategy": "local-per-point",
+    "sampleCountPerPoint": 288,
+    "sampleStepMinutes": 5,
+    "checkAtLocalTime": "17:00"
+  },
+  "strategies": [
+    {
+      "strategy": "global-single-mask",
+      "cellSizeMeters": null,
+      "masks": {
+        "count": 1,
+        "buildMs": 25852.077,
+        "buildSpeedupVsLocal": 0.215
+      },
+      "qualityVsLocal": {
+        "pointsWithAnyMismatch": 171,
+        "pointsWithAnyMismatchPct": 77.727,
+        "maxMismatchMinutesPerPoint": 45,
+        "avgMismatchMinutesPerPoint": 8.205,
+        "mismatchComparisons": 361,
+        "mismatchPctComparisons": 0.57,
+        "mismatchPointMinutes": 1805,
+        "mismatchPointHours": 30.083
+      },
+      "checkAt": {
+        "localTime": "17:00",
+        "differentTerrainBlockedPointCount": 0,
+        "differentSunnyPointCount": 0,
+        "horizonAngleDeltaAbsMeanDeg": 0.453427,
+        "horizonAngleDeltaAbsMaxDeg": 4.453
+      }
+    },
+    {
+      "strategy": "macro-250m",
+      "cellSizeMeters": 250,
+      "masks": {
+        "count": 220,
+        "buildMs": 5487.868,
+        "buildSpeedupVsLocal": 1.013
+      },
+      "qualityVsLocal": {
+        "pointsWithAnyMismatch": 82,
+        "pointsWithAnyMismatchPct": 37.273,
+        "maxMismatchMinutesPerPoint": 45,
+        "avgMismatchMinutesPerPoint": 3.227,
+        "mismatchComparisons": 142,
+        "mismatchPctComparisons": 0.224,
+        "mismatchPointMinutes": 710,
+        "mismatchPointHours": 11.833
+      },
+      "checkAt": {
+        "localTime": "17:00",
+        "differentTerrainBlockedPointCount": 0,
+        "differentSunnyPointCount": 0,
+        "horizonAngleDeltaAbsMeanDeg": 0.187486,
+        "horizonAngleDeltaAbsMaxDeg": 4.56
+      }
+    },
+    {
+      "strategy": "macro-500m",
+      "cellSizeMeters": 500,
+      "masks": {
+        "count": 220,
+        "buildMs": 5381.611,
+        "buildSpeedupVsLocal": 1.033
+      },
+      "qualityVsLocal": {
+        "pointsWithAnyMismatch": 114,
+        "pointsWithAnyMismatchPct": 51.818,
+        "maxMismatchMinutesPerPoint": 40,
+        "avgMismatchMinutesPerPoint": 5.205,
+        "mismatchComparisons": 229,
+        "mismatchPctComparisons": 0.361,
+        "mismatchPointMinutes": 1145,
+        "mismatchPointHours": 19.083
+      },
+      "checkAt": {
+        "localTime": "17:00",
+        "differentTerrainBlockedPointCount": 0,
+        "differentSunnyPointCount": 0,
+        "horizonAngleDeltaAbsMeanDeg": 0.291764,
+        "horizonAngleDeltaAbsMaxDeg": 4.654
+      }
+    },
+    {
+      "strategy": "macro-1000m",
+      "cellSizeMeters": 1000,
+      "masks": {
+        "count": 199,
+        "buildMs": 4917.318,
+        "buildSpeedupVsLocal": 1.131
+      },
+      "qualityVsLocal": {
+        "pointsWithAnyMismatch": 131,
+        "pointsWithAnyMismatchPct": 59.545,
+        "maxMismatchMinutesPerPoint": 45,
+        "avgMismatchMinutesPerPoint": 5.955,
+        "mismatchComparisons": 262,
+        "mismatchPctComparisons": 0.414,
+        "mismatchPointMinutes": 1310,
+        "mismatchPointHours": 21.833
+      },
+      "checkAt": {
+        "localTime": "17:00",
+        "differentTerrainBlockedPointCount": 0,
+        "differentSunnyPointCount": 0,
+        "horizonAngleDeltaAbsMeanDeg": 0.246064,
+        "horizonAngleDeltaAbsMaxDeg": 2.525
+      }
+    },
+    {
+      "strategy": "macro-2000m",
+      "cellSizeMeters": 2000,
+      "masks": {
+        "count": 69,
+        "buildMs": 1706.351,
+        "buildSpeedupVsLocal": 3.259
+      },
+      "qualityVsLocal": {
+        "pointsWithAnyMismatch": 151,
+        "pointsWithAnyMismatchPct": 68.636,
+        "maxMismatchMinutesPerPoint": 45,
+        "avgMismatchMinutesPerPoint": 8.182,
+        "mismatchComparisons": 360,
+        "mismatchPctComparisons": 0.568,
+        "mismatchPointMinutes": 1800,
+        "mismatchPointHours": 30
+      },
+      "checkAt": {
+        "localTime": "17:00",
+        "differentTerrainBlockedPointCount": 0,
+        "differentSunnyPointCount": 0,
+        "horizonAngleDeltaAbsMeanDeg": 0.376082,
+        "horizonAngleDeltaAbsMaxDeg": 4.81
+      }
+    }
+  ]
+}
