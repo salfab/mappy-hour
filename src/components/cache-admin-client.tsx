@@ -386,6 +386,7 @@ export function CacheAdminClient() {
   const [preStartLocalTime, setPreStartLocalTime] = useState("00:00");
   const [preEndLocalTime, setPreEndLocalTime] = useState("23:59");
   const [preSkipExisting, setPreSkipExisting] = useState(true);
+  const [showPrecomputeTileSelector, setShowPrecomputeTileSelector] = useState(false);
   const [precomputeTilesState, setPrecomputeTilesState] = useState<ActionState>("idle");
   const [precomputeTilesError, setPrecomputeTilesError] = useState<string | null>(null);
   const [precomputeTilesCatalog, setPrecomputeTilesCatalog] =
@@ -571,8 +572,11 @@ export function CacheAdminClient() {
   }, []);
 
   useEffect(() => {
+    if (!showPrecomputeTileSelector) {
+      return;
+    }
     void refreshPrecomputeTiles(preRegion);
-  }, [preRegion, refreshPrecomputeTiles]);
+  }, [preRegion, refreshPrecomputeTiles, showPrecomputeTileSelector]);
 
   const setSelectedPrecomputeTiles = useCallback(
     (tileIds: string[]) => {
@@ -1493,42 +1497,59 @@ export function CacheAdminClient() {
               <div className="grid gap-2 rounded-xl border border-white/12 bg-slate-900/50 px-3 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs text-slate-200">
-                    Sélection des tuiles à précalculer ({precomputeTileSelectionSummary})
+                    Sélection des tuiles ({precomputeTileSelectionSummary})
                   </p>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={selectAllPrecomputeTiles}
-                      disabled={!precomputeTilesCatalog || precomputeTilesState === "loading"}
-                      className="rounded-full border border-white/20 px-2 py-1 text-[11px] disabled:opacity-50"
-                    >
-                      Tout sélectionner
-                    </button>
-                    <button
-                      type="button"
-                      onClick={clearPrecomputeTiles}
-                      disabled={!precomputeTilesCatalog || precomputeTilesState === "loading"}
-                      className="rounded-full border border-white/20 px-2 py-1 text-[11px] disabled:opacity-50"
-                    >
-                      Tout désélectionner
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowPrecomputeTileSelector((current) => !current)}
+                    className="rounded-full border border-cyan-300/40 px-3 py-1 text-[11px] text-cyan-100"
+                  >
+                    {showPrecomputeTileSelector
+                      ? "Masquer la sélection"
+                      : "Sélectionner zones à précalculer"}
+                  </button>
                 </div>
-                {precomputeTilesState === "loading" ? (
-                  <p className="text-xs text-cyan-100">Chargement de la grille des tuiles...</p>
-                ) : null}
-                {precomputeTilesError ? (
-                  <p className="text-xs text-rose-100">{precomputeTilesError}</p>
-                ) : null}
-                {precomputeTilesCatalog ? (
-                  <PrecomputeTileSelectorMap
-                    regionBbox={precomputeTilesCatalog.bbox}
-                    tiles={precomputeTilesCatalog.tiles}
-                    selectedTileIds={selectedPrecomputeTileIds}
-                    disabled={precomputeTilesState === "loading"}
-                    onSelectionChange={setSelectedPrecomputeTiles}
-                  />
-                ) : null}
+                {showPrecomputeTileSelector ? (
+                  <>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={selectAllPrecomputeTiles}
+                        disabled={!precomputeTilesCatalog || precomputeTilesState === "loading"}
+                        className="rounded-full border border-white/20 px-2 py-1 text-[11px] disabled:opacity-50"
+                      >
+                        Tout sélectionner
+                      </button>
+                      <button
+                        type="button"
+                        onClick={clearPrecomputeTiles}
+                        disabled={!precomputeTilesCatalog || precomputeTilesState === "loading"}
+                        className="rounded-full border border-white/20 px-2 py-1 text-[11px] disabled:opacity-50"
+                      >
+                        Tout désélectionner
+                      </button>
+                    </div>
+                    {precomputeTilesState === "loading" ? (
+                      <p className="text-xs text-cyan-100">Chargement de la grille des tuiles...</p>
+                    ) : null}
+                    {precomputeTilesError ? (
+                      <p className="text-xs text-rose-100">{precomputeTilesError}</p>
+                    ) : null}
+                    {precomputeTilesCatalog ? (
+                      <PrecomputeTileSelectorMap
+                        regionBbox={precomputeTilesCatalog.bbox}
+                        tiles={precomputeTilesCatalog.tiles}
+                        selectedTileIds={selectedPrecomputeTileIds}
+                        disabled={precomputeTilesState === "loading"}
+                        onSelectionChange={setSelectedPrecomputeTiles}
+                      />
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="text-xs text-slate-300">
+                    Clique sur “Sélectionner zones à précalculer” pour ouvrir la carte OSM et choisir les tuiles.
+                  </p>
+                )}
                 {noTileSelected ? (
                   <p className="text-xs text-amber-100">
                     Aucune tuile sélectionnée. Sélectionne au moins une tuile pour lancer le précompute.

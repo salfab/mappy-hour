@@ -1,7 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
-import type { LayerGroup, Map as LeafletMap, PathOptions, Rectangle } from "leaflet";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type {
+  LayerGroup,
+  LeafletMouseEvent,
+  Map as LeafletMap,
+  PathOptions,
+  Rectangle,
+} from "leaflet";
 
 export interface TileSelectorBbox {
   minLon: number;
@@ -47,7 +53,29 @@ function asBounds(bbox: TileSelectorBbox): [[number, number], [number, number]] 
   ];
 }
 
+function bboxIntersects(left: TileSelectorBbox, right: TileSelectorBbox): boolean {
+  return !(
+    left.maxLon < right.minLon ||
+    left.minLon > right.maxLon ||
+    left.maxLat < right.minLat ||
+    left.minLat > right.maxLat
+  );
+}
+
+function normalizeBboxFromPoints(
+  start: { lat: number; lon: number },
+  end: { lat: number; lon: number },
+): TileSelectorBbox {
+  return {
+    minLon: Math.min(start.lon, end.lon),
+    minLat: Math.min(start.lat, end.lat),
+    maxLon: Math.max(start.lon, end.lon),
+    maxLat: Math.max(start.lat, end.lat),
+  };
+}
+
 export function PrecomputeTileSelectorMap(props: PrecomputeTileSelectorMapProps) {
+  const [mapReady, setMapReady] = useState(false);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
   const layerRef = useRef<LayerGroup | null>(null);
@@ -57,6 +85,9 @@ export function PrecomputeTileSelectorMap(props: PrecomputeTileSelectorMapProps)
   const disabledRef = useRef(Boolean(props.disabled));
   const selectedSet = useMemo(() => new Set(props.selectedTileIds), [props.selectedTileIds]);
   const selectedSetRef = useRef(selectedSet);
+  const dragStartRef = useRef<{ lat: number; lon: number } | null>(null);
+  const dragRectangleRef = useRef<Rectangle | null>(null);
+  const suppressNextTileClickRef = useRef(false);
   const regionMinLat = props.regionBbox.minLat;
   const regionMinLon = props.regionBbox.minLon;
   const regionMaxLat = props.regionBbox.maxLat;
@@ -108,6 +139,7 @@ export function PrecomputeTileSelectorMap(props: PrecomputeTileSelectorMapProps)
       }).addTo(map);
       layerRef.current = L.layerGroup().addTo(map);
       mapRef.current = map;
+      setMapReady(true);
       map.fitBounds(
         asBounds({
           minLat: regionMinLat,
@@ -130,6 +162,7 @@ export function PrecomputeTileSelectorMap(props: PrecomputeTileSelectorMapProps)
       layerRef.current = null;
       rectanglesById.clear();
       leafletModuleRef.current = null;
+      setMapReady(false);
     };
   }, [regionMaxLat, regionMaxLon, regionMinLat, regionMinLon]);
 
@@ -147,7 +180,7 @@ export function PrecomputeTileSelectorMap(props: PrecomputeTileSelectorMapProps)
       }),
       { padding: [10, 10] },
     );
-  }, [regionMaxLat, regionMaxLon, regionMinLat, regionMinLon]);
+  }, [mapReady, regionMaxLat, regionMaxLon, regionMinLat, regionMinLon]);
 
   useEffect(() => {
     const L = leafletModuleRef.current;
@@ -167,13 +200,19 @@ export function PrecomputeTileSelectorMap(props: PrecomputeTileSelectorMapProps)
         opacity: 0.8,
         sticky: true,
       });
-      rectangle.on("click", () => {
+      rectangle.on("click", (event: LeafletMouseEvent) => {
         if (disabledRef.current) {
           return;
         }
+        if (suppressNextTileClickRef.current) {
+          suppressNextTileClickRef.current = false;
+          return;
+        }
+        const rawEvent = event.originalEvent as MouseEvent;
+        const isRemoveAction = rawEvent.ctrlKey || rawEvent.metaKey;
         const current = selectedSetRef.current;
         const next = new Set(current);
-        if (next.has(tile.tileId)) {
+        if (isRemoveAction) {
           next.delete(tile.tileId);
         } else {
           next.add(tile.tileId);
@@ -184,7 +223,111 @@ export function PrecomputeTileSelectorMap(props: PrecomputeTileSelectorMapProps)
       rectangle.addTo(layer);
       rectanglesByIdRef.current.set(tile.tileId, rectangle);
     }
-  }, [props.tiles]);
+  }, [mapReady, props.tiles]);
+
+  useEffect(() => {
+    const L = leafletModuleRef.current;
+    const map = mapRef.current;
+    if (!L || !map) {
+      return;
+    }
+
+    const clearDragRectangle = () => {
+      if (dragRectangleRef.current) {
+        map.removeLayer(dragRectangleRef.current);
+        dragRectangleRef.current = null;
+      }
+    };
+
+    const onMouseDown = (event: LeafletMouseEvent) => {
+      if (disabledRef.current) {
+        return;
+      }
+      const mouseEvent = event.originalEvent as MouseEvent;
+      if (mouseEvent.button !== 0) {
+        return;
+      }
+      if (mouseEvent.ctrlKey || mouseEvent.metaKey) {
+        return;
+      }
+      const start = { lat: event.latlng.lat, lon: event.latlng.lng };
+      dragStartRef.current = start;
+      clearDragRectangle();
+      dragRectangleRef.current = L.rectangle(
+        asBounds(
+          normalizeBboxFromPoints(start, start),
+        ),
+        {
+          color: "#f59e0b",
+          weight: 1,
+          fillColor: "#f59e0b",
+          fillOpacity: 0.1,
+          dashArray: "4 4",
+          interactive: false,
+        },
+      ).addTo(map);
+      map.dragging.disable();
+    };
+
+    const onMouseMove = (event: LeafletMouseEvent) => {
+      if (!dragStartRef.current || !dragRectangleRef.current) {
+        return;
+      }
+      const current = { lat: event.latlng.lat, lon: event.latlng.lng };
+      dragRectangleRef.current.setBounds(asBounds(normalizeBboxFromPoints(dragStartRef.current, current)));
+    };
+
+    const onMouseUp = (event: LeafletMouseEvent) => {
+      if (!dragStartRef.current) {
+        return;
+      }
+      const start = dragStartRef.current;
+      const end = { lat: event.latlng.lat, lon: event.latlng.lng };
+      dragStartRef.current = null;
+
+      map.dragging.enable();
+
+      const selectionBbox = normalizeBboxFromPoints(start, end);
+      const movedEnough =
+        Math.abs(end.lat - start.lat) > 0.00005 ||
+        Math.abs(end.lon - start.lon) > 0.00005;
+      clearDragRectangle();
+      if (!movedEnough) {
+        return;
+      }
+
+      const next = new Set(selectedSetRef.current);
+      let added = false;
+      for (const tile of props.tiles) {
+        if (bboxIntersects(tile.bbox, selectionBbox)) {
+          if (!next.has(tile.tileId)) {
+            next.add(tile.tileId);
+            added = true;
+          }
+        }
+      }
+      if (added) {
+        const orderedSelection = props.tiles
+          .map((tile) => tile.tileId)
+          .filter((tileId) => next.has(tileId));
+        onSelectionChangeRef.current(orderedSelection);
+      }
+      suppressNextTileClickRef.current = true;
+    };
+
+    map.on("mousedown", onMouseDown);
+    map.on("mousemove", onMouseMove);
+    map.on("mouseup", onMouseUp);
+
+    return () => {
+      map.off("mousedown", onMouseDown);
+      map.off("mousemove", onMouseMove);
+      map.off("mouseup", onMouseUp);
+      map.dragging.enable();
+      clearDragRectangle();
+      dragStartRef.current = null;
+    };
+  }, [mapReady, props.tiles]);
 
   return (
     <div className="grid gap-2">
@@ -193,7 +336,7 @@ export function PrecomputeTileSelectorMap(props: PrecomputeTileSelectorMapProps)
         className="h-80 w-full overflow-hidden rounded-xl border border-white/15 bg-slate-900/70"
       />
       <p className="text-[11px] text-slate-300">
-        Clique sur une tuile pour l&apos;inclure ou l&apos;exclure du précompute.
+        Clique pour ajouter une tuile. `Ctrl + clic` retire une tuile. Glisser-déposer ajoute un rectangle de tuiles.
       </p>
     </div>
   );
