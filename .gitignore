@@ -50,3 +50,7 @@ next-env.d.ts
 /data/raw/swisstopo/swissbuildings3d_2/
 /data/raw/swisstopo/swissalti3d_2m/
 /data/raw/copernicus-dem30/
+
+/.tmp/**
+/.tmp-*.*
+/scripts/tmp/**

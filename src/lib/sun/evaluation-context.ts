@@ -123,12 +123,12 @@ export async function buildPointEvaluationContext(
   const warnings: string[] = [];
   if (!horizonMask) {
     warnings.push(
-      "No horizon mask found. Run preprocess:lausanne:horizon (fallback) and ingest terrain horizon DEM tiles for your target area.",
+      "No horizon mask found. Run preprocess:horizon:mask (fallback) and ingest terrain horizon DEM tiles for your target area.",
     );
   }
   if (!buildingsIndex) {
     warnings.push(
-      "No buildings obstacle index found. Run preprocess:lausanne:buildings after ingesting buildings data for your target area.",
+      "No buildings obstacle index found. Run preprocess:buildings:index after ingesting buildings data for your target area.",
     );
   }
   if (shouldEvaluateVegetation && vegetationSurfaceTiles === null) {

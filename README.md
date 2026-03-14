@@ -39,7 +39,6 @@ $env:MAPPY_DATA_ROOT='D:\mappy-hour-data'
 pnpm dev
 ```
 
-`pnpm dev` utilise webpack (plus stable avec nos ignores `data/**`).
 `pnpm dev` utilise Turbopack (Next 16 par defaut).
 En cas de probleme de filewatcher sous Windows, la solution recommandee est de
 mettre les donnees lourdes hors repo avec `MAPPY_DATA_ROOT`.
@@ -52,24 +51,20 @@ et reduire la charge du filewatcher en developpement.
 Pour tout recuperer/reconstruire en une commande :
 
 ```bash
-pnpm fetch:all:models
+pnpm setup
 ```
 
 Ou par ville :
 
 ```bash
-pnpm fetch:lausanne:3d
-pnpm fetch:nyon:3d
+pnpm setup:lausanne
+pnpm setup:nyon
 ```
 
 Ce script execute :
 
-- `ingest:lausanne:buildings`
-- `ingest:lausanne:terrain:ch`
-- `ingest:lausanne:vegetation:surface`
-- `ingest:lausanne:terrain:horizon`
-- `preprocess:lausanne:buildings`
-- `preprocess:lausanne:horizon`
+- `ingest:all`
+- `preprocess`
 
 ## Ingestion des donnees Nyon
 
@@ -150,13 +145,13 @@ pnpm ingest:lausanne:places
 ### 5) Generation de l'index d'obstacles batiments
 
 ```bash
-pnpm preprocess:lausanne:buildings
+pnpm preprocess:buildings:index
 ```
 
 ### 6) Generation du masque d'horizon DEM
 
 ```bash
-pnpm preprocess:lausanne:horizon
+pnpm preprocess:horizon:mask
 ```
 
 ## API

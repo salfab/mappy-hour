@@ -112,7 +112,7 @@ export async function POST(request: Request) {
           buildingsMethod: "none",
         },
         warnings: [
-          "No buildings obstacle index found. Run preprocess:lausanne:buildings first.",
+          "No buildings obstacle index found. Run preprocess:buildings:index first.",
         ],
         stats: {
           elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
