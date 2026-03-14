@@ -8,6 +8,8 @@ import {
 import { getZonedDayRangeUtc } from "@/lib/time/zoned-date";
 
 const RAD_TO_DEG = 180 / Math.PI;
+const TERRAIN_HORIZON_SKIP_MARGIN_DEG = 0.25;
+const horizonMaxAngleCache = new WeakMap<HorizonMask, number>();
 
 export interface PointSunlightInput {
   lat: number;
@@ -85,6 +87,7 @@ export interface InstantSunlightInput {
   horizonMask: HorizonMask | null;
   buildingShadowEvaluator?: PointSunlightInput["buildingShadowEvaluator"];
   vegetationShadowEvaluator?: PointSunlightInput["vegetationShadowEvaluator"];
+  evaluateAllBlockers?: boolean;
 }
 
 function normalizeAzimuthDegrees(azimuthDegreesFromSunCalc: number): number {
@@ -119,6 +122,22 @@ function safeFormatDateTimeLocal(date: Date, timeZone: string): string | null {
   }
 
   return formatDateTimeLocal(date, timeZone);
+}
+
+function getMaxHorizonAngle(horizonMask: HorizonMask): number {
+  const cached = horizonMaxAngleCache.get(horizonMask);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  let max = Number.NEGATIVE_INFINITY;
+  for (const angle of horizonMask.binsDeg) {
+    if (angle > max) {
+      max = angle;
+    }
+  }
+  horizonMaxAngleCache.set(horizonMask, max);
+  return max;
 }
 
 function buildSunnyWindows(
@@ -180,27 +199,37 @@ export function evaluateInstantSunlight(
   const horizonAngleDeg = input.horizonMask
     ? getHorizonAngleForAzimuth(input.horizonMask, azimuthDeg)
     : null;
-  const terrainBlocked =
+  const terrainCheckNeeded =
     aboveAstronomicalHorizon &&
     input.horizonMask !== null &&
+    altitudeDeg <=
+      getMaxHorizonAngle(input.horizonMask) + TERRAIN_HORIZON_SKIP_MARGIN_DEG;
+  const terrainBlocked =
+    terrainCheckNeeded &&
+    input.horizonMask !== null &&
     isTerrainBlockedByHorizon(input.horizonMask, azimuthDeg, altitudeDeg);
-  const buildingShadow = input.buildingShadowEvaluator
-    ? input.buildingShadowEvaluator({
-        azimuthDeg,
-        altitudeDeg,
-        utcDate: input.utcDate,
-      })
-    : null;
+  const evaluateSecondaryBlockers =
+    aboveAstronomicalHorizon &&
+    (input.evaluateAllBlockers === true || !terrainBlocked);
+  const buildingShadow =
+    evaluateSecondaryBlockers && input.buildingShadowEvaluator
+      ? input.buildingShadowEvaluator({
+          azimuthDeg,
+          altitudeDeg,
+          utcDate: input.utcDate,
+        })
+      : null;
   const buildingsBlocked = aboveAstronomicalHorizon
     ? (buildingShadow?.blocked ?? false)
     : false;
-  const vegetationShadow = input.vegetationShadowEvaluator
-    ? input.vegetationShadowEvaluator({
-        azimuthDeg,
-        altitudeDeg,
-        utcDate: input.utcDate,
-      })
-    : null;
+  const vegetationShadow =
+    evaluateSecondaryBlockers && input.vegetationShadowEvaluator
+      ? input.vegetationShadowEvaluator({
+          azimuthDeg,
+          altitudeDeg,
+          utcDate: input.utcDate,
+        })
+      : null;
   const vegetationBlocked = aboveAstronomicalHorizon
     ? (vegetationShadow?.blocked ?? false)
     : false;
