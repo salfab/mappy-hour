@@ -20,6 +20,14 @@ describe("GET /api/admin/cache/runs", () => {
       filters: {
         region: "lausanne",
       },
+      pagination: {
+        page: 1,
+        pageSize: 25,
+        totalRuns: 1,
+        totalPages: 1,
+        sortBy: "date",
+        sortOrder: "desc",
+      },
       summary: {
         runCount: 1,
         totalTiles: 16,
@@ -63,12 +71,20 @@ describe("GET /api/admin/cache/runs", () => {
     expect(response.status).toBe(200);
     expect(json.summary.runCount).toBe(1);
     expect(json.runs[0]?.modelVersionHash).toBe("abc123");
-    expect(listCacheRuns).toHaveBeenCalledWith({
-      region: "lausanne",
-      modelVersionHash: undefined,
-      startDate: "2026-03-08",
-      endDate: undefined,
-    });
+    expect(listCacheRuns).toHaveBeenCalledWith(
+      {
+        region: "lausanne",
+        modelVersionHash: undefined,
+        startDate: "2026-03-08",
+        endDate: undefined,
+      },
+      {
+        sortBy: undefined,
+        sortOrder: undefined,
+        page: undefined,
+        pageSize: undefined,
+      },
+    );
   });
 
   it("rejects invalid queries", async () => {

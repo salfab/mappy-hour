@@ -4,6 +4,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 type RegionFilter = "all" | "lausanne" | "nyon";
 type ActionState = "idle" | "loading";
+type SortBy =
+  | "date"
+  | "generatedAt"
+  | "sizeBytes"
+  | "tileCount"
+  | "failedTileCount"
+  | "gridStepMeters"
+  | "sampleEveryMinutes";
+type SortOrder = "asc" | "desc";
 
 interface CacheRunSummary {
   region: "lausanne" | "nyon";
@@ -27,6 +36,14 @@ interface CacheRunSummary {
 interface CacheRunsOverview {
   generatedAt: string;
   root: string;
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalRuns: number;
+    totalPages: number;
+    sortBy: SortBy;
+    sortOrder: SortOrder;
+  };
   summary: {
     runCount: number;
     totalTiles: number;
@@ -42,6 +59,11 @@ interface CacheVerifyResult {
   generatedAt: string;
   manifestsMatched: number;
   tilesVerified: number;
+  strictChecks: {
+    expectedFrameCountChecks: number;
+    expectedMaskSizeChecks: number;
+    pointIndexChecks: number;
+  };
   problems: string[];
 }
 
@@ -52,20 +74,32 @@ interface CachePurgeResult {
   removedRunDirs: string[];
 }
 
+interface CachePrecomputeResult {
+  generatedAt: string;
+  region: "lausanne" | "nyon";
+  modelVersionHash: string;
+  totalTiles: number;
+  totalDates: number;
+  dates: Array<{
+    date: string;
+    succeededTiles: number;
+    failedTiles: number;
+    complete: boolean;
+    elapsedMs: number;
+  }>;
+}
+
 function formatBytes(value: number): string {
   if (value <= 0) {
     return "0 B";
   }
-
   const units = ["B", "KB", "MB", "GB"];
   let size = value;
   let unitIndex = 0;
-
   while (size >= 1024 && unitIndex < units.length - 1) {
     size /= 1024;
     unitIndex += 1;
   }
-
   return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
@@ -85,6 +119,10 @@ function buildRunsUrl(filters: {
   modelVersionHash: string;
   startDate: string;
   endDate: string;
+  sortBy: SortBy;
+  sortOrder: SortOrder;
+  page: number;
+  pageSize: number;
 }): string {
   const params = new URLSearchParams();
   if (filters.region !== "all") {
@@ -99,10 +137,11 @@ function buildRunsUrl(filters: {
   if (filters.endDate) {
     params.set("endDate", filters.endDate);
   }
-  const query = params.toString();
-  return query
-    ? `/api/admin/cache/runs?${query}`
-    : "/api/admin/cache/runs";
+  params.set("sortBy", filters.sortBy);
+  params.set("sortOrder", filters.sortOrder);
+  params.set("page", String(filters.page));
+  params.set("pageSize", String(filters.pageSize));
+  return `/api/admin/cache/runs?${params.toString()}`;
 }
 
 export function CacheAdminClient() {
@@ -110,14 +149,30 @@ export function CacheAdminClient() {
   const [modelVersionHash, setModelVersionHash] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [sortBy, setSortBy] = useState<SortBy>("date");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [overview, setOverview] = useState<CacheRunsOverview | null>(null);
   const [verifyResult, setVerifyResult] = useState<CacheVerifyResult | null>(null);
   const [purgeResult, setPurgeResult] = useState<CachePurgeResult | null>(null);
+  const [precomputeResult, setPrecomputeResult] =
+    useState<CachePrecomputeResult | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<ActionState>("idle");
   const [verifyState, setVerifyState] = useState<ActionState>("idle");
   const [purgeState, setPurgeState] = useState<ActionState>("idle");
+  const [precomputeState, setPrecomputeState] = useState<ActionState>("idle");
+
+  const [preRegion, setPreRegion] = useState<"lausanne" | "nyon">("lausanne");
+  const [preStartDate, setPreStartDate] = useState("2026-03-08");
+  const [preDays, setPreDays] = useState(1);
+  const [preGridStep, setPreGridStep] = useState(5);
+  const [preSampleEvery, setPreSampleEvery] = useState(15);
+  const [preTileSize, setPreTileSize] = useState(250);
+  const [preStartLocalTime, setPreStartLocalTime] = useState("00:00");
+  const [preEndLocalTime, setPreEndLocalTime] = useState("23:59");
 
   const filters = useMemo(
     () => ({
@@ -125,18 +180,28 @@ export function CacheAdminClient() {
       modelVersionHash,
       startDate,
       endDate,
+      sortBy,
+      sortOrder,
+      page,
+      pageSize,
     }),
-    [endDate, modelVersionHash, region, startDate],
+    [
+      endDate,
+      modelVersionHash,
+      page,
+      pageSize,
+      region,
+      sortBy,
+      sortOrder,
+      startDate,
+    ],
   );
 
   const refreshRuns = useCallback(async () => {
     setLoadState("loading");
     setLoadError(null);
-
     try {
-      const response = await fetch(buildRunsUrl(filters), {
-        cache: "no-store",
-      });
+      const response = await fetch(buildRunsUrl(filters), { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) {
         throw new Error(payload?.details ?? payload?.error ?? "Unknown error");
@@ -154,20 +219,17 @@ export function CacheAdminClient() {
   }, [refreshRuns]);
 
   const runAction = useCallback(
-    async (action: "verify" | "purge", options?: { dryRun?: boolean }) => {
+    async (action: "verify" | "purge", dryRun?: boolean) => {
       setActionError(null);
       if (action === "verify") {
         setVerifyState("loading");
       } else {
         setPurgeState("loading");
       }
-
       try {
         const response = await fetch("/api/admin/cache/actions", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action,
             filters: {
@@ -176,19 +238,17 @@ export function CacheAdminClient() {
               startDate: startDate || undefined,
               endDate: endDate || undefined,
             },
-            dryRun: options?.dryRun,
+            dryRun,
           }),
         });
         const payload = await response.json();
         if (!response.ok) {
           throw new Error(payload?.details ?? payload?.error ?? "Unknown error");
         }
-
         if (action === "verify") {
           setVerifyResult(payload as CacheVerifyResult);
         } else {
           setPurgeResult(payload as CachePurgeResult);
-          setVerifyResult(null);
           await refreshRuns();
         }
       } catch (error) {
@@ -204,72 +264,93 @@ export function CacheAdminClient() {
     [endDate, modelVersionHash, refreshRuns, region, startDate],
   );
 
-  const handlePurge = useCallback(
-    async (dryRun: boolean) => {
-      if (!dryRun) {
-        const confirmed = window.confirm(
-          "Supprimer les runs de cache filtres actuellement affiches ?",
-        );
-        if (!confirmed) {
-          return;
-        }
+  const runPrecompute = useCallback(async () => {
+    const confirmed = window.confirm(
+      "Lancer un precompute maintenant ? Cette action peut prendre du temps.",
+    );
+    if (!confirmed) {
+      return;
+    }
+    setPrecomputeState("loading");
+    setActionError(null);
+    try {
+      const response = await fetch("/api/admin/cache/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "precompute",
+          precompute: {
+            region: preRegion,
+            startDate: preStartDate,
+            days: preDays,
+            timezone: "Europe/Zurich",
+            sampleEveryMinutes: preSampleEvery,
+            gridStepMeters: preGridStep,
+            tileSizeMeters: preTileSize,
+            startLocalTime: preStartLocalTime,
+            endLocalTime: preEndLocalTime,
+          },
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.details ?? payload?.error ?? "Unknown error");
       }
-      await runAction("purge", { dryRun });
-    },
-    [runAction],
-  );
+      setPrecomputeResult(payload as CachePrecomputeResult);
+      await refreshRuns();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      setPrecomputeState("idle");
+    }
+  }, [
+    preDays,
+    preEndLocalTime,
+    preGridStep,
+    preRegion,
+    preSampleEvery,
+    preStartDate,
+    preStartLocalTime,
+    preTileSize,
+    refreshRuns,
+  ]);
 
   return (
     <div className="grid gap-6">
-      <section className="grid gap-4 rounded-3xl border border-white/12 bg-black/20 p-5 shadow-[0_20px_80px_rgba(0,0,0,0.25)]">
-        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-          <div className="space-y-2">
-            <p className="text-xs uppercase tracking-[0.25em] text-sky-200/80">
-              Dashboard cache
-            </p>
-            <h1 className="text-3xl font-semibold tracking-tight">
-              Etat du cache precalcule
-            </h1>
-            <p className="max-w-3xl text-sm text-slate-300">
-              Visualise les runs precalcules, verifie leur integrite et purge
-              les lots obsoletes sans quitter l&apos;application.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap gap-3">
-            <button
-              type="button"
-              onClick={() => void refreshRuns()}
-              disabled={loadState === "loading"}
-              className="rounded-full border border-white/15 px-4 py-2 text-sm text-slate-100 transition hover:border-sky-300/50 hover:bg-sky-400/10 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {loadState === "loading" ? "Actualisation..." : "Actualiser"}
-            </button>
-            <button
-              type="button"
-              onClick={() => void runAction("verify")}
-              disabled={verifyState === "loading"}
-              className="rounded-full bg-sky-300 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-sky-200 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {verifyState === "loading" ? "Verification..." : "Verifier"}
-            </button>
-            <button
-              type="button"
-              onClick={() => void handlePurge(true)}
-              disabled={purgeState === "loading"}
-              className="rounded-full border border-amber-300/40 px-4 py-2 text-sm text-amber-100 transition hover:bg-amber-300/10 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Dry run purge
-            </button>
-            <button
-              type="button"
-              onClick={() => void handlePurge(false)}
-              disabled={purgeState === "loading"}
-              className="rounded-full border border-rose-400/40 px-4 py-2 text-sm text-rose-100 transition hover:bg-rose-400/10 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {purgeState === "loading" ? "Purge..." : "Purger"}
-            </button>
-          </div>
+      <section className="grid gap-4 rounded-3xl border border-white/12 bg-black/20 p-5">
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={() => void refreshRuns()}
+            disabled={loadState === "loading"}
+            className="rounded-full border border-white/15 px-4 py-2 text-sm"
+          >
+            {loadState === "loading" ? "Actualisation..." : "Actualiser"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void runAction("verify")}
+            disabled={verifyState === "loading"}
+            className="rounded-full bg-sky-300 px-4 py-2 text-sm font-medium text-slate-950"
+          >
+            {verifyState === "loading" ? "Verification..." : "Verifier"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void runAction("purge", true)}
+            disabled={purgeState === "loading"}
+            className="rounded-full border border-amber-300/40 px-4 py-2 text-sm"
+          >
+            Dry run purge
+          </button>
+          <button
+            type="button"
+            onClick={() => void runAction("purge", false)}
+            disabled={purgeState === "loading"}
+            className="rounded-full border border-rose-400/40 px-4 py-2 text-sm"
+          >
+            {purgeState === "loading" ? "Purge..." : "Purger"}
+          </button>
         </div>
 
         <div className="grid gap-3 md:grid-cols-4">
@@ -277,8 +358,11 @@ export function CacheAdminClient() {
             <span className="text-slate-300">Region</span>
             <select
               value={region}
-              onChange={(event) => setRegion(event.target.value as RegionFilter)}
-              className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2 text-slate-100 outline-none"
+              onChange={(event) => {
+                setPage(1);
+                setRegion(event.target.value as RegionFilter);
+              }}
+              className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2"
             >
               <option value="all">Toutes</option>
               <option value="lausanne">Lausanne</option>
@@ -289,9 +373,11 @@ export function CacheAdminClient() {
             <span className="text-slate-300">Model version hash</span>
             <input
               value={modelVersionHash}
-              onChange={(event) => setModelVersionHash(event.target.value)}
-              placeholder="ex: 1aead7ba2238b854"
-              className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2 text-slate-100 outline-none placeholder:text-slate-500"
+              onChange={(event) => {
+                setPage(1);
+                setModelVersionHash(event.target.value);
+              }}
+              className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2"
             />
           </label>
           <label className="grid gap-2 text-sm">
@@ -299,8 +385,11 @@ export function CacheAdminClient() {
             <input
               type="date"
               value={startDate}
-              onChange={(event) => setStartDate(event.target.value)}
-              className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2 text-slate-100 outline-none"
+              onChange={(event) => {
+                setPage(1);
+                setStartDate(event.target.value);
+              }}
+              className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2"
             />
           </label>
           <label className="grid gap-2 text-sm">
@@ -308,82 +397,132 @@ export function CacheAdminClient() {
             <input
               type="date"
               value={endDate}
-              onChange={(event) => setEndDate(event.target.value)}
-              className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2 text-slate-100 outline-none"
+              onChange={(event) => {
+                setPage(1);
+                setEndDate(event.target.value);
+              }}
+              className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2"
             />
           </label>
         </div>
 
-        {loadError ? (
-          <div className="rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
-            {loadError}
-          </div>
-        ) : null}
-        {actionError ? (
-          <div className="rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
-            {actionError}
-          </div>
-        ) : null}
+        <div className="grid gap-3 md:grid-cols-4">
+          <label className="grid gap-2 text-sm">
+            <span className="text-slate-300">Tri</span>
+            <select
+              value={sortBy}
+              onChange={(event) => {
+                setPage(1);
+                setSortBy(event.target.value as SortBy);
+              }}
+              className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2"
+            >
+              <option value="date">Date</option>
+              <option value="generatedAt">Genere</option>
+              <option value="sizeBytes">Taille</option>
+              <option value="tileCount">Tuiles</option>
+              <option value="failedTileCount">Echecs</option>
+              <option value="gridStepMeters">Pas grille</option>
+              <option value="sampleEveryMinutes">Pas temps</option>
+            </select>
+          </label>
+          <label className="grid gap-2 text-sm">
+            <span className="text-slate-300">Ordre</span>
+            <select
+              value={sortOrder}
+              onChange={(event) => {
+                setPage(1);
+                setSortOrder(event.target.value as SortOrder);
+              }}
+              className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2"
+            >
+              <option value="desc">Descendant</option>
+              <option value="asc">Ascendant</option>
+            </select>
+          </label>
+          <label className="grid gap-2 text-sm">
+            <span className="text-slate-300">Page</span>
+            <input
+              type="number"
+              min={1}
+              value={page}
+              onChange={(event) => setPage(Math.max(1, Number(event.target.value) || 1))}
+              className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2"
+            />
+          </label>
+          <label className="grid gap-2 text-sm">
+            <span className="text-slate-300">Lignes</span>
+            <select
+              value={String(pageSize)}
+              onChange={(event) => {
+                setPage(1);
+                setPageSize(Number(event.target.value));
+              }}
+              className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2"
+            >
+              <option value="10">10</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+        </div>
+
+        {loadError ? <p className="text-sm text-rose-200">{loadError}</p> : null}
+        {actionError ? <p className="text-sm text-rose-200">{actionError}</p> : null}
       </section>
 
       <section className="grid gap-4 md:grid-cols-5">
         <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
-          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Runs</p>
-          <p className="mt-3 text-3xl font-semibold">
-            {overview?.summary.runCount ?? 0}
-          </p>
+          <p className="text-xs text-slate-400">Runs</p>
+          <p className="mt-2 text-3xl font-semibold">{overview?.summary.runCount ?? 0}</p>
         </article>
         <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
-          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Tuiles</p>
-          <p className="mt-3 text-3xl font-semibold">
+          <p className="text-xs text-slate-400">Tuiles</p>
+          <p className="mt-2 text-3xl font-semibold">
             {overview?.summary.totalTiles ?? 0}
           </p>
         </article>
         <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
-          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Complets</p>
-          <p className="mt-3 text-3xl font-semibold">
+          <p className="text-xs text-slate-400">Complets</p>
+          <p className="mt-2 text-3xl font-semibold">
             {overview?.summary.completeRuns ?? 0}
           </p>
         </article>
         <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
-          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Echecs</p>
-          <p className="mt-3 text-3xl font-semibold">
+          <p className="text-xs text-slate-400">Echecs</p>
+          <p className="mt-2 text-3xl font-semibold">
             {overview?.summary.totalFailedTiles ?? 0}
           </p>
         </article>
         <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
-          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Taille</p>
-          <p className="mt-3 text-3xl font-semibold">
+          <p className="text-xs text-slate-400">Taille</p>
+          <p className="mt-2 text-3xl font-semibold">
             {formatBytes(overview?.summary.totalSizeBytes ?? 0)}
-          </p>
-          <p className="mt-2 text-xs text-slate-400">
-            {overview?.summary.totalFiles ?? 0} fichiers
           </p>
         </article>
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+      <section className="grid gap-4 lg:grid-cols-[2fr_1fr]">
         <article className="overflow-hidden rounded-3xl border border-white/12 bg-black/20">
-          <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-            <div>
-              <h2 className="text-lg font-semibold">Runs detectes</h2>
-              <p className="text-sm text-slate-400">
-                {overview?.root ?? "Chargement..."}
+          <div className="border-b border-white/10 px-5 py-4">
+            <h2 className="text-lg font-semibold">Runs detectes</h2>
+            <p className="text-sm text-slate-400">{overview?.root ?? "Chargement..."}</p>
+            {overview ? (
+              <p className="text-xs text-slate-500">
+                Page {overview.pagination.page}/{overview.pagination.totalPages} (
+                {overview.pagination.totalRuns} runs)
               </p>
-            </div>
-            <p className="text-xs text-slate-400">
-              {overview ? `Maj ${formatDateTime(overview.generatedAt)}` : ""}
-            </p>
+            ) : null}
           </div>
-
           <div className="max-h-[60vh] overflow-auto">
-            <table className="min-w-full border-collapse text-left text-sm">
+            <table className="min-w-full text-left text-sm">
               <thead className="sticky top-0 bg-slate-950/95 text-slate-400">
                 <tr>
-                  <th className="px-5 py-3 font-medium">Run</th>
-                  <th className="px-5 py-3 font-medium">Parametres</th>
-                  <th className="px-5 py-3 font-medium">Etat</th>
-                  <th className="px-5 py-3 font-medium">Stockage</th>
+                  <th className="px-5 py-3">Run</th>
+                  <th className="px-5 py-3">Parametres</th>
+                  <th className="px-5 py-3">Etat</th>
+                  <th className="px-5 py-3">Stockage</th>
                 </tr>
               </thead>
               <tbody>
@@ -391,55 +530,26 @@ export function CacheAdminClient() {
                   overview.runs.map((run) => (
                     <tr key={run.runDir} className="border-t border-white/8 align-top">
                       <td className="px-5 py-4">
-                        <div className="grid gap-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="rounded-full border border-white/12 px-2 py-1 text-xs uppercase tracking-[0.2em] text-sky-200">
-                              {run.region}
-                            </span>
-                            <span className="text-sm font-medium">{run.date}</span>
-                          </div>
-                          <p className="font-mono text-xs text-slate-400">
-                            {run.modelVersionHash}
-                          </p>
-                          <p className="font-mono text-xs text-slate-500">
-                            {run.runDir}
-                          </p>
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 text-slate-300">
-                        <div className="grid gap-1">
-                          <p>{run.startLocalTime} - {run.endLocalTime}</p>
-                          <p>grille {run.gridStepMeters} m</p>
-                          <p>pas temps {run.sampleEveryMinutes} min</p>
-                          <p>tuile {run.tileSizeMeters} m</p>
-                        </div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-sky-200">
+                          {run.region}
+                        </p>
+                        <p className="font-medium">{run.date}</p>
+                        <p className="font-mono text-xs text-slate-400">{run.modelVersionHash}</p>
                       </td>
                       <td className="px-5 py-4">
-                        <div className="grid gap-2">
-                          <span
-                            className={`inline-flex w-fit rounded-full px-2 py-1 text-xs ${
-                              run.complete
-                                ? "bg-emerald-400/15 text-emerald-200"
-                                : "bg-amber-400/15 text-amber-100"
-                            }`}
-                          >
-                            {run.complete ? "complet" : "incomplet"}
-                          </span>
-                          <p className="text-slate-300">{run.tileCount} tuiles</p>
-                          <p className="text-slate-400">
-                            {run.failedTileCount} echecs
-                          </p>
-                          <p className="text-xs text-slate-500">
-                            genere {formatDateTime(run.generatedAt)}
-                          </p>
-                        </div>
+                        <p>{run.startLocalTime} - {run.endLocalTime}</p>
+                        <p>grille {run.gridStepMeters} m</p>
+                        <p>pas temps {run.sampleEveryMinutes} min</p>
                       </td>
-                      <td className="px-5 py-4 text-slate-300">
-                        <div className="grid gap-1">
-                          <p>{formatBytes(run.sizeBytes)}</p>
-                          <p className="text-slate-400">{run.fileCount} fichiers</p>
-                          <p className="text-slate-400">{run.timezone}</p>
-                        </div>
+                      <td className="px-5 py-4">
+                        <p>{run.complete ? "complet" : "incomplet"}</p>
+                        <p>{run.tileCount} tuiles</p>
+                        <p>{run.failedTileCount} echecs</p>
+                      </td>
+                      <td className="px-5 py-4">
+                        <p>{formatBytes(run.sizeBytes)}</p>
+                        <p>{run.fileCount} fichiers</p>
+                        <p className="text-xs text-slate-500">{formatDateTime(run.generatedAt)}</p>
                       </td>
                     </tr>
                   ))
@@ -453,85 +563,135 @@ export function CacheAdminClient() {
               </tbody>
             </table>
           </div>
+          <div className="flex items-center justify-between border-t border-white/10 px-5 py-3 text-sm">
+            <button
+              type="button"
+              disabled={!overview || overview.pagination.page <= 1}
+              onClick={() => setPage((previous) => Math.max(1, previous - 1))}
+              className="rounded-full border border-white/15 px-3 py-1 disabled:opacity-50"
+            >
+              Page precedente
+            </button>
+            <button
+              type="button"
+              disabled={!overview || overview.pagination.page >= overview.pagination.totalPages}
+              onClick={() =>
+                setPage((previous) =>
+                  overview ? Math.min(overview.pagination.totalPages, previous + 1) : previous,
+                )
+              }
+              className="rounded-full border border-white/15 px-3 py-1 disabled:opacity-50"
+            >
+              Page suivante
+            </button>
+          </div>
         </article>
 
         <div className="grid gap-4">
           <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
             <h2 className="text-lg font-semibold">Verification</h2>
             {verifyResult ? (
-              <div className="mt-4 grid gap-3 text-sm">
-                <p className="text-slate-300">
-                  {verifyResult.manifestsMatched} manifests,{" "}
-                  {verifyResult.tilesVerified} tuiles verifiees
-                </p>
+              <div className="mt-3 grid gap-2 text-sm">
+                <p>{verifyResult.manifestsMatched} manifests</p>
+                <p>{verifyResult.tilesVerified} tuiles verifiees</p>
                 <p className="text-xs text-slate-400">
-                  {formatDateTime(verifyResult.generatedAt)}
+                  checks frames={verifyResult.strictChecks.expectedFrameCountChecks} masks=
+                  {verifyResult.strictChecks.expectedMaskSizeChecks} indexes=
+                  {verifyResult.strictChecks.pointIndexChecks}
                 </p>
-                {verifyResult.problems.length > 0 ? (
-                  <ul className="grid gap-2 text-rose-100">
-                    {verifyResult.problems.map((problem) => (
-                      <li
-                        key={problem}
-                        className="rounded-2xl border border-rose-400/20 bg-rose-400/10 px-3 py-2"
-                      >
-                        {problem}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-emerald-100">
-                    Aucun probleme detecte.
-                  </div>
-                )}
+                <p className="text-xs text-slate-400">{formatDateTime(verifyResult.generatedAt)}</p>
+                <p>{verifyResult.problems.length} problemes</p>
               </div>
-            ) : (
-              <p className="mt-4 text-sm text-slate-400">
-                Lance une verification pour controler manifests, versions et
-                presence des tuiles.
-              </p>
-            )}
+            ) : null}
+          </article>
+
+          <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
+            <h2 className="text-lg font-semibold">Precompute</h2>
+            <div className="mt-3 grid gap-2 text-sm">
+              <select
+                value={preRegion}
+                onChange={(event) => setPreRegion(event.target.value as "lausanne" | "nyon")}
+                className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+              >
+                <option value="lausanne">Lausanne</option>
+                <option value="nyon">Nyon</option>
+              </select>
+              <input
+                type="date"
+                value={preStartDate}
+                onChange={(event) => setPreStartDate(event.target.value)}
+                className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+              />
+              <input
+                type="number"
+                min={1}
+                max={31}
+                value={preDays}
+                onChange={(event) => setPreDays(Math.max(1, Math.min(31, Number(event.target.value) || 1)))}
+                className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+              />
+              <input
+                type="number"
+                min={1}
+                max={2000}
+                value={preGridStep}
+                onChange={(event) => setPreGridStep(Math.max(1, Number(event.target.value) || 1))}
+                className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+              />
+              <input
+                type="number"
+                min={1}
+                max={60}
+                value={preSampleEvery}
+                onChange={(event) => setPreSampleEvery(Math.max(1, Math.min(60, Number(event.target.value) || 1)))}
+                className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+              />
+              <input
+                type="number"
+                min={10}
+                max={5000}
+                value={preTileSize}
+                onChange={(event) => setPreTileSize(Math.max(10, Number(event.target.value) || 10))}
+                className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="time"
+                  value={preStartLocalTime}
+                  onChange={(event) => setPreStartLocalTime(event.target.value)}
+                  className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+                />
+                <input
+                  type="time"
+                  value={preEndLocalTime}
+                  onChange={(event) => setPreEndLocalTime(event.target.value)}
+                  className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void runPrecompute()}
+                disabled={precomputeState === "loading"}
+                className="rounded-full bg-cyan-300 px-4 py-2 text-sm font-medium text-slate-950"
+              >
+                {precomputeState === "loading" ? "Precompute en cours..." : "Lancer precompute"}
+              </button>
+              {precomputeResult ? (
+                <p className="text-xs text-cyan-100">
+                  Termine: {precomputeResult.totalDates} jour(s), {precomputeResult.totalTiles} tuiles,
+                  model {precomputeResult.modelVersionHash}
+                </p>
+              ) : null}
+            </div>
           </article>
 
           <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
             <h2 className="text-lg font-semibold">Purge</h2>
             {purgeResult ? (
-              <div className="mt-4 grid gap-3 text-sm">
-                <p className="text-slate-300">
-                  {purgeResult.runsMatched} runs matches
-                </p>
-                <p className="text-xs text-slate-400">
-                  {formatDateTime(purgeResult.generatedAt)}
-                </p>
-                <div
-                  className={`rounded-2xl px-3 py-2 ${
-                    purgeResult.dryRun
-                      ? "border border-amber-400/20 bg-amber-400/10 text-amber-100"
-                      : "border border-rose-400/20 bg-rose-400/10 text-rose-100"
-                  }`}
-                >
-                  {purgeResult.dryRun
-                    ? "Dry run uniquement, aucun fichier supprime."
-                    : `${purgeResult.removedRunDirs.length} dossiers supprimes.`}
-                </div>
-                {purgeResult.removedRunDirs.length > 0 ? (
-                  <ul className="grid gap-2 text-xs text-slate-300">
-                    {purgeResult.removedRunDirs.map((runDir) => (
-                      <li
-                        key={runDir}
-                        className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2 font-mono"
-                      >
-                        {runDir}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-            ) : (
-              <p className="mt-4 text-sm text-slate-400">
-                Utilise d&apos;abord le dry run pour verifier la selection avant
-                suppression.
+              <p className="mt-3 text-sm">
+                {purgeResult.runsMatched} runs matches, dryRun={String(purgeResult.dryRun)}
               </p>
-            )}
+            ) : null}
           </article>
         </div>
       </section>

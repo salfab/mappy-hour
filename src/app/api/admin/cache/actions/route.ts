@@ -1,12 +1,16 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { purgeCacheRuns, verifyCacheRuns } from "@/lib/admin/cache-admin";
+import {
+  precomputeCacheRuns,
+  purgeCacheRuns,
+  verifyCacheRuns,
+} from "@/lib/admin/cache-admin";
 
 export const runtime = "nodejs";
 
 const bodySchema = z.object({
-  action: z.enum(["verify", "purge"]),
+  action: z.enum(["verify", "purge", "precompute"]),
   filters: z
     .object({
       region: z.enum(["lausanne", "nyon"]).optional(),
@@ -16,6 +20,21 @@ const bodySchema = z.object({
     })
     .default({}),
   dryRun: z.boolean().optional(),
+  precompute: z
+    .object({
+      region: z.enum(["lausanne", "nyon"]),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      days: z.number().int().min(1).max(31).default(1),
+      timezone: z.string().default("Europe/Zurich"),
+      sampleEveryMinutes: z.number().int().min(1).max(60).default(15),
+      gridStepMeters: z.number().int().min(1).max(2000).default(5),
+      tileSizeMeters: z.number().int().min(10).max(5000).default(250),
+      startLocalTime: z.string().regex(/^\d{2}:\d{2}$/).default("00:00"),
+      endLocalTime: z.string().regex(/^\d{2}:\d{2}$/).default("23:59"),
+      observerHeightMeters: z.number().min(-5).max(20).optional(),
+      buildingHeightBiasMeters: z.number().min(-20).max(20).optional(),
+    })
+    .optional(),
 });
 
 export async function POST(request: Request) {
@@ -41,6 +60,16 @@ export async function POST(request: Request) {
   try {
     if (parsed.data.action === "verify") {
       const result = await verifyCacheRuns(parsed.data.filters);
+      return NextResponse.json(result);
+    }
+    if (parsed.data.action === "precompute") {
+      if (!parsed.data.precompute) {
+        return NextResponse.json(
+          { error: "Missing precompute payload." },
+          { status: 400 },
+        );
+      }
+      const result = await precomputeCacheRuns(parsed.data.precompute);
       return NextResponse.json(result);
     }
 

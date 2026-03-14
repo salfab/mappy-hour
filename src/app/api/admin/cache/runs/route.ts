@@ -10,6 +10,20 @@ const querySchema = z.object({
   modelVersionHash: z.string().min(1).optional(),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  sortBy: z
+    .enum([
+      "date",
+      "generatedAt",
+      "sizeBytes",
+      "tileCount",
+      "failedTileCount",
+      "gridStepMeters",
+      "sampleEveryMinutes",
+    ])
+    .optional(),
+  sortOrder: z.enum(["asc", "desc"]).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(200).optional(),
 });
 
 export async function GET(request: Request) {
@@ -20,6 +34,10 @@ export async function GET(request: Request) {
       modelVersionHash: url.searchParams.get("modelVersionHash") ?? undefined,
       startDate: url.searchParams.get("startDate") ?? undefined,
       endDate: url.searchParams.get("endDate") ?? undefined,
+      sortBy: url.searchParams.get("sortBy") ?? undefined,
+      sortOrder: url.searchParams.get("sortOrder") ?? undefined,
+      page: url.searchParams.get("page") ?? undefined,
+      pageSize: url.searchParams.get("pageSize") ?? undefined,
     });
 
     if (!parsed.success) {
@@ -32,7 +50,20 @@ export async function GET(request: Request) {
       );
     }
 
-    const result = await listCacheRuns(parsed.data);
+    const result = await listCacheRuns(
+      {
+        region: parsed.data.region,
+        modelVersionHash: parsed.data.modelVersionHash,
+        startDate: parsed.data.startDate,
+        endDate: parsed.data.endDate,
+      },
+      {
+        sortBy: parsed.data.sortBy,
+        sortOrder: parsed.data.sortOrder,
+        page: parsed.data.page,
+        pageSize: parsed.data.pageSize,
+      },
+    );
     return NextResponse.json(result);
   } catch (error) {
     return NextResponse.json(

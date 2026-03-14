@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { purgeCacheRuns, verifyCacheRuns } from "@/lib/admin/cache-admin";
+import {
+  precomputeCacheRuns,
+  purgeCacheRuns,
+  verifyCacheRuns,
+} from "@/lib/admin/cache-admin";
 
 import { POST } from "./route";
 
 vi.mock("@/lib/admin/cache-admin", () => ({
   verifyCacheRuns: vi.fn(),
   purgeCacheRuns: vi.fn(),
+  precomputeCacheRuns: vi.fn(),
 }));
 
 describe("POST /api/admin/cache/actions", () => {
@@ -23,6 +28,11 @@ describe("POST /api/admin/cache/actions", () => {
       },
       manifestsMatched: 2,
       tilesVerified: 24,
+      strictChecks: {
+        expectedFrameCountChecks: 2,
+        expectedMaskSizeChecks: 10,
+        pointIndexChecks: 100,
+      },
       problems: [],
     });
 
@@ -89,6 +99,74 @@ describe("POST /api/admin/cache/actions", () => {
       {
         dryRun: true,
       },
+    );
+  });
+
+  it("runs precompute", async () => {
+    vi.mocked(precomputeCacheRuns).mockResolvedValue({
+      generatedAt: "2026-03-14T10:00:00.000Z",
+      region: "lausanne",
+      modelVersionHash: "abc123",
+      algorithmVersion: "sunlight-cache-v2",
+      totalTiles: 16,
+      totalDates: 1,
+      params: {
+        region: "lausanne",
+        startDate: "2026-03-08",
+        days: 1,
+        timezone: "Europe/Zurich",
+        sampleEveryMinutes: 15,
+        gridStepMeters: 5,
+        tileSizeMeters: 250,
+        startLocalTime: "00:00",
+        endLocalTime: "23:59",
+        observerHeightMeters: 0,
+        buildingHeightBiasMeters: 0,
+      },
+      dates: [
+        {
+          date: "2026-03-08",
+          succeededTiles: 16,
+          failedTiles: 0,
+          complete: true,
+          elapsedMs: 1200,
+        },
+      ],
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/admin/cache/actions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "precompute",
+          precompute: {
+            region: "lausanne",
+            startDate: "2026-03-08",
+            days: 1,
+            timezone: "Europe/Zurich",
+            sampleEveryMinutes: 15,
+            gridStepMeters: 5,
+            tileSizeMeters: 250,
+            startLocalTime: "00:00",
+            endLocalTime: "23:59",
+          },
+        }),
+      }),
+    );
+    const json = (await response.json()) as { totalTiles: number; totalDates: number };
+
+    expect(response.status).toBe(200);
+    expect(json.totalTiles).toBe(16);
+    expect(json.totalDates).toBe(1);
+    expect(precomputeCacheRuns).toHaveBeenCalledWith(
+      expect.objectContaining({
+        region: "lausanne",
+        startDate: "2026-03-08",
+        days: 1,
+      }),
     );
   });
 
