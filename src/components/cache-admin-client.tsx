@@ -1,7 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
+
+const JOBS_SSE_STALE_AFTER_MS = 12_000;
+const JOBS_SSE_WATCHDOG_INTERVAL_MS = 4_000;
 
 type RegionFilter = "all" | "lausanne" | "nyon";
 type ActionState = "idle" | "loading";
@@ -94,9 +97,22 @@ interface CachePrecomputeResult {
 interface CachePrecomputeJob {
   jobId: string;
   createdAt: string;
+  updatedAt: string;
+  revision: number;
   startedAt: string | null;
   endedAt: string | null;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "cancelled" | "interrupted" | "completed" | "failed";
+  request: {
+    region: "lausanne" | "nyon";
+    startDate: string;
+    days: number;
+    timezone: string;
+    sampleEveryMinutes: number;
+    gridStepMeters: number;
+    startLocalTime: string;
+    endLocalTime: string;
+    skipExisting: boolean;
+  };
   progress: {
     stage: "running" | "finalizing";
     date: string;
@@ -107,12 +123,19 @@ interface CachePrecomputeJob {
     completedTiles: number;
     totalTiles: number;
     percent: number;
-    currentTileState: "computed" | "skipped" | "failed";
+    currentTileState: "running" | "computed" | "skipped" | "failed";
+    currentTilePhase?: "prepare-context" | "prepare-points" | "evaluate-frames" | null;
+    currentTileProgressPercent?: number | null;
     elapsedMs: number;
     etaSeconds: number | null;
   } | null;
   result: CachePrecomputeResult | null;
   error: string | null;
+}
+
+interface CacheJobsListResponse {
+  generatedAt: string;
+  jobs: CachePrecomputeJob[];
 }
 
 function formatBytes(value: number): string {
@@ -147,6 +170,104 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
+function isActiveJobStatus(status: CachePrecomputeJob["status"]): boolean {
+  return status === "queued" || status === "running";
+}
+
+function isActiveJob(job: CachePrecomputeJob): boolean {
+  return isActiveJobStatus(job.status);
+}
+
+function isResumableJob(job: CachePrecomputeJob): boolean {
+  return (
+    job.status === "failed" ||
+    job.status === "cancelled" ||
+    job.status === "interrupted"
+  );
+}
+
+function formatJobStatus(status: CachePrecomputeJob["status"]): string {
+  if (status === "queued") {
+    return "en attente";
+  }
+  if (status === "running") {
+    return "en cours";
+  }
+  if (status === "cancelled") {
+    return "annule";
+  }
+  if (status === "interrupted") {
+    return "interrompu";
+  }
+  if (status === "completed") {
+    return "termine";
+  }
+  return "en erreur";
+}
+
+function formatTileState(state: NonNullable<CachePrecomputeJob["progress"]>["currentTileState"]): string {
+  if (state === "running") {
+    return "calcul";
+  }
+  if (state === "computed") {
+    return "calculee";
+  }
+  if (state === "skipped") {
+    return "ignoree (cache)";
+  }
+  return "echec";
+}
+
+function formatTilePhase(
+  phase: NonNullable<CachePrecomputeJob["progress"]>["currentTilePhase"],
+): string {
+  if (phase === "prepare-context") {
+    return "preparation contexte";
+  }
+  if (phase === "prepare-points") {
+    return "preparation points";
+  }
+  if (phase === "evaluate-frames") {
+    return "evaluation soleil";
+  }
+  return "n/a";
+}
+
+function computeJobElapsedSeconds(job: CachePrecomputeJob): number | null {
+  if (job.progress && Number.isFinite(job.progress.elapsedMs)) {
+    return Math.max(0, Math.round(job.progress.elapsedMs / 1000));
+  }
+  if (!job.startedAt) {
+    return null;
+  }
+  const startedAtMs = Date.parse(job.startedAt);
+  if (!Number.isFinite(startedAtMs)) {
+    return null;
+  }
+  const endedAtMs = job.endedAt ? Date.parse(job.endedAt) : Date.now();
+  if (!Number.isFinite(endedAtMs)) {
+    return null;
+  }
+  return Math.max(0, Math.round((endedAtMs - startedAtMs) / 1000));
+}
+
+function formatElapsed(seconds: number | null): string {
+  if (seconds === null) {
+    return "n/a";
+  }
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) {
+    return `${minutes}m ${remainingSeconds}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
+}
+
 function buildRunsUrl(filters: {
   region: RegionFilter;
   modelVersionHash: string;
@@ -178,6 +299,7 @@ function buildRunsUrl(filters: {
 }
 
 export function CacheAdminClient() {
+  const lastJobStreamSignalAtRef = useRef<number>(0);
   const [region, setRegion] = useState<RegionFilter>("all");
   const [modelVersionHash, setModelVersionHash] = useState("");
   const [startDate, setStartDate] = useState("");
@@ -192,8 +314,15 @@ export function CacheAdminClient() {
   const [precomputeResult, setPrecomputeResult] =
     useState<CachePrecomputeResult | null>(null);
   const [precomputeJob, setPrecomputeJob] = useState<CachePrecomputeJob | null>(null);
+  const [activeJobs, setActiveJobs] = useState<CachePrecomputeJob[]>([]);
+  const [recentJobs, setRecentJobs] = useState<CachePrecomputeJob[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [jobsLoadError, setJobsLoadError] = useState<string | null>(null);
+  const [jobActionPending, setJobActionPending] = useState<{
+    jobId: string;
+    action: "cancel" | "resume";
+  } | null>(null);
   const [loadState, setLoadState] = useState<ActionState>("idle");
   const [verifyState, setVerifyState] = useState<ActionState>("idle");
   const [purgeState, setPurgeState] = useState<ActionState>("idle");
@@ -207,6 +336,9 @@ export function CacheAdminClient() {
   const [preStartLocalTime, setPreStartLocalTime] = useState("00:00");
   const [preEndLocalTime, setPreEndLocalTime] = useState("23:59");
   const [preSkipExisting, setPreSkipExisting] = useState(true);
+  const hasActivePrecompute = activeJobs.length > 0;
+  const precomputeButtonDisabled =
+    precomputeState === "loading" || hasActivePrecompute;
 
   const filters = useMemo(
     () => ({
@@ -252,6 +384,62 @@ export function CacheAdminClient() {
   useEffect(() => {
     void refreshRuns();
   }, [refreshRuns]);
+
+  const refreshActiveJobs = useCallback(async () => {
+    try {
+      setJobsLoadError(null);
+      const response = await fetch("/api/admin/cache/jobs", { cache: "no-store" });
+      const payload = (await response.json()) as
+        | CacheJobsListResponse
+        | { error?: string; details?: string };
+      if (!response.ok) {
+        const errorPayload = payload as { error?: string; details?: string };
+        throw new Error(errorPayload.details ?? errorPayload.error ?? "Unknown error");
+      }
+
+      const jobs = (payload as CacheJobsListResponse).jobs ?? [];
+      const active = jobs.filter(isActiveJob);
+      setRecentJobs(jobs.slice(0, 10));
+      setActiveJobs(active);
+      setPrecomputeJob((current) => {
+        if (!current) {
+          return active[0] ?? null;
+        }
+        const sameJob = jobs.find((job) => job.jobId === current.jobId) ?? null;
+        if (sameJob) {
+          return sameJob;
+        }
+        if (isActiveJob(current)) {
+          return active[0] ?? current;
+        }
+        return current;
+      });
+    } catch (error) {
+      setJobsLoadError(error instanceof Error ? error.message : "Unknown error");
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshActiveJobs();
+  }, [refreshActiveJobs]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const trackedJob = precomputeJob;
+      const expectsSse = trackedJob ? isActiveJobStatus(trackedJob.status) : false;
+      if (!expectsSse) {
+        return;
+      }
+      const now = Date.now();
+      const lastSignalAt = lastJobStreamSignalAtRef.current;
+      const staleForMs =
+        lastSignalAt > 0 ? now - lastSignalAt : JOBS_SSE_STALE_AFTER_MS + 1;
+      if (staleForMs >= JOBS_SSE_STALE_AFTER_MS) {
+        void refreshActiveJobs();
+      }
+    }, JOBS_SSE_WATCHDOG_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [precomputeJob?.jobId, precomputeJob?.status, refreshActiveJobs]);
 
   const runAction = useCallback(
     async (action: "verify" | "purge", dryRun?: boolean) => {
@@ -300,6 +488,12 @@ export function CacheAdminClient() {
   );
 
   const runPrecompute = useCallback(async () => {
+    if (hasActivePrecompute) {
+      setActionError(
+        "Un job precompute est deja en cours. Annule-le ou attends sa fin avant d'en lancer un nouveau.",
+      );
+      return;
+    }
     const confirmed = window.confirm(
       "Lancer un precompute maintenant ? Cette action peut prendre du temps.",
     );
@@ -338,22 +532,39 @@ export function CacheAdminClient() {
         throw new Error("Invalid precompute job response.");
       }
       setPrecomputeResult(null);
-      setPrecomputeJob({
+      const queuedJob: CachePrecomputeJob = {
         jobId: payload.jobId,
         createdAt: payload.createdAt,
+        updatedAt: payload.createdAt,
+        revision: 0,
         startedAt: null,
         endedAt: null,
         status: "queued",
+        request: {
+          region: preRegion,
+          startDate: preStartDate,
+          days: preDays,
+          timezone: "Europe/Zurich",
+          sampleEveryMinutes: preSampleEvery,
+          gridStepMeters: preGridStep,
+          startLocalTime: preStartLocalTime,
+          endLocalTime: preEndLocalTime,
+          skipExisting: preSkipExisting,
+        },
         progress: null,
         result: null,
         error: null,
-      });
+      };
+      setPrecomputeJob(queuedJob);
+      setActiveJobs((current) => [queuedJob, ...current.filter((job) => job.jobId !== queuedJob.jobId)]);
+      setRecentJobs((current) => [queuedJob, ...current.filter((job) => job.jobId !== queuedJob.jobId)].slice(0, 10));
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Unknown error");
     } finally {
       setPrecomputeState("idle");
     }
   }, [
+    hasActivePrecompute,
     preDays,
     preEndLocalTime,
     preGridStep,
@@ -365,25 +576,151 @@ export function CacheAdminClient() {
     refreshRuns,
   ]);
 
+  const runJobAction = useCallback(
+    async (job: CachePrecomputeJob, action: "cancel" | "resume") => {
+      if (action === "cancel") {
+        const confirmed = window.confirm(
+          `Annuler le job ${job.jobId.slice(0, 8)} ?`,
+        );
+        if (!confirmed) {
+          return;
+        }
+      }
+
+      setJobActionPending({ jobId: job.jobId, action });
+      setActionError(null);
+      try {
+        const response = await fetch(
+          `/api/admin/cache/jobs/${encodeURIComponent(job.jobId)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action }),
+          },
+        );
+        const payload = (await response.json()) as
+          | CachePrecomputeJob
+          | {
+              jobId: string;
+              status: "cancelled";
+              rejected: boolean;
+              removedRunDirs: number;
+              removedSnapshot: boolean;
+            }
+          | { error?: string; details?: string };
+        if (!response.ok) {
+          const errorPayload = payload as { error?: string; details?: string };
+          throw new Error(
+            errorPayload.details ?? errorPayload.error ?? "Unknown error",
+          );
+        }
+        if (action === "cancel") {
+          const cancelPayload = payload as
+            | CachePrecomputeJob
+            | {
+                jobId: string;
+                status: "cancelled";
+                rejected: boolean;
+                removedRunDirs: number;
+                removedSnapshot: boolean;
+              };
+          const cancelledJobId = cancelPayload.jobId;
+          setActiveJobs((current) =>
+            current.filter((entry) => entry.jobId !== cancelledJobId),
+          );
+          setRecentJobs((current) =>
+            current.filter((entry) => entry.jobId !== cancelledJobId),
+          );
+          setPrecomputeJob((current) =>
+            current?.jobId === cancelledJobId ? null : current,
+          );
+          await refreshRuns();
+        } else {
+          const jobPayload = payload as CachePrecomputeJob;
+          setPrecomputeResult(null);
+          setPrecomputeJob(jobPayload);
+          setActiveJobs((current) =>
+            [jobPayload, ...current.filter((entry) => entry.jobId !== jobPayload.jobId)]
+              .sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+          );
+          setRecentJobs((current) =>
+            [jobPayload, ...current.filter((entry) => entry.jobId !== jobPayload.jobId)]
+              .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+              .slice(0, 10),
+          );
+        }
+        await refreshActiveJobs();
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : "Unknown error");
+      } finally {
+        setJobActionPending(null);
+      }
+    },
+    [refreshActiveJobs, refreshRuns],
+  );
+
   useEffect(() => {
     const jobId = precomputeJob?.jobId;
     const status = precomputeJob?.status;
     if (!jobId) {
       return;
     }
-    if (status === "completed" || status === "failed") {
+    if (!status || !isActiveJobStatus(status)) {
       return;
     }
+    lastJobStreamSignalAtRef.current = Date.now();
 
     let cancelled = false;
-    let inFlight = false;
-    let nextTimer: ReturnType<typeof setTimeout> | null = null;
+    let pollingInFlight = false;
+    let pollingTimer: ReturnType<typeof setTimeout> | null = null;
+    let eventSource: EventSource | null = null;
+    let fallbackStarted = false;
 
-    const tick = async () => {
-      if (cancelled || inFlight) {
+    const applyJobUpdate = (job: CachePrecomputeJob) => {
+      lastJobStreamSignalAtRef.current = Date.now();
+      setPrecomputeJob(job);
+      setActiveJobs((current) => {
+        const remaining = current.filter((entry) => entry.jobId !== job.jobId);
+        if (isActiveJob(job)) {
+          return [job, ...remaining].sort((left, right) =>
+            right.createdAt.localeCompare(left.createdAt),
+          );
+        }
+        return remaining;
+      });
+      setRecentJobs((current) =>
+        [job, ...current.filter((entry) => entry.jobId !== job.jobId)]
+          .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+          .slice(0, 10),
+      );
+      if (job.status === "completed") {
+        setPrecomputeResult(job.result ?? null);
+        void refreshRuns();
+      }
+    };
+
+    const startPollingFallback = () => {
+      if (fallbackStarted || cancelled) {
         return;
       }
-      inFlight = true;
+      fallbackStarted = true;
+      void pollJob();
+    };
+
+    const scheduleNextPoll = () => {
+      if (cancelled) {
+        return;
+      }
+      pollingTimer = setTimeout(() => {
+        void pollJob();
+      }, 1000);
+    };
+
+    const pollJob = async () => {
+      if (cancelled || pollingInFlight) {
+        return;
+      }
+      pollingInFlight = true;
       try {
         const response = await fetch(`/api/admin/cache/jobs/${encodeURIComponent(jobId)}`, {
           cache: "no-store",
@@ -395,6 +732,8 @@ export function CacheAdminClient() {
               current && current.jobId === jobId
                 ? {
                     ...current,
+                    updatedAt: new Date().toISOString(),
+                    revision: (current.revision ?? 0) + 1,
                     status: "failed",
                     endedAt: new Date().toISOString(),
                     error:
@@ -402,6 +741,7 @@ export function CacheAdminClient() {
                   }
                 : current,
             );
+            setActiveJobs((current) => current.filter((job) => job.jobId !== jobId));
             return;
           }
           throw new Error((payload as { error?: string }).error ?? "Unknown error");
@@ -409,36 +749,72 @@ export function CacheAdminClient() {
         if (cancelled) {
           return;
         }
-        const job = payload as CachePrecomputeJob;
-        setPrecomputeJob(job);
-        if (job.status === "completed") {
-          setPrecomputeResult(job.result ?? null);
-          void refreshRuns();
-        }
+        lastJobStreamSignalAtRef.current = Date.now();
+        applyJobUpdate(payload as CachePrecomputeJob);
       } catch (error) {
         if (cancelled) {
           return;
         }
         setActionError(error instanceof Error ? error.message : "Unknown error");
       } finally {
-        inFlight = false;
-        if (!cancelled) {
-          nextTimer = setTimeout(() => {
-            void tick();
-          }, 1000);
-        }
+        pollingInFlight = false;
+        scheduleNextPoll();
       }
     };
 
-    void tick();
+    if (typeof EventSource !== "undefined") {
+      eventSource = new EventSource(
+        `/api/admin/cache/jobs/${encodeURIComponent(jobId)}/stream`,
+      );
+      eventSource.addEventListener("job", (event) => {
+        if (cancelled) {
+          return;
+        }
+        try {
+          const job = JSON.parse((event as MessageEvent<string>).data) as CachePrecomputeJob;
+          applyJobUpdate(job);
+        } catch {
+          startPollingFallback();
+        }
+      });
+      eventSource.addEventListener("heartbeat", () => {
+        if (cancelled) {
+          return;
+        }
+        lastJobStreamSignalAtRef.current = Date.now();
+      });
+      eventSource.addEventListener("done", () => {
+        if (cancelled) {
+          return;
+        }
+        lastJobStreamSignalAtRef.current = Date.now();
+        void refreshActiveJobs();
+      });
+      eventSource.addEventListener("error", () => {
+        if (cancelled) {
+          return;
+        }
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+        startPollingFallback();
+      });
+    } else {
+      startPollingFallback();
+    }
 
     return () => {
       cancelled = true;
-      if (nextTimer) {
-        clearTimeout(nextTimer);
+      lastJobStreamSignalAtRef.current = 0;
+      if (eventSource) {
+        eventSource.close();
+      }
+      if (pollingTimer) {
+        clearTimeout(pollingTimer);
       }
     };
-  }, [precomputeJob?.jobId, precomputeJob?.status, refreshRuns]);
+  }, [precomputeJob?.jobId, precomputeJob?.status, refreshActiveJobs, refreshRuns]);
 
   return (
     <div className="grid gap-6">
@@ -737,6 +1113,103 @@ export function CacheAdminClient() {
           <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
             <h2 className="text-lg font-semibold">Precompute</h2>
             <div className="mt-3 grid gap-2 text-sm">
+              {activeJobs.length > 0 ? (
+                <div className="grid gap-2 rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3 py-2">
+                  <p className="text-cyan-100">
+                    {activeJobs.length} job(s) en cours detecte(s) apres rafraichissement.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {activeJobs.slice(0, 4).map((job) => (
+                      <button
+                        key={job.jobId}
+                        type="button"
+                        onClick={() => setPrecomputeJob(job)}
+                        className="rounded-full border border-cyan-300/60 px-3 py-1 text-xs text-cyan-100"
+                      >
+                        Suivre {job.jobId.slice(0, 8)} ({formatJobStatus(job.status)})
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {jobsLoadError ? (
+                <p className="text-xs text-amber-200">
+                  Impossible de charger la liste des jobs en cours: {jobsLoadError}
+                </p>
+              ) : null}
+              {recentJobs.length > 0 ? (
+                <div className="grid gap-2 rounded-xl border border-white/12 bg-slate-950/40 p-3">
+                  <p className="text-xs text-slate-300">Jobs recents</p>
+                  <div className="grid max-h-72 gap-2 overflow-auto">
+                    {recentJobs.map((job) => (
+                      <article
+                        key={job.jobId}
+                        className="grid gap-2 rounded-lg border border-white/10 bg-slate-900/50 p-3"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-mono text-xs text-slate-200">
+                            {job.jobId.slice(0, 8)}
+                          </p>
+                          <p className="text-xs text-slate-300">
+                            {formatJobStatus(job.status)}
+                          </p>
+                        </div>
+                        <p className="text-[11px] text-slate-300">
+                          Region {job.request.region} · {job.request.days} jour(s) depuis {job.request.startDate}
+                        </p>
+                        <p className="text-[11px] text-slate-300">
+                          Fenetre {job.request.startLocalTime}-{job.request.endLocalTime} · grille {job.request.gridStepMeters}m · pas {job.request.sampleEveryMinutes}min
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          elapsed {formatElapsed(computeJobElapsedSeconds(job))} · maj {formatDateTime(job.updatedAt)}
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setPrecomputeJob(job)}
+                            disabled={precomputeJob?.jobId === job.jobId}
+                            className="rounded-full border border-white/20 px-2 py-1 text-[11px] disabled:opacity-50"
+                          >
+                            Suivre
+                          </button>
+                          {isActiveJob(job) ? (
+                            <button
+                              type="button"
+                              onClick={() => void runJobAction(job, "cancel")}
+                              disabled={
+                                jobActionPending?.jobId === job.jobId &&
+                                jobActionPending.action === "cancel"
+                              }
+                              className="rounded-full border border-rose-300/50 px-2 py-1 text-[11px] text-rose-100 disabled:opacity-50"
+                            >
+                              {jobActionPending?.jobId === job.jobId &&
+                              jobActionPending.action === "cancel"
+                                ? "Annulation..."
+                                : "Annuler"}
+                            </button>
+                          ) : null}
+                          {isResumableJob(job) ? (
+                            <button
+                              type="button"
+                              onClick={() => void runJobAction(job, "resume")}
+                              disabled={
+                                jobActionPending?.jobId === job.jobId &&
+                                jobActionPending.action === "resume"
+                              }
+                              className="rounded-full border border-emerald-300/50 px-2 py-1 text-[11px] text-emerald-100 disabled:opacity-50"
+                            >
+                              {jobActionPending?.jobId === job.jobId &&
+                              jobActionPending.action === "resume"
+                                ? "Relance..."
+                                : "Reprendre"}
+                            </button>
+                          ) : null}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               <label className="grid gap-1">
                 <span className="text-slate-300">Region</span>
                 <select
@@ -832,25 +1305,85 @@ export function CacheAdminClient() {
                 />
                 Ignorer les tuiles deja calculees (mode reprise)
               </label>
+              <p className="rounded-xl border border-white/12 bg-slate-900/50 px-3 py-2 text-xs text-slate-300">
+                Portee d&apos;un run: region complete ({preRegion}), {preDays} jour(s) a partir du {preStartDate},
+                fenetre {preStartLocalTime}-{preEndLocalTime}. La progression totale compte les tuiles sur
+                toute la plage de jours (tuile-jour).
+              </p>
               <button
                 type="button"
                 onClick={() => void runPrecompute()}
-                disabled={precomputeState === "loading"}
+                disabled={precomputeButtonDisabled}
                 className="rounded-full bg-cyan-300 px-4 py-2 text-sm font-medium text-slate-950"
               >
-                {precomputeState === "loading" ? "Precompute en cours..." : "Lancer precompute"}
+                {precomputeState === "loading"
+                  ? "Precompute en cours..."
+                  : hasActivePrecompute
+                    ? "Job en cours (bloque)"
+                    : "Lancer precompute"}
               </button>
+              {hasActivePrecompute ? (
+                <p className="text-xs text-amber-100">
+                  Un job est deja en cours. Le lancement d'un nouveau precompute est bloque.
+                </p>
+              ) : null}
               {precomputeJob ? (
                 <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs text-cyan-100">
                   <p>
-                    Job {precomputeJob.jobId.slice(0, 8)} - {precomputeJob.status}
+                    Job {precomputeJob.jobId.slice(0, 8)} - {formatJobStatus(precomputeJob.status)}
                   </p>
+                  <p className="mt-1 text-[11px] text-cyan-50">
+                    Portee: region {precomputeJob.request.region}, {precomputeJob.request.days} jour(s)
+                    depuis {precomputeJob.request.startDate}, fenetre {precomputeJob.request.startLocalTime}-
+                    {precomputeJob.request.endLocalTime}, grille {precomputeJob.request.gridStepMeters}m,
+                    pas {precomputeJob.request.sampleEveryMinutes}min.
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {isActiveJob(precomputeJob) ? (
+                      <button
+                        type="button"
+                        onClick={() => void runJobAction(precomputeJob, "cancel")}
+                        disabled={
+                          jobActionPending?.jobId === precomputeJob.jobId &&
+                          jobActionPending.action === "cancel"
+                        }
+                        className="rounded-full border border-rose-300/50 px-2 py-1 text-[11px] text-rose-100 disabled:opacity-50"
+                      >
+                        {jobActionPending?.jobId === precomputeJob.jobId &&
+                        jobActionPending.action === "cancel"
+                          ? "Annulation..."
+                          : "Annuler ce job"}
+                      </button>
+                    ) : null}
+                    {isResumableJob(precomputeJob) ? (
+                      <button
+                        type="button"
+                        onClick={() => void runJobAction(precomputeJob, "resume")}
+                        disabled={
+                          jobActionPending?.jobId === precomputeJob.jobId &&
+                          jobActionPending.action === "resume"
+                        }
+                        className="rounded-full border border-emerald-300/50 px-2 py-1 text-[11px] text-emerald-100 disabled:opacity-50"
+                      >
+                        {jobActionPending?.jobId === precomputeJob.jobId &&
+                        jobActionPending.action === "resume"
+                          ? "Relance..."
+                          : "Reprendre depuis cache"}
+                      </button>
+                    ) : null}
+                  </div>
                   {precomputeJob.progress ? (
                     <>
-                      <p>
-                        {precomputeJob.progress.percent}% ({precomputeJob.progress.completedTiles}/
-                        {precomputeJob.progress.totalTiles}) - {precomputeJob.progress.date}
-                      </p>
+                      {precomputeJob.progress.totalTiles > 0 ? (
+                        <p>
+                          {precomputeJob.progress.percent}% ({precomputeJob.progress.completedTiles}/
+                          {precomputeJob.progress.totalTiles}) - {precomputeJob.progress.date}
+                        </p>
+                      ) : (
+                        <p>
+                          Demarrage du calcul - {precomputeJob.progress.date}
+                        </p>
+                      )}
                       <div className="grid gap-1">
                         <p className="text-cyan-50">
                           Progression totale
@@ -864,24 +1397,35 @@ export function CacheAdminClient() {
                       </div>
                       <div className="grid gap-1">
                         <p className="text-cyan-50">
-                          Progression tuile/jour ({precomputeJob.progress.tileIndex}/
-                          {precomputeJob.progress.tilesTotal})
+                          Progression tuile en cours ({Math.round(
+                            precomputeJob.progress.currentTileProgressPercent ??
+                              ((precomputeJob.progress.tileIndex /
+                                Math.max(precomputeJob.progress.tilesTotal, 1)) *
+                                100),
+                          )}
+                          %)
                         </p>
                         <div className="h-2 w-full overflow-hidden rounded-full bg-cyan-950/60">
                           <div
                             className="h-full rounded-full bg-sky-200 transition-all duration-500"
                             style={{
                               width: `${clampPercent(
-                                (precomputeJob.progress.tileIndex /
-                                  Math.max(precomputeJob.progress.tilesTotal, 1)) *
-                                  100,
+                                precomputeJob.progress.currentTileProgressPercent ??
+                                  ((precomputeJob.progress.tileIndex /
+                                    Math.max(precomputeJob.progress.tilesTotal, 1)) *
+                                    100),
                               )}%`,
                             }}
                           />
                         </div>
                       </div>
                       <p>
-                        etape={precomputeJob.progress.currentTileState} | elapsed=
+                        tuile={precomputeJob.progress.tileIndex}/{precomputeJob.progress.tilesTotal} |
+                        etape={formatTileState(precomputeJob.progress.currentTileState)}
+                        {precomputeJob.progress.currentTilePhase
+                          ? ` (${formatTilePhase(precomputeJob.progress.currentTilePhase)})`
+                          : ""}
+                        {" "} | elapsed=
                         {Math.round(precomputeJob.progress.elapsedMs / 1000)}s | eta=
                         {precomputeJob.progress.etaSeconds === null
                           ? "n/a"
@@ -889,7 +1433,7 @@ export function CacheAdminClient() {
                       </p>
                     </>
                   ) : (
-                    <p>En attente...</p>
+                    <p>Initialisation de la premiere tuile...</p>
                   )}
                   {precomputeJob.error ? <p>{precomputeJob.error}</p> : null}
                 </div>
