@@ -272,6 +272,42 @@ function formatElapsed(seconds: number | null): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
+function parseLocalTimeToMinutes(value: string): number | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) {
+    return null;
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) {
+    return null;
+  }
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+  return hours * 60 + minutes;
+}
+
+function computeFrameCountPerDay(
+  startLocalTime: string,
+  endLocalTime: string,
+  sampleEveryMinutes: number,
+): number | null {
+  const startMinutes = parseLocalTimeToMinutes(startLocalTime);
+  const endMinutes = parseLocalTimeToMinutes(endLocalTime);
+  if (startMinutes === null || endMinutes === null) {
+    return null;
+  }
+  if (!Number.isFinite(sampleEveryMinutes) || sampleEveryMinutes <= 0) {
+    return null;
+  }
+  if (endMinutes < startMinutes) {
+    return null;
+  }
+  return Math.floor((endMinutes - startMinutes) / sampleEveryMinutes) + 1;
+}
+
 function buildRunsUrl(filters: {
   region: RegionFilter;
   modelVersionHash: string;
@@ -343,6 +379,16 @@ export function CacheAdminClient() {
   const hasActivePrecompute = activeJobs.length > 0;
   const precomputeButtonDisabled =
     precomputeState === "loading" || hasActivePrecompute;
+  const precomputeFrameCountPerDay = useMemo(() => {
+    if (!precomputeJob) {
+      return null;
+    }
+    return computeFrameCountPerDay(
+      precomputeJob.request.startLocalTime,
+      precomputeJob.request.endLocalTime,
+      precomputeJob.request.sampleEveryMinutes,
+    );
+  }, [precomputeJob]);
 
   const filters = useMemo(
     () => ({
@@ -1342,6 +1388,18 @@ export function CacheAdminClient() {
                     {precomputeJob.request.endLocalTime}, grille {precomputeJob.request.gridStepMeters}m,
                     pas {precomputeJob.request.sampleEveryMinutes}min.
                   </p>
+                  <p className="text-[11px] text-cyan-100/90">
+                    Unite totale: <span className="font-semibold">tuile-jour</span> = 1 tuile spatiale
+                    ({CANONICAL_PRECOMPUTE_TILE_SIZE_METERS}m) calculee pour toute la fenetre d'un jour.
+                  </p>
+                  <p className="text-[11px] text-cyan-100/90">
+                    Slots temporels par tuile-jour:{" "}
+                    {precomputeFrameCountPerDay === null
+                      ? "n/a"
+                      : `${precomputeFrameCountPerDay} frames`}{" "}
+                    ({precomputeJob.request.startLocalTime}-{precomputeJob.request.endLocalTime}, pas{" "}
+                    {precomputeJob.request.sampleEveryMinutes} min).
+                  </p>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {canCancelJob(precomputeJob) ? (
                       <button
@@ -1381,7 +1439,9 @@ export function CacheAdminClient() {
                       {precomputeJob.progress.totalTiles > 0 ? (
                         <p>
                           {precomputeJob.progress.percent}% ({precomputeJob.progress.completedTiles}/
-                          {precomputeJob.progress.totalTiles}) - {precomputeJob.progress.date}
+                          {precomputeJob.progress.totalTiles} tuiles-jour) - jour{" "}
+                          {precomputeJob.progress.dayIndex}/{precomputeJob.progress.daysTotal} (
+                          {precomputeJob.progress.date})
                         </p>
                       ) : (
                         <p>
@@ -1390,7 +1450,7 @@ export function CacheAdminClient() {
                       )}
                       <div className="grid gap-1">
                         <p className="text-cyan-50">
-                          Progression totale
+                          Progression totale (tuiles-jour)
                         </p>
                         <div className="h-2 w-full overflow-hidden rounded-full bg-cyan-950/60">
                           <div
@@ -1401,7 +1461,7 @@ export function CacheAdminClient() {
                       </div>
                       <div className="grid gap-1">
                         <p className="text-cyan-50">
-                          Progression tuile en cours ({Math.round(
+                          Progression tuile spatiale en cours ({Math.round(
                             precomputeJob.progress.currentTileProgressPercent ??
                               ((precomputeJob.progress.tileIndex /
                                 Math.max(precomputeJob.progress.tilesTotal, 1)) *
@@ -1423,8 +1483,12 @@ export function CacheAdminClient() {
                           />
                         </div>
                       </div>
+                      <p className="text-[11px] text-cyan-100/90">
+                        La tuile en cours couvre tous les slots temporels de la fenetre du jour.
+                      </p>
                       <p>
-                        tuile={precomputeJob.progress.tileIndex}/{precomputeJob.progress.tilesTotal} |
+                        jour={precomputeJob.progress.dayIndex}/{precomputeJob.progress.daysTotal} |
+                        tuile spatiale={precomputeJob.progress.tileIndex}/{precomputeJob.progress.tilesTotal} |
                         étape={formatTileState(precomputeJob.progress.currentTileState)}
                         {precomputeJob.progress.currentTilePhase
                           ? ` (${formatTilePhase(precomputeJob.progress.currentTilePhase)})`
