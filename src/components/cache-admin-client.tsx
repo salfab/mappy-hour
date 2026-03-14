@@ -263,17 +263,11 @@ function formatElapsed(seconds: number | null): string {
   if (seconds === null) {
     return "n/a";
   }
-  if (seconds < 60) {
-    return `${seconds}s`;
-  }
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  if (minutes < 60) {
-    return `${minutes}m ${remainingSeconds}s`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return `${hours}h ${remainingMinutes}m`;
+  const totalSeconds = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
 }
 
 function parseLocalTimeToMinutes(value: string): number | null {
@@ -1504,10 +1498,8 @@ export function CacheAdminClient() {
                           ? ` (${formatTilePhase(precomputeJob.progress.currentTilePhase)})`
                           : ""}
                         {" "} | elapsed=
-                        {Math.round(precomputeJob.progress.elapsedMs / 1000)}s | eta=
-                        {precomputeJob.progress.etaSeconds === null
-                          ? "n/a"
-                          : `${precomputeJob.progress.etaSeconds}s`}
+                        {formatElapsed(Math.round(precomputeJob.progress.elapsedMs / 1000))} | eta=
+                        {formatElapsed(precomputeJob.progress.etaSeconds)}
                       </p>
                     </>
                   ) : (
