@@ -131,6 +131,57 @@ describe("GET /api/admin/cache/jobs/[jobId]", () => {
     expect(rejectCachePrecomputeJob).toHaveBeenCalledWith("job-cancel");
   });
 
+  it("cancels an interrupted job by rejecting artifacts", async () => {
+    vi.mocked(cancelCachePrecomputeJob).mockReturnValue({
+      jobId: "job-interrupted",
+      createdAt: "2026-03-14T10:00:00.000Z",
+      updatedAt: "2026-03-14T10:10:00.000Z",
+      revision: 5,
+      startedAt: "2026-03-14T10:00:01.000Z",
+      endedAt: "2026-03-14T10:10:00.000Z",
+      status: "interrupted",
+      request: {
+        region: "lausanne",
+        startDate: "2026-03-08",
+        days: 1,
+        timezone: "Europe/Zurich",
+        sampleEveryMinutes: 15,
+        gridStepMeters: 1,
+        startLocalTime: "00:00",
+        endLocalTime: "23:59",
+        skipExisting: true,
+      },
+      progress: null,
+      result: null,
+      error: "Worker stopped unexpectedly.",
+    });
+    vi.mocked(rejectCachePrecomputeJob).mockResolvedValue({
+      jobId: "job-interrupted",
+      modelVersionHash: "model-abc",
+      removedModelVersionHashes: ["model-abc"],
+      removedRunDirs: ["C:\\cache\\run-b"],
+      removedSnapshot: true,
+    });
+
+    const response = await POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "cancel" }),
+      }),
+      {
+        params: Promise.resolve({ jobId: "job-interrupted" }),
+      },
+    );
+    const json = (await response.json()) as { status: string; rejected: boolean };
+
+    expect(response.status).toBe(200);
+    expect(json.status).toBe("cancelled");
+    expect(json.rejected).toBe(true);
+    expect(cancelCachePrecomputeJob).toHaveBeenCalledWith("job-interrupted");
+    expect(rejectCachePrecomputeJob).toHaveBeenCalledWith("job-interrupted");
+  });
+
   it("resumes the same job id (no duplicate job)", async () => {
     vi.mocked(resumeCachePrecomputeJob).mockReturnValue({
       jobId: "job-old",

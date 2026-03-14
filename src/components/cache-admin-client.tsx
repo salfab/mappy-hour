@@ -186,6 +186,10 @@ function isResumableJob(job: CachePrecomputeJob): boolean {
   );
 }
 
+function canCancelJob(job: CachePrecomputeJob): boolean {
+  return job.status !== "completed";
+}
+
 function formatJobStatus(status: CachePrecomputeJob["status"]): string {
   if (status === "queued") {
     return "en attente";
@@ -194,13 +198,13 @@ function formatJobStatus(status: CachePrecomputeJob["status"]): string {
     return "en cours";
   }
   if (status === "cancelled") {
-    return "annule";
+    return "annulé";
   }
   if (status === "interrupted") {
     return "interrompu";
   }
   if (status === "completed") {
-    return "termine";
+    return "terminé";
   }
   return "en erreur";
 }
@@ -210,25 +214,25 @@ function formatTileState(state: NonNullable<CachePrecomputeJob["progress"]>["cur
     return "calcul";
   }
   if (state === "computed") {
-    return "calculee";
+    return "calculée";
   }
   if (state === "skipped") {
-    return "ignoree (cache)";
+    return "ignorée (cache)";
   }
-  return "echec";
+  return "échec";
 }
 
 function formatTilePhase(
   phase: NonNullable<CachePrecomputeJob["progress"]>["currentTilePhase"],
 ): string {
   if (phase === "prepare-context") {
-    return "preparation contexte";
+    return "préparation du contexte";
   }
   if (phase === "prepare-points") {
-    return "preparation points";
+    return "préparation des points";
   }
   if (phase === "evaluate-frames") {
-    return "evaluation soleil";
+    return "évaluation du soleil";
   }
   return "n/a";
 }
@@ -490,7 +494,7 @@ export function CacheAdminClient() {
   const runPrecompute = useCallback(async () => {
     if (hasActivePrecompute) {
       setActionError(
-        "Un job precompute est deja en cours. Annule-le ou attends sa fin avant d'en lancer un nouveau.",
+        "Un job precompute est déjà en cours. Annule-le ou attends sa fin avant d'en lancer un nouveau.",
       );
       return;
     }
@@ -737,7 +741,7 @@ export function CacheAdminClient() {
                     status: "failed",
                     endedAt: new Date().toISOString(),
                     error:
-                      "Job introuvable (probable redemarrage serveur). Relance un nouveau precompute.",
+                      "Job introuvable (probable redémarrage serveur). Relance un nouveau precompute.",
                   }
                 : current,
             );
@@ -834,7 +838,7 @@ export function CacheAdminClient() {
             disabled={verifyState === "loading"}
             className="rounded-full bg-sky-300 px-4 py-2 text-sm font-medium text-slate-950"
           >
-            {verifyState === "loading" ? "Verification..." : "Verifier"}
+            {verifyState === "loading" ? "Vérification..." : "Vérifier"}
           </button>
           <button
             type="button"
@@ -856,7 +860,7 @@ export function CacheAdminClient() {
 
         <div className="grid gap-3 md:grid-cols-4">
           <label className="grid gap-2 text-sm">
-            <span className="text-slate-300">Region</span>
+            <span className="text-slate-300">Région</span>
             <select
               value={region}
               onChange={(event) => {
@@ -882,7 +886,7 @@ export function CacheAdminClient() {
             />
           </label>
           <label className="grid gap-2 text-sm">
-            <span className="text-slate-300">Date debut</span>
+            <span className="text-slate-300">Date début</span>
             <input
               type="date"
               value={startDate}
@@ -919,10 +923,10 @@ export function CacheAdminClient() {
               className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2"
             >
               <option value="date">Date</option>
-              <option value="generatedAt">Genere</option>
+              <option value="generatedAt">Généré</option>
               <option value="sizeBytes">Taille</option>
               <option value="tileCount">Tuiles</option>
-              <option value="failedTileCount">Echecs</option>
+              <option value="failedTileCount">Échecs</option>
               <option value="gridStepMeters">Pas grille</option>
               <option value="sampleEveryMinutes">Pas temps</option>
             </select>
@@ -991,7 +995,7 @@ export function CacheAdminClient() {
           </p>
         </article>
         <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
-          <p className="text-xs text-slate-400">Echecs</p>
+          <p className="text-xs text-slate-400">Échecs</p>
           <p className="mt-2 text-3xl font-semibold">
             {overview?.summary.totalFailedTiles ?? 0}
           </p>
@@ -1009,7 +1013,7 @@ export function CacheAdminClient() {
       <section className="grid gap-4 lg:grid-cols-[2fr_1fr]">
         <article className="overflow-hidden rounded-3xl border border-white/12 bg-black/20">
           <div className="border-b border-white/10 px-5 py-4">
-            <h2 className="text-lg font-semibold">Runs detectes</h2>
+            <h2 className="text-lg font-semibold">Runs détectés</h2>
             <p className="text-sm text-slate-400">{overview?.root ?? "Chargement..."}</p>
             {overview ? (
               <p className="text-xs text-slate-500">
@@ -1023,8 +1027,8 @@ export function CacheAdminClient() {
               <thead className="sticky top-0 bg-slate-950/95 text-slate-400">
                 <tr>
                   <th className="px-5 py-3">Run</th>
-                  <th className="px-5 py-3">Parametres</th>
-                  <th className="px-5 py-3">Etat</th>
+                  <th className="px-5 py-3">Paramètres</th>
+                  <th className="px-5 py-3">État</th>
                   <th className="px-5 py-3">Stockage</th>
                 </tr>
               </thead>
@@ -1047,7 +1051,7 @@ export function CacheAdminClient() {
                       <td className="px-5 py-4">
                         <p>{run.complete ? "complet" : "incomplet"}</p>
                         <p>{run.tileCount} tuiles</p>
-                        <p>{run.failedTileCount} echecs</p>
+                        <p>{run.failedTileCount} échecs</p>
                       </td>
                       <td className="px-5 py-4">
                         <p>{run.sizeBytes === null ? "n/a" : formatBytes(run.sizeBytes)}</p>
@@ -1075,7 +1079,7 @@ export function CacheAdminClient() {
               onClick={() => setPage((previous) => Math.max(1, previous - 1))}
               className="rounded-full border border-white/15 px-3 py-1 disabled:opacity-50"
             >
-              Page precedente
+              Page précédente
             </button>
             <button
               type="button"
@@ -1094,18 +1098,18 @@ export function CacheAdminClient() {
 
         <div className="grid gap-4">
           <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
-            <h2 className="text-lg font-semibold">Verification</h2>
+            <h2 className="text-lg font-semibold">Vérification</h2>
             {verifyResult ? (
               <div className="mt-3 grid gap-2 text-sm">
                 <p>{verifyResult.manifestsMatched} manifests</p>
-                <p>{verifyResult.tilesVerified} tuiles verifiees</p>
+                <p>{verifyResult.tilesVerified} tuiles vérifiées</p>
                 <p className="text-xs text-slate-400">
                   checks frames={verifyResult.strictChecks.expectedFrameCountChecks} masks=
                   {verifyResult.strictChecks.expectedMaskSizeChecks} indexes=
                   {verifyResult.strictChecks.pointIndexChecks}
                 </p>
                 <p className="text-xs text-slate-400">{formatDateTime(verifyResult.generatedAt)}</p>
-                <p>{verifyResult.problems.length} problemes</p>
+                <p>{verifyResult.problems.length} problèmes</p>
               </div>
             ) : null}
           </article>
@@ -1116,7 +1120,7 @@ export function CacheAdminClient() {
               {activeJobs.length > 0 ? (
                 <div className="grid gap-2 rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3 py-2">
                   <p className="text-cyan-100">
-                    {activeJobs.length} job(s) en cours detecte(s) apres rafraichissement.
+                    {activeJobs.length} job(s) en cours détecté(s) après rafraîchissement.
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {activeJobs.slice(0, 4).map((job) => (
@@ -1139,7 +1143,7 @@ export function CacheAdminClient() {
               ) : null}
               {recentJobs.length > 0 ? (
                 <div className="grid gap-2 rounded-xl border border-white/12 bg-slate-950/40 p-3">
-                  <p className="text-xs text-slate-300">Jobs recents</p>
+                  <p className="text-xs text-slate-300">Jobs récents</p>
                   <div className="grid max-h-72 gap-2 overflow-auto">
                     {recentJobs.map((job) => (
                       <article
@@ -1155,10 +1159,10 @@ export function CacheAdminClient() {
                           </p>
                         </div>
                         <p className="text-[11px] text-slate-300">
-                          Region {job.request.region} · {job.request.days} jour(s) depuis {job.request.startDate}
+                          Région {job.request.region} · {job.request.days} jour(s) depuis {job.request.startDate}
                         </p>
                         <p className="text-[11px] text-slate-300">
-                          Fenetre {job.request.startLocalTime}-{job.request.endLocalTime} · grille {job.request.gridStepMeters}m · pas {job.request.sampleEveryMinutes}min
+                          Fenêtre {job.request.startLocalTime}-{job.request.endLocalTime} · grille {job.request.gridStepMeters}m · pas {job.request.sampleEveryMinutes}min
                         </p>
                         <p className="text-[11px] text-slate-400">
                           elapsed {formatElapsed(computeJobElapsedSeconds(job))} · maj {formatDateTime(job.updatedAt)}
@@ -1172,7 +1176,7 @@ export function CacheAdminClient() {
                           >
                             Suivre
                           </button>
-                          {isActiveJob(job) ? (
+                          {canCancelJob(job) ? (
                             <button
                               type="button"
                               onClick={() => void runJobAction(job, "cancel")}
@@ -1211,7 +1215,7 @@ export function CacheAdminClient() {
                 </div>
               ) : null}
               <label className="grid gap-1">
-                <span className="text-slate-300">Region</span>
+                <span className="text-slate-300">Région</span>
                 <select
                   value={preRegion}
                   onChange={(event) =>
@@ -1224,7 +1228,7 @@ export function CacheAdminClient() {
                 </select>
               </label>
               <label className="grid gap-1">
-                <span className="text-slate-300">Date de debut</span>
+                <span className="text-slate-300">Date de début</span>
                 <input
                   type="date"
                   value={preStartDate}
@@ -1246,7 +1250,7 @@ export function CacheAdminClient() {
                 />
               </label>
               <label className="grid gap-1">
-                <span className="text-slate-300">Pas de grille (metres)</span>
+                <span className="text-slate-300">Pas de grille (mètres)</span>
                 <input
                   type="number"
                   min={1}
@@ -1274,12 +1278,12 @@ export function CacheAdminClient() {
                 />
               </label>
               <p className="rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
-                Taille des tuiles fixee a {CANONICAL_PRECOMPUTE_TILE_SIZE_METERS} m (canonique)
-                pour maximiser la reutilisation du cache entre zones.
+                Taille des tuiles fixée à {CANONICAL_PRECOMPUTE_TILE_SIZE_METERS} m (canonique)
+                pour maximiser la réutilisation du cache entre zones.
               </p>
               <div className="grid grid-cols-2 gap-2">
                 <label className="grid gap-1">
-                  <span className="text-slate-300">Heure debut</span>
+                  <span className="text-slate-300">Heure de début</span>
                   <input
                     type="time"
                     value={preStartLocalTime}
@@ -1303,11 +1307,11 @@ export function CacheAdminClient() {
                   checked={preSkipExisting}
                   onChange={(event) => setPreSkipExisting(event.target.checked)}
                 />
-                Ignorer les tuiles deja calculees (mode reprise)
+                Ignorer les tuiles déjà calculées (mode reprise)
               </label>
               <p className="rounded-xl border border-white/12 bg-slate-900/50 px-3 py-2 text-xs text-slate-300">
-                Portee d&apos;un run: region complete ({preRegion}), {preDays} jour(s) a partir du {preStartDate},
-                fenetre {preStartLocalTime}-{preEndLocalTime}. La progression totale compte les tuiles sur
+                Portée d&apos;un run: région complète ({preRegion}), {preDays} jour(s) à partir du {preStartDate},
+                fenêtre {preStartLocalTime}-{preEndLocalTime}. La progression totale compte les tuiles sur
                 toute la plage de jours (tuile-jour).
               </p>
               <button
@@ -1319,12 +1323,12 @@ export function CacheAdminClient() {
                 {precomputeState === "loading"
                   ? "Precompute en cours..."
                   : hasActivePrecompute
-                    ? "Job en cours (bloque)"
+                    ? "Job en cours (bloqué)"
                     : "Lancer precompute"}
               </button>
               {hasActivePrecompute ? (
                 <p className="text-xs text-amber-100">
-                  Un job est deja en cours. Le lancement d'un nouveau precompute est bloque.
+                  Un job est déjà en cours. Le lancement d'un nouveau precompute est bloqué.
                 </p>
               ) : null}
               {precomputeJob ? (
@@ -1333,13 +1337,13 @@ export function CacheAdminClient() {
                     Job {precomputeJob.jobId.slice(0, 8)} - {formatJobStatus(precomputeJob.status)}
                   </p>
                   <p className="mt-1 text-[11px] text-cyan-50">
-                    Portee: region {precomputeJob.request.region}, {precomputeJob.request.days} jour(s)
-                    depuis {precomputeJob.request.startDate}, fenetre {precomputeJob.request.startLocalTime}-
+                    Portée: région {precomputeJob.request.region}, {precomputeJob.request.days} jour(s)
+                    depuis {precomputeJob.request.startDate}, fenêtre {precomputeJob.request.startLocalTime}-
                     {precomputeJob.request.endLocalTime}, grille {precomputeJob.request.gridStepMeters}m,
                     pas {precomputeJob.request.sampleEveryMinutes}min.
                   </p>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    {isActiveJob(precomputeJob) ? (
+                    {canCancelJob(precomputeJob) ? (
                       <button
                         type="button"
                         onClick={() => void runJobAction(precomputeJob, "cancel")}
@@ -1381,7 +1385,7 @@ export function CacheAdminClient() {
                         </p>
                       ) : (
                         <p>
-                          Demarrage du calcul - {precomputeJob.progress.date}
+                          Démarrage du calcul - {precomputeJob.progress.date}
                         </p>
                       )}
                       <div className="grid gap-1">
@@ -1421,7 +1425,7 @@ export function CacheAdminClient() {
                       </div>
                       <p>
                         tuile={precomputeJob.progress.tileIndex}/{precomputeJob.progress.tilesTotal} |
-                        etape={formatTileState(precomputeJob.progress.currentTileState)}
+                        étape={formatTileState(precomputeJob.progress.currentTileState)}
                         {precomputeJob.progress.currentTilePhase
                           ? ` (${formatTilePhase(precomputeJob.progress.currentTilePhase)})`
                           : ""}
@@ -1433,14 +1437,14 @@ export function CacheAdminClient() {
                       </p>
                     </>
                   ) : (
-                    <p>Initialisation de la premiere tuile...</p>
+                    <p>Initialisation de la première tuile...</p>
                   )}
                   {precomputeJob.error ? <p>{precomputeJob.error}</p> : null}
                 </div>
               ) : null}
               {precomputeResult ? (
                 <p className="text-xs text-cyan-100">
-                  Termine: {precomputeResult.totalDates} jour(s), {precomputeResult.totalTiles} tuiles,
+                  Terminé: {precomputeResult.totalDates} jour(s), {precomputeResult.totalTiles} tuiles,
                   model {precomputeResult.modelVersionHash}
                 </p>
               ) : null}
@@ -1460,3 +1464,6 @@ export function CacheAdminClient() {
     </div>
   );
 }
+
+
+
