@@ -578,6 +578,21 @@ export function CacheAdminClient() {
     void refreshPrecomputeTiles(preRegion);
   }, [preRegion, refreshPrecomputeTiles, showPrecomputeTileSelector]);
 
+  useEffect(() => {
+    if (!showPrecomputeTileSelector) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowPrecomputeTileSelector(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [showPrecomputeTileSelector]);
+
   const setSelectedPrecomputeTiles = useCallback(
     (tileIds: string[]) => {
       setPrecomputeTileSelectionByRegion((current) => ({
@@ -1501,55 +1516,16 @@ export function CacheAdminClient() {
                   </p>
                   <button
                     type="button"
-                    onClick={() => setShowPrecomputeTileSelector((current) => !current)}
+                    data-testid="open-precompute-tile-selector"
+                    onClick={() => setShowPrecomputeTileSelector(true)}
                     className="rounded-full border border-cyan-300/40 px-3 py-1 text-[11px] text-cyan-100"
                   >
-                    {showPrecomputeTileSelector
-                      ? "Masquer la sélection"
-                      : "Sélectionner zones à précalculer"}
+                    Sélectionner zones à précalculer
                   </button>
                 </div>
-                {showPrecomputeTileSelector ? (
-                  <>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={selectAllPrecomputeTiles}
-                        disabled={!precomputeTilesCatalog || precomputeTilesState === "loading"}
-                        className="rounded-full border border-white/20 px-2 py-1 text-[11px] disabled:opacity-50"
-                      >
-                        Tout sélectionner
-                      </button>
-                      <button
-                        type="button"
-                        onClick={clearPrecomputeTiles}
-                        disabled={!precomputeTilesCatalog || precomputeTilesState === "loading"}
-                        className="rounded-full border border-white/20 px-2 py-1 text-[11px] disabled:opacity-50"
-                      >
-                        Tout désélectionner
-                      </button>
-                    </div>
-                    {precomputeTilesState === "loading" ? (
-                      <p className="text-xs text-cyan-100">Chargement de la grille des tuiles...</p>
-                    ) : null}
-                    {precomputeTilesError ? (
-                      <p className="text-xs text-rose-100">{precomputeTilesError}</p>
-                    ) : null}
-                    {precomputeTilesCatalog ? (
-                      <PrecomputeTileSelectorMap
-                        regionBbox={precomputeTilesCatalog.bbox}
-                        tiles={precomputeTilesCatalog.tiles}
-                        selectedTileIds={selectedPrecomputeTileIds}
-                        disabled={precomputeTilesState === "loading"}
-                        onSelectionChange={setSelectedPrecomputeTiles}
-                      />
-                    ) : null}
-                  </>
-                ) : (
-                  <p className="text-xs text-slate-300">
-                    Clique sur “Sélectionner zones à précalculer” pour ouvrir la carte OSM et choisir les tuiles.
-                  </p>
-                )}
+                <p className="text-xs text-slate-300">
+                  Clique sur “Sélectionner zones à précalculer” pour ouvrir la carte OSM en plein écran et choisir les tuiles.
+                </p>
                 {noTileSelected ? (
                   <p className="text-xs text-amber-100">
                     Aucune tuile sélectionnée. Sélectionne au moins une tuile pour lancer le précompute.
@@ -1738,6 +1714,73 @@ export function CacheAdminClient() {
           </article>
         </div>
       </section>
+
+      {showPrecomputeTileSelector ? (
+        <div
+          data-testid="precompute-tile-selector-modal"
+          className="fixed inset-0 z-[1200] bg-black/70"
+          onClick={() => setShowPrecomputeTileSelector(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="flex h-screen w-screen flex-col bg-slate-950/95 p-4 text-slate-100 shadow-2xl md:p-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold">Sélection des zones à précalculer</p>
+                <p className="text-xs text-slate-300">
+                  Région {preRegion} · {precomputeTileSelectionSummary}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={selectAllPrecomputeTiles}
+                  disabled={!precomputeTilesCatalog || precomputeTilesState === "loading"}
+                  className="rounded-full border border-white/20 px-3 py-1 text-xs disabled:opacity-50"
+                >
+                  Tout sélectionner
+                </button>
+                <button
+                  type="button"
+                  onClick={clearPrecomputeTiles}
+                  disabled={!precomputeTilesCatalog || precomputeTilesState === "loading"}
+                  className="rounded-full border border-white/20 px-3 py-1 text-xs disabled:opacity-50"
+                >
+                  Tout désélectionner
+                </button>
+                <button
+                  type="button"
+                  data-testid="close-precompute-tile-selector"
+                  onClick={() => setShowPrecomputeTileSelector(false)}
+                  className="rounded-full border border-rose-300/40 px-3 py-1 text-xs text-rose-100"
+                >
+                  Fermer
+                </button>
+              </div>
+            </div>
+
+            {precomputeTilesState === "loading" ? (
+              <p className="mb-2 text-xs text-cyan-100">Chargement de la grille des tuiles...</p>
+            ) : null}
+            {precomputeTilesError ? (
+              <p className="mb-2 text-xs text-rose-200">{precomputeTilesError}</p>
+            ) : null}
+            {precomputeTilesCatalog ? (
+              <PrecomputeTileSelectorMap
+                regionBbox={precomputeTilesCatalog.bbox}
+                tiles={precomputeTilesCatalog.tiles}
+                selectedTileIds={selectedPrecomputeTileIds}
+                disabled={precomputeTilesState === "loading"}
+                fullscreen
+                onSelectionChange={setSelectedPrecomputeTiles}
+              />
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

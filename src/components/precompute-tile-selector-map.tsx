@@ -26,6 +26,7 @@ interface PrecomputeTileSelectorMapProps {
   tiles: TileSelectorEntry[];
   selectedTileIds: string[];
   disabled?: boolean;
+  fullscreen?: boolean;
   onSelectionChange: (tileIds: string[]) => void;
 }
 
@@ -209,7 +210,7 @@ export function PrecomputeTileSelectorMap(props: PrecomputeTileSelectorMapProps)
           return;
         }
         const rawEvent = event.originalEvent as MouseEvent;
-        const isRemoveAction = rawEvent.ctrlKey || rawEvent.metaKey;
+        const isRemoveAction = rawEvent.altKey;
         const current = selectedSetRef.current;
         const next = new Set(current);
         if (isRemoveAction) {
@@ -247,7 +248,7 @@ export function PrecomputeTileSelectorMap(props: PrecomputeTileSelectorMapProps)
       if (mouseEvent.button !== 0) {
         return;
       }
-      if (mouseEvent.ctrlKey || mouseEvent.metaKey) {
+      if (mouseEvent.altKey) {
         return;
       }
       const start = { lat: event.latlng.lat, lon: event.latlng.lng };
@@ -330,13 +331,16 @@ export function PrecomputeTileSelectorMap(props: PrecomputeTileSelectorMapProps)
   }, [mapReady, props.tiles]);
 
   return (
-    <div className="grid gap-2">
+    <div className={props.fullscreen ? "flex min-h-0 flex-1 flex-col gap-2" : "grid gap-2"}>
       <div
         ref={mapContainerRef}
-        className="h-80 w-full overflow-hidden rounded-xl border border-white/15 bg-slate-900/70"
+        data-testid="precompute-tile-selector-map"
+        className={`w-full overflow-hidden rounded-xl border border-white/15 bg-slate-900/70 ${
+          props.fullscreen ? "min-h-0 flex-1" : "h-80"
+        }`}
       />
       <p className="text-[11px] text-slate-300">
-        Clique pour ajouter une tuile. `Ctrl + clic` retire une tuile. Glisser-déposer ajoute un rectangle de tuiles.
+        Clique pour ajouter une tuile. `Alt + clic` retire une tuile. Glisser-déposer ajoute un rectangle de tuiles.
       </p>
     </div>
   );
