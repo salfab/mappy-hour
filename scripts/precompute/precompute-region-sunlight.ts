@@ -17,7 +17,6 @@ interface ParsedArgs {
   timezone: string;
   sampleEveryMinutes: number;
   gridStepMeters: number;
-  tileSizeMeters: number;
   startLocalTime: string;
   endLocalTime: string;
   observerHeightMeters: number;
@@ -31,7 +30,6 @@ const DEFAULT_ARGS: ParsedArgs = {
   timezone: "Europe/Zurich",
   sampleEveryMinutes: 15,
   gridStepMeters: 5,
-  tileSizeMeters: CANONICAL_PRECOMPUTE_TILE_SIZE_METERS,
   startLocalTime: "00:00",
   endLocalTime: "23:59",
   observerHeightMeters: 0,
@@ -78,11 +76,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
     if (arg.startsWith("--tile-size-meters=")) {
-      const parsed = Number(arg.slice("--tile-size-meters=".length));
-      if (Number.isInteger(parsed) && parsed >= 10 && parsed <= 5000) {
-        result.tileSizeMeters = parsed;
-      }
-      continue;
+      throw new Error(
+        "The --tile-size-meters option was removed. Tile size is fixed to 250m.",
+      );
     }
     if (arg.startsWith("--start-local-time=")) {
       result.startLocalTime = arg.slice("--start-local-time=".length);
@@ -117,11 +113,6 @@ function addDays(dateInput: string, days: number): string {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const tileSizeMeters = CANONICAL_PRECOMPUTE_TILE_SIZE_METERS;
-  if (args.tileSizeMeters !== tileSizeMeters) {
-    console.warn(
-      `[precompute] --tile-size-meters=${args.tileSizeMeters} ignored. Canonical tile size is ${tileSizeMeters}m.`,
-    );
-  }
   const tiles = buildRegionTiles(args.region, tileSizeMeters);
   const shadowCalibration = normalizeShadowCalibration({
     observerHeightMeters: args.observerHeightMeters,

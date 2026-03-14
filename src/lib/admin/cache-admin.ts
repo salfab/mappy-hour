@@ -113,7 +113,6 @@ export interface CachePrecomputeRequest {
   timezone: string;
   sampleEveryMinutes: number;
   gridStepMeters: number;
-  tileSizeMeters: number;
   startLocalTime: string;
   endLocalTime: string;
   skipExisting?: boolean;
@@ -129,6 +128,7 @@ export interface CachePrecomputeResult {
   totalTiles: number;
   totalDates: number;
   params: Omit<CachePrecomputeRequest, "observerHeightMeters" | "buildingHeightBiasMeters"> & {
+    tileSizeMeters: number;
     observerHeightMeters: number;
     buildingHeightBiasMeters: number;
   };

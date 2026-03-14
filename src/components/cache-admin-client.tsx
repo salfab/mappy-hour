@@ -321,7 +321,6 @@ export function CacheAdminClient() {
             timezone: "Europe/Zurich",
             sampleEveryMinutes: preSampleEvery,
             gridStepMeters: preGridStep,
-            tileSizeMeters: CANONICAL_PRECOMPUTE_TILE_SIZE_METERS,
             startLocalTime: preStartLocalTime,
             endLocalTime: preEndLocalTime,
             skipExisting: preSkipExisting,

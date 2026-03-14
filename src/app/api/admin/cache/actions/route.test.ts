@@ -5,7 +5,6 @@ import {
   verifyCacheRuns,
 } from "@/lib/admin/cache-admin";
 import { startCachePrecomputeJob } from "@/lib/admin/cache-precompute-jobs";
-import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
 
 import { POST } from "./route";
 
@@ -106,7 +105,7 @@ describe("POST /api/admin/cache/actions", () => {
     );
   });
 
-  it("runs precompute with canonical tile size", async () => {
+  it("runs precompute", async () => {
     vi.mocked(startCachePrecomputeJob).mockReturnValue({
       jobId: "job-123",
       createdAt: "2026-03-14T10:00:00.000Z",
@@ -120,7 +119,6 @@ describe("POST /api/admin/cache/actions", () => {
         timezone: "Europe/Zurich",
         sampleEveryMinutes: 15,
         gridStepMeters: 5,
-        tileSizeMeters: 250,
         startLocalTime: "00:00",
         endLocalTime: "23:59",
         skipExisting: true,
@@ -145,7 +143,6 @@ describe("POST /api/admin/cache/actions", () => {
             timezone: "Europe/Zurich",
             sampleEveryMinutes: 15,
             gridStepMeters: 5,
-            tileSizeMeters: 5000,
             startLocalTime: "00:00",
             endLocalTime: "23:59",
             skipExisting: true,
@@ -163,9 +160,38 @@ describe("POST /api/admin/cache/actions", () => {
         region: "lausanne",
         startDate: "2026-03-08",
         days: 1,
-        tileSizeMeters: CANONICAL_PRECOMPUTE_TILE_SIZE_METERS,
       }),
     );
+  });
+
+  it("rejects deprecated tile size parameter", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/admin/cache/actions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "precompute",
+          precompute: {
+            region: "lausanne",
+            startDate: "2026-03-08",
+            days: 1,
+            timezone: "Europe/Zurich",
+            sampleEveryMinutes: 15,
+            gridStepMeters: 5,
+            tileSizeMeters: 250,
+            startLocalTime: "00:00",
+            endLocalTime: "23:59",
+            skipExisting: true,
+          },
+        }),
+      }),
+    );
+    const json = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(400);
+    expect(json.error).toContain("Invalid admin cache action payload");
   });
 
   it("rejects invalid payloads", async () => {

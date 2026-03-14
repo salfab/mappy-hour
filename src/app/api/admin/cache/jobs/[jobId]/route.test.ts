@@ -23,7 +23,6 @@ describe("GET /api/admin/cache/jobs/[jobId]", () => {
         timezone: "Europe/Zurich",
         sampleEveryMinutes: 15,
         gridStepMeters: 5,
-        tileSizeMeters: 250,
         startLocalTime: "00:00",
         endLocalTime: "23:59",
         skipExisting: true,
