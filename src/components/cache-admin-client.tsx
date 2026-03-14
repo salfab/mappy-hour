@@ -83,6 +83,7 @@ interface CachePrecomputeResult {
   dates: Array<{
     date: string;
     succeededTiles: number;
+    skippedTiles: number;
     failedTiles: number;
     complete: boolean;
     elapsedMs: number;
@@ -105,6 +106,9 @@ interface CachePrecomputeJob {
     completedTiles: number;
     totalTiles: number;
     percent: number;
+    currentTileState: "computed" | "skipped" | "failed";
+    elapsedMs: number;
+    etaSeconds: number | null;
   } | null;
   result: CachePrecomputeResult | null;
   error: string | null;
@@ -195,6 +199,7 @@ export function CacheAdminClient() {
   const [preTileSize, setPreTileSize] = useState(250);
   const [preStartLocalTime, setPreStartLocalTime] = useState("00:00");
   const [preEndLocalTime, setPreEndLocalTime] = useState("23:59");
+  const [preSkipExisting, setPreSkipExisting] = useState(true);
 
   const filters = useMemo(
     () => ({
@@ -312,6 +317,7 @@ export function CacheAdminClient() {
             tileSizeMeters: preTileSize,
             startLocalTime: preStartLocalTime,
             endLocalTime: preEndLocalTime,
+            skipExisting: preSkipExisting,
           },
         }),
       });
@@ -350,6 +356,7 @@ export function CacheAdminClient() {
     preStartDate,
     preStartLocalTime,
     preTileSize,
+    preSkipExisting,
     refreshRuns,
   ]);
 
@@ -789,6 +796,14 @@ export function CacheAdminClient() {
                   />
                 </label>
               </div>
+              <label className="flex items-center gap-2 rounded-xl border border-white/12 bg-slate-950/50 px-3 py-2 text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={preSkipExisting}
+                  onChange={(event) => setPreSkipExisting(event.target.checked)}
+                />
+                Ignorer les tuiles deja calculees (mode reprise)
+              </label>
               <button
                 type="button"
                 onClick={() => void runPrecompute()}
@@ -803,10 +818,19 @@ export function CacheAdminClient() {
                     Job {precomputeJob.jobId.slice(0, 8)} - {precomputeJob.status}
                   </p>
                   {precomputeJob.progress ? (
-                    <p>
-                      {precomputeJob.progress.percent}% ({precomputeJob.progress.completedTiles}/
-                      {precomputeJob.progress.totalTiles}) - {precomputeJob.progress.date}
-                    </p>
+                    <>
+                      <p>
+                        {precomputeJob.progress.percent}% ({precomputeJob.progress.completedTiles}/
+                        {precomputeJob.progress.totalTiles}) - {precomputeJob.progress.date}
+                      </p>
+                      <p>
+                        etape={precomputeJob.progress.currentTileState} | elapsed=
+                        {Math.round(precomputeJob.progress.elapsedMs / 1000)}s | eta=
+                        {precomputeJob.progress.etaSeconds === null
+                          ? "n/a"
+                          : `${precomputeJob.progress.etaSeconds}s`}
+                      </p>
+                    </>
                   ) : (
                     <p>En attente...</p>
                   )}

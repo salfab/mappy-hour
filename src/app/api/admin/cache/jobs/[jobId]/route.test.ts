@@ -26,6 +26,7 @@ describe("GET /api/admin/cache/jobs/[jobId]", () => {
         tileSizeMeters: 250,
         startLocalTime: "00:00",
         endLocalTime: "23:59",
+        skipExisting: true,
       },
       progress: {
         stage: "running",
@@ -37,6 +38,9 @@ describe("GET /api/admin/cache/jobs/[jobId]", () => {
         completedTiles: 3,
         totalTiles: 16,
         percent: 18.8,
+        currentTileState: "computed",
+        elapsedMs: 5500,
+        etaSeconds: 24,
       },
       result: null,
       error: null,

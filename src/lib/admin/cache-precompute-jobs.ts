@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 import {
   precomputeCacheRuns,
@@ -20,7 +21,7 @@ export interface CachePrecomputeJob {
   endedAt: string | null;
   status: CachePrecomputeJobStatus;
   request: CachePrecomputeRequest;
-  progress: CachePrecomputeProgress | null;
+  progress: (CachePrecomputeProgress & { elapsedMs: number; etaSeconds: number | null }) | null;
   result: CachePrecomputeResult | null;
   error: string | null;
 }
@@ -69,10 +70,20 @@ export function startCachePrecomputeJob(
   void (async () => {
     job.status = "running";
     job.startedAt = new Date().toISOString();
+    const startedAtPerf = performance.now();
     try {
       const result = await precomputeCacheRuns(request, {
         onProgress: (progress) => {
-          job.progress = progress;
+          const elapsedMs = performance.now() - startedAtPerf;
+          const remainingTiles = Math.max(progress.totalTiles - progress.completedTiles, 0);
+          const tilesPerMs =
+            progress.completedTiles > 0 ? progress.completedTiles / elapsedMs : 0;
+          const etaMs = tilesPerMs > 0 ? remainingTiles / tilesPerMs : null;
+          job.progress = {
+            ...progress,
+            elapsedMs: Math.round(elapsedMs),
+            etaSeconds: etaMs === null ? null : Math.max(0, Math.round(etaMs / 1000)),
+          };
         },
       });
       job.status = "completed";
@@ -88,6 +99,9 @@ export function startCachePrecomputeJob(
         completedTiles: result.totalTiles * request.days,
         totalTiles: result.totalTiles * request.days,
         percent: 100,
+        currentTileState: "computed",
+        elapsedMs: Math.round(performance.now() - startedAtPerf),
+        etaSeconds: 0,
       };
     } catch (error) {
       job.status = "failed";

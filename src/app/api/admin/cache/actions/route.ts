@@ -31,6 +31,7 @@ const bodySchema = z.object({
       tileSizeMeters: z.number().int().min(10).max(5000).default(250),
       startLocalTime: z.string().regex(/^\d{2}:\d{2}$/).default("00:00"),
       endLocalTime: z.string().regex(/^\d{2}:\d{2}$/).default("23:59"),
+      skipExisting: z.boolean().default(true),
       observerHeightMeters: z.number().min(-5).max(20).optional(),
       buildingHeightBiasMeters: z.number().min(-20).max(20).optional(),
     })

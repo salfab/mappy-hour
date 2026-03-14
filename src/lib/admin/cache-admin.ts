@@ -115,6 +115,7 @@ export interface CachePrecomputeRequest {
   tileSizeMeters: number;
   startLocalTime: string;
   endLocalTime: string;
+  skipExisting?: boolean;
   observerHeightMeters?: number;
   buildingHeightBiasMeters?: number;
 }
@@ -133,6 +134,7 @@ export interface CachePrecomputeResult {
   dates: Array<{
     date: string;
     succeededTiles: number;
+    skippedTiles: number;
     failedTiles: number;
     complete: boolean;
     elapsedMs: number;
@@ -149,6 +151,7 @@ export interface CachePrecomputeProgress {
   completedTiles: number;
   totalTiles: number;
   percent: number;
+  currentTileState: "computed" | "skipped" | "failed";
 }
 
 function dateInRange(date: string, startDate?: string, endDate?: string): boolean {
@@ -562,6 +565,7 @@ export async function precomputeCacheRuns(
     buildingHeightBiasMeters: request.buildingHeightBiasMeters,
   });
   const modelVersion = await getSunlightModelVersion(request.region, shadowCalibration);
+  const skipExisting = request.skipExisting ?? true;
   const tiles = buildRegionTiles(request.region, request.tileSizeMeters);
   const dates: CachePrecomputeResult["dates"] = [];
   const totalTiles = tiles.length * request.days;
@@ -572,9 +576,43 @@ export async function precomputeCacheRuns(
     const startedAt = performance.now();
     const succeededTileIds: string[] = [];
     const failedTileIds: string[] = [];
+    const skippedTileIds: string[] = [];
 
     for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
       const tile = tiles[tileIndex];
+      if (skipExisting) {
+        const existing = await loadPrecomputedSunlightTile({
+          region: request.region,
+          modelVersionHash: modelVersion.modelVersionHash,
+          date,
+          gridStepMeters: request.gridStepMeters,
+          sampleEveryMinutes: request.sampleEveryMinutes,
+          startLocalTime: request.startLocalTime,
+          endLocalTime: request.endLocalTime,
+          tileId: tile.tileId,
+        });
+        if (existing) {
+          skippedTileIds.push(tile.tileId);
+          succeededTileIds.push(tile.tileId);
+          completedTiles += 1;
+          options.onProgress?.({
+            stage: "running",
+            date,
+            dayIndex: dayOffset + 1,
+            daysTotal: request.days,
+            tileIndex: tileIndex + 1,
+            tilesTotal: tiles.length,
+            completedTiles,
+            totalTiles,
+            percent:
+              totalTiles === 0
+                ? 100
+                : Math.round((completedTiles / totalTiles) * 1000) / 10,
+            currentTileState: "skipped",
+          });
+          continue;
+        }
+      }
       try {
         const artifact = await computeSunlightTileArtifact({
           region: request.region,
@@ -591,24 +629,41 @@ export async function precomputeCacheRuns(
         });
         await writePrecomputedSunlightTile(artifact);
         succeededTileIds.push(tile.tileId);
+        completedTiles += 1;
+        options.onProgress?.({
+          stage: "running",
+          date,
+          dayIndex: dayOffset + 1,
+          daysTotal: request.days,
+          tileIndex: tileIndex + 1,
+          tilesTotal: tiles.length,
+          completedTiles,
+          totalTiles,
+          percent:
+            totalTiles === 0
+              ? 100
+              : Math.round((completedTiles / totalTiles) * 1000) / 10,
+          currentTileState: "computed",
+        });
       } catch {
         failedTileIds.push(tile.tileId);
+        completedTiles += 1;
+        options.onProgress?.({
+          stage: "running",
+          date,
+          dayIndex: dayOffset + 1,
+          daysTotal: request.days,
+          tileIndex: tileIndex + 1,
+          tilesTotal: tiles.length,
+          completedTiles,
+          totalTiles,
+          percent:
+            totalTiles === 0
+              ? 100
+              : Math.round((completedTiles / totalTiles) * 1000) / 10,
+          currentTileState: "failed",
+        });
       }
-      completedTiles += 1;
-      options.onProgress?.({
-        stage: "running",
-        date,
-        dayIndex: dayOffset + 1,
-        daysTotal: request.days,
-        tileIndex: tileIndex + 1,
-        tilesTotal: tiles.length,
-        completedTiles,
-        totalTiles,
-        percent:
-          totalTiles === 0
-            ? 100
-            : Math.round((completedTiles / totalTiles) * 1000) / 10,
-      });
     }
 
     const manifest: PrecomputedSunlightManifest = {
@@ -646,13 +701,15 @@ export async function precomputeCacheRuns(
       totalTiles,
       percent:
         totalTiles === 0 ? 100 : Math.round((completedTiles / totalTiles) * 1000) / 10,
+      currentTileState: "computed",
     });
     dates.push({
-      date,
-      succeededTiles: succeededTileIds.length,
-      failedTiles: failedTileIds.length,
-      complete: manifest.complete,
-      elapsedMs: Math.round((performance.now() - startedAt) * 1000) / 1000,
+        date,
+        succeededTiles: succeededTileIds.length,
+        skippedTiles: skippedTileIds.length,
+        failedTiles: failedTileIds.length,
+        complete: manifest.complete,
+        elapsedMs: Math.round((performance.now() - startedAt) * 1000) / 1000,
     });
   }
 
@@ -673,6 +730,7 @@ export async function precomputeCacheRuns(
       tileSizeMeters: request.tileSizeMeters,
       startLocalTime: request.startLocalTime,
       endLocalTime: request.endLocalTime,
+      skipExisting,
       observerHeightMeters: shadowCalibration.observerHeightMeters,
       buildingHeightBiasMeters: shadowCalibration.buildingHeightBiasMeters,
     },
