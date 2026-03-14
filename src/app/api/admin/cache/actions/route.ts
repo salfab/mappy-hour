@@ -6,6 +6,7 @@ import {
   verifyCacheRuns,
 } from "@/lib/admin/cache-admin";
 import { startCachePrecomputeJob } from "@/lib/admin/cache-precompute-jobs";
+import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
 
 export const runtime = "nodejs";
 
@@ -28,7 +29,7 @@ const bodySchema = z.object({
       timezone: z.string().default("Europe/Zurich"),
       sampleEveryMinutes: z.number().int().min(1).max(60).default(15),
       gridStepMeters: z.number().int().min(1).max(2000).default(5),
-      tileSizeMeters: z.number().int().min(10).max(5000).default(250),
+      tileSizeMeters: z.number().int().min(10).max(5000).default(CANONICAL_PRECOMPUTE_TILE_SIZE_METERS),
       startLocalTime: z.string().regex(/^\d{2}:\d{2}$/).default("00:00"),
       endLocalTime: z.string().regex(/^\d{2}:\d{2}$/).default("23:59"),
       skipExisting: z.boolean().default(true),
@@ -70,7 +71,11 @@ export async function POST(request: Request) {
           { status: 400 },
         );
       }
-      const job = startCachePrecomputeJob(parsed.data.precompute);
+      const normalizedPrecomputeRequest = {
+        ...parsed.data.precompute,
+        tileSizeMeters: CANONICAL_PRECOMPUTE_TILE_SIZE_METERS,
+      };
+      const job = startCachePrecomputeJob(normalizedPrecomputeRequest);
       return NextResponse.json(
         {
           jobId: job.jobId,

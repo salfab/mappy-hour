@@ -13,6 +13,7 @@ import {
 import { getSunlightModelVersion, SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "@/lib/precompute/model-version";
 import { computeSunlightTileArtifact } from "@/lib/precompute/sunlight-tile-service";
 import { getSunlightCacheStorage } from "@/lib/precompute/sunlight-cache-storage";
+import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 
@@ -54,8 +55,8 @@ export interface CacheRunSummary {
   complete: boolean;
   generatedAt: string;
   runDir: string;
-  sizeBytes: number;
-  fileCount: number;
+  sizeBytes: number | null;
+  fileCount: number | null;
 }
 
 export interface CacheRunsOverview {
@@ -75,8 +76,8 @@ export interface CacheRunsOverview {
     totalTiles: number;
     totalFailedTiles: number;
     completeRuns: number;
-    totalSizeBytes: number;
-    totalFiles: number;
+    totalSizeBytes: number | null;
+    totalFiles: number | null;
   };
   runs: CacheRunSummary[];
 }
@@ -260,7 +261,7 @@ function compareRuns(
     return left.generatedAt.localeCompare(right.generatedAt);
   }
   if (sortBy === "sizeBytes") {
-    return left.sizeBytes - right.sizeBytes;
+    return (left.sizeBytes ?? -1) - (right.sizeBytes ?? -1);
   }
   if (sortBy === "tileCount") {
     return left.tileCount - right.tileCount;
@@ -309,11 +310,10 @@ async function listMatchingManifests(
     );
 }
 
-async function toRunSummary(
+function toRunSummary(
   manifest: PrecomputedSunlightManifest,
-): Promise<CacheRunSummary> {
+): CacheRunSummary {
   const runDir = getRunDir(manifest);
-  const storageStats = await computeRunStorageStats(runDir);
 
   return {
     region: manifest.region,
@@ -330,6 +330,15 @@ async function toRunSummary(
     complete: manifest.complete,
     generatedAt: manifest.generatedAt,
     runDir,
+    sizeBytes: null,
+    fileCount: null,
+  };
+}
+
+async function withStorageStats(run: CacheRunSummary): Promise<CacheRunSummary> {
+  const storageStats = await computeRunStorageStats(run.runDir);
+  return {
+    ...run,
     sizeBytes: storageStats.sizeBytes,
     fileCount: storageStats.fileCount,
   };
@@ -340,7 +349,7 @@ export async function listCacheRuns(
   options: CacheListOptions = {},
 ): Promise<CacheRunsOverview> {
   const manifests = await listMatchingManifests(filters);
-  const allRuns = await Promise.all(manifests.map((manifest) => toRunSummary(manifest)));
+  const allRuns = manifests.map((manifest) => toRunSummary(manifest));
 
   const sortBy = options.sortBy ?? "date";
   const sortOrder = options.sortOrder ?? "desc";
@@ -355,7 +364,9 @@ export async function listCacheRuns(
     return sortOrder === "asc" ? result : -result;
   });
   const startIndex = (boundedPage - 1) * pageSize;
-  const runs = sortedRuns.slice(startIndex, startIndex + pageSize);
+  const runs = await Promise.all(
+    sortedRuns.slice(startIndex, startIndex + pageSize).map(withStorageStats),
+  );
 
   return {
     generatedAt: new Date().toISOString(),
@@ -377,8 +388,8 @@ export async function listCacheRuns(
         0,
       ),
       completeRuns: allRuns.filter((run) => run.complete).length,
-      totalSizeBytes: allRuns.reduce((total, run) => total + run.sizeBytes, 0),
-      totalFiles: allRuns.reduce((total, run) => total + run.fileCount, 0),
+      totalSizeBytes: null,
+      totalFiles: null,
     },
     runs,
   };
@@ -532,7 +543,7 @@ export async function purgeCacheRuns(
   options: { dryRun?: boolean } = {},
 ): Promise<CachePurgeResult> {
   const manifests = await listMatchingManifests(filters);
-  const runs = await Promise.all(manifests.map((manifest) => toRunSummary(manifest)));
+  const runs = manifests.map((manifest) => toRunSummary(manifest));
   const removedRunDirs: string[] = [];
 
   if (!options.dryRun) {
@@ -560,13 +571,14 @@ export async function precomputeCacheRuns(
     onProgress?: (progress: CachePrecomputeProgress) => void;
   } = {},
 ): Promise<CachePrecomputeResult> {
+  const tileSizeMeters = CANONICAL_PRECOMPUTE_TILE_SIZE_METERS;
   const shadowCalibration = normalizeShadowCalibration({
     observerHeightMeters: request.observerHeightMeters,
     buildingHeightBiasMeters: request.buildingHeightBiasMeters,
   });
   const modelVersion = await getSunlightModelVersion(request.region, shadowCalibration);
   const skipExisting = request.skipExisting ?? true;
-  const tiles = buildRegionTiles(request.region, request.tileSizeMeters);
+  const tiles = buildRegionTiles(request.region, tileSizeMeters);
   const dates: CachePrecomputeResult["dates"] = [];
   const totalTiles = tiles.length * request.days;
   let completedTiles = 0;
@@ -677,7 +689,7 @@ export async function precomputeCacheRuns(
       sampleEveryMinutes: request.sampleEveryMinutes,
       startLocalTime: request.startLocalTime,
       endLocalTime: request.endLocalTime,
-      tileSizeMeters: request.tileSizeMeters,
+      tileSizeMeters,
       tileIds: succeededTileIds.sort(),
       failedTileIds: failedTileIds.sort(),
       bbox: {
@@ -728,7 +740,7 @@ export async function precomputeCacheRuns(
       timezone: request.timezone,
       sampleEveryMinutes: request.sampleEveryMinutes,
       gridStepMeters: request.gridStepMeters,
-      tileSizeMeters: request.tileSizeMeters,
+      tileSizeMeters,
       startLocalTime: request.startLocalTime,
       endLocalTime: request.endLocalTime,
       skipExisting,

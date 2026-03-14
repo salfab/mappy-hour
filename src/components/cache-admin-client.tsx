@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
 
 type RegionFilter = "all" | "lausanne" | "nyon";
 type ActionState = "idle" | "loading";
@@ -30,7 +31,7 @@ interface CacheRunSummary {
   generatedAt: string;
   runDir: string;
   sizeBytes: number;
-  fileCount: number;
+  fileCount: number | null;
 }
 
 interface CacheRunsOverview {
@@ -49,8 +50,8 @@ interface CacheRunsOverview {
     totalTiles: number;
     totalFailedTiles: number;
     completeRuns: number;
-    totalSizeBytes: number;
-    totalFiles: number;
+    totalSizeBytes: number | null;
+    totalFiles: number | null;
   };
   runs: CacheRunSummary[];
 }
@@ -203,7 +204,6 @@ export function CacheAdminClient() {
   const [preDays, setPreDays] = useState(1);
   const [preGridStep, setPreGridStep] = useState(5);
   const [preSampleEvery, setPreSampleEvery] = useState(15);
-  const [preTileSize, setPreTileSize] = useState(250);
   const [preStartLocalTime, setPreStartLocalTime] = useState("00:00");
   const [preEndLocalTime, setPreEndLocalTime] = useState("23:59");
   const [preSkipExisting, setPreSkipExisting] = useState(true);
@@ -321,7 +321,7 @@ export function CacheAdminClient() {
             timezone: "Europe/Zurich",
             sampleEveryMinutes: preSampleEvery,
             gridStepMeters: preGridStep,
-            tileSizeMeters: preTileSize,
+            tileSizeMeters: CANONICAL_PRECOMPUTE_TILE_SIZE_METERS,
             startLocalTime: preStartLocalTime,
             endLocalTime: preEndLocalTime,
             skipExisting: preSkipExisting,
@@ -362,7 +362,6 @@ export function CacheAdminClient() {
     preSampleEvery,
     preStartDate,
     preStartLocalTime,
-    preTileSize,
     preSkipExisting,
     refreshRuns,
   ]);
@@ -392,6 +391,20 @@ export function CacheAdminClient() {
         });
         const payload = (await response.json()) as CachePrecomputeJob | { error?: string };
         if (!response.ok) {
+          if (response.status === 404) {
+            setPrecomputeJob((current) =>
+              current && current.jobId === jobId
+                ? {
+                    ...current,
+                    status: "failed",
+                    endedAt: new Date().toISOString(),
+                    error:
+                      "Job introuvable (probable redemarrage serveur). Relance un nouveau precompute.",
+                  }
+                : current,
+            );
+            return;
+          }
           throw new Error((payload as { error?: string }).error ?? "Unknown error");
         }
         if (cancelled) {
@@ -611,7 +624,9 @@ export function CacheAdminClient() {
         <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
           <p className="text-xs text-slate-400">Taille</p>
           <p className="mt-2 text-3xl font-semibold">
-            {formatBytes(overview?.summary.totalSizeBytes ?? 0)}
+            {overview?.summary.totalSizeBytes == null
+              ? "n/a"
+              : formatBytes(overview?.summary.totalSizeBytes ?? 0)}
           </p>
         </article>
       </section>
@@ -660,8 +675,10 @@ export function CacheAdminClient() {
                         <p>{run.failedTileCount} echecs</p>
                       </td>
                       <td className="px-5 py-4">
-                        <p>{formatBytes(run.sizeBytes)}</p>
-                        <p>{run.fileCount} fichiers</p>
+                        <p>{run.sizeBytes === null ? "n/a" : formatBytes(run.sizeBytes)}</p>
+                        <p>
+                          {run.fileCount === null ? "n/a" : `${run.fileCount} fichiers`}
+                        </p>
                         <p className="text-xs text-slate-500">{formatDateTime(run.generatedAt)}</p>
                       </td>
                     </tr>
@@ -784,19 +801,10 @@ export function CacheAdminClient() {
                   className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
                 />
               </label>
-              <label className="grid gap-1">
-                <span className="text-slate-300">Taille des tuiles (metres)</span>
-                <input
-                  type="number"
-                  min={10}
-                  max={5000}
-                  value={preTileSize}
-                  onChange={(event) =>
-                    setPreTileSize(Math.max(10, Number(event.target.value) || 10))
-                  }
-                  className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
-                />
-              </label>
+              <p className="rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
+                Taille des tuiles fixee a {CANONICAL_PRECOMPUTE_TILE_SIZE_METERS} m (canonique)
+                pour maximiser la reutilisation du cache entre zones.
+              </p>
               <div className="grid grid-cols-2 gap-2">
                 <label className="grid gap-1">
                   <span className="text-slate-300">Heure debut</span>
