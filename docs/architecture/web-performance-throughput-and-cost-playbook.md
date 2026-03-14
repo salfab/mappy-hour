@@ -1,7 +1,39 @@
 # Web Performance Playbook - Throughput and Cost
 
-Date: 2026-03-08
+Date: 2026-03-08  
+Updated: 2026-03-14
 Scope: increase sunlight compute throughput (points/minute) while keeping a web architecture.
+
+## 0. 2026-03-14 status update (measured)
+
+Benchmarks now available:
+
+- `docs/progress/benchmarks/precompute-lausanne-2026-03-08-d1-g250.json`
+- `docs/progress/benchmarks/smoke-cache-benchmark-2026-03-08-instant-g20.json`
+- `docs/progress/benchmarks/lausanne-horizon-macro-tiling-20260308-s5.json`
+- `docs/progress/benchmarks/lausanne-horizon-tile-vs-global-20260308-s5.json`
+
+Observed results:
+
+1. Large bbox vs tiled precompute (same covered area):
+   - large: `2.85 points/s`
+   - tiled: `155.779 points/s`
+   - throughput ratio: `54.653x` (cold/warm effects still contribute to this gap)
+2. Cache cold vs warm (instant):
+   - cold wall time: `~222701 ms`
+   - warm wall time: `~105 ms`
+   - practical speedup: `~x2100`
+3. Horizon sharing quality:
+   - one global Lausanne mask is not acceptable as a universal replacement
+   - tile/macro-local masks are significantly closer to local reference than global mask
+
+Immediate implication:
+
+- Keep tile-first architecture.
+- Focus optimization work on:
+  - avoiding unnecessary per-point shadow checks once terrain already blocks
+  - reducing horizon-mask computation count with controlled local sharing
+  - preserving quality with explicit mismatch budgets.
 
 ## 1. What to optimize exactly
 
@@ -76,6 +108,13 @@ Use 3 levels:
    - fail fast with actionable message
 4. Prefer coarser defaults:
    - instant default grid wider than daily
+5. Add terrain-first short-circuit in runtime evaluation:
+   - if `terrainBlocked === true`, skip building + vegetation checks
+   - keep optional full-cause mode only for diagnostics/click-debug
+6. Add high-sun coarse gate for horizon:
+   - per region/tile, precompute conservative `maxHorizonDeg`
+   - if `sunAltitude > maxHorizonDeg + margin`, skip terrain block checks for that frame
+   - best gain for instant requests and mid-day windows
 
 ## P1 (big CPU gains)
 
@@ -87,6 +126,13 @@ Use 3 levels:
 3. Parallelize compute:
    - worker_threads by point chunk
    - fixed pool size per machine
+4. Horizon mask sharing with quality budget:
+   - keep local mask as reference model
+   - choose macro-cell mask only when estimated angular error stays below threshold
+   - fallback to finer/local mask in sensitive areas (steep slopes / ridge transitions)
+5. Offline partition pass:
+   - one-time preprocessing to assign canonical mask centers to LV95 cells
+   - runtime does lookup instead of ad-hoc center choice
 
 ## P2 (large-scale web operations)
 
@@ -99,6 +145,10 @@ Use 3 levels:
 3. Precompute popular zones:
    - Lausanne hotspots, terraces, parks
    - morning/noon/evening seasonal packs
+4. Day interpolation (every K days) with safety fallback:
+   - compute exact every `K` days (start with `K=3`)
+   - interpolate intermediate days
+   - force exact recompute for sensitive points/time windows
 
 ## 5. Cost control model
 
@@ -158,11 +208,79 @@ Operational levers:
    - cache hit rate
    - queue wait time
 
-## 9. Decision
+## 9. Optimization matrix (new)
 
-Web architecture is viable if compute is split into:
+### A. Terrain-first short-circuit (buildings/vegetation)
 
-- fast sync for interactive
-- async + cached for heavy
+Idea:
 
-Without this split, costs and latency will grow non-linearly with usage.
+- evaluate terrain/horizon first
+- if blocked, skip building/vegetation checks for non-debug execution path
+
+Expected gain:
+
+- near-zero when terrain rarely blocks
+- very high when terrain blocks most points in a frame (morning/evening, north-facing areas)
+- measured in a Lausanne-north micro-benchmark: up to `~96%` compute saved for fully terrain-blocked frame
+
+Quality impact:
+
+- none on final sunny/not-sunny result
+- potential loss of secondary blocker diagnostics unless enabled in debug mode
+
+### B. High-sun coarse gate
+
+Idea:
+
+- skip terrain shadow evaluation when sun altitude is safely above local maximum horizon angle
+
+Expected gain:
+
+- modest-to-good for instant/midday calls
+- limited for full-day timelines (morning/evening still need full checks)
+
+Quality impact:
+
+- none if safety margin is conservative
+
+### C. Adaptive horizon sharing (macro-cell vs local)
+
+Idea:
+
+- reduce number of masks by sharing on macro-cells
+- enforce mismatch budget against local reference
+
+Expected gain:
+
+- less mask-build work and fewer unique mask computations
+- runtime lookup simplification
+
+Quality impact:
+
+- controlled by mismatch budget (`point-minutes`, max mismatch per point)
+- global single-mask strategy is rejected by current Lausanne benchmark data
+
+### D. Daily interpolation every K days
+
+Idea:
+
+- compute exact for anchor days only, interpolate intermediate days
+
+Expected gain:
+
+- potentially large reduction in daily precompute volume
+
+Quality impact:
+
+- needs sensitive-area fallback to avoid time-shift errors near shadow transitions
+
+## 10. Decision
+
+Web architecture remains viable if we keep a layered strategy:
+
+1. tile-first cache and precompute
+2. terrain-first compute short-circuit
+3. adaptive (not global) horizon sharing
+4. optional interpolation only with error-budget fallback
+
+Without these controls, costs and latency grow non-linearly with usage.
