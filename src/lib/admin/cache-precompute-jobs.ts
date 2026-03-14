@@ -79,7 +79,7 @@ function normalizeRecoveredSnapshot(job: CachePrecomputeJob): CachePrecomputeJob
       endedAt: job.endedAt ?? new Date().toISOString(),
       error:
         job.error ??
-        "Job interrompu (redemarrage serveur ou process stoppe). Reprendre pour continuer avec le cache existant.",
+        "Job interrompu (redémarrage serveur ou process stoppé). Reprendre pour continuer avec le cache existant.",
     };
     persistJobSnapshot(recovered, { force: true });
     return recovered;
@@ -268,7 +268,7 @@ export function cancelCachePrecomputeJob(jobId: string): CachePrecomputeJob | nu
     }
     inMemory.status = "cancelled";
     inMemory.endedAt = new Date().toISOString();
-    inMemory.error = "Annulation demandee par l'utilisateur.";
+    inMemory.error = "Annulation demandée par l'utilisateur.";
     touchJob(inMemory);
     persistJobSnapshot(inMemory, { force: true });
     console.info("[cache-precompute-job] cancel requested (local owner)", { jobId });
@@ -288,7 +288,7 @@ export function cancelCachePrecomputeJob(jobId: string): CachePrecomputeJob | nu
     ...recovered,
     error:
       recovered.error ??
-      "Annulation demandee par l'utilisateur. En attente d'arret du worker executeur.",
+      "Annulation demandée par l'utilisateur. En attente d'arrêt du worker exécuteur.",
   });
   console.info("[cache-precompute-job] cancel marker written", { jobId });
   return marked;
@@ -301,11 +301,11 @@ export function resumeCachePrecomputeJob(jobId: string): CachePrecomputeJob | nu
   }
   if (existing.status === "queued" || existing.status === "running") {
     throw new Error(
-      `Le job ${jobId} est deja actif (${existing.status}) et ne peut pas etre repris.`,
+      `Le job ${jobId} est déjà actif (${existing.status}) et ne peut pas être repris.`,
     );
   }
   if (existing.status === "completed") {
-    throw new Error(`Le job ${jobId} est deja termine.`);
+    throw new Error(`Le job ${jobId} est déjà terminé.`);
   }
 
   const targetJob: CachePrecomputeJob = jobs.get(jobId) ?? {
@@ -342,12 +342,12 @@ export async function rejectCachePrecomputeJob(
   }
   if (existing.status === "queued" || existing.status === "running") {
     throw new Error(
-      `Le job ${jobId} est actif (${existing.status}) et ne peut pas etre rejete.`,
+      `Le job ${jobId} est actif (${existing.status}) et ne peut pas être rejeté.`,
     );
   }
   if (existing.status === "completed") {
     throw new Error(
-      `Le job ${jobId} est termine. Utilise la purge cache si tu veux supprimer ces donnees.`,
+      `Le job ${jobId} est terminé. Utilise la purge cache si tu veux supprimer ces données.`,
     );
   }
 
@@ -509,7 +509,7 @@ function launchCachePrecomputeJobWorker(
     }
     if (abortController.signal.aborted) {
       job.status = "cancelled";
-      job.error = "Annulation demandee par l'utilisateur.";
+      job.error = "Annulation demandée par l'utilisateur.";
       job.endedAt = new Date().toISOString();
       touchJob(job);
       persistJobSnapshot(job, { force: true });
@@ -559,9 +559,26 @@ function launchCachePrecomputeJobWorker(
         signal: abortController.signal,
         onProgress: (progress) => {
           const elapsedMs = performance.now() - startedAtPerf;
-          const remainingTiles = Math.max(progress.totalTiles - progress.completedTiles, 0);
+          // Include in-flight tile progress so ETA appears before the first tile is fully done.
+          const runningTileFractionRaw =
+            progress.currentTileState === "running" &&
+            typeof progress.currentTileProgressPercent === "number"
+              ? progress.currentTileProgressPercent / 100
+              : 0;
+          const runningTileFraction = Math.max(0, Math.min(1, runningTileFractionRaw));
+          const completedFromPercent =
+            progress.totalTiles > 0
+              ? (Math.max(0, Math.min(100, progress.percent)) / 100) * progress.totalTiles
+              : 0;
+          const completedTilesEquivalent = Math.max(
+            progress.completedTiles + runningTileFraction,
+            completedFromPercent,
+          );
+          const remainingTiles = Math.max(progress.totalTiles - completedTilesEquivalent, 0);
           const tilesPerMs =
-            progress.completedTiles > 0 ? progress.completedTiles / elapsedMs : 0;
+            completedTilesEquivalent > 0 && elapsedMs > 0
+              ? completedTilesEquivalent / elapsedMs
+              : 0;
           const etaMs = tilesPerMs > 0 ? remainingTiles / tilesPerMs : null;
           job.progress = {
             ...progress,
@@ -631,7 +648,7 @@ function launchCachePrecomputeJobWorker(
     } catch (error) {
       if (abortController.signal.aborted) {
         job.status = "cancelled";
-        job.error = job.error ?? "Annulation demandee par l'utilisateur.";
+        job.error = job.error ?? "Annulation demandée par l'utilisateur.";
         job.endedAt = new Date().toISOString();
         touchJob(job);
         persistJobSnapshot(job, { force: true });
@@ -680,3 +697,4 @@ export function startCachePrecomputeJob(
   evictFinishedJobs();
   return job;
 }
+
