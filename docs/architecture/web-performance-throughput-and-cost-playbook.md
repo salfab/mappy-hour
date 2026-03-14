@@ -35,6 +35,15 @@ Immediate implication:
   - reducing horizon-mask computation count with controlled local sharing
   - preserving quality with explicit mismatch budgets.
 
+Implementation status (2026-03-14, runtime):
+
+- `evaluateInstantSunlight()` now skips building + vegetation evaluators when:
+  - sun is below the astronomical horizon
+  - terrain already blocks sunlight (default fast path)
+- optional diagnostic mode is available through `evaluateAllBlockers=true` to keep full blocker details when needed.
+- a conservative high-sun gate is active for terrain checks:
+  - if `sunAltitude > max(horizonMask) + margin`, terrain blocking check is skipped.
+
 ## 1. What to optimize exactly
 
 Use one common unit across backend and product:
