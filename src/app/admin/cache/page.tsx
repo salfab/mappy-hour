@@ -18,7 +18,7 @@ export default function CacheAdminPage() {
           href="/"
           className="inline-flex rounded-full border border-white/15 px-4 py-2 text-sm text-slate-100 transition hover:border-sky-300/50 hover:bg-sky-400/10"
         >
-          Retour a la carte
+          Retour à la carte
         </Link>
       </header>
 

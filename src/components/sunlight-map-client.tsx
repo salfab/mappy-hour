@@ -596,7 +596,7 @@ function selectPrimaryShadowCause(input: {
   isSunny: boolean;
 }): { primary: string; secondary: string[] } {
   if (input.isSunny) {
-    return { primary: "aucune (point ensoleille)", secondary: [] };
+    return { primary: "aucune (point ensoleillé)", secondary: [] };
   }
 
   const causes = new Set<string>();
@@ -607,10 +607,10 @@ function selectPrimaryShadowCause(input: {
     causes.add(input.terrainSource ?? "terrain/horizon");
   }
   if (input.vegetationBlocked) {
-    causes.add("vegetation");
+    causes.add("végétation");
   }
   if (input.buildingsBlocked) {
-    causes.add("batiment");
+    causes.add("bâtiment");
   }
 
   const priority = [
@@ -618,8 +618,8 @@ function selectPrimaryShadowCause(input: {
     "montagnes",
     "DEM local (colline du terrain de la ville)",
     "terrain/horizon",
-    "vegetation",
-    "batiment",
+    "végétation",
+    "bâtiment",
   ];
   for (const candidate of priority) {
     if (causes.has(candidate)) {
@@ -1463,14 +1463,14 @@ export function SunlightMapClient() {
     }
 
     if (!lastResult) {
-      return "Aucun calcul encore lance.";
+      return "Aucun calcul encore lancé.";
     }
     const warningCount = Array.from(
       new Set([...(lastResult.warnings ?? []), ...buildingWarnings, ...placesWarnings]),
     ).length;
     const excludedIndoor = lastResult.stats.indoorPointsExcluded ?? 0;
     const buildingCount = lastBuildings?.count ?? 0;
-    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, batiments: ${buildingCount}, terrasses soleil: ${sunlitPlaces.length}, obs+${observerHeightMeters.toFixed(1)}m, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m, warnings: ${warningCount}`;
+    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, bâtiments: ${buildingCount}, terrasses soleil: ${sunlitPlaces.length}, obs+${observerHeightMeters.toFixed(1)}m, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m, warnings: ${warningCount}`;
   }, [
     buildingWarnings,
     buildingHeightBiasMeters,
@@ -1559,7 +1559,7 @@ export function SunlightMapClient() {
           .bindTooltip(label, { sticky: true });
       };
 
-      if (params.primarySource === "batiment") {
+      if (params.primarySource === "bâtiment") {
         const blockerId =
           params.response.sample.buildingBlockerId ??
           params.response.pointContext.indoorBuildingId;
@@ -1582,7 +1582,7 @@ export function SunlightMapClient() {
             fillOpacity: 0.28,
           })
             .addTo(highlightLayer)
-            .bindTooltip(`Bloqueur batiment: ${blockerId}`, { sticky: true });
+            .bindTooltip(`Bloqueur bâtiment: ${blockerId}`, { sticky: true });
 
           const center = computeFootprintCenter(building.footprint);
           if (center) {
@@ -1590,7 +1590,7 @@ export function SunlightMapClient() {
               center.lat,
               center.lon,
               "#ea580c",
-              "Rayon vers le batiment bloqueur",
+              "Rayon vers le bâtiment bloqueur",
             );
           }
           return;
@@ -1612,18 +1612,18 @@ export function SunlightMapClient() {
             weight: 2,
           })
             .addTo(highlightLayer)
-            .bindTooltip("Approximation du bloqueur batiment", { sticky: true });
+            .bindTooltip("Approximation du bloqueur bâtiment", { sticky: true });
           drawRayToTarget(
             fallbackPoint.lat,
             fallbackPoint.lon,
             "#ea580c",
-            "Rayon vers le bloqueur batiment (approx.)",
+            "Rayon vers le bloqueur bâtiment (approx.)",
           );
         }
         return;
       }
 
-      if (params.primarySource === "vegetation") {
+      if (params.primarySource === "végétation") {
         const distance = params.response.sample.vegetationBlockerDistanceMeters;
         const vegetationPoint =
           typeof distance === "number" && Number.isFinite(distance) && distance > 0
@@ -1648,12 +1648,12 @@ export function SunlightMapClient() {
           weight: 2,
         })
           .addTo(highlightLayer)
-          .bindTooltip("Bloqueur vegetation", { sticky: true });
+          .bindTooltip("Bloqueur végétation", { sticky: true });
         drawRayToTarget(
           vegetationPoint.lat,
           vegetationPoint.lon,
           "#16a34a",
-          "Rayon vers le bloqueur vegetation",
+          "Rayon vers le bloqueur végétation",
         );
         return;
       }
@@ -1799,7 +1799,7 @@ export function SunlightMapClient() {
       console.log("Causes secondaires (mode brut):", secondarySourcesRaw.join(", "));
     }
     console.log(
-      "Cause principale (avec toggle UI ignore vegetation =",
+      "Cause principale (avec toggle UI ignore végétation =",
       ignoreVegetationForUi,
       "):",
       primarySourceEffective,
@@ -1812,7 +1812,7 @@ export function SunlightMapClient() {
     }
     console.log("Indoor/Outdoor:", json.pointContext.insideBuilding ? "indoor" : "outdoor");
     console.log("Date/Heure locale:", `${json.date} ${json.localTime}`, "| UTC:", json.utcTime);
-    console.log("Coordonnees LV95:", {
+    console.log("Coordonnées LV95:", {
       easting: json.pointContext.lv95Easting,
       northing: json.pointContext.lv95Northing,
     });
@@ -2455,7 +2455,7 @@ export function SunlightMapClient() {
     }
 
     if (mode === "daily" && isDailyRangeInvalid) {
-      setError("Plage horaire daily invalide: la fin doit etre apres le debut.");
+      setError("Plage horaire daily invalide: la fin doit être après le début.");
       return;
     }
 
@@ -3078,7 +3078,7 @@ export function SunlightMapClient() {
             onChange={(event) => setShowSunny(event.target.checked)}
           />
           <span className="rounded px-2 py-0.5 text-black" style={{ background: "#facc15" }}>
-            ensoleille
+            ensoleillé
           </span>
         </label>
         <label className="inline-flex items-center gap-2">
@@ -3095,7 +3095,7 @@ export function SunlightMapClient() {
             checked={showVegetation}
             onChange={(event) => setShowVegetation(event.target.checked)}
           />
-          <span className="rounded bg-green-700 px-2 py-0.5 text-white">vegetation</span>
+          <span className="rounded bg-green-700 px-2 py-0.5 text-white">végétation</span>
         </label>
         <label className="inline-flex items-center gap-2">
           <input
@@ -3143,7 +3143,7 @@ export function SunlightMapClient() {
             onChange={(event) => setIgnoreVegetationShadow(event.target.checked)}
           />
           <span className="rounded bg-emerald-800 px-2 py-0.5 text-white">
-            ignorer ombre vegetation
+            ignorer ombre végétation
           </span>
         </label>
       </div>
@@ -3167,18 +3167,18 @@ export function SunlightMapClient() {
             disabled={!dailyTimeline || dailyTimeline.frames.length === 0}
           />
           <p className="text-xs text-slate-300">
-            Frames recues: {dailyTimeline?.frames.length ?? 0}/
+            Frames reçues: {dailyTimeline?.frames.length ?? 0}/
             {dailyTimeline?.frameCount ?? 0}
           </p>
           {canShowHeatmap ? (
             <p className="text-xs text-rose-200">
               Heatmap disponible: active &quot;heatmap expo&quot; pour voir
-              l&apos;exposition cumulee de la journee.
+              l&apos;exposition cumulée de la journée.
             </p>
           ) : null}
           {isDailyRangeInvalid ? (
             <p className="text-xs text-red-300">
-              Plage horaire invalide: la fin doit etre strictement apres le debut.
+              Plage horaire invalide: la fin doit être strictement après le début.
             </p>
           ) : null}
           {dailyProgress ? (
@@ -3252,13 +3252,13 @@ export function SunlightMapClient() {
             <p className="text-xs text-slate-300">
               {isPlacesLoading
                 ? "Calcul terrasses en cours..."
-                : `${sunlitPlaces.length} etablissements visibles`}
+                : `${sunlitPlaces.length} établissements visibles`}
             </p>
           </div>
           <div className="h-[calc(560px-56px)] overflow-y-auto px-2 py-2">
             {sunlitPlaces.length === 0 && !isPlacesLoading ? (
               <p className="px-2 py-2 text-xs text-slate-300">
-                Aucun etablissement ensoleille pour les filtres actuels.
+                Aucun établissement ensoleillé pour les filtres actuels.
               </p>
             ) : null}
             <div className="grid gap-2">
@@ -3292,12 +3292,12 @@ export function SunlightMapClient() {
                     {mode === "instant"
                       ? place.isSunnyNow
                         ? `Soleil maintenant (${localTime})`
-                        : "A l'ombre maintenant"
+                        : "À l'ombre maintenant"
                       : `${place.sunlightStartLocalTime ?? "--:--"} -> ${place.sunlightEndLocalTime ?? "--:--"} (${place.sunnyMinutes} min)`}
                   </div>
                   {place.selectionStrategy !== "original" ? (
                     <div className="text-[11px] text-amber-200">
-                      Terrasse decalee ({place.selectionOffsetMeters}m) pour eviter un point indoor.
+                      Terrasse décalée ({place.selectionOffsetMeters}m) pour éviter un point indoor.
                     </div>
                   ) : null}
                 </button>
@@ -3309,3 +3309,4 @@ export function SunlightMapClient() {
     </section>
   );
 }
+

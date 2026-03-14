@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Mappy Hour - Ensoleillement Lausanne + Nyon",
   description:
-    "Application Next.js pour calculer l'ensoleillement a Lausanne et Nyon avec relief transfrontalier et batiments 3D.",
+    "Application Next.js pour calculer l'ensoleillement à Lausanne et Nyon avec relief transfrontalier et bâtiments 3D.",
 };
 
 export default function RootLayout({
@@ -34,3 +34,4 @@ export default function RootLayout({
     </html>
   );
 }
+

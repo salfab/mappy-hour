@@ -11,12 +11,12 @@ export default function Home() {
             Mappy Hour - Lausanne + Nyon
           </p>
           <h1 className="text-4xl font-semibold tracking-tight md:text-5xl">
-            Carte d&apos;ensoleillement relief + batiments
+            Carte d&apos;ensoleillement relief + bâtiments
           </h1>
           <p className="max-w-4xl text-base text-slate-300 md:text-lg">
             Le backend combine horizon transfrontalier (Suisse + France),
-            modele terrain local et ombres batiments pour afficher les zones
-            ensoleillees sur la carte.
+            modèle terrain local et ombres bâtiments pour afficher les zones
+            ensoleillées sur la carte.
           </p>
         </div>
         <Link

@@ -70,7 +70,7 @@ export async function POST(
       return NextResponse.json(
         {
           error: "Cannot cancel completed precompute job.",
-          details: "Le job est deja termine. Utilise l'action reject si tu veux nettoyer ce run.",
+          details: "Le job est déjà terminé. Utilise l'action reject si tu veux nettoyer ce run.",
         },
         { status: 409 },
       );
@@ -85,7 +85,7 @@ export async function POST(
         {
           error: "Cancel timed out before job stopped.",
           details:
-            "L'arret du job prend plus de temps que prevu. Reessaie dans quelques secondes.",
+            "L'arrêt du job prend plus de temps que prévu. Réessaie dans quelques secondes.",
         },
         { status: 409 },
       );
@@ -151,3 +151,4 @@ export async function POST(
     );
   }
 }
+
