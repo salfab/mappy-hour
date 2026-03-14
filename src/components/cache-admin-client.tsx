@@ -1,7 +1,8 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
+import { PrecomputeTileSelectorMap, type TileSelectorBbox, type TileSelectorEntry } from "@/components/precompute-tile-selector-map";
 
 const JOBS_SSE_STALE_AFTER_MS = 12_000;
 const JOBS_SSE_WATCHDOG_INTERVAL_MS = 4_000;
@@ -111,6 +112,7 @@ interface CachePrecomputeJob {
     gridStepMeters: number;
     startLocalTime: string;
     endLocalTime: string;
+    tileIds?: string[];
     skipExisting: boolean;
   };
   progress: {
@@ -140,6 +142,15 @@ interface CachePrecomputeJob {
 interface CacheJobsListResponse {
   generatedAt: string;
   jobs: CachePrecomputeJob[];
+}
+
+interface CachePrecomputeTilesResponse {
+  generatedAt: string;
+  region: "lausanne" | "nyon";
+  tileSizeMeters: number;
+  bbox: TileSelectorBbox;
+  tileCount: number;
+  tiles: TileSelectorEntry[];
 }
 
 function formatBytes(value: number): string {
@@ -202,13 +213,13 @@ function formatJobStatus(status: CachePrecomputeJob["status"]): string {
     return "en cours";
   }
   if (status === "cancelled") {
-    return "annulé";
+    return "annulÃ©";
   }
   if (status === "interrupted") {
     return "interrompu";
   }
   if (status === "completed") {
-    return "terminé";
+    return "terminÃ©";
   }
   return "en erreur";
 }
@@ -218,25 +229,25 @@ function formatTileState(state: NonNullable<CachePrecomputeJob["progress"]>["cur
     return "calcul";
   }
   if (state === "computed") {
-    return "calculée";
+    return "calculÃ©e";
   }
   if (state === "skipped") {
-    return "ignorée (cache)";
+    return "ignorÃ©e (cache)";
   }
-  return "échec";
+  return "Ã©chec";
 }
 
 function formatTilePhase(
   phase: NonNullable<CachePrecomputeJob["progress"]>["currentTilePhase"],
 ): string {
   if (phase === "prepare-context") {
-    return "préparation du contexte";
+    return "prÃ©paration du contexte";
   }
   if (phase === "prepare-points") {
-    return "préparation des points";
+    return "prÃ©paration des points";
   }
   if (phase === "evaluate-frames") {
-    return "évaluation du soleil";
+    return "Ã©valuation du soleil";
   }
   return "n/a";
 }
@@ -338,6 +349,7 @@ function buildRunsUrl(filters: {
 
 export function CacheAdminClient() {
   const lastJobStreamSignalAtRef = useRef<number>(0);
+  const precomputeTilesRequestIdRef = useRef(0);
   const [region, setRegion] = useState<RegionFilter>("all");
   const [modelVersionHash, setModelVersionHash] = useState("");
   const [startDate, setStartDate] = useState("");
@@ -374,9 +386,30 @@ export function CacheAdminClient() {
   const [preStartLocalTime, setPreStartLocalTime] = useState("00:00");
   const [preEndLocalTime, setPreEndLocalTime] = useState("23:59");
   const [preSkipExisting, setPreSkipExisting] = useState(true);
+  const [precomputeTilesState, setPrecomputeTilesState] = useState<ActionState>("idle");
+  const [precomputeTilesError, setPrecomputeTilesError] = useState<string | null>(null);
+  const [precomputeTilesCatalog, setPrecomputeTilesCatalog] =
+    useState<CachePrecomputeTilesResponse | null>(null);
+  const [precomputeTileSelectionByRegion, setPrecomputeTileSelectionByRegion] = useState<{
+    lausanne: string[] | null;
+    nyon: string[] | null;
+  }>({
+    lausanne: null,
+    nyon: null,
+  });
   const hasActivePrecompute = activeJobs.length > 0;
+  const selectedPrecomputeTileIds = useMemo(
+    () => precomputeTileSelectionByRegion[preRegion] ?? [],
+    [preRegion, precomputeTileSelectionByRegion],
+  );
+  const precomputeTileCountTotal = precomputeTilesCatalog?.tiles.length ?? 0;
+  const noTileSelected =
+    precomputeTilesCatalog !== null && selectedPrecomputeTileIds.length === 0;
   const precomputeButtonDisabled =
-    precomputeState === "loading" || hasActivePrecompute;
+    precomputeState === "loading" ||
+    precomputeTilesState === "loading" ||
+    hasActivePrecompute ||
+    noTileSelected;
   const precomputeFrameCountPerDay = useMemo(() => {
     if (!precomputeJob) {
       return null;
@@ -387,6 +420,22 @@ export function CacheAdminClient() {
       precomputeJob.request.sampleEveryMinutes,
     );
   }, [precomputeJob]);
+  const precomputeTileSelectionSummary = useMemo(() => {
+    if (!precomputeTilesCatalog) {
+      return "Chargement des tuiles...";
+    }
+    const selectedCount = selectedPrecomputeTileIds.length;
+    return `${selectedCount}/${precomputeTileCountTotal} tuiles sÃ©lectionnÃ©es`;
+  }, [precomputeTileCountTotal, precomputeTilesCatalog, selectedPrecomputeTileIds.length]);
+  const precomputeScopeLabel = useMemo(() => {
+    if (!precomputeTilesCatalog) {
+      return "en attente du catalogue des tuiles";
+    }
+    if (selectedPrecomputeTileIds.length >= precomputeTilesCatalog.tiles.length) {
+      return "toutes les tuiles de la rÃ©gion";
+    }
+    return `${selectedPrecomputeTileIds.length} tuiles sÃ©lectionnÃ©es`;
+  }, [precomputeTilesCatalog, selectedPrecomputeTileIds.length]);
 
   const filters = useMemo(
     () => ({
@@ -471,6 +520,81 @@ export function CacheAdminClient() {
     void refreshActiveJobs();
   }, [refreshActiveJobs]);
 
+  const refreshPrecomputeTiles = useCallback(async (regionValue: "lausanne" | "nyon") => {
+    const requestId = ++precomputeTilesRequestIdRef.current;
+    setPrecomputeTilesState("loading");
+    setPrecomputeTilesError(null);
+    try {
+      const response = await fetch(
+        `/api/admin/cache/tiles?region=${encodeURIComponent(regionValue)}`,
+        { cache: "no-store" },
+      );
+      const payload = (await response.json()) as
+        | CachePrecomputeTilesResponse
+        | { error?: string; details?: string };
+      if (!response.ok) {
+        const errorPayload = payload as { error?: string; details?: string };
+        throw new Error(errorPayload.details ?? errorPayload.error ?? "Unknown error");
+      }
+      if (requestId !== precomputeTilesRequestIdRef.current) {
+        return;
+      }
+      const catalog = payload as CachePrecomputeTilesResponse;
+      const availableTileIds = catalog.tiles.map((tile) => tile.tileId);
+      setPrecomputeTilesCatalog(catalog);
+      setPrecomputeTileSelectionByRegion((current) => {
+        const currentSelection = current[regionValue];
+        if (currentSelection === null) {
+          return {
+            ...current,
+            [regionValue]: availableTileIds,
+          };
+        }
+        const currentSet = new Set(currentSelection);
+        const filtered = availableTileIds.filter((tileId) => currentSet.has(tileId));
+        return {
+          ...current,
+          [regionValue]: filtered,
+        };
+      });
+    } catch (error) {
+      if (requestId !== precomputeTilesRequestIdRef.current) {
+        return;
+      }
+      setPrecomputeTilesCatalog(null);
+      setPrecomputeTilesError(error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      if (requestId === precomputeTilesRequestIdRef.current) {
+        setPrecomputeTilesState("idle");
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshPrecomputeTiles(preRegion);
+  }, [preRegion, refreshPrecomputeTiles]);
+
+  const setSelectedPrecomputeTiles = useCallback(
+    (tileIds: string[]) => {
+      setPrecomputeTileSelectionByRegion((current) => ({
+        ...current,
+        [preRegion]: tileIds,
+      }));
+    },
+    [preRegion],
+  );
+
+  const selectAllPrecomputeTiles = useCallback(() => {
+    if (!precomputeTilesCatalog) {
+      return;
+    }
+    setSelectedPrecomputeTiles(precomputeTilesCatalog.tiles.map((tile) => tile.tileId));
+  }, [precomputeTilesCatalog, setSelectedPrecomputeTiles]);
+
+  const clearPrecomputeTiles = useCallback(() => {
+    setSelectedPrecomputeTiles([]);
+  }, [setSelectedPrecomputeTiles]);
+
   useEffect(() => {
     const timer = setInterval(() => {
       const trackedJob = precomputeJob;
@@ -542,6 +666,16 @@ export function CacheAdminClient() {
       );
       return;
     }
+    if (precomputeTilesCatalog && selectedPrecomputeTileIds.length === 0) {
+      setActionError("Sélectionne au moins une tuile avant de lancer le précompute.");
+      return;
+    }
+    const tileIdsForRequest =
+      precomputeTilesCatalog &&
+      selectedPrecomputeTileIds.length > 0 &&
+      selectedPrecomputeTileIds.length < precomputeTilesCatalog.tiles.length
+        ? selectedPrecomputeTileIds
+        : undefined;
     const confirmed = window.confirm(
       "Lancer un precompute maintenant ? Cette action peut prendre du temps.",
     );
@@ -565,6 +699,7 @@ export function CacheAdminClient() {
             gridStepMeters: preGridStep,
             startLocalTime: preStartLocalTime,
             endLocalTime: preEndLocalTime,
+            tileIds: tileIdsForRequest,
             skipExisting: preSkipExisting,
           },
         }),
@@ -597,6 +732,7 @@ export function CacheAdminClient() {
           gridStepMeters: preGridStep,
           startLocalTime: preStartLocalTime,
           endLocalTime: preEndLocalTime,
+          tileIds: tileIdsForRequest,
           skipExisting: preSkipExisting,
         },
         progress: null,
@@ -621,7 +757,8 @@ export function CacheAdminClient() {
     preStartDate,
     preStartLocalTime,
     preSkipExisting,
-    refreshRuns,
+    precomputeTilesCatalog,
+    selectedPrecomputeTileIds,
   ]);
 
   const runJobAction = useCallback(
@@ -785,7 +922,7 @@ export function CacheAdminClient() {
                     status: "failed",
                     endedAt: new Date().toISOString(),
                     error:
-                      "Job introuvable (probable redémarrage serveur). Relance un nouveau precompute.",
+                      "Job introuvable (probable redÃ©marrage serveur). Relance un nouveau precompute.",
                   }
                 : current,
             );
@@ -882,7 +1019,7 @@ export function CacheAdminClient() {
             disabled={verifyState === "loading"}
             className="rounded-full bg-sky-300 px-4 py-2 text-sm font-medium text-slate-950"
           >
-            {verifyState === "loading" ? "Vérification..." : "Vérifier"}
+            {verifyState === "loading" ? "VÃ©rification..." : "VÃ©rifier"}
           </button>
           <button
             type="button"
@@ -904,7 +1041,7 @@ export function CacheAdminClient() {
 
         <div className="grid gap-3 md:grid-cols-4">
           <label className="grid gap-2 text-sm">
-            <span className="text-slate-300">Région</span>
+            <span className="text-slate-300">RÃ©gion</span>
             <select
               value={region}
               onChange={(event) => {
@@ -930,7 +1067,7 @@ export function CacheAdminClient() {
             />
           </label>
           <label className="grid gap-2 text-sm">
-            <span className="text-slate-300">Date début</span>
+            <span className="text-slate-300">Date dÃ©but</span>
             <input
               type="date"
               value={startDate}
@@ -967,10 +1104,10 @@ export function CacheAdminClient() {
               className="rounded-2xl border border-white/12 bg-slate-950/70 px-3 py-2"
             >
               <option value="date">Date</option>
-              <option value="generatedAt">Généré</option>
+              <option value="generatedAt">GÃ©nÃ©rÃ©</option>
               <option value="sizeBytes">Taille</option>
               <option value="tileCount">Tuiles</option>
-              <option value="failedTileCount">Échecs</option>
+              <option value="failedTileCount">Ã‰checs</option>
               <option value="gridStepMeters">Pas grille</option>
               <option value="sampleEveryMinutes">Pas temps</option>
             </select>
@@ -1039,7 +1176,7 @@ export function CacheAdminClient() {
           </p>
         </article>
         <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
-          <p className="text-xs text-slate-400">Échecs</p>
+          <p className="text-xs text-slate-400">Ã‰checs</p>
           <p className="mt-2 text-3xl font-semibold">
             {overview?.summary.totalFailedTiles ?? 0}
           </p>
@@ -1057,7 +1194,7 @@ export function CacheAdminClient() {
       <section className="grid gap-4 lg:grid-cols-[2fr_1fr]">
         <article className="overflow-hidden rounded-3xl border border-white/12 bg-black/20">
           <div className="border-b border-white/10 px-5 py-4">
-            <h2 className="text-lg font-semibold">Runs détectés</h2>
+            <h2 className="text-lg font-semibold">Runs dÃ©tectÃ©s</h2>
             <p className="text-sm text-slate-400">{overview?.root ?? "Chargement..."}</p>
             {overview ? (
               <p className="text-xs text-slate-500">
@@ -1071,8 +1208,8 @@ export function CacheAdminClient() {
               <thead className="sticky top-0 bg-slate-950/95 text-slate-400">
                 <tr>
                   <th className="px-5 py-3">Run</th>
-                  <th className="px-5 py-3">Paramètres</th>
-                  <th className="px-5 py-3">État</th>
+                  <th className="px-5 py-3">ParamÃ¨tres</th>
+                  <th className="px-5 py-3">Ã‰tat</th>
                   <th className="px-5 py-3">Stockage</th>
                 </tr>
               </thead>
@@ -1095,7 +1232,7 @@ export function CacheAdminClient() {
                       <td className="px-5 py-4">
                         <p>{run.complete ? "complet" : "incomplet"}</p>
                         <p>{run.tileCount} tuiles</p>
-                        <p>{run.failedTileCount} échecs</p>
+                        <p>{run.failedTileCount} Ã©checs</p>
                       </td>
                       <td className="px-5 py-4">
                         <p>{run.sizeBytes === null ? "n/a" : formatBytes(run.sizeBytes)}</p>
@@ -1123,7 +1260,7 @@ export function CacheAdminClient() {
               onClick={() => setPage((previous) => Math.max(1, previous - 1))}
               className="rounded-full border border-white/15 px-3 py-1 disabled:opacity-50"
             >
-              Page précédente
+              Page prÃ©cÃ©dente
             </button>
             <button
               type="button"
@@ -1142,18 +1279,18 @@ export function CacheAdminClient() {
 
         <div className="grid gap-4">
           <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
-            <h2 className="text-lg font-semibold">Vérification</h2>
+            <h2 className="text-lg font-semibold">VÃ©rification</h2>
             {verifyResult ? (
               <div className="mt-3 grid gap-2 text-sm">
                 <p>{verifyResult.manifestsMatched} manifests</p>
-                <p>{verifyResult.tilesVerified} tuiles vérifiées</p>
+                <p>{verifyResult.tilesVerified} tuiles vÃ©rifiÃ©es</p>
                 <p className="text-xs text-slate-400">
                   checks frames={verifyResult.strictChecks.expectedFrameCountChecks} masks=
                   {verifyResult.strictChecks.expectedMaskSizeChecks} indexes=
                   {verifyResult.strictChecks.pointIndexChecks}
                 </p>
                 <p className="text-xs text-slate-400">{formatDateTime(verifyResult.generatedAt)}</p>
-                <p>{verifyResult.problems.length} problèmes</p>
+                <p>{verifyResult.problems.length} problÃ¨mes</p>
               </div>
             ) : null}
           </article>
@@ -1164,7 +1301,7 @@ export function CacheAdminClient() {
               {activeJobs.length > 0 ? (
                 <div className="grid gap-2 rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3 py-2">
                   <p className="text-cyan-100">
-                    {activeJobs.length} job(s) en cours détecté(s) après rafraîchissement.
+                    {activeJobs.length} job(s) en cours dÃ©tectÃ©(s) aprÃ¨s rafraÃ®chissement.
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {activeJobs.slice(0, 4).map((job) => (
@@ -1187,7 +1324,7 @@ export function CacheAdminClient() {
               ) : null}
               {recentJobs.length > 0 ? (
                 <div className="grid gap-2 rounded-xl border border-white/12 bg-slate-950/40 p-3">
-                  <p className="text-xs text-slate-300">Jobs récents</p>
+                  <p className="text-xs text-slate-300">Jobs rÃ©cents</p>
                   <div className="grid max-h-72 gap-2 overflow-auto">
                     {recentJobs.map((job) => (
                       <article
@@ -1203,13 +1340,13 @@ export function CacheAdminClient() {
                           </p>
                         </div>
                         <p className="text-[11px] text-slate-300">
-                          Région {job.request.region} · {job.request.days} jour(s) depuis {job.request.startDate}
+                          RÃ©gion {job.request.region} Â· {job.request.days} jour(s) depuis {job.request.startDate}
                         </p>
                         <p className="text-[11px] text-slate-300">
-                          Fenêtre {job.request.startLocalTime}-{job.request.endLocalTime} · grille {job.request.gridStepMeters}m · pas {job.request.sampleEveryMinutes}min
+                          FenÃªtre {job.request.startLocalTime}-{job.request.endLocalTime} Â· grille {job.request.gridStepMeters}m Â· pas {job.request.sampleEveryMinutes}min
                         </p>
                         <p className="text-[11px] text-slate-400">
-                          elapsed {formatElapsed(computeJobElapsedSeconds(job))} · maj {formatDateTime(job.updatedAt)}
+                          elapsed {formatElapsed(computeJobElapsedSeconds(job))} Â· maj {formatDateTime(job.updatedAt)}
                         </p>
                         <div className="flex flex-wrap gap-1">
                           <button
@@ -1259,7 +1396,7 @@ export function CacheAdminClient() {
                 </div>
               ) : null}
               <label className="grid gap-1">
-                <span className="text-slate-300">Région</span>
+                <span className="text-slate-300">RÃ©gion</span>
                 <select
                   value={preRegion}
                   onChange={(event) =>
@@ -1272,7 +1409,7 @@ export function CacheAdminClient() {
                 </select>
               </label>
               <label className="grid gap-1">
-                <span className="text-slate-300">Date de début</span>
+                <span className="text-slate-300">Date de dÃ©but</span>
                 <input
                   type="date"
                   value={preStartDate}
@@ -1294,7 +1431,7 @@ export function CacheAdminClient() {
                 />
               </label>
               <label className="grid gap-1">
-                <span className="text-slate-300">Pas de grille (mètres)</span>
+                <span className="text-slate-300">Pas de grille (mÃ¨tres)</span>
                 <input
                   type="number"
                   min={1}
@@ -1322,12 +1459,12 @@ export function CacheAdminClient() {
                 />
               </label>
               <p className="rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
-                Taille des tuiles fixée à {CANONICAL_PRECOMPUTE_TILE_SIZE_METERS} m (canonique)
-                pour maximiser la réutilisation du cache entre zones.
+                Taille des tuiles fixÃ©e Ã  {CANONICAL_PRECOMPUTE_TILE_SIZE_METERS} m (canonique)
+                pour maximiser la rÃ©utilisation du cache entre zones.
               </p>
               <div className="grid grid-cols-2 gap-2">
                 <label className="grid gap-1">
-                  <span className="text-slate-300">Heure de début</span>
+                  <span className="text-slate-300">Heure de dÃ©but</span>
                   <input
                     type="time"
                     value={preStartLocalTime}
@@ -1351,11 +1488,56 @@ export function CacheAdminClient() {
                   checked={preSkipExisting}
                   onChange={(event) => setPreSkipExisting(event.target.checked)}
                 />
-                Ignorer les tuiles déjà calculées (mode reprise)
+                Ignorer les tuiles dÃ©jÃ  calculÃ©es (mode reprise)
               </label>
+              <div className="grid gap-2 rounded-xl border border-white/12 bg-slate-900/50 px-3 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-slate-200">
+                    SÃ©lection des tuiles Ã  prÃ©calculer ({precomputeTileSelectionSummary})
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={selectAllPrecomputeTiles}
+                      disabled={!precomputeTilesCatalog || precomputeTilesState === "loading"}
+                      className="rounded-full border border-white/20 px-2 py-1 text-[11px] disabled:opacity-50"
+                    >
+                      Tout sÃ©lectionner
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearPrecomputeTiles}
+                      disabled={!precomputeTilesCatalog || precomputeTilesState === "loading"}
+                      className="rounded-full border border-white/20 px-2 py-1 text-[11px] disabled:opacity-50"
+                    >
+                      Tout dÃ©sÃ©lectionner
+                    </button>
+                  </div>
+                </div>
+                {precomputeTilesState === "loading" ? (
+                  <p className="text-xs text-cyan-100">Chargement de la grille des tuiles...</p>
+                ) : null}
+                {precomputeTilesError ? (
+                  <p className="text-xs text-rose-100">{precomputeTilesError}</p>
+                ) : null}
+                {precomputeTilesCatalog ? (
+                  <PrecomputeTileSelectorMap
+                    regionBbox={precomputeTilesCatalog.bbox}
+                    tiles={precomputeTilesCatalog.tiles}
+                    selectedTileIds={selectedPrecomputeTileIds}
+                    disabled={precomputeTilesState === "loading"}
+                    onSelectionChange={setSelectedPrecomputeTiles}
+                  />
+                ) : null}
+                {noTileSelected ? (
+                  <p className="text-xs text-amber-100">
+                    Aucune tuile sÃ©lectionnÃ©e. SÃ©lectionne au moins une tuile pour lancer le prÃ©compute.
+                  </p>
+                ) : null}
+              </div>
               <p className="rounded-xl border border-white/12 bg-slate-900/50 px-3 py-2 text-xs text-slate-300">
-                Portée d&apos;un run: région complète ({preRegion}), {preDays} jour(s) à partir du {preStartDate},
-                fenêtre {preStartLocalTime}-{preEndLocalTime}. La progression totale compte les tuiles sur
+                PortÃ©e d&apos;un run: {precomputeScopeLabel} ({preRegion}), {preDays} jour(s) Ã  partir du {preStartDate},
+                fenÃªtre {preStartLocalTime}-{preEndLocalTime}. La progression totale compte les tuiles sur
                 toute la plage de jours (tuile-jour).
               </p>
               <button
@@ -1367,12 +1549,17 @@ export function CacheAdminClient() {
                 {precomputeState === "loading"
                   ? "Precompute en cours..."
                   : hasActivePrecompute
-                    ? "Job en cours (bloqué)"
+                    ? "Job en cours (bloquÃ©)"
                     : "Lancer precompute"}
               </button>
               {hasActivePrecompute ? (
                 <p className="text-xs text-amber-100">
-                  Un job est déjà en cours. Le lancement d’un nouveau precompute est bloqué.
+                  Un job est dÃ©jÃ  en cours. Le lancement dâ€™un nouveau precompute est bloquÃ©.
+                </p>
+              ) : null}
+              {!hasActivePrecompute && noTileSelected ? (
+                <p className="text-xs text-amber-100">
+                  Le lancement est bloquÃ© tant qu&apos;aucune tuile n&apos;est sÃ©lectionnÃ©e.
                 </p>
               ) : null}
               {precomputeJob ? (
@@ -1381,14 +1568,17 @@ export function CacheAdminClient() {
                     Job {precomputeJob.jobId.slice(0, 8)} - {formatJobStatus(precomputeJob.status)}
                   </p>
                   <p className="mt-1 text-[11px] text-cyan-50">
-                    Portée: région {precomputeJob.request.region}, {precomputeJob.request.days} jour(s)
-                    depuis {precomputeJob.request.startDate}, fenêtre {precomputeJob.request.startLocalTime}-
+                    PortÃ©e: rÃ©gion {precomputeJob.request.region}, {precomputeJob.request.days} jour(s)
+                    depuis {precomputeJob.request.startDate}, fenÃªtre {precomputeJob.request.startLocalTime}-
                     {precomputeJob.request.endLocalTime}, grille {precomputeJob.request.gridStepMeters}m,
-                    pas {precomputeJob.request.sampleEveryMinutes}min.
+                    pas {precomputeJob.request.sampleEveryMinutes}min, tuiles{" "}
+                    {precomputeJob.request.tileIds?.length
+                      ? `${precomputeJob.request.tileIds.length} sÃ©lectionnÃ©es`
+                      : "toutes"}.
                   </p>
                   <p className="text-[11px] text-cyan-100/90">
-                    Unité totale: <span className="font-semibold">tuile-jour</span> = 1 tuile spatiale
-                    ({CANONICAL_PRECOMPUTE_TILE_SIZE_METERS}m) calculée pour toute la fenêtre d’un jour.
+                    UnitÃ© totale: <span className="font-semibold">tuile-jour</span> = 1 tuile spatiale
+                    ({CANONICAL_PRECOMPUTE_TILE_SIZE_METERS}m) calculÃ©e pour toute la fenÃªtre dâ€™un jour.
                   </p>
                   <p className="text-[11px] text-cyan-100/90">
                     Slots temporels par tuile-jour:{" "}
@@ -1443,7 +1633,7 @@ export function CacheAdminClient() {
                         </p>
                       ) : (
                         <p>
-                          Démarrage du calcul - {precomputeJob.progress.date}
+                          DÃ©marrage du calcul - {precomputeJob.progress.date}
                         </p>
                       )}
                       <div className="grid gap-1">
@@ -1482,7 +1672,7 @@ export function CacheAdminClient() {
                         </div>
                       </div>
                       <p className="text-[11px] text-cyan-100/90">
-                        La tuile en cours couvre tous les slots temporels de la fenêtre du jour.
+                        La tuile en cours couvre tous les slots temporels de la fenÃªtre du jour.
                       </p>
                       <p className="text-[11px] text-cyan-100/90">
                         points tuile={precomputeJob.progress.currentTilePointCountTotal ?? "n/a"} (outdoor=
@@ -1493,7 +1683,7 @@ export function CacheAdminClient() {
                       <p>
                         jour={precomputeJob.progress.dayIndex}/{precomputeJob.progress.daysTotal} |
                         tuile spatiale={precomputeJob.progress.tileIndex}/{precomputeJob.progress.tilesTotal} |
-                        étape={formatTileState(precomputeJob.progress.currentTileState)}
+                        Ã©tape={formatTileState(precomputeJob.progress.currentTileState)}
                         {precomputeJob.progress.currentTilePhase
                           ? ` (${formatTilePhase(precomputeJob.progress.currentTilePhase)})`
                           : ""}
@@ -1503,15 +1693,15 @@ export function CacheAdminClient() {
                       </p>
                     </>
                   ) : (
-                    <p>Initialisation de la première tuile...</p>
+                    <p>Initialisation de la premiÃ¨re tuile...</p>
                   )}
                   {precomputeJob.error ? <p>{precomputeJob.error}</p> : null}
                 </div>
               ) : null}
               {precomputeResult ? (
                 <p className="text-xs text-cyan-100">
-                  Terminé: {precomputeResult.totalDates} jour(s), {precomputeResult.totalTiles} tuiles,
-                  modèle {precomputeResult.modelVersionHash}
+                  TerminÃ©: {precomputeResult.totalDates} jour(s), {precomputeResult.totalTiles} tuiles,
+                  modÃ¨le {precomputeResult.modelVersionHash}
                 </p>
               ) : null}
             </div>
