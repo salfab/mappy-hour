@@ -115,6 +115,7 @@ export interface CachePrecomputeRequest {
   gridStepMeters: number;
   startLocalTime: string;
   endLocalTime: string;
+  tileIds?: string[];
   skipExisting?: boolean;
   observerHeightMeters?: number;
   buildingHeightBiasMeters?: number;
@@ -591,7 +592,25 @@ export async function precomputeCacheRuns(
   });
   const modelVersion = await getSunlightModelVersion(request.region, shadowCalibration);
   const skipExisting = request.skipExisting ?? true;
-  const tiles = buildRegionTiles(request.region, tileSizeMeters);
+  const allRegionTiles = buildRegionTiles(request.region, tileSizeMeters);
+  const tiles = (() => {
+    const selected = request.tileIds;
+    if (!selected || selected.length === 0) {
+      return allRegionTiles;
+    }
+    const selectedSet = new Set(selected);
+    const tileById = new Map(allRegionTiles.map((tile) => [tile.tileId, tile]));
+    const unknownTileIds = selected.filter((tileId) => !tileById.has(tileId));
+    if (unknownTileIds.length > 0) {
+      throw new Error(
+        `Unknown tile ids for region ${request.region}: ${unknownTileIds.slice(0, 10).join(", ")}${unknownTileIds.length > 10 ? "..." : ""}`,
+      );
+    }
+    return allRegionTiles.filter((tile) => selectedSet.has(tile.tileId));
+  })();
+  if (tiles.length === 0) {
+    throw new Error("No tiles selected for precompute.");
+  }
   const dates: CachePrecomputeResult["dates"] = [];
   const totalTiles = tiles.length * request.days;
   let completedTiles = 0;

@@ -4,7 +4,10 @@ import {
   purgeCacheRuns,
   verifyCacheRuns,
 } from "@/lib/admin/cache-admin";
-import { startCachePrecomputeJob } from "@/lib/admin/cache-precompute-jobs";
+import {
+  listCachePrecomputeJobs,
+  startCachePrecomputeJob,
+} from "@/lib/admin/cache-precompute-jobs";
 
 import { POST } from "./route";
 
@@ -14,12 +17,14 @@ vi.mock("@/lib/admin/cache-admin", () => ({
 }));
 
 vi.mock("@/lib/admin/cache-precompute-jobs", () => ({
+  listCachePrecomputeJobs: vi.fn(),
   startCachePrecomputeJob: vi.fn(),
 }));
 
 describe("POST /api/admin/cache/actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(listCachePrecomputeJobs).mockReturnValue([]);
   });
 
   it("runs verification", async () => {
@@ -109,6 +114,8 @@ describe("POST /api/admin/cache/actions", () => {
     vi.mocked(startCachePrecomputeJob).mockReturnValue({
       jobId: "job-123",
       createdAt: "2026-03-14T10:00:00.000Z",
+      updatedAt: "2026-03-14T10:00:00.000Z",
+      revision: 0,
       startedAt: null,
       endedAt: null,
       status: "queued",
@@ -121,6 +128,7 @@ describe("POST /api/admin/cache/actions", () => {
         gridStepMeters: 5,
         startLocalTime: "00:00",
         endLocalTime: "23:59",
+        tileIds: ["e2538000_n1152000_s250"],
         skipExisting: true,
       },
       progress: null,
@@ -145,6 +153,7 @@ describe("POST /api/admin/cache/actions", () => {
             gridStepMeters: 5,
             startLocalTime: "00:00",
             endLocalTime: "23:59",
+            tileIds: ["e2538000_n1152000_s250"],
             skipExisting: true,
           },
         }),
@@ -160,8 +169,66 @@ describe("POST /api/admin/cache/actions", () => {
         region: "lausanne",
         startDate: "2026-03-08",
         days: 1,
+        tileIds: ["e2538000_n1152000_s250"],
       }),
     );
+  });
+
+  it("rejects precompute when another job is already active", async () => {
+    vi.mocked(listCachePrecomputeJobs).mockReturnValue([
+      {
+        jobId: "job-running",
+        createdAt: "2026-03-14T10:00:00.000Z",
+        updatedAt: "2026-03-14T10:00:00.000Z",
+        revision: 1,
+        startedAt: "2026-03-14T10:00:00.000Z",
+        endedAt: null,
+        status: "running",
+        request: {
+          region: "lausanne",
+          startDate: "2026-03-08",
+          days: 1,
+          timezone: "Europe/Zurich",
+          sampleEveryMinutes: 15,
+          gridStepMeters: 1,
+          startLocalTime: "00:00",
+          endLocalTime: "23:59",
+          skipExisting: true,
+        },
+        progress: null,
+        result: null,
+        error: null,
+      },
+    ]);
+
+    const response = await POST(
+      new Request("http://localhost/api/admin/cache/actions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "precompute",
+          precompute: {
+            region: "lausanne",
+            startDate: "2026-03-08",
+            days: 1,
+            timezone: "Europe/Zurich",
+            sampleEveryMinutes: 15,
+            gridStepMeters: 1,
+            startLocalTime: "00:00",
+            endLocalTime: "23:59",
+            skipExisting: true,
+          },
+        }),
+      }),
+    );
+    const json = (await response.json()) as { error: string; activeJobIds: string[] };
+
+    expect(response.status).toBe(409);
+    expect(json.error).toContain("already running");
+    expect(json.activeJobIds).toContain("job-running");
+    expect(startCachePrecomputeJob).not.toHaveBeenCalled();
   });
 
   it("rejects deprecated tile size parameter", async () => {
