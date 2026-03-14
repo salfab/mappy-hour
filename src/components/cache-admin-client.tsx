@@ -368,20 +368,28 @@ export function CacheAdminClient() {
   ]);
 
   useEffect(() => {
-    if (!precomputeJob) {
+    const jobId = precomputeJob?.jobId;
+    const status = precomputeJob?.status;
+    if (!jobId) {
       return;
     }
-    if (precomputeJob.status === "completed" || precomputeJob.status === "failed") {
+    if (status === "completed" || status === "failed") {
       return;
     }
 
     let cancelled = false;
+    let inFlight = false;
+    let nextTimer: ReturnType<typeof setTimeout> | null = null;
+
     const tick = async () => {
+      if (cancelled || inFlight) {
+        return;
+      }
+      inFlight = true;
       try {
-        const response = await fetch(
-          `/api/admin/cache/jobs/${encodeURIComponent(precomputeJob.jobId)}`,
-          { cache: "no-store" },
-        );
+        const response = await fetch(`/api/admin/cache/jobs/${encodeURIComponent(jobId)}`, {
+          cache: "no-store",
+        });
         const payload = (await response.json()) as CachePrecomputeJob | { error?: string };
         if (!response.ok) {
           throw new Error((payload as { error?: string }).error ?? "Unknown error");
@@ -400,19 +408,25 @@ export function CacheAdminClient() {
           return;
         }
         setActionError(error instanceof Error ? error.message : "Unknown error");
+      } finally {
+        inFlight = false;
+        if (!cancelled) {
+          nextTimer = setTimeout(() => {
+            void tick();
+          }, 1000);
+        }
       }
     };
 
-    const intervalId = setInterval(() => {
-      void tick();
-    }, 1000);
     void tick();
 
     return () => {
       cancelled = true;
-      clearInterval(intervalId);
+      if (nextTimer) {
+        clearTimeout(nextTimer);
+      }
     };
-  }, [precomputeJob, refreshRuns]);
+  }, [precomputeJob?.jobId, precomputeJob?.status, refreshRuns]);
 
   return (
     <div className="grid gap-6">

@@ -36,6 +36,12 @@ const PRECOMPUTED_REGIONS: PrecomputedRegionName[] = ["lausanne", "nyon"];
 const manifestMemoryCache = new TtlCache<PrecomputedSunlightManifest | null>(60_000, 64);
 const tileMemoryCache = new TtlCache<PrecomputedSunlightTileArtifact | null>(60_000, 128);
 
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
 interface PreparedOutdoorPoint {
   lat: number;
   lon: number;
@@ -316,6 +322,7 @@ export async function computeSunlightTileArtifact(params: {
   endLocalTime: string;
   tile: RegionTileSpec;
   shadowCalibration: ShadowCalibration;
+  cooperativeYieldEveryPoints?: number;
 }): Promise<PrecomputedSunlightTileArtifact> {
   const started = performance.now();
   const rawTilePoints = buildTilePoints(params.tile, params.gridStepMeters);
@@ -393,6 +400,13 @@ export async function computeSunlightTileArtifact(params: {
       outdoorIndex,
       pointElevationMeters: context.pointElevationMeters,
     });
+    if (
+      params.cooperativeYieldEveryPoints &&
+      params.cooperativeYieldEveryPoints > 0 &&
+      preparedOutdoorPoints.length % params.cooperativeYieldEveryPoints === 0
+    ) {
+      await yieldToEventLoop();
+    }
   }
 
   const samples = createUtcSamples(
@@ -471,6 +485,14 @@ export async function computeSunlightTileArtifact(params: {
       if (sample.isSunny) {
         setMaskBit(sunnyMask, pointIndex);
         sunnyCount += 1;
+      }
+      if (
+        params.cooperativeYieldEveryPoints &&
+        params.cooperativeYieldEveryPoints > 0 &&
+        pointIndex > 0 &&
+        pointIndex % params.cooperativeYieldEveryPoints === 0
+      ) {
+        await yieldToEventLoop();
       }
     }
 

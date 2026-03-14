@@ -626,6 +626,7 @@ export async function precomputeCacheRuns(
           endLocalTime: request.endLocalTime,
           tile,
           shadowCalibration,
+          cooperativeYieldEveryPoints: 200,
         });
         await writePrecomputedSunlightTile(artifact);
         succeededTileIds.push(tile.tileId);
