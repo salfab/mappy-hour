@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-03-14T09:39:47.313Z",
+  "generatedAt": "2026-03-14T09:40:25.870Z",
   "benchmarkVersion": "v1",
   "args": {
     "bbox": [
-      6.6001,
-      46.5221,
-      6.6002,
-      46.5222
+      6.599447,
+      46.522107,
+      6.601426,
+      46.523137
     ],
     "date": "2026-03-08",
     "timezone": "Europe/Zurich",
@@ -14,46 +14,46 @@
     "localTime": "09:15",
     "sampleEveryMinutes": 15,
     "gridStepMeters": 20,
-    "maxPoints": 100,
+    "maxPoints": 500,
     "ignoreVegetation": false,
     "outputName": "smoke-cache-benchmark"
   },
   "cold": {
-    "wallMs": 1384.085,
+    "wallMs": 222701.518,
     "cache": {
-      "hit": true,
-      "layer": "L2",
+      "hit": false,
+      "layer": "MISS",
       "region": "lausanne",
       "modelVersionHash": "1aead7ba2238b854",
-      "fullyCovered": true,
-      "tilesRequested": 1,
+      "fullyCovered": false,
+      "tilesRequested": 4,
       "tilesFromL1": 0,
-      "tilesFromL2": 1,
-      "tilesComputed": 0
+      "tilesFromL2": 0,
+      "tilesComputed": 4
     },
-    "pointCount": 0,
-    "gridPointCount": 0,
-    "elapsedMs": 1378.412
+    "pointCount": 36,
+    "gridPointCount": 43,
+    "elapsedMs": 222694.231
   },
   "warm": {
-    "wallMs": 73.934,
+    "wallMs": 105.178,
     "cache": {
       "hit": true,
       "layer": "L1",
       "region": "lausanne",
       "modelVersionHash": "1aead7ba2238b854",
       "fullyCovered": true,
-      "tilesRequested": 1,
-      "tilesFromL1": 1,
-      "tilesFromL2": 0,
+      "tilesRequested": 4,
+      "tilesFromL1": 2,
+      "tilesFromL2": 2,
       "tilesComputed": 0
     },
-    "pointCount": 0,
-    "gridPointCount": 0,
-    "elapsedMs": 72.906
+    "pointCount": 36,
+    "gridPointCount": 43,
+    "elapsedMs": 100.867
   },
   "ratios": {
-    "warmVsColdWallTime": 0.053,
-    "warmVsColdApiElapsed": 0.053
+    "warmVsColdWallTime": 0,
+    "warmVsColdApiElapsed": 0
   }
 }
