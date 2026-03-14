@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { buildGridFromBbox } from "@/lib/geo/grid";
+import { findInstantAreaCacheHit } from "@/lib/precompute/sunlight-area-cache";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
@@ -107,6 +108,51 @@ export async function POST(request: Request) {
       observerHeightMeters: parsed.data.observerHeightMeters,
       buildingHeightBiasMeters: parsed.data.buildingHeightBiasMeters,
     });
+
+    if (parsed.data.mode === "instant") {
+      const cacheHit = await findInstantAreaCacheHit({
+        bbox: {
+          minLon,
+          minLat,
+          maxLon,
+          maxLat,
+        },
+        date: parsed.data.date,
+        timezone: parsed.data.timezone,
+        localTime: parsed.data.localTime,
+        sampleEveryMinutes: parsed.data.sampleEveryMinutes,
+        gridStepMeters: parsed.data.gridStepMeters,
+        maxPoints: parsed.data.maxPoints,
+        shadowCalibration,
+      });
+
+      if (cacheHit) {
+        return NextResponse.json({
+          mode: parsed.data.mode,
+          date: parsed.data.date,
+          timezone: parsed.data.timezone,
+          localTime: parsed.data.localTime,
+          utcTime: cacheHit.utcTime,
+          bbox: {
+            minLon,
+            minLat,
+            maxLon,
+            maxLat,
+          },
+          gridStepMeters: parsed.data.gridStepMeters,
+          pointCount: cacheHit.pointCount,
+          gridPointCount: cacheHit.gridPointCount,
+          points: cacheHit.points,
+          model: cacheHit.model,
+          warnings: cacheHit.warnings,
+          stats: {
+            ...cacheHit.stats,
+            elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
+          },
+        });
+      }
+    }
+
     const grid = buildGridFromBbox(
       { minLon, minLat, maxLon, maxLat },
       parsed.data.gridStepMeters,

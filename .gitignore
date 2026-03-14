@@ -43,6 +43,7 @@ next-env.d.ts
 # project data
 /data/raw/
 /data/processed/
+/data/cache/
 /data/tmp/
 
 # Explicit heavy 3D/DEM dataset paths (kept out of git and ignored by dev file watchers)
