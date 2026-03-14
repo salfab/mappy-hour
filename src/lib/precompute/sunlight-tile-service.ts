@@ -51,6 +51,22 @@ interface PreparedOutdoorPoint {
   vegetationShadowEvaluator: Awaited<ReturnType<typeof buildPointEvaluationContext>>["vegetationShadowEvaluator"];
 }
 
+interface SunlightTileComputeProgress {
+  stage: "prepare-points" | "evaluate-frames";
+  completed: number;
+  total: number;
+  pointCountTotal: number;
+  pointCountOutdoor: number;
+  frameCountTotal: number;
+  frameIndex: number | null;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new Error("Tile precompute aborted.");
+  }
+}
+
 export interface CacheMetadata {
   hit: boolean;
   layer: "L1" | "L2" | "PARTIAL" | "MISS";
@@ -323,8 +339,11 @@ export async function computeSunlightTileArtifact(params: {
   tile: RegionTileSpec;
   shadowCalibration: ShadowCalibration;
   cooperativeYieldEveryPoints?: number;
+  onProgress?: (progress: SunlightTileComputeProgress) => void;
+  signal?: AbortSignal;
 }): Promise<PrecomputedSunlightTileArtifact> {
   const started = performance.now();
+  throwIfAborted(params.signal);
   const rawTilePoints = buildTilePoints(params.tile, params.gridStepMeters);
   const warnings: string[] = [];
   let terrainMethod = "none";
@@ -358,7 +377,9 @@ export async function computeSunlightTileArtifact(params: {
   const points: PrecomputedSunlightTileArtifact["points"] = [];
   const preparedOutdoorPoints: PreparedOutdoorPoint[] = [];
 
-  for (const point of rawTilePoints) {
+  for (let rawPointIndex = 0; rawPointIndex < rawTilePoints.length; rawPointIndex += 1) {
+    throwIfAborted(params.signal);
+    const point = rawTilePoints[rawPointIndex];
     const context = await buildPointEvaluationContext(point.lat, point.lon, {
       skipTerrainSamplingWhenIndoor: true,
       terrainHorizonOverride: terrainHorizonOverride ?? undefined,
@@ -403,11 +424,32 @@ export async function computeSunlightTileArtifact(params: {
     if (
       params.cooperativeYieldEveryPoints &&
       params.cooperativeYieldEveryPoints > 0 &&
-      preparedOutdoorPoints.length % params.cooperativeYieldEveryPoints === 0
+      rawPointIndex > 0 &&
+      (rawPointIndex + 1) % params.cooperativeYieldEveryPoints === 0
     ) {
+      params.onProgress?.({
+        stage: "prepare-points",
+        completed: rawPointIndex + 1,
+        total: rawTilePoints.length,
+        pointCountTotal: rawTilePoints.length,
+        pointCountOutdoor: preparedOutdoorPoints.length,
+        frameCountTotal: 0,
+        frameIndex: null,
+      });
       await yieldToEventLoop();
+      throwIfAborted(params.signal);
     }
   }
+
+  params.onProgress?.({
+    stage: "prepare-points",
+    completed: rawTilePoints.length,
+    total: rawTilePoints.length,
+    pointCountTotal: rawTilePoints.length,
+    pointCountOutdoor: preparedOutdoorPoints.length,
+    frameCountTotal: 0,
+    frameIndex: null,
+  });
 
   const samples = createUtcSamples(
     params.date,
@@ -423,7 +465,10 @@ export async function computeSunlightTileArtifact(params: {
   }
 
   const frames: PrecomputedSunlightTileArtifact["frames"] = [];
+  const totalFrameEvaluations = preparedOutdoorPoints.length * samples.length;
+  let completedFrameEvaluations = 0;
   for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
+    throwIfAborted(params.signal);
     const sampleDate = samples[sampleIndex];
     const sunnyMask = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
     const sunnyMaskNoVegetation = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
@@ -439,6 +484,7 @@ export async function computeSunlightTileArtifact(params: {
     let localTime = "";
 
     for (let pointIndex = 0; pointIndex < preparedOutdoorPoints.length; pointIndex += 1) {
+      throwIfAborted(params.signal);
       const point = preparedOutdoorPoints[pointIndex];
       const sample = evaluateInstantSunlight({
         lat: point.lat,
@@ -492,8 +538,19 @@ export async function computeSunlightTileArtifact(params: {
         pointIndex > 0 &&
         pointIndex % params.cooperativeYieldEveryPoints === 0
       ) {
+        params.onProgress?.({
+          stage: "evaluate-frames",
+          completed: completedFrameEvaluations,
+          total: totalFrameEvaluations,
+          pointCountTotal: rawTilePoints.length,
+          pointCountOutdoor: preparedOutdoorPoints.length,
+          frameCountTotal: samples.length,
+          frameIndex: sampleIndex + 1,
+        });
         await yieldToEventLoop();
+        throwIfAborted(params.signal);
       }
+      completedFrameEvaluations += 1;
     }
 
     frames.push({
@@ -513,6 +570,16 @@ export async function computeSunlightTileArtifact(params: {
         buildingBlockerDistanceMetersByPoint,
         vegetationBlockerDistanceMetersByPoint,
       },
+    });
+
+    params.onProgress?.({
+      stage: "evaluate-frames",
+      completed: completedFrameEvaluations,
+      total: totalFrameEvaluations,
+      pointCountTotal: rawTilePoints.length,
+      pointCountOutdoor: preparedOutdoorPoints.length,
+      frameCountTotal: samples.length,
+      frameIndex: sampleIndex + 1,
     });
   }
 

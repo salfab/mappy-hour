@@ -152,7 +152,19 @@ export interface CachePrecomputeProgress {
   completedTiles: number;
   totalTiles: number;
   percent: number;
-  currentTileState: "computed" | "skipped" | "failed";
+  currentTileState: "running" | "computed" | "skipped" | "failed";
+  currentTilePhase?: "prepare-context" | "prepare-points" | "evaluate-frames" | null;
+  currentTileProgressPercent?: number | null;
+  currentTilePointCountTotal?: number | null;
+  currentTilePointCountOutdoor?: number | null;
+  currentTileFrameCountTotal?: number | null;
+  currentTileFrameIndex?: number | null;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new Error("Precompute aborted.");
+  }
 }
 
 function dateInRange(date: string, startDate?: string, endDate?: string): boolean {
@@ -569,6 +581,7 @@ export async function precomputeCacheRuns(
   request: CachePrecomputeRequest,
   options: {
     onProgress?: (progress: CachePrecomputeProgress) => void;
+    signal?: AbortSignal;
   } = {},
 ): Promise<CachePrecomputeResult> {
   const tileSizeMeters = CANONICAL_PRECOMPUTE_TILE_SIZE_METERS;
@@ -584,6 +597,7 @@ export async function precomputeCacheRuns(
   let completedTiles = 0;
 
   for (let dayOffset = 0; dayOffset < request.days; dayOffset += 1) {
+    throwIfAborted(options.signal);
     const date = addDays(request.startDate, dayOffset);
     const startedAt = performance.now();
     const succeededTileIds: string[] = [];
@@ -591,8 +605,32 @@ export async function precomputeCacheRuns(
     const skippedTileIds: string[] = [];
 
     for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
+      throwIfAborted(options.signal);
       const tile = tiles[tileIndex];
+      options.onProgress?.({
+        stage: "running",
+        date,
+        dayIndex: dayOffset + 1,
+        daysTotal: request.days,
+        tileIndex: tileIndex + 1,
+        tilesTotal: tiles.length,
+        completedTiles,
+        totalTiles,
+        percent:
+          totalTiles === 0
+            ? 100
+            : Math.round((completedTiles / totalTiles) * 10000) / 100,
+        currentTileState: "running",
+        currentTilePhase: "prepare-context",
+        currentTileProgressPercent: 0,
+        currentTilePointCountTotal: null,
+        currentTilePointCountOutdoor: null,
+        currentTileFrameCountTotal: null,
+        currentTileFrameIndex: null,
+      });
+
       if (skipExisting) {
+        throwIfAborted(options.signal);
         const existing = await loadPrecomputedSunlightTile({
           region: request.region,
           modelVersionHash: modelVersion.modelVersionHash,
@@ -621,6 +659,12 @@ export async function precomputeCacheRuns(
                 ? 100
                 : Math.round((completedTiles / totalTiles) * 1000) / 10,
             currentTileState: "skipped",
+            currentTilePhase: null,
+            currentTileProgressPercent: 100,
+            currentTilePointCountTotal: existing.stats.gridPointCount,
+            currentTilePointCountOutdoor: existing.stats.pointCount,
+            currentTileFrameCountTotal: existing.frames.length,
+            currentTileFrameIndex: existing.frames.length,
           });
           continue;
         }
@@ -638,7 +682,39 @@ export async function precomputeCacheRuns(
           endLocalTime: request.endLocalTime,
           tile,
           shadowCalibration,
-          cooperativeYieldEveryPoints: 200,
+          cooperativeYieldEveryPoints: 50,
+          signal: options.signal,
+          onProgress: (tileProgress) => {
+            const tileFraction =
+              tileProgress.total <= 0
+                ? 0
+                : Math.max(
+                    0,
+                    Math.min(1, tileProgress.completed / tileProgress.total),
+                  );
+            const totalProgress = completedTiles + tileFraction;
+            options.onProgress?.({
+              stage: "running",
+              date,
+              dayIndex: dayOffset + 1,
+              daysTotal: request.days,
+              tileIndex: tileIndex + 1,
+              tilesTotal: tiles.length,
+              completedTiles,
+              totalTiles,
+              percent:
+                totalTiles === 0
+                  ? 100
+                  : Math.round((totalProgress / totalTiles) * 1000) / 10,
+              currentTileState: "running",
+              currentTilePhase: tileProgress.stage,
+              currentTileProgressPercent: Math.round(tileFraction * 1000) / 10,
+              currentTilePointCountTotal: tileProgress.pointCountTotal,
+              currentTilePointCountOutdoor: tileProgress.pointCountOutdoor,
+              currentTileFrameCountTotal: tileProgress.frameCountTotal,
+              currentTileFrameIndex: tileProgress.frameIndex,
+            });
+          },
         });
         await writePrecomputedSunlightTile(artifact);
         succeededTileIds.push(tile.tileId);
@@ -657,8 +733,17 @@ export async function precomputeCacheRuns(
               ? 100
               : Math.round((completedTiles / totalTiles) * 1000) / 10,
           currentTileState: "computed",
+          currentTilePhase: null,
+          currentTileProgressPercent: 100,
+          currentTilePointCountTotal: artifact.stats.gridPointCount,
+          currentTilePointCountOutdoor: artifact.stats.pointCount,
+          currentTileFrameCountTotal: artifact.frames.length,
+          currentTileFrameIndex: artifact.frames.length,
         });
-      } catch {
+      } catch (error) {
+        if (options.signal?.aborted) {
+          throw error;
+        }
         failedTileIds.push(tile.tileId);
         completedTiles += 1;
         options.onProgress?.({
@@ -675,6 +760,12 @@ export async function precomputeCacheRuns(
               ? 100
               : Math.round((completedTiles / totalTiles) * 1000) / 10,
           currentTileState: "failed",
+          currentTilePhase: null,
+          currentTileProgressPercent: 100,
+          currentTilePointCountTotal: null,
+          currentTilePointCountOutdoor: null,
+          currentTileFrameCountTotal: null,
+          currentTileFrameIndex: null,
         });
       }
     }
@@ -715,6 +806,12 @@ export async function precomputeCacheRuns(
       percent:
         totalTiles === 0 ? 100 : Math.round((completedTiles / totalTiles) * 1000) / 10,
       currentTileState: "computed",
+      currentTilePhase: null,
+      currentTileProgressPercent: 100,
+      currentTilePointCountTotal: null,
+      currentTilePointCountOutdoor: null,
+      currentTileFrameCountTotal: null,
+      currentTileFrameIndex: null,
     });
     dates.push({
         date,

@@ -126,6 +126,10 @@ interface CachePrecomputeJob {
     currentTileState: "running" | "computed" | "skipped" | "failed";
     currentTilePhase?: "prepare-context" | "prepare-points" | "evaluate-frames" | null;
     currentTileProgressPercent?: number | null;
+    currentTilePointCountTotal?: number | null;
+    currentTilePointCountOutdoor?: number | null;
+    currentTileFrameCountTotal?: number | null;
+    currentTileFrameIndex?: number | null;
     elapsedMs: number;
     etaSeconds: number | null;
   } | null;
@@ -1374,7 +1378,7 @@ export function CacheAdminClient() {
               </button>
               {hasActivePrecompute ? (
                 <p className="text-xs text-amber-100">
-                  Un job est déjà en cours. Le lancement d'un nouveau precompute est bloqué.
+                  Un job est déjà en cours. Le lancement d’un nouveau precompute est bloqué.
                 </p>
               ) : null}
               {precomputeJob ? (
@@ -1390,7 +1394,7 @@ export function CacheAdminClient() {
                   </p>
                   <p className="text-[11px] text-cyan-100/90">
                     Unité totale: <span className="font-semibold">tuile-jour</span> = 1 tuile spatiale
-                    ({CANONICAL_PRECOMPUTE_TILE_SIZE_METERS}m) calculée pour toute la fenêtre d'un jour.
+                    ({CANONICAL_PRECOMPUTE_TILE_SIZE_METERS}m) calculée pour toute la fenêtre d’un jour.
                   </p>
                   <p className="text-[11px] text-cyan-100/90">
                     Slots temporels par tuile-jour:{" "}
@@ -1485,6 +1489,12 @@ export function CacheAdminClient() {
                       </div>
                       <p className="text-[11px] text-cyan-100/90">
                         La tuile en cours couvre tous les slots temporels de la fenêtre du jour.
+                      </p>
+                      <p className="text-[11px] text-cyan-100/90">
+                        points tuile={precomputeJob.progress.currentTilePointCountTotal ?? "n/a"} (outdoor=
+                        {precomputeJob.progress.currentTilePointCountOutdoor ?? "n/a"}) |
+                        frame={precomputeJob.progress.currentTileFrameIndex ?? "n/a"}/
+                        {precomputeJob.progress.currentTileFrameCountTotal ?? "n/a"}
                       </p>
                       <p>
                         jour={precomputeJob.progress.dayIndex}/{precomputeJob.progress.daysTotal} |

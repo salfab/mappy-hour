@@ -63,6 +63,56 @@ function isJobTerminal(status: CachePrecomputeJobStatus): boolean {
   );
 }
 
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, value));
+}
+
+function computeEtaSeconds(
+  progress: CachePrecomputeProgress,
+  elapsedMs: number,
+): number | null {
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) {
+    return null;
+  }
+  const totalTiles = Number.isFinite(progress.totalTiles)
+    ? Math.max(0, progress.totalTiles)
+    : 0;
+  if (totalTiles <= 0) {
+    return null;
+  }
+  const completedTiles = Number.isFinite(progress.completedTiles)
+    ? Math.max(0, progress.completedTiles)
+    : 0;
+  const runningTileFraction =
+    progress.currentTileState === "running" &&
+    typeof progress.currentTileProgressPercent === "number" &&
+    Number.isFinite(progress.currentTileProgressPercent)
+      ? clampPercent(progress.currentTileProgressPercent) / 100
+      : 0;
+  const completedFromPercent =
+    (clampPercent(progress.percent) / 100) * totalTiles;
+  const completedTilesEquivalentRaw = Math.max(
+    completedTiles + runningTileFraction,
+    completedFromPercent,
+  );
+  const completedTilesEquivalent = Math.max(
+    0,
+    Math.min(totalTiles, completedTilesEquivalentRaw),
+  );
+  if (!Number.isFinite(completedTilesEquivalent) || completedTilesEquivalent <= 0) {
+    return null;
+  }
+  const remainingTiles = Math.max(totalTiles - completedTilesEquivalent, 0);
+  const etaMs = (elapsedMs * remainingTiles) / completedTilesEquivalent;
+  if (!Number.isFinite(etaMs)) {
+    return null;
+  }
+  return Math.max(0, Math.round(etaMs / 1000));
+}
+
 function normalizeRecoveredSnapshot(job: CachePrecomputeJob): CachePrecomputeJob {
   if (!jobs.has(job.jobId) && (job.status === "queued" || job.status === "running")) {
     const updatedAtMs = Date.parse(job.updatedAt);
@@ -535,6 +585,10 @@ function launchCachePrecomputeJobWorker(
       currentTileState: "running",
       currentTilePhase: "prepare-context",
       currentTileProgressPercent: 0,
+      currentTilePointCountTotal: null,
+      currentTilePointCountOutdoor: null,
+      currentTileFrameCountTotal: null,
+      currentTileFrameIndex: null,
       elapsedMs: 0,
       etaSeconds: null,
     };
@@ -550,7 +604,9 @@ function launchCachePrecomputeJobWorker(
         return;
       }
       if (job.progress) {
-        job.progress.elapsedMs = Math.round(performance.now() - startedAtPerf);
+        const elapsedMs = Math.round(performance.now() - startedAtPerf);
+        job.progress.elapsedMs = elapsedMs;
+        job.progress.etaSeconds = computeEtaSeconds(job.progress, elapsedMs);
       }
       touchJob(job);
     }, 1000);
@@ -558,32 +614,12 @@ function launchCachePrecomputeJobWorker(
       const result = await precomputeCacheRuns(request, {
         signal: abortController.signal,
         onProgress: (progress) => {
-          const elapsedMs = performance.now() - startedAtPerf;
-          // Include in-flight tile progress so ETA appears before the first tile is fully done.
-          const runningTileFractionRaw =
-            progress.currentTileState === "running" &&
-            typeof progress.currentTileProgressPercent === "number"
-              ? progress.currentTileProgressPercent / 100
-              : 0;
-          const runningTileFraction = Math.max(0, Math.min(1, runningTileFractionRaw));
-          const completedFromPercent =
-            progress.totalTiles > 0
-              ? (Math.max(0, Math.min(100, progress.percent)) / 100) * progress.totalTiles
-              : 0;
-          const completedTilesEquivalent = Math.max(
-            progress.completedTiles + runningTileFraction,
-            completedFromPercent,
-          );
-          const remainingTiles = Math.max(progress.totalTiles - completedTilesEquivalent, 0);
-          const tilesPerMs =
-            completedTilesEquivalent > 0 && elapsedMs > 0
-              ? completedTilesEquivalent / elapsedMs
-              : 0;
-          const etaMs = tilesPerMs > 0 ? remainingTiles / tilesPerMs : null;
+          const elapsedMs = Math.round(performance.now() - startedAtPerf);
+          const etaSeconds = computeEtaSeconds(progress, elapsedMs);
           job.progress = {
             ...progress,
-            elapsedMs: Math.round(elapsedMs),
-            etaSeconds: etaMs === null ? null : Math.max(0, Math.round(etaMs / 1000)),
+            elapsedMs,
+            etaSeconds,
           };
           touchJob(job);
 
@@ -610,8 +646,12 @@ function launchCachePrecomputeJobWorker(
               state: progress.currentTileState,
               phase: progress.currentTilePhase ?? null,
               tileProgressPercent: progress.currentTileProgressPercent ?? null,
-              elapsedMs: Math.round(elapsedMs),
-              etaSeconds: etaMs === null ? null : Math.max(0, Math.round(etaMs / 1000)),
+              tilePointCountTotal: progress.currentTilePointCountTotal ?? null,
+              tilePointCountOutdoor: progress.currentTilePointCountOutdoor ?? null,
+              frameCountTotal: progress.currentTileFrameCountTotal ?? null,
+              frameIndex: progress.currentTileFrameIndex ?? null,
+              elapsedMs,
+              etaSeconds,
             });
             lastProgressLogAt = now;
             lastLoggedPhase = phase;
@@ -633,6 +673,10 @@ function launchCachePrecomputeJobWorker(
         totalTiles: result.totalTiles * request.days,
         percent: 100,
         currentTileState: "computed",
+        currentTilePointCountTotal: null,
+        currentTilePointCountOutdoor: null,
+        currentTileFrameCountTotal: null,
+        currentTileFrameIndex: null,
         elapsedMs: Math.round(performance.now() - startedAtPerf),
         etaSeconds: 0,
       };
