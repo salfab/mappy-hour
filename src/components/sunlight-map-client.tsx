@@ -1308,7 +1308,7 @@ export function SunlightMapClient() {
   const [localTime, setLocalTime] = useState(defaultNow.time);
   const [dailyStartLocalTime, setDailyStartLocalTime] = useState("06:00");
   const [dailyEndLocalTime, setDailyEndLocalTime] = useState("21:00");
-  const [gridStepMeters, setGridStepMeters] = useState(200);
+  const [gridStepMeters, setGridStepMeters] = useState(1);
   const [sampleEveryMinutes, setSampleEveryMinutes] = useState(15);
   const [observerHeightMeters, setObserverHeightMeters] = useState(0);
   const [buildingHeightBiasMeters, setBuildingHeightBiasMeters] = useState(0);
