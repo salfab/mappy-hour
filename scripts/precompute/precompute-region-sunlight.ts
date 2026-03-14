@@ -7,6 +7,7 @@ import {
   type PrecomputedRegionName,
   type PrecomputedSunlightManifest,
 } from "../../src/lib/precompute/sunlight-cache";
+import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "../../src/lib/precompute/constants";
 import { computeSunlightTileArtifact } from "../../src/lib/precompute/sunlight-tile-service";
 
 interface ParsedArgs {
@@ -30,7 +31,7 @@ const DEFAULT_ARGS: ParsedArgs = {
   timezone: "Europe/Zurich",
   sampleEveryMinutes: 15,
   gridStepMeters: 5,
-  tileSizeMeters: 250,
+  tileSizeMeters: CANONICAL_PRECOMPUTE_TILE_SIZE_METERS,
   startLocalTime: "00:00",
   endLocalTime: "23:59",
   observerHeightMeters: 0,
@@ -115,7 +116,13 @@ function addDays(dateInput: string, days: number): string {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const tiles = buildRegionTiles(args.region, args.tileSizeMeters);
+  const tileSizeMeters = CANONICAL_PRECOMPUTE_TILE_SIZE_METERS;
+  if (args.tileSizeMeters !== tileSizeMeters) {
+    console.warn(
+      `[precompute] --tile-size-meters=${args.tileSizeMeters} ignored. Canonical tile size is ${tileSizeMeters}m.`,
+    );
+  }
+  const tiles = buildRegionTiles(args.region, tileSizeMeters);
   const shadowCalibration = normalizeShadowCalibration({
     observerHeightMeters: args.observerHeightMeters,
     buildingHeightBiasMeters: args.buildingHeightBiasMeters,
@@ -123,7 +130,7 @@ async function main() {
   const modelVersion = await getSunlightModelVersion(args.region, shadowCalibration);
 
   console.log(
-    `[precompute] region=${args.region} model=${modelVersion.modelVersionHash} tiles=${tiles.length} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min tileSize=${args.tileSizeMeters}m`,
+    `[precompute] region=${args.region} model=${modelVersion.modelVersionHash} tiles=${tiles.length} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min tileSize=${tileSizeMeters}m`,
   );
 
   for (let dayOffset = 0; dayOffset < args.days; dayOffset += 1) {
@@ -171,7 +178,7 @@ async function main() {
       sampleEveryMinutes: args.sampleEveryMinutes,
       startLocalTime: args.startLocalTime,
       endLocalTime: args.endLocalTime,
-      tileSizeMeters: args.tileSizeMeters,
+      tileSizeMeters,
       tileIds: succeededTileIds.sort(),
       failedTileIds: failedTileIds.sort(),
       bbox: {
