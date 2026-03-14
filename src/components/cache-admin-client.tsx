@@ -1389,8 +1389,8 @@ export function CacheAdminClient() {
                     pas {precomputeJob.request.sampleEveryMinutes}min.
                   </p>
                   <p className="text-[11px] text-cyan-100/90">
-                    Unite totale: <span className="font-semibold">tuile-jour</span> = 1 tuile spatiale
-                    ({CANONICAL_PRECOMPUTE_TILE_SIZE_METERS}m) calculee pour toute la fenetre d'un jour.
+                    Unité totale: <span className="font-semibold">tuile-jour</span> = 1 tuile spatiale
+                    ({CANONICAL_PRECOMPUTE_TILE_SIZE_METERS}m) calculée pour toute la fenêtre d'un jour.
                   </p>
                   <p className="text-[11px] text-cyan-100/90">
                     Slots temporels par tuile-jour:{" "}
@@ -1484,7 +1484,7 @@ export function CacheAdminClient() {
                         </div>
                       </div>
                       <p className="text-[11px] text-cyan-100/90">
-                        La tuile en cours couvre tous les slots temporels de la fenetre du jour.
+                        La tuile en cours couvre tous les slots temporels de la fenêtre du jour.
                       </p>
                       <p>
                         jour={precomputeJob.progress.dayIndex}/{precomputeJob.progress.daysTotal} |
@@ -1509,7 +1509,7 @@ export function CacheAdminClient() {
               {precomputeResult ? (
                 <p className="text-xs text-cyan-100">
                   Terminé: {precomputeResult.totalDates} jour(s), {precomputeResult.totalTiles} tuiles,
-                  model {precomputeResult.modelVersionHash}
+                  modèle {precomputeResult.modelVersionHash}
                 </p>
               ) : null}
             </div>
