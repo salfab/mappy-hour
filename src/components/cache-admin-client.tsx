@@ -139,6 +139,13 @@ function formatDateTime(value: string): string {
   }).format(date);
 }
 
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, value));
+}
+
 function buildRunsUrl(filters: {
   region: RegionFilter;
   modelVersionHash: string;
@@ -823,6 +830,35 @@ export function CacheAdminClient() {
                         {precomputeJob.progress.percent}% ({precomputeJob.progress.completedTiles}/
                         {precomputeJob.progress.totalTiles}) - {precomputeJob.progress.date}
                       </p>
+                      <div className="grid gap-1">
+                        <p className="text-cyan-50">
+                          Progression totale
+                        </p>
+                        <div className="h-2 w-full overflow-hidden rounded-full bg-cyan-950/60">
+                          <div
+                            className="h-full rounded-full bg-cyan-300 transition-all duration-500"
+                            style={{ width: `${clampPercent(precomputeJob.progress.percent)}%` }}
+                          />
+                        </div>
+                      </div>
+                      <div className="grid gap-1">
+                        <p className="text-cyan-50">
+                          Progression tuile/jour ({precomputeJob.progress.tileIndex}/
+                          {precomputeJob.progress.tilesTotal})
+                        </p>
+                        <div className="h-2 w-full overflow-hidden rounded-full bg-cyan-950/60">
+                          <div
+                            className="h-full rounded-full bg-sky-200 transition-all duration-500"
+                            style={{
+                              width: `${clampPercent(
+                                (precomputeJob.progress.tileIndex /
+                                  Math.max(precomputeJob.progress.tilesTotal, 1)) *
+                                  100,
+                              )}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
                       <p>
                         etape={precomputeJob.progress.currentTileState} | elapsed=
                         {Math.round(precomputeJob.progress.elapsedMs / 1000)}s | eta=
