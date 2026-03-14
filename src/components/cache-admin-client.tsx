@@ -89,6 +89,27 @@ interface CachePrecomputeResult {
   }>;
 }
 
+interface CachePrecomputeJob {
+  jobId: string;
+  createdAt: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  status: "queued" | "running" | "completed" | "failed";
+  progress: {
+    stage: "running" | "finalizing";
+    date: string;
+    dayIndex: number;
+    daysTotal: number;
+    tileIndex: number;
+    tilesTotal: number;
+    completedTiles: number;
+    totalTiles: number;
+    percent: number;
+  } | null;
+  result: CachePrecomputeResult | null;
+  error: string | null;
+}
+
 function formatBytes(value: number): string {
   if (value <= 0) {
     return "0 B";
@@ -158,6 +179,7 @@ export function CacheAdminClient() {
   const [purgeResult, setPurgeResult] = useState<CachePurgeResult | null>(null);
   const [precomputeResult, setPrecomputeResult] =
     useState<CachePrecomputeResult | null>(null);
+  const [precomputeJob, setPrecomputeJob] = useState<CachePrecomputeJob | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<ActionState>("idle");
@@ -204,7 +226,8 @@ export function CacheAdminClient() {
       const response = await fetch(buildRunsUrl(filters), { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload?.details ?? payload?.error ?? "Unknown error");
+        const errorPayload = payload as { details?: string; error?: string };
+        throw new Error(errorPayload.details ?? errorPayload.error ?? "Unknown error");
       }
       setOverview(payload as CacheRunsOverview);
     } catch (error) {
@@ -292,12 +315,27 @@ export function CacheAdminClient() {
           },
         }),
       });
-      const payload = await response.json();
+      const payload = (await response.json()) as
+        | { jobId: string; status: string; createdAt: string }
+        | { details?: string; error?: string };
       if (!response.ok) {
-        throw new Error(payload?.details ?? payload?.error ?? "Unknown error");
+        const errorPayload = payload as { details?: string; error?: string };
+        throw new Error(errorPayload.details ?? errorPayload.error ?? "Unknown error");
       }
-      setPrecomputeResult(payload as CachePrecomputeResult);
-      await refreshRuns();
+      if (!("jobId" in payload)) {
+        throw new Error("Invalid precompute job response.");
+      }
+      setPrecomputeResult(null);
+      setPrecomputeJob({
+        jobId: payload.jobId,
+        createdAt: payload.createdAt,
+        startedAt: null,
+        endedAt: null,
+        status: "queued",
+        progress: null,
+        result: null,
+        error: null,
+      });
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Unknown error");
     } finally {
@@ -314,6 +352,53 @@ export function CacheAdminClient() {
     preTileSize,
     refreshRuns,
   ]);
+
+  useEffect(() => {
+    if (!precomputeJob) {
+      return;
+    }
+    if (precomputeJob.status === "completed" || precomputeJob.status === "failed") {
+      return;
+    }
+
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const response = await fetch(
+          `/api/admin/cache/jobs/${encodeURIComponent(precomputeJob.jobId)}`,
+          { cache: "no-store" },
+        );
+        const payload = (await response.json()) as CachePrecomputeJob | { error?: string };
+        if (!response.ok) {
+          throw new Error((payload as { error?: string }).error ?? "Unknown error");
+        }
+        if (cancelled) {
+          return;
+        }
+        const job = payload as CachePrecomputeJob;
+        setPrecomputeJob(job);
+        if (job.status === "completed") {
+          setPrecomputeResult(job.result ?? null);
+          void refreshRuns();
+        }
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setActionError(error instanceof Error ? error.message : "Unknown error");
+      }
+    };
+
+    const intervalId = setInterval(() => {
+      void tick();
+    }, 1000);
+    void tick();
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [precomputeJob, refreshRuns]);
 
   return (
     <div className="grid gap-6">
@@ -676,6 +761,22 @@ export function CacheAdminClient() {
               >
                 {precomputeState === "loading" ? "Precompute en cours..." : "Lancer precompute"}
               </button>
+              {precomputeJob ? (
+                <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs text-cyan-100">
+                  <p>
+                    Job {precomputeJob.jobId.slice(0, 8)} - {precomputeJob.status}
+                  </p>
+                  {precomputeJob.progress ? (
+                    <p>
+                      {precomputeJob.progress.percent}% ({precomputeJob.progress.completedTiles}/
+                      {precomputeJob.progress.totalTiles}) - {precomputeJob.progress.date}
+                    </p>
+                  ) : (
+                    <p>En attente...</p>
+                  )}
+                  {precomputeJob.error ? <p>{precomputeJob.error}</p> : null}
+                </div>
+              ) : null}
               {precomputeResult ? (
                 <p className="text-xs text-cyan-100">
                   Termine: {precomputeResult.totalDates} jour(s), {precomputeResult.totalTiles} tuiles,

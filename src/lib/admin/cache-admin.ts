@@ -139,6 +139,18 @@ export interface CachePrecomputeResult {
   }>;
 }
 
+export interface CachePrecomputeProgress {
+  stage: "running" | "finalizing";
+  date: string;
+  dayIndex: number;
+  daysTotal: number;
+  tileIndex: number;
+  tilesTotal: number;
+  completedTiles: number;
+  totalTiles: number;
+  percent: number;
+}
+
 function dateInRange(date: string, startDate?: string, endDate?: string): boolean {
   if (startDate && date < startDate) {
     return false;
@@ -541,6 +553,9 @@ export async function purgeCacheRuns(
 
 export async function precomputeCacheRuns(
   request: CachePrecomputeRequest,
+  options: {
+    onProgress?: (progress: CachePrecomputeProgress) => void;
+  } = {},
 ): Promise<CachePrecomputeResult> {
   const shadowCalibration = normalizeShadowCalibration({
     observerHeightMeters: request.observerHeightMeters,
@@ -549,6 +564,8 @@ export async function precomputeCacheRuns(
   const modelVersion = await getSunlightModelVersion(request.region, shadowCalibration);
   const tiles = buildRegionTiles(request.region, request.tileSizeMeters);
   const dates: CachePrecomputeResult["dates"] = [];
+  const totalTiles = tiles.length * request.days;
+  let completedTiles = 0;
 
   for (let dayOffset = 0; dayOffset < request.days; dayOffset += 1) {
     const date = addDays(request.startDate, dayOffset);
@@ -556,7 +573,8 @@ export async function precomputeCacheRuns(
     const succeededTileIds: string[] = [];
     const failedTileIds: string[] = [];
 
-    for (const tile of tiles) {
+    for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
+      const tile = tiles[tileIndex];
       try {
         const artifact = await computeSunlightTileArtifact({
           region: request.region,
@@ -576,6 +594,21 @@ export async function precomputeCacheRuns(
       } catch {
         failedTileIds.push(tile.tileId);
       }
+      completedTiles += 1;
+      options.onProgress?.({
+        stage: "running",
+        date,
+        dayIndex: dayOffset + 1,
+        daysTotal: request.days,
+        tileIndex: tileIndex + 1,
+        tilesTotal: tiles.length,
+        completedTiles,
+        totalTiles,
+        percent:
+          totalTiles === 0
+            ? 100
+            : Math.round((completedTiles / totalTiles) * 1000) / 10,
+      });
     }
 
     const manifest: PrecomputedSunlightManifest = {
@@ -602,6 +635,18 @@ export async function precomputeCacheRuns(
     };
 
     await writePrecomputedSunlightManifest(manifest);
+    options.onProgress?.({
+      stage: "finalizing",
+      date,
+      dayIndex: dayOffset + 1,
+      daysTotal: request.days,
+      tileIndex: tiles.length,
+      tilesTotal: tiles.length,
+      completedTiles,
+      totalTiles,
+      percent:
+        totalTiles === 0 ? 100 : Math.round((completedTiles / totalTiles) * 1000) / 10,
+    });
     dates.push({
       date,
       succeededTiles: succeededTileIds.length,

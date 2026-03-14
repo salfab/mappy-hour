@@ -2,10 +2,10 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
-  precomputeCacheRuns,
   purgeCacheRuns,
   verifyCacheRuns,
 } from "@/lib/admin/cache-admin";
+import { startCachePrecomputeJob } from "@/lib/admin/cache-precompute-jobs";
 
 export const runtime = "nodejs";
 
@@ -69,8 +69,15 @@ export async function POST(request: Request) {
           { status: 400 },
         );
       }
-      const result = await precomputeCacheRuns(parsed.data.precompute);
-      return NextResponse.json(result);
+      const job = startCachePrecomputeJob(parsed.data.precompute);
+      return NextResponse.json(
+        {
+          jobId: job.jobId,
+          status: job.status,
+          createdAt: job.createdAt,
+        },
+        { status: 202 },
+      );
     }
 
     const result = await purgeCacheRuns(parsed.data.filters, {

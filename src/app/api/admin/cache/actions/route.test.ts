@@ -1,17 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  precomputeCacheRuns,
   purgeCacheRuns,
   verifyCacheRuns,
 } from "@/lib/admin/cache-admin";
+import { startCachePrecomputeJob } from "@/lib/admin/cache-precompute-jobs";
 
 import { POST } from "./route";
 
 vi.mock("@/lib/admin/cache-admin", () => ({
   verifyCacheRuns: vi.fn(),
   purgeCacheRuns: vi.fn(),
-  precomputeCacheRuns: vi.fn(),
+}));
+
+vi.mock("@/lib/admin/cache-precompute-jobs", () => ({
+  startCachePrecomputeJob: vi.fn(),
 }));
 
 describe("POST /api/admin/cache/actions", () => {
@@ -103,14 +106,13 @@ describe("POST /api/admin/cache/actions", () => {
   });
 
   it("runs precompute", async () => {
-    vi.mocked(precomputeCacheRuns).mockResolvedValue({
-      generatedAt: "2026-03-14T10:00:00.000Z",
-      region: "lausanne",
-      modelVersionHash: "abc123",
-      algorithmVersion: "sunlight-cache-v2",
-      totalTiles: 16,
-      totalDates: 1,
-      params: {
+    vi.mocked(startCachePrecomputeJob).mockReturnValue({
+      jobId: "job-123",
+      createdAt: "2026-03-14T10:00:00.000Z",
+      startedAt: null,
+      endedAt: null,
+      status: "queued",
+      request: {
         region: "lausanne",
         startDate: "2026-03-08",
         days: 1,
@@ -120,18 +122,10 @@ describe("POST /api/admin/cache/actions", () => {
         tileSizeMeters: 250,
         startLocalTime: "00:00",
         endLocalTime: "23:59",
-        observerHeightMeters: 0,
-        buildingHeightBiasMeters: 0,
       },
-      dates: [
-        {
-          date: "2026-03-08",
-          succeededTiles: 16,
-          failedTiles: 0,
-          complete: true,
-          elapsedMs: 1200,
-        },
-      ],
+      progress: null,
+      result: null,
+      error: null,
     });
 
     const response = await POST(
@@ -156,12 +150,12 @@ describe("POST /api/admin/cache/actions", () => {
         }),
       }),
     );
-    const json = (await response.json()) as { totalTiles: number; totalDates: number };
+    const json = (await response.json()) as { jobId: string; status: string };
 
-    expect(response.status).toBe(200);
-    expect(json.totalTiles).toBe(16);
-    expect(json.totalDates).toBe(1);
-    expect(precomputeCacheRuns).toHaveBeenCalledWith(
+    expect(response.status).toBe(202);
+    expect(json.jobId).toBe("job-123");
+    expect(json.status).toBe("queued");
+    expect(startCachePrecomputeJob).toHaveBeenCalledWith(
       expect.objectContaining({
         region: "lausanne",
         startDate: "2026-03-08",
