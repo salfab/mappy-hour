@@ -693,65 +693,101 @@ export function CacheAdminClient() {
           <article className="rounded-3xl border border-white/12 bg-white/6 p-5">
             <h2 className="text-lg font-semibold">Precompute</h2>
             <div className="mt-3 grid gap-2 text-sm">
-              <select
-                value={preRegion}
-                onChange={(event) => setPreRegion(event.target.value as "lausanne" | "nyon")}
-                className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
-              >
-                <option value="lausanne">Lausanne</option>
-                <option value="nyon">Nyon</option>
-              </select>
-              <input
-                type="date"
-                value={preStartDate}
-                onChange={(event) => setPreStartDate(event.target.value)}
-                className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
-              />
-              <input
-                type="number"
-                min={1}
-                max={31}
-                value={preDays}
-                onChange={(event) => setPreDays(Math.max(1, Math.min(31, Number(event.target.value) || 1)))}
-                className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
-              />
-              <input
-                type="number"
-                min={1}
-                max={2000}
-                value={preGridStep}
-                onChange={(event) => setPreGridStep(Math.max(1, Number(event.target.value) || 1))}
-                className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
-              />
-              <input
-                type="number"
-                min={1}
-                max={60}
-                value={preSampleEvery}
-                onChange={(event) => setPreSampleEvery(Math.max(1, Math.min(60, Number(event.target.value) || 1)))}
-                className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
-              />
-              <input
-                type="number"
-                min={10}
-                max={5000}
-                value={preTileSize}
-                onChange={(event) => setPreTileSize(Math.max(10, Number(event.target.value) || 10))}
-                className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
-              />
+              <label className="grid gap-1">
+                <span className="text-slate-300">Region</span>
+                <select
+                  value={preRegion}
+                  onChange={(event) =>
+                    setPreRegion(event.target.value as "lausanne" | "nyon")
+                  }
+                  className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+                >
+                  <option value="lausanne">Lausanne</option>
+                  <option value="nyon">Nyon</option>
+                </select>
+              </label>
+              <label className="grid gap-1">
+                <span className="text-slate-300">Date de debut</span>
+                <input
+                  type="date"
+                  value={preStartDate}
+                  onChange={(event) => setPreStartDate(event.target.value)}
+                  className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+                />
+              </label>
+              <label className="grid gap-1">
+                <span className="text-slate-300">Nombre de jours</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={31}
+                  value={preDays}
+                  onChange={(event) =>
+                    setPreDays(Math.max(1, Math.min(31, Number(event.target.value) || 1)))
+                  }
+                  className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+                />
+              </label>
+              <label className="grid gap-1">
+                <span className="text-slate-300">Pas de grille (metres)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={2000}
+                  value={preGridStep}
+                  onChange={(event) =>
+                    setPreGridStep(Math.max(1, Number(event.target.value) || 1))
+                  }
+                  className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+                />
+              </label>
+              <label className="grid gap-1">
+                <span className="text-slate-300">Pas temporel (minutes)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  value={preSampleEvery}
+                  onChange={(event) =>
+                    setPreSampleEvery(
+                      Math.max(1, Math.min(60, Number(event.target.value) || 1)),
+                    )
+                  }
+                  className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+                />
+              </label>
+              <label className="grid gap-1">
+                <span className="text-slate-300">Taille des tuiles (metres)</span>
+                <input
+                  type="number"
+                  min={10}
+                  max={5000}
+                  value={preTileSize}
+                  onChange={(event) =>
+                    setPreTileSize(Math.max(10, Number(event.target.value) || 10))
+                  }
+                  className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+                />
+              </label>
               <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="time"
-                  value={preStartLocalTime}
-                  onChange={(event) => setPreStartLocalTime(event.target.value)}
-                  className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
-                />
-                <input
-                  type="time"
-                  value={preEndLocalTime}
-                  onChange={(event) => setPreEndLocalTime(event.target.value)}
-                  className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
-                />
+                <label className="grid gap-1">
+                  <span className="text-slate-300">Heure debut</span>
+                  <input
+                    type="time"
+                    value={preStartLocalTime}
+                    onChange={(event) => setPreStartLocalTime(event.target.value)}
+                    className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+                  />
+                </label>
+                <label className="grid gap-1">
+                  <span className="text-slate-300">Heure fin</span>
+                  <input
+                    type="time"
+                    value={preEndLocalTime}
+                    onChange={(event) => setPreEndLocalTime(event.target.value)}
+                    className="rounded-xl border border-white/12 bg-slate-950/70 px-3 py-2"
+                  />
+                </label>
               </div>
               <button
                 type="button"
