@@ -59,6 +59,13 @@ interface VertexAccumulator {
   flag?: number;
 }
 
+const GROUND_TOLERANCE_METERS = 0.6;
+const FOOTPRINT_MIN_EDGE_METERS = 0.8;
+const FOOTPRINT_COLLINEAR_TOLERANCE_METERS = 0.15;
+const ROOF_DETAIL_HEIGHT_THRESHOLD_METERS = 1.5;
+const ROOF_DETAIL_NEAR_MAX_BAND_METERS = 0.35;
+const ROOF_DETAIL_MAX_SHARE = 0.08;
+
 function round3(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
@@ -121,6 +128,65 @@ function polygonArea(points: Point2D[]): number {
 
 function pointsAreEqual(a: Point2D, b: Point2D, epsilon = 1e-6): boolean {
   return Math.abs(a.x - b.x) <= epsilon && Math.abs(a.y - b.y) <= epsilon;
+}
+
+function distance(a: Point2D, b: Point2D): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function distancePointToSegment(point: Point2D, a: Point2D, b: Point2D): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared < 1e-9) {
+    return distance(point, a);
+  }
+
+  const t = Math.max(
+    0,
+    Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared),
+  );
+  const projection = {
+    x: a.x + t * dx,
+    y: a.y + t * dy,
+  };
+  return distance(point, projection);
+}
+
+function dedupePoints(points: Point2D[]): Point2D[] {
+  const unique = new Map<string, Point2D>();
+  for (const point of points) {
+    const key = `${round3(point.x)}:${round3(point.y)}`;
+    if (!unique.has(key)) {
+      unique.set(key, point);
+    }
+  }
+  return Array.from(unique.values());
+}
+
+function sortPointsByAngle(points: Point2D[]): Point2D[] {
+  if (points.length < 3) {
+    return points;
+  }
+
+  const center = points.reduce(
+    (acc, point) => ({
+      x: acc.x + point.x / points.length,
+      y: acc.y + point.y / points.length,
+    }),
+    { x: 0, y: 0 },
+  );
+
+  return [...points].sort((a, b) => {
+    const angleA = Math.atan2(a.y - center.y, a.x - center.x);
+    const angleB = Math.atan2(b.y - center.y, b.x - center.x);
+    if (angleA !== angleB) {
+      return angleA - angleB;
+    }
+    const distA = distance(a, center);
+    const distB = distance(b, center);
+    return distA - distB;
+  });
 }
 
 function simplifyRingPoints(points: Point2D[]): Point2D[] {
@@ -212,21 +278,154 @@ function isSimplePolygon(points: Point2D[]): boolean {
   return true;
 }
 
-function extractGroundFootprint(vertices: Point3D[], minZ: number): Point2D[] | null {
-  const groundToleranceMeters = 0.6;
-  const groundVertices = vertices
-    .filter((vertex) => Math.abs(vertex.z - minZ) <= groundToleranceMeters)
+function collectGroundVertices(vertices: Point3D[], minZ: number): Point2D[] {
+  return vertices
+    .filter((vertex) => Math.abs(vertex.z - minZ) <= GROUND_TOLERANCE_METERS)
     .map((vertex) => ({ x: vertex.x, y: vertex.y }));
-  const footprint = simplifyRingPoints(groundVertices);
+}
 
-  if (footprint.length < 3) {
-    return null;
-  }
-  if (!isSimplePolygon(footprint)) {
-    return null;
+function simplifyFootprintGeometry(points: Point2D[]): Point2D[] {
+  if (points.length < 4) {
+    return points;
   }
 
-  return footprint;
+  let ring = simplifyRingPoints(points);
+  let changed = true;
+  let guard = 0;
+
+  while (changed && ring.length > 3 && guard < 256) {
+    guard += 1;
+    changed = false;
+    const nextRing: Point2D[] = [];
+
+    for (let i = 0; i < ring.length; i += 1) {
+      const prev = ring[(i - 1 + ring.length) % ring.length];
+      const curr = ring[i];
+      const next = ring[(i + 1) % ring.length];
+      const prevDist = distance(prev, curr);
+      const nextDist = distance(curr, next);
+      const collinearDistance = distancePointToSegment(curr, prev, next);
+      const tinyCorner =
+        prevDist <= FOOTPRINT_MIN_EDGE_METERS &&
+        nextDist <= FOOTPRINT_MIN_EDGE_METERS;
+      const nearlyCollinear =
+        collinearDistance <= FOOTPRINT_COLLINEAR_TOLERANCE_METERS;
+
+      if (tinyCorner || nearlyCollinear) {
+        changed = true;
+        continue;
+      }
+
+      nextRing.push(curr);
+    }
+
+    if (nextRing.length >= 3) {
+      ring = nextRing;
+    } else {
+      break;
+    }
+  }
+
+  return ring;
+}
+
+function extractGroundFootprint(vertices: Point3D[], minZ: number): Point2D[] | null {
+  const groundVerticesRaw = collectGroundVertices(vertices, minZ);
+  if (groundVerticesRaw.length < 3) {
+    return null;
+  }
+
+  const groundVertices = dedupePoints(groundVerticesRaw);
+  if (groundVertices.length < 3) {
+    return null;
+  }
+
+  // The DXF vertex stream may not always be ring-ordered. Try both source order
+  // and angle-sorted order before falling back to hull.
+  const sourceOrdered = simplifyRingPoints(groundVertices);
+
+  if (sourceOrdered.length >= 3 && isSimplePolygon(sourceOrdered)) {
+    return sourceOrdered;
+  }
+
+  const angleOrdered = simplifyRingPoints(sortPointsByAngle(groundVertices));
+  if (angleOrdered.length >= 3 && isSimplePolygon(angleOrdered)) {
+    return angleOrdered;
+  }
+
+  return null;
+}
+
+function quantile(sortedValues: number[], q: number): number {
+  if (sortedValues.length === 0) {
+    return 0;
+  }
+
+  const clamped = Math.max(0, Math.min(1, q));
+  const index = (sortedValues.length - 1) * clamped;
+  const low = Math.floor(index);
+  const high = Math.ceil(index);
+  if (low === high) {
+    return sortedValues[low];
+  }
+
+  const weight = index - low;
+  return sortedValues[low] * (1 - weight) + sortedValues[high] * weight;
+}
+
+function computeSimplifiedMaxZ(vertices: Point3D[], rawMaxZ: number): number {
+  if (vertices.length < 8) {
+    return rawMaxZ;
+  }
+
+  const sortedZ = vertices
+    .map((vertex) => vertex.z)
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  if (sortedZ.length < 8) {
+    return rawMaxZ;
+  }
+
+  const p90 = quantile(sortedZ, 0.9);
+  const delta = rawMaxZ - p90;
+  const nearMaxCount = sortedZ.filter(
+    (value) => value >= rawMaxZ - ROOF_DETAIL_NEAR_MAX_BAND_METERS,
+  ).length;
+  const nearMaxShare = nearMaxCount / sortedZ.length;
+
+  if (delta >= ROOF_DETAIL_HEIGHT_THRESHOLD_METERS && nearMaxShare <= ROOF_DETAIL_MAX_SHARE) {
+    return p90;
+  }
+
+  return rawMaxZ;
+}
+
+function chooseFootprint(vertices: Point3D[], minZ: number): Point2D[] | null {
+  const groundFootprint = extractGroundFootprint(vertices, minZ);
+  if (groundFootprint && polygonArea(groundFootprint) >= 4) {
+    const simplified = simplifyFootprintGeometry(groundFootprint);
+    if (simplified.length >= 3 && isSimplePolygon(simplified)) {
+      return simplified;
+    }
+    if (isSimplePolygon(groundFootprint)) {
+      return groundFootprint;
+    }
+  }
+
+  const groundVertices = collectGroundVertices(vertices, minZ);
+  if (groundVertices.length >= 3) {
+    const groundHull = convexHull(dedupePoints(groundVertices));
+    if (groundHull.length >= 3 && polygonArea(groundHull) >= 4) {
+      return groundHull;
+    }
+  }
+
+  const allHull = convexHull(vertices.map((vertex) => ({ x: vertex.x, y: vertex.y })));
+  if (allHull.length < 3) {
+    return null;
+  }
+
+  return allHull;
 }
 
 function obstacleKey(obstacle: BuildingObstacle): string {
@@ -405,20 +604,19 @@ function polylineToObstacle(
     return null;
   }
 
-  const convexFootprintHull = convexHull(
-    polyline.vertices.map((vertex) => ({ x: vertex.x, y: vertex.y })),
-  );
-  if (convexFootprintHull.length < 3) {
+  const footprint = chooseFootprint(polyline.vertices, minZ);
+  if (!footprint || footprint.length < 3) {
+    return null;
+  }
+  const area = polygonArea(footprint);
+  if (area < 4) {
     return null;
   }
 
-  const groundFootprint = extractGroundFootprint(polyline.vertices, minZ);
-  const footprint =
-    groundFootprint && polygonArea(groundFootprint) >= 4
-      ? groundFootprint
-      : convexFootprintHull;
-  const area = polygonArea(footprint);
-  if (area < 4) {
+  const simplifiedMaxZ = computeSimplifiedMaxZ(polyline.vertices, maxZ);
+  const effectiveMaxZ = Math.max(simplifiedMaxZ, minZ + 1);
+  const effectiveHeight = effectiveMaxZ - minZ;
+  if (effectiveHeight < 1) {
     return null;
   }
 
@@ -433,8 +631,8 @@ function polylineToObstacle(
     maxX: round3(maxX),
     maxY: round3(maxY),
     minZ: round3(minZ),
-    maxZ: round3(maxZ),
-    height: round3(height),
+    maxZ: round3(effectiveMaxZ),
+    height: round3(effectiveHeight),
     centerX: round3(centerX),
     centerY: round3(centerY),
     halfDiagonal: round3(halfDiagonal),
@@ -656,8 +854,8 @@ async function main() {
   const elapsedSeconds = round3((performance.now() - startedAt) / 1000);
   const payload = {
     generatedAt: new Date().toISOString(),
-    method: "dxf-footprint-prism-v2-spatial-grid",
-    indexVersion: 2,
+    method: "dxf-footprint-prism-v3-balanced-simplification-spatial-grid",
+    indexVersion: 3,
     sourceSelectionStrategy: "latest-zip-per-tile",
     sourceDirectory: RAW_BUILDINGS_DIR,
     zipFilesProcessed: zipFiles.length,
