@@ -1,0 +1,268 @@
+{
+  "target": {
+    "name": "Chemin des Pyramides (point route)",
+    "lat": 46.5227926,
+    "lon": 6.6019121
+  },
+  "date": "2026-03-08",
+  "timezone": "Europe/Zurich",
+  "pointLv95": {
+    "easting": 2535796.378,
+    "northing": 1152731.377,
+    "elevation": 421.093
+  },
+  "blockersSeenInSimplifiedModel": [
+    {
+      "id": "obs-22446",
+      "sourceZip": "swissbuildings3d_2_2021-09_1243-13_2056_5728.dxf.zip"
+    },
+    {
+      "id": "obs-21583",
+      "sourceZip": "swissbuildings3d_2_2021-09_1243-13_2056_5728.dxf.zip"
+    },
+    {
+      "id": "obs-16521",
+      "sourceZip": "swissbuildings3d_2_2021-09_1243-13_2056_5728.dxf.zip"
+    },
+    {
+      "id": "obs-18122",
+      "sourceZip": "swissbuildings3d_2_2021-09_1243-13_2056_5728.dxf.zip"
+    },
+    {
+      "id": "obs-17366",
+      "sourceZip": "swissbuildings3d_2_2021-09_1243-13_2056_5728.dxf.zip"
+    },
+    {
+      "id": "obs-20019",
+      "sourceZip": "swissbuildings3d_2_2021-09_1243-13_2056_5728.dxf.zip"
+    }
+  ],
+  "matchedMeshes": [
+    {
+      "id": "obs-22446",
+      "sourceZip": "swissbuildings3d_2_2021-09_1243-13_2056_5728.dxf.zip",
+      "matchScore": 0,
+      "vertices": 18,
+      "faces": 40
+    },
+    {
+      "id": "obs-21583",
+      "sourceZip": "swissbuildings3d_2_2021-09_1243-13_2056_5728.dxf.zip",
+      "matchScore": 0,
+      "vertices": 18,
+      "faces": 40
+    },
+    {
+      "id": "obs-16521",
+      "sourceZip": "swissbuildings3d_2_2021-09_1243-13_2056_5728.dxf.zip",
+      "matchScore": 0,
+      "vertices": 16,
+      "faces": 36
+    },
+    {
+      "id": "obs-18122",
+      "sourceZip": "swissbuildings3d_2_2021-09_1243-13_2056_5728.dxf.zip",
+      "matchScore": 0,
+      "vertices": 18,
+      "faces": 40
+    },
+    {
+      "id": "obs-17366",
+      "sourceZip": "swissbuildings3d_2_2021-09_1243-13_2056_5728.dxf.zip",
+      "matchScore": 0,
+      "vertices": 26,
+      "faces": 44
+    },
+    {
+      "id": "obs-20019",
+      "sourceZip": "swissbuildings3d_2_2021-09_1243-13_2056_5728.dxf.zip",
+      "matchScore": 0,
+      "vertices": 18,
+      "faces": 40
+    }
+  ],
+  "parseWarnings": [],
+  "differencesCount": 33,
+  "differencesPreview": [
+    {
+      "localTime": "08:11",
+      "altitudeDeg": 10.836,
+      "azimuthDeg": 109.358,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-21583",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "08:12",
+      "altitudeDeg": 10.999,
+      "azimuthDeg": 109.55,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-21583",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "08:13",
+      "altitudeDeg": 11.161,
+      "azimuthDeg": 109.743,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-21583",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "08:14",
+      "altitudeDeg": 11.323,
+      "azimuthDeg": 109.936,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-21583",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "08:15",
+      "altitudeDeg": 11.485,
+      "azimuthDeg": 110.129,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-21583",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "09:24",
+      "altitudeDeg": 22.044,
+      "azimuthDeg": 124.32,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-16521",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "09:25",
+      "altitudeDeg": 22.186,
+      "azimuthDeg": 124.541,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-16521",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "09:26",
+      "altitudeDeg": 22.328,
+      "azimuthDeg": 124.762,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-16521",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "09:27",
+      "altitudeDeg": 22.469,
+      "azimuthDeg": 124.984,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-16521",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "09:28",
+      "altitudeDeg": 22.61,
+      "azimuthDeg": 125.206,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-16521",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "11:35",
+      "altitudeDeg": 36.231,
+      "azimuthDeg": 158.25,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-18122",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "11:36",
+      "altitudeDeg": 36.294,
+      "azimuthDeg": 158.549,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-18122",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "11:37",
+      "altitudeDeg": 36.357,
+      "azimuthDeg": 158.848,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-18122",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "11:38",
+      "altitudeDeg": 36.419,
+      "azimuthDeg": 159.147,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-18122",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "11:39",
+      "altitudeDeg": 36.48,
+      "azimuthDeg": 159.448,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-18122",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "11:40",
+      "altitudeDeg": 36.54,
+      "azimuthDeg": 159.748,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-18122",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "11:41",
+      "altitudeDeg": 36.6,
+      "azimuthDeg": 160.05,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-18122",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "11:42",
+      "altitudeDeg": 36.658,
+      "azimuthDeg": 160.351,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-18122",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "11:43",
+      "altitudeDeg": 36.716,
+      "azimuthDeg": 160.654,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-18122",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    },
+    {
+      "localTime": "16:20",
+      "altitudeDeg": 20.059,
+      "azimuthDeg": 238.867,
+      "simplifiedBlocked": true,
+      "simplifiedBlockerId": "obs-18122",
+      "detailedBlocked": false,
+      "detailedBlockerId": null
+    }
+  ]
+}
