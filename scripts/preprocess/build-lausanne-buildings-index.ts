@@ -37,6 +37,17 @@ interface BuildingObstacle {
   sourceZip: string;
 }
 
+interface BuildingSpatialGrid {
+  version: number;
+  cellSizeMeters: number;
+  cells: Record<string, number[]>;
+  stats: {
+    cellCount: number;
+    maxObstaclesPerCell: number;
+    avgObstaclesPerCell: number;
+  };
+}
+
 interface PolylineAccumulator {
   vertices: Point3D[];
 }
@@ -223,6 +234,58 @@ function obstacleKey(obstacle: BuildingObstacle): string {
     .map((point) => `${round1(point.x)},${round1(point.y)}`)
     .join(";");
   return `${footprintKey}|${round1(obstacle.maxZ)}`;
+}
+
+function buildCellKey(cellX: number, cellY: number): string {
+  return `${cellX}:${cellY}`;
+}
+
+function buildSpatialGrid(
+  obstacles: BuildingObstacle[],
+  cellSizeMeters: number,
+): BuildingSpatialGrid {
+  const cells = new Map<string, number[]>();
+
+  for (let obstacleIndex = 0; obstacleIndex < obstacles.length; obstacleIndex += 1) {
+    const obstacle = obstacles[obstacleIndex];
+    const minCellX = Math.floor(obstacle.minX / cellSizeMeters);
+    const maxCellX = Math.floor(obstacle.maxX / cellSizeMeters);
+    const minCellY = Math.floor(obstacle.minY / cellSizeMeters);
+    const maxCellY = Math.floor(obstacle.maxY / cellSizeMeters);
+
+    for (let cellY = minCellY; cellY <= maxCellY; cellY += 1) {
+      for (let cellX = minCellX; cellX <= maxCellX; cellX += 1) {
+        const key = buildCellKey(cellX, cellY);
+        const bucket = cells.get(key);
+        if (bucket) {
+          bucket.push(obstacleIndex);
+        } else {
+          cells.set(key, [obstacleIndex]);
+        }
+      }
+    }
+  }
+
+  const serializedCells: Record<string, number[]> = {};
+  let maxObstaclesPerCell = 0;
+  let sumObstaclesPerCell = 0;
+  for (const [key, bucket] of cells.entries()) {
+    serializedCells[key] = bucket;
+    maxObstaclesPerCell = Math.max(maxObstaclesPerCell, bucket.length);
+    sumObstaclesPerCell += bucket.length;
+  }
+
+  return {
+    version: 1,
+    cellSizeMeters,
+    cells: serializedCells,
+    stats: {
+      cellCount: cells.size,
+      maxObstaclesPerCell,
+      avgObstaclesPerCell:
+        cells.size === 0 ? 0 : round3(sumObstaclesPerCell / cells.size),
+    },
+  };
 }
 
 async function listZipFilesRecursively(rootDirectory: string): Promise<string[]> {
@@ -589,10 +652,12 @@ async function main() {
   const obstacles = Array.from(deduped.values()).sort((a, b) =>
     a.id.localeCompare(b.id),
   );
+  const spatialGrid = buildSpatialGrid(obstacles, 64);
   const elapsedSeconds = round3((performance.now() - startedAt) / 1000);
   const payload = {
     generatedAt: new Date().toISOString(),
-    method: "dxf-footprint-prism-v1",
+    method: "dxf-footprint-prism-v2-spatial-grid",
+    indexVersion: 2,
     sourceSelectionStrategy: "latest-zip-per-tile",
     sourceDirectory: RAW_BUILDINGS_DIR,
     zipFilesProcessed: zipFiles.length,
@@ -601,6 +666,7 @@ async function main() {
     uniqueObstaclesCount: obstacles.length,
     elapsedSeconds,
     obstacles,
+    spatialGrid,
   };
 
   await fs.mkdir(path.dirname(PROCESSED_BUILDINGS_INDEX_PATH), {

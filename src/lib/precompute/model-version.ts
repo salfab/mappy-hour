@@ -136,9 +136,19 @@ export async function getSunlightModelVersion(
       ? {
           generatedAt: buildingsIndex.generatedAt,
           method: buildingsIndex.method,
+          indexVersion: buildingsIndex.indexVersion ?? 1,
           zipFilesProcessed: buildingsIndex.zipFilesProcessed,
           rawObstaclesCount: buildingsIndex.rawObstaclesCount,
           uniqueObstaclesCount: buildingsIndex.uniqueObstaclesCount,
+          spatialGrid: buildingsIndex.spatialGrid
+            ? {
+                version: buildingsIndex.spatialGrid.version,
+                cellSizeMeters: buildingsIndex.spatialGrid.cellSizeMeters,
+                cellCount: buildingsIndex.spatialGrid.stats?.cellCount ?? null,
+                maxObstaclesPerCell:
+                  buildingsIndex.spatialGrid.stats?.maxObstaclesPerCell ?? null,
+              }
+            : null,
         }
       : {
           exists: false,

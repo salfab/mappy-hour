@@ -71,6 +71,7 @@ export async function buildPointEvaluationContext(
         buildingsIndex.obstacles,
         pointLv95.easting,
         pointLv95.northing,
+        buildingsIndex.spatialGrid,
       )
     : {
         insideBuilding: false,
@@ -104,7 +105,7 @@ export async function buildPointEvaluationContext(
               shadowCalibration.buildingHeightBiasMeters,
             solarAzimuthDeg: sample.azimuthDeg,
             solarAltitudeDeg: sample.altitudeDeg,
-          })
+          }, buildingsIndex.spatialGrid)
       : undefined;
   const vegetationShadowEvaluator =
     vegetationSurfaceTiles &&

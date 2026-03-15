@@ -26,19 +26,35 @@ const obstacleSchema = z.object({
   sourceZip: z.string(),
 });
 
+const spatialGridSchema = z.object({
+  version: z.number().int().min(1),
+  cellSizeMeters: z.number().positive(),
+  cells: z.record(z.string(), z.array(z.number().int().nonnegative())),
+  stats: z
+    .object({
+      cellCount: z.number().int().nonnegative(),
+      maxObstaclesPerCell: z.number().int().nonnegative(),
+      avgObstaclesPerCell: z.number().nonnegative(),
+    })
+    .optional(),
+});
+
 const buildingIndexSchema = z.object({
   generatedAt: z.string(),
   method: z.string(),
+  indexVersion: z.number().int().min(1).optional(),
   sourceDirectory: z.string(),
   zipFilesProcessed: z.number(),
   rawObstaclesCount: z.number(),
   uniqueObstaclesCount: z.number(),
   elapsedSeconds: z.number(),
   obstacles: z.array(obstacleSchema),
+  spatialGrid: spatialGridSchema.optional(),
 });
 
 type BuildingObstacle = z.infer<typeof obstacleSchema>;
 type BuildingObstacleIndex = z.infer<typeof buildingIndexSchema>;
+type BuildingObstacleSpatialGrid = z.infer<typeof spatialGridSchema>;
 type FootprintPoint = z.infer<typeof footprintPointSchema>;
 
 export interface BuildingShadowInput {
@@ -67,6 +83,8 @@ export interface BuildingContainmentResult {
 
 let obstacleIndexCache: BuildingObstacleIndex | null | undefined;
 
+const DEFAULT_SPATIAL_GRID_CELL_SIZE_METERS = 64;
+
 export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleIndex | null> {
   if (obstacleIndexCache !== undefined) {
     return obstacleIndexCache;
@@ -74,7 +92,11 @@ export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleInde
 
   try {
     const raw = await fs.readFile(PROCESSED_BUILDINGS_INDEX_PATH, "utf8");
-    obstacleIndexCache = buildingIndexSchema.parse(JSON.parse(raw));
+    const parsed = buildingIndexSchema.parse(JSON.parse(raw));
+    obstacleIndexCache = {
+      ...parsed,
+      spatialGrid: sanitizeSpatialGrid(parsed.spatialGrid, parsed.obstacles.length),
+    };
     return obstacleIndexCache;
   } catch (error) {
     if (
@@ -89,6 +111,114 @@ export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleInde
 
     throw error;
   }
+}
+
+function sanitizeSpatialGrid(
+  spatialGrid: BuildingObstacleSpatialGrid | undefined,
+  obstacleCount: number,
+): BuildingObstacleSpatialGrid | undefined {
+  if (!spatialGrid) {
+    return undefined;
+  }
+
+  for (const indices of Object.values(spatialGrid.cells)) {
+    for (const index of indices) {
+      if (index < 0 || index >= obstacleCount) {
+        return undefined;
+      }
+    }
+  }
+
+  return spatialGrid;
+}
+
+function buildCellKey(cellX: number, cellY: number): string {
+  return `${cellX}:${cellY}`;
+}
+
+function collectObstacleIndicesInBounds(params: {
+  spatialGrid: BuildingObstacleSpatialGrid;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}): Set<number> {
+  const cellSizeMeters = params.spatialGrid.cellSizeMeters;
+  const minCellX = Math.floor(params.minX / cellSizeMeters);
+  const maxCellX = Math.floor(params.maxX / cellSizeMeters);
+  const minCellY = Math.floor(params.minY / cellSizeMeters);
+  const maxCellY = Math.floor(params.maxY / cellSizeMeters);
+  const candidateIndices = new Set<number>();
+
+  for (let cellY = minCellY; cellY <= maxCellY; cellY += 1) {
+    for (let cellX = minCellX; cellX <= maxCellX; cellX += 1) {
+      const key = buildCellKey(cellX, cellY);
+      const indices = params.spatialGrid.cells[key];
+      if (!indices || indices.length === 0) {
+        continue;
+      }
+      for (const obstacleIndex of indices) {
+        candidateIndices.add(obstacleIndex);
+      }
+    }
+  }
+
+  return candidateIndices;
+}
+
+function collectCandidateObstacleIndices(params: {
+  obstacles: BuildingObstacle[];
+  spatialGrid: BuildingObstacleSpatialGrid;
+  pointX: number;
+  pointY: number;
+  dirX: number;
+  dirY: number;
+  maxDistanceMeters: number;
+}): number[] {
+  const cellSizeMeters = params.spatialGrid.cellSizeMeters;
+  if (!Number.isFinite(cellSizeMeters) || cellSizeMeters <= 0) {
+    return params.obstacles.map((_, index) => index);
+  }
+
+  const maxHalfDiagonal = params.obstacles.reduce(
+    (max, obstacle) => Math.max(max, obstacle.halfDiagonal),
+    0,
+  );
+  const corridorPadding = maxHalfDiagonal + cellSizeMeters;
+  const endX = params.pointX + params.dirX * params.maxDistanceMeters;
+  const endY = params.pointY + params.dirY * params.maxDistanceMeters;
+  const minX = Math.min(params.pointX, endX) - corridorPadding;
+  const maxX = Math.max(params.pointX, endX) + corridorPadding;
+  const minY = Math.min(params.pointY, endY) - corridorPadding;
+  const maxY = Math.max(params.pointY, endY) + corridorPadding;
+  const candidateIndices = collectObstacleIndicesInBounds({
+    spatialGrid: params.spatialGrid,
+    minX,
+    maxX,
+    minY,
+    maxY,
+  });
+  const filteredIndices: number[] = [];
+
+  for (const obstacleIndex of candidateIndices) {
+    const obstacle = params.obstacles[obstacleIndex];
+    if (!obstacle) {
+      continue;
+    }
+    const dx = obstacle.centerX - params.pointX;
+    const dy = obstacle.centerY - params.pointY;
+    const dot = dx * params.dirX + dy * params.dirY;
+    if (dot < -obstacle.halfDiagonal) {
+      continue;
+    }
+    const centerDistance = Math.hypot(dx, dy);
+    if (centerDistance > params.maxDistanceMeters + obstacle.halfDiagonal) {
+      continue;
+    }
+    filteredIndices.push(obstacleIndex);
+  }
+
+  return filteredIndices;
 }
 
 function cross(ax: number, ay: number, bx: number, by: number): number {
@@ -246,8 +376,25 @@ export function findContainingBuilding(
   obstacles: BuildingObstacle[],
   pointX: number,
   pointY: number,
+  spatialGrid?: BuildingObstacleSpatialGrid,
 ): BuildingContainmentResult {
-  for (const obstacle of obstacles) {
+  const candidateIndices = spatialGrid
+    ? Array.from(
+        collectObstacleIndicesInBounds({
+          spatialGrid,
+          minX: pointX - DEFAULT_SPATIAL_GRID_CELL_SIZE_METERS,
+          maxX: pointX + DEFAULT_SPATIAL_GRID_CELL_SIZE_METERS,
+          minY: pointY - DEFAULT_SPATIAL_GRID_CELL_SIZE_METERS,
+          maxY: pointY + DEFAULT_SPATIAL_GRID_CELL_SIZE_METERS,
+        }),
+      )
+    : obstacles.map((_, index) => index);
+
+  for (const obstacleIndex of candidateIndices) {
+    const obstacle = obstacles[obstacleIndex];
+    if (!obstacle) {
+      continue;
+    }
     if (!isPointInsideBoundingBox(pointX, pointY, obstacle)) {
       continue;
     }
@@ -275,6 +422,7 @@ export function findContainingBuilding(
 export function evaluateBuildingsShadow(
   obstacles: BuildingObstacle[],
   input: BuildingShadowInput,
+  spatialGrid?: BuildingObstacleSpatialGrid,
 ): BuildingShadowResult {
   if (input.solarAltitudeDeg <= 0) {
     return {
@@ -298,8 +446,23 @@ export function evaluateBuildingsShadow(
   let blockerDistanceMeters: number | null = null;
   let blockerAltitudeAngleDeg: number | null = null;
   let checkedObstaclesCount = 0;
+  const candidateIndices = spatialGrid
+    ? collectCandidateObstacleIndices({
+        obstacles,
+        spatialGrid,
+        pointX: input.pointX,
+        pointY: input.pointY,
+        dirX,
+        dirY,
+        maxDistanceMeters,
+      })
+    : obstacles.map((_, index) => index);
 
-  for (const obstacle of obstacles) {
+  for (const obstacleIndex of candidateIndices) {
+    const obstacle = obstacles[obstacleIndex];
+    if (!obstacle) {
+      continue;
+    }
     const centerDistance = Math.hypot(
       obstacle.centerX - input.pointX,
       obstacle.centerY - input.pointY,
