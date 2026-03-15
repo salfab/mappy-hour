@@ -62,9 +62,6 @@ interface VertexAccumulator {
 const GROUND_TOLERANCE_METERS = 0.6;
 const FOOTPRINT_MIN_EDGE_METERS = 0.8;
 const FOOTPRINT_COLLINEAR_TOLERANCE_METERS = 0.15;
-const ROOF_DETAIL_HEIGHT_THRESHOLD_METERS = 1.5;
-const ROOF_DETAIL_NEAR_MAX_BAND_METERS = 0.35;
-const ROOF_DETAIL_MAX_SHARE = 0.08;
 
 function round3(value: number): number {
   return Math.round(value * 1000) / 1000;
@@ -356,50 +353,6 @@ function extractGroundFootprint(vertices: Point3D[], minZ: number): Point2D[] | 
   return null;
 }
 
-function quantile(sortedValues: number[], q: number): number {
-  if (sortedValues.length === 0) {
-    return 0;
-  }
-
-  const clamped = Math.max(0, Math.min(1, q));
-  const index = (sortedValues.length - 1) * clamped;
-  const low = Math.floor(index);
-  const high = Math.ceil(index);
-  if (low === high) {
-    return sortedValues[low];
-  }
-
-  const weight = index - low;
-  return sortedValues[low] * (1 - weight) + sortedValues[high] * weight;
-}
-
-function computeSimplifiedMaxZ(vertices: Point3D[], rawMaxZ: number): number {
-  if (vertices.length < 8) {
-    return rawMaxZ;
-  }
-
-  const sortedZ = vertices
-    .map((vertex) => vertex.z)
-    .filter((value) => Number.isFinite(value))
-    .sort((a, b) => a - b);
-  if (sortedZ.length < 8) {
-    return rawMaxZ;
-  }
-
-  const p90 = quantile(sortedZ, 0.9);
-  const delta = rawMaxZ - p90;
-  const nearMaxCount = sortedZ.filter(
-    (value) => value >= rawMaxZ - ROOF_DETAIL_NEAR_MAX_BAND_METERS,
-  ).length;
-  const nearMaxShare = nearMaxCount / sortedZ.length;
-
-  if (delta >= ROOF_DETAIL_HEIGHT_THRESHOLD_METERS && nearMaxShare <= ROOF_DETAIL_MAX_SHARE) {
-    return p90;
-  }
-
-  return rawMaxZ;
-}
-
 function chooseFootprint(vertices: Point3D[], minZ: number): Point2D[] | null {
   const groundFootprint = extractGroundFootprint(vertices, minZ);
   if (groundFootprint && polygonArea(groundFootprint) >= 4) {
@@ -613,13 +566,6 @@ function polylineToObstacle(
     return null;
   }
 
-  const simplifiedMaxZ = computeSimplifiedMaxZ(polyline.vertices, maxZ);
-  const effectiveMaxZ = Math.max(simplifiedMaxZ, minZ + 1);
-  const effectiveHeight = effectiveMaxZ - minZ;
-  if (effectiveHeight < 1) {
-    return null;
-  }
-
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
   const halfDiagonal = Math.hypot(width, depth) / 2;
@@ -631,8 +577,8 @@ function polylineToObstacle(
     maxX: round3(maxX),
     maxY: round3(maxY),
     minZ: round3(minZ),
-    maxZ: round3(effectiveMaxZ),
-    height: round3(effectiveHeight),
+    maxZ: round3(maxZ),
+    height: round3(height),
     centerX: round3(centerX),
     centerY: round3(centerY),
     halfDiagonal: round3(halfDiagonal),
