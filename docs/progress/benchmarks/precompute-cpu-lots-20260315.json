@@ -1,0 +1,38 @@
+{
+  "generatedAt": "2026-03-15T07:01:30.468Z",
+  "benchmarkDate": "2026-03-15",
+  "lots": {
+    "lotA": {
+      "iterations": 500,
+      "baselineElapsedMs": 70.29,
+      "indexedElapsedMs": 16.53,
+      "baselineCheckedAvg": 962,
+      "indexedCheckedAvg": 1,
+      "baselineCheckedP50": 962,
+      "baselineCheckedP95": 962,
+      "indexedCheckedP50": 1,
+      "indexedCheckedP95": 1,
+      "speedup": 4.252
+    },
+    "lotB": {
+      "sampledPoints": 180,
+      "noSharedElapsedMs": 33798.375,
+      "sharedElapsedMs": 738.054,
+      "speedup": 45.794,
+      "parityMismatchCount": 0
+    },
+    "lotC": {
+      "tilesMeasured": 24,
+      "localOnlyElapsedMs": 30321.11,
+      "localMaskCount": 24,
+      "adaptiveFirstElapsedMs": 163.938,
+      "adaptiveWarmElapsedMs": 1.61,
+      "decisions": {
+        "shared": 20,
+        "local": 4,
+        "none": 0
+      }
+    }
+  },
+  "elapsedMs": 34718.37
+}

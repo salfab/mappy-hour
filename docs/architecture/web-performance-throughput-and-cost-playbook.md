@@ -12,6 +12,7 @@ Benchmarks now available:
 - `docs/progress/benchmarks/smoke-cache-benchmark-2026-03-08-instant-g20.json`
 - `docs/progress/benchmarks/lausanne-horizon-macro-tiling-20260308-s5.json`
 - `docs/progress/benchmarks/lausanne-horizon-tile-vs-global-20260308-s5.json`
+- `docs/progress/benchmarks/precompute-cpu-lots-20260315.json`
 
 Observed results:
 
@@ -43,6 +44,12 @@ Implementation status (2026-03-14, runtime):
 - optional diagnostic mode is available through `evaluateAllBlockers=true` to keep full blocker details when needed.
 - a conservative high-sun gate is active for terrain checks:
   - if `sunAltitude > max(horizonMask) + margin`, terrain blocking check is skipped.
+- buildings spatial filtering is now active:
+  - preprocessed LV95 grid index + corridor candidate selection at runtime
+- precompute now supports shared tile sources:
+  - terrain and vegetation tiles can be loaded once per tile and reused across points
+- adaptive horizon sharing is active in precompute:
+  - shared vs local decision under mismatch budget with local fallback
 
 ## 1. What to optimize exactly
 
