@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import { fork, type ChildProcess } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 
@@ -9,6 +11,7 @@ import {
   writePrecomputedSunlightTile,
   type PrecomputedRegionName,
   type PrecomputedSunlightManifest,
+  type RegionTileSpec,
 } from "@/lib/precompute/sunlight-cache";
 import { getSunlightModelVersion, SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "@/lib/precompute/model-version";
 import { computeSunlightTileArtifact } from "@/lib/precompute/sunlight-tile-service";
@@ -158,6 +161,416 @@ export interface CachePrecomputeProgress {
   currentTilePointCountOutdoor?: number | null;
   currentTileFrameCountTotal?: number | null;
   currentTileFrameIndex?: number | null;
+}
+
+interface WorkerPoolTileTask {
+  taskId: string;
+  tileIndex: number;
+  tile: RegionTileSpec;
+}
+
+interface WorkerPoolTaskPayload {
+  taskId: string;
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  algorithmVersion: string;
+  date: string;
+  timezone: string;
+  sampleEveryMinutes: number;
+  gridStepMeters: number;
+  startLocalTime: string;
+  endLocalTime: string;
+  tile: RegionTileSpec;
+  shadowCalibration: {
+    buildingHeightBiasMeters: number;
+  };
+  skipExisting: boolean;
+}
+
+type WorkerPoolMessage =
+  | {
+      type: "progress";
+      taskId: string;
+      stage: "prepare-points" | "evaluate-frames";
+      completed: number;
+      total: number;
+      pointCountTotal: number;
+      pointCountOutdoor: number;
+      frameCountTotal: number;
+      frameIndex: number | null;
+    }
+  | {
+      type: "done";
+      taskId: string;
+      state: "computed" | "skipped" | "failed" | "cancelled";
+      pointCountTotal: number | null;
+      pointCountOutdoor: number | null;
+      frameCountTotal: number | null;
+      error?: string;
+    };
+
+interface WorkerPoolRunResult {
+  succeededTileIds: string[];
+  skippedTileIds: string[];
+  failedTileIds: string[];
+  completedTiles: number;
+}
+
+function clampRatio(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
+function resolvePrecomputeWorkerCount(tileCount: number): number {
+  if (tileCount <= 1) {
+    return 1;
+  }
+  if (process.env.NODE_ENV === "test") {
+    return 1;
+  }
+  const fromEnvRaw = process.env.MAPPY_PRECOMPUTE_WORKERS?.trim();
+  if (fromEnvRaw) {
+    const parsed = Number(fromEnvRaw);
+    if (Number.isFinite(parsed)) {
+      return Math.max(1, Math.min(tileCount, Math.floor(parsed)));
+    }
+  }
+  const cpuCount = os.cpus().length;
+  const suggested = Math.min(4, Math.max(2, cpuCount - 1));
+  return Math.max(1, Math.min(tileCount, suggested));
+}
+
+function getPrecomputeTileWorkerPath(): string {
+  return path.join(process.cwd(), "scripts", "precompute", "cache-precompute-tile-worker.ts");
+}
+
+async function runDateTilesWithWorkerPool(params: {
+  workerCount: number;
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  algorithmVersion: string;
+  date: string;
+  timezone: string;
+  sampleEveryMinutes: number;
+  gridStepMeters: number;
+  startLocalTime: string;
+  endLocalTime: string;
+  tiles: RegionTileSpec[];
+  skipExisting: boolean;
+  shadowCalibration: {
+    buildingHeightBiasMeters: number;
+  };
+  dayIndex: number;
+  daysTotal: number;
+  totalTiles: number;
+  completedTiles: number;
+  onProgress?: (progress: CachePrecomputeProgress) => void;
+  signal?: AbortSignal;
+}): Promise<WorkerPoolRunResult> {
+  const succeededTileIds: string[] = [];
+  const skippedTileIds: string[] = [];
+  const failedTileIds: string[] = [];
+  const tasks: WorkerPoolTileTask[] = params.tiles.map((tile, tileIndex) => ({
+    taskId: `${params.date}:${tile.tileId}:${tileIndex}`,
+    tileIndex,
+    tile,
+  }));
+  const taskById = new Map(tasks.map((task) => [task.taskId, task]));
+  const runningFractions = new Map<string, number>();
+  const workerPath = getPrecomputeTileWorkerPath();
+  let completedTiles = params.completedTiles;
+  let completedInDay = 0;
+
+  type WorkerSlot = {
+    worker: ChildProcess;
+    currentTaskId: string | null;
+  };
+
+  const workers: WorkerSlot[] = [];
+  let nextTask = 0;
+  let settled = false;
+
+  const sumRunningFractions = () => {
+    let total = 0;
+    for (const fraction of runningFractions.values()) {
+      total += clampRatio(fraction);
+    }
+    return total;
+  };
+
+  const emitRunningProgress = (task: WorkerPoolTileTask, message: WorkerPoolMessage) => {
+    if (!params.onProgress || message.type !== "progress") {
+      return;
+    }
+    const tileFraction =
+      message.total <= 0 ? 0 : clampRatio(message.completed / message.total);
+    runningFractions.set(task.taskId, tileFraction);
+    const totalProgress = completedTiles + sumRunningFractions();
+    params.onProgress({
+      stage: "running",
+      date: params.date,
+      dayIndex: params.dayIndex,
+      daysTotal: params.daysTotal,
+      tileIndex: task.tileIndex + 1,
+      tilesTotal: params.tiles.length,
+      completedTiles,
+      totalTiles: params.totalTiles,
+      percent:
+        params.totalTiles === 0
+          ? 100
+          : Math.round((totalProgress / params.totalTiles) * 1000) / 10,
+      currentTileState: "running",
+      currentTilePhase: message.stage,
+      currentTileProgressPercent: Math.round(tileFraction * 1000) / 10,
+      currentTilePointCountTotal: message.pointCountTotal,
+      currentTilePointCountOutdoor: message.pointCountOutdoor,
+      currentTileFrameCountTotal: message.frameCountTotal,
+      currentTileFrameIndex: message.frameIndex,
+    });
+  };
+
+  const emitDoneProgress = (
+    task: WorkerPoolTileTask,
+    message: Extract<WorkerPoolMessage, { type: "done" }>,
+  ) => {
+    if (!params.onProgress) {
+      return;
+    }
+    const state = message.state === "cancelled" ? "failed" : message.state;
+    params.onProgress({
+      stage: "running",
+      date: params.date,
+      dayIndex: params.dayIndex,
+      daysTotal: params.daysTotal,
+      tileIndex: task.tileIndex + 1,
+      tilesTotal: params.tiles.length,
+      completedTiles,
+      totalTiles: params.totalTiles,
+      percent:
+        params.totalTiles === 0
+          ? 100
+          : Math.round((completedTiles / params.totalTiles) * 1000) / 10,
+      currentTileState: state,
+      currentTilePhase: null,
+      currentTileProgressPercent: 100,
+      currentTilePointCountTotal: message.pointCountTotal,
+      currentTilePointCountOutdoor: message.pointCountOutdoor,
+      currentTileFrameCountTotal: message.frameCountTotal,
+      currentTileFrameIndex: message.frameCountTotal,
+    });
+  };
+
+  const postRunMessage = (slot: WorkerSlot, task: WorkerPoolTileTask) => {
+    const payload: WorkerPoolTaskPayload = {
+      taskId: task.taskId,
+      region: params.region,
+      modelVersionHash: params.modelVersionHash,
+      algorithmVersion: params.algorithmVersion,
+      date: params.date,
+      timezone: params.timezone,
+      sampleEveryMinutes: params.sampleEveryMinutes,
+      gridStepMeters: params.gridStepMeters,
+      startLocalTime: params.startLocalTime,
+      endLocalTime: params.endLocalTime,
+      tile: task.tile,
+      shadowCalibration: params.shadowCalibration,
+      skipExisting: params.skipExisting,
+    };
+    slot.currentTaskId = task.taskId;
+    slot.worker.send?.({
+      type: "run",
+      task: payload,
+    });
+    params.onProgress?.({
+      stage: "running",
+      date: params.date,
+      dayIndex: params.dayIndex,
+      daysTotal: params.daysTotal,
+      tileIndex: task.tileIndex + 1,
+      tilesTotal: params.tiles.length,
+      completedTiles,
+      totalTiles: params.totalTiles,
+      percent:
+        params.totalTiles === 0
+          ? 100
+          : Math.round(((completedTiles + sumRunningFractions()) / params.totalTiles) * 1000) / 10,
+      currentTileState: "running",
+      currentTilePhase: "prepare-context",
+      currentTileProgressPercent: 0,
+      currentTilePointCountTotal: null,
+      currentTilePointCountOutdoor: null,
+      currentTileFrameCountTotal: null,
+      currentTileFrameIndex: null,
+    });
+  };
+
+  const terminateWorkers = async () => {
+    await Promise.all(
+      workers.map(async (slot) => {
+        try {
+          const worker = slot.worker;
+          if (worker.exitCode !== null || worker.killed) {
+            return;
+          }
+          await new Promise<void>((resolve) => {
+            const onExit = () => resolve();
+            worker.once("exit", onExit);
+            worker.kill("SIGTERM");
+            setTimeout(() => {
+              try {
+                worker.kill("SIGKILL");
+              } catch {
+                // Ignore hard-stop failures.
+              }
+              resolve();
+            }, 1000);
+          });
+        } catch {
+          // Ignore worker shutdown failures.
+        }
+      }),
+    );
+  };
+
+  const runPromise = new Promise<void>((resolve, reject) => {
+    const dispatch = (slot: WorkerSlot) => {
+      if (settled) {
+        return;
+      }
+      if (params.signal?.aborted) {
+        settled = true;
+        reject(new Error("Precompute aborted."));
+        return;
+      }
+      if (nextTask >= tasks.length) {
+        slot.currentTaskId = null;
+        if (completedInDay >= tasks.length) {
+          settled = true;
+          resolve();
+        }
+        return;
+      }
+      const task = tasks[nextTask];
+      nextTask += 1;
+      postRunMessage(slot, task);
+    };
+
+    const handleWorkerFailure = (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    };
+
+    for (let workerIndex = 0; workerIndex < params.workerCount; workerIndex += 1) {
+      const worker = fork(workerPath, [], {
+        execArgv: ["--import", "tsx"],
+        env: {
+          ...process.env,
+          NODE_OPTIONS: "",
+        },
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      });
+      const slot: WorkerSlot = {
+        worker,
+        currentTaskId: null,
+      };
+      workers.push(slot);
+
+      worker.on("message", (message: WorkerPoolMessage) => {
+        if (settled) {
+          return;
+        }
+        const task = taskById.get(message.taskId);
+        if (!task) {
+          return;
+        }
+
+        if (message.type === "progress") {
+          emitRunningProgress(task, message);
+          return;
+        }
+
+        runningFractions.delete(task.taskId);
+        slot.currentTaskId = null;
+        completedTiles += 1;
+        completedInDay += 1;
+
+        if (message.state === "skipped") {
+          skippedTileIds.push(task.tile.tileId);
+          succeededTileIds.push(task.tile.tileId);
+        } else if (message.state === "computed") {
+          succeededTileIds.push(task.tile.tileId);
+        } else if (message.state === "failed") {
+          failedTileIds.push(task.tile.tileId);
+        } else if (message.state === "cancelled") {
+          if (params.signal?.aborted) {
+            if (!settled) {
+              settled = true;
+              reject(new Error("Precompute aborted."));
+            }
+            return;
+          }
+          failedTileIds.push(task.tile.tileId);
+        }
+
+        emitDoneProgress(task, message);
+        dispatch(slot);
+      });
+
+      worker.on("error", (error) => {
+        handleWorkerFailure(
+          new Error(
+            `Precompute worker failed: ${error instanceof Error ? error.message : "unknown error"}`,
+          ),
+        );
+      });
+
+      worker.on("exit", (code) => {
+        if (settled) {
+          return;
+        }
+        if (code !== 0 && slot.currentTaskId) {
+          const task = taskById.get(slot.currentTaskId);
+          handleWorkerFailure(
+            new Error(
+              `Precompute worker exited with code ${code} while processing ${task?.tile.tileId ?? "unknown tile"}.`,
+            ),
+          );
+        }
+      });
+    }
+
+    for (const slot of workers) {
+      dispatch(slot);
+    }
+  });
+
+  const abortHandler = () => {
+    for (const slot of workers) {
+      slot.worker.send?.({
+        type: "cancel",
+      });
+    }
+  };
+
+  params.signal?.addEventListener("abort", abortHandler);
+
+  try {
+    await runPromise;
+    return {
+      succeededTileIds,
+      skippedTileIds,
+      failedTileIds,
+      completedTiles,
+    };
+  } finally {
+    params.signal?.removeEventListener("abort", abortHandler);
+    await terminateWorkers();
+  }
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -611,6 +1024,8 @@ export async function precomputeCacheRuns(
   const dates: CachePrecomputeResult["dates"] = [];
   const totalTiles = tiles.length * request.days;
   let completedTiles = 0;
+  const workerCount = resolvePrecomputeWorkerCount(tiles.length);
+  const strictMultithread = process.env.MAPPY_PRECOMPUTE_WORKERS_STRICT === "1";
 
   for (let dayOffset = 0; dayOffset < request.days; dayOffset += 1) {
     throwIfAborted(options.signal);
@@ -619,46 +1034,120 @@ export async function precomputeCacheRuns(
     const succeededTileIds: string[] = [];
     const failedTileIds: string[] = [];
     const skippedTileIds: string[] = [];
-
-    for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
-      throwIfAborted(options.signal);
-      const tile = tiles[tileIndex];
-      options.onProgress?.({
-        stage: "running",
-        date,
-        dayIndex: dayOffset + 1,
-        daysTotal: request.days,
-        tileIndex: tileIndex + 1,
-        tilesTotal: tiles.length,
-        completedTiles,
-        totalTiles,
-        percent:
-          totalTiles === 0
-            ? 100
-            : Math.round((completedTiles / totalTiles) * 10000) / 100,
-        currentTileState: "running",
-        currentTilePhase: "prepare-context",
-        currentTileProgressPercent: 0,
-        currentTilePointCountTotal: null,
-        currentTilePointCountOutdoor: null,
-        currentTileFrameCountTotal: null,
-        currentTileFrameIndex: null,
-      });
-
-      if (skipExisting) {
+    const runSequentialTiles = async () => {
+      for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
         throwIfAborted(options.signal);
-        const existing = await loadPrecomputedSunlightTile({
-          region: request.region,
-          modelVersionHash: modelVersion.modelVersionHash,
+        const tile = tiles[tileIndex];
+        options.onProgress?.({
+          stage: "running",
           date,
-          gridStepMeters: request.gridStepMeters,
-          sampleEveryMinutes: request.sampleEveryMinutes,
-          startLocalTime: request.startLocalTime,
-          endLocalTime: request.endLocalTime,
-          tileId: tile.tileId,
+          dayIndex: dayOffset + 1,
+          daysTotal: request.days,
+          tileIndex: tileIndex + 1,
+          tilesTotal: tiles.length,
+          completedTiles,
+          totalTiles,
+          percent:
+            totalTiles === 0
+              ? 100
+              : Math.round((completedTiles / totalTiles) * 10000) / 100,
+          currentTileState: "running",
+          currentTilePhase: "prepare-context",
+          currentTileProgressPercent: 0,
+          currentTilePointCountTotal: null,
+          currentTilePointCountOutdoor: null,
+          currentTileFrameCountTotal: null,
+          currentTileFrameIndex: null,
         });
-        if (existing) {
-          skippedTileIds.push(tile.tileId);
+
+        if (skipExisting) {
+          throwIfAborted(options.signal);
+          const existing = await loadPrecomputedSunlightTile({
+            region: request.region,
+            modelVersionHash: modelVersion.modelVersionHash,
+            date,
+            gridStepMeters: request.gridStepMeters,
+            sampleEveryMinutes: request.sampleEveryMinutes,
+            startLocalTime: request.startLocalTime,
+            endLocalTime: request.endLocalTime,
+            tileId: tile.tileId,
+          });
+          if (existing) {
+            skippedTileIds.push(tile.tileId);
+            succeededTileIds.push(tile.tileId);
+            completedTiles += 1;
+            options.onProgress?.({
+              stage: "running",
+              date,
+              dayIndex: dayOffset + 1,
+              daysTotal: request.days,
+              tileIndex: tileIndex + 1,
+              tilesTotal: tiles.length,
+              completedTiles,
+              totalTiles,
+              percent:
+                totalTiles === 0
+                  ? 100
+                  : Math.round((completedTiles / totalTiles) * 1000) / 10,
+              currentTileState: "skipped",
+              currentTilePhase: null,
+              currentTileProgressPercent: 100,
+              currentTilePointCountTotal: existing.stats.gridPointCount,
+              currentTilePointCountOutdoor: existing.stats.pointCount,
+              currentTileFrameCountTotal: existing.frames.length,
+              currentTileFrameIndex: existing.frames.length,
+            });
+            continue;
+          }
+        }
+        try {
+          const artifact = await computeSunlightTileArtifact({
+            region: request.region,
+            modelVersionHash: modelVersion.modelVersionHash,
+            algorithmVersion: modelVersion.algorithmVersion,
+            date,
+            timezone: request.timezone,
+            sampleEveryMinutes: request.sampleEveryMinutes,
+            gridStepMeters: request.gridStepMeters,
+            startLocalTime: request.startLocalTime,
+            endLocalTime: request.endLocalTime,
+            tile,
+            shadowCalibration,
+            cooperativeYieldEveryPoints: 50,
+            signal: options.signal,
+            onProgress: (tileProgress) => {
+              const tileFraction =
+                tileProgress.total <= 0
+                  ? 0
+                  : Math.max(
+                      0,
+                      Math.min(1, tileProgress.completed / tileProgress.total),
+                    );
+              const totalProgress = completedTiles + tileFraction;
+              options.onProgress?.({
+                stage: "running",
+                date,
+                dayIndex: dayOffset + 1,
+                daysTotal: request.days,
+                tileIndex: tileIndex + 1,
+                tilesTotal: tiles.length,
+                completedTiles,
+                totalTiles,
+                percent:
+                  totalTiles === 0
+                    ? 100
+                    : Math.round((totalProgress / totalTiles) * 1000) / 10,
+                currentTileState: "running",
+                currentTilePhase: tileProgress.stage,
+                currentTileProgressPercent: Math.round(tileFraction * 1000) / 10,
+                currentTilePointCountTotal: tileProgress.pointCountTotal,
+                currentTilePointCountOutdoor: tileProgress.pointCountOutdoor,
+                currentTileFrameCountTotal: tileProgress.frameCountTotal,
+                currentTileFrameIndex: tileProgress.frameIndex,
+              });
+            },
+          });
+          await writePrecomputedSunlightTile(artifact);
           succeededTileIds.push(tile.tileId);
           completedTiles += 1;
           options.onProgress?.({
@@ -674,19 +1163,50 @@ export async function precomputeCacheRuns(
               totalTiles === 0
                 ? 100
                 : Math.round((completedTiles / totalTiles) * 1000) / 10,
-            currentTileState: "skipped",
+            currentTileState: "computed",
             currentTilePhase: null,
             currentTileProgressPercent: 100,
-            currentTilePointCountTotal: existing.stats.gridPointCount,
-            currentTilePointCountOutdoor: existing.stats.pointCount,
-            currentTileFrameCountTotal: existing.frames.length,
-            currentTileFrameIndex: existing.frames.length,
+            currentTilePointCountTotal: artifact.stats.gridPointCount,
+            currentTilePointCountOutdoor: artifact.stats.pointCount,
+            currentTileFrameCountTotal: artifact.frames.length,
+            currentTileFrameIndex: artifact.frames.length,
           });
-          continue;
+        } catch (error) {
+          if (options.signal?.aborted) {
+            throw error;
+          }
+          failedTileIds.push(tile.tileId);
+          completedTiles += 1;
+          options.onProgress?.({
+            stage: "running",
+            date,
+            dayIndex: dayOffset + 1,
+            daysTotal: request.days,
+            tileIndex: tileIndex + 1,
+            tilesTotal: tiles.length,
+            completedTiles,
+            totalTiles,
+            percent:
+              totalTiles === 0
+                ? 100
+                : Math.round((completedTiles / totalTiles) * 1000) / 10,
+            currentTileState: "failed",
+            currentTilePhase: null,
+            currentTileProgressPercent: 100,
+            currentTilePointCountTotal: null,
+            currentTilePointCountOutdoor: null,
+            currentTileFrameCountTotal: null,
+            currentTileFrameIndex: null,
+          });
         }
       }
+    };
+
+    let usedWorkerPool = false;
+    if (workerCount > 1) {
       try {
-        const artifact = await computeSunlightTileArtifact({
+        const workerResult = await runDateTilesWithWorkerPool({
+          workerCount,
           region: request.region,
           modelVersionHash: modelVersion.modelVersionHash,
           algorithmVersion: modelVersion.algorithmVersion,
@@ -696,94 +1216,40 @@ export async function precomputeCacheRuns(
           gridStepMeters: request.gridStepMeters,
           startLocalTime: request.startLocalTime,
           endLocalTime: request.endLocalTime,
-          tile,
-          shadowCalibration,
-          cooperativeYieldEveryPoints: 50,
-          signal: options.signal,
-          onProgress: (tileProgress) => {
-            const tileFraction =
-              tileProgress.total <= 0
-                ? 0
-                : Math.max(
-                    0,
-                    Math.min(1, tileProgress.completed / tileProgress.total),
-                  );
-            const totalProgress = completedTiles + tileFraction;
-            options.onProgress?.({
-              stage: "running",
-              date,
-              dayIndex: dayOffset + 1,
-              daysTotal: request.days,
-              tileIndex: tileIndex + 1,
-              tilesTotal: tiles.length,
-              completedTiles,
-              totalTiles,
-              percent:
-                totalTiles === 0
-                  ? 100
-                  : Math.round((totalProgress / totalTiles) * 1000) / 10,
-              currentTileState: "running",
-              currentTilePhase: tileProgress.stage,
-              currentTileProgressPercent: Math.round(tileFraction * 1000) / 10,
-              currentTilePointCountTotal: tileProgress.pointCountTotal,
-              currentTilePointCountOutdoor: tileProgress.pointCountOutdoor,
-              currentTileFrameCountTotal: tileProgress.frameCountTotal,
-              currentTileFrameIndex: tileProgress.frameIndex,
-            });
+          tiles,
+          skipExisting,
+          shadowCalibration: {
+            buildingHeightBiasMeters: shadowCalibration.buildingHeightBiasMeters,
           },
-        });
-        await writePrecomputedSunlightTile(artifact);
-        succeededTileIds.push(tile.tileId);
-        completedTiles += 1;
-        options.onProgress?.({
-          stage: "running",
-          date,
           dayIndex: dayOffset + 1,
           daysTotal: request.days,
-          tileIndex: tileIndex + 1,
-          tilesTotal: tiles.length,
-          completedTiles,
           totalTiles,
-          percent:
-            totalTiles === 0
-              ? 100
-              : Math.round((completedTiles / totalTiles) * 1000) / 10,
-          currentTileState: "computed",
-          currentTilePhase: null,
-          currentTileProgressPercent: 100,
-          currentTilePointCountTotal: artifact.stats.gridPointCount,
-          currentTilePointCountOutdoor: artifact.stats.pointCount,
-          currentTileFrameCountTotal: artifact.frames.length,
-          currentTileFrameIndex: artifact.frames.length,
+          completedTiles,
+          onProgress: options.onProgress,
+          signal: options.signal,
         });
+        succeededTileIds.push(...workerResult.succeededTileIds);
+        skippedTileIds.push(...workerResult.skippedTileIds);
+        failedTileIds.push(...workerResult.failedTileIds);
+        completedTiles = workerResult.completedTiles;
+        usedWorkerPool = true;
       } catch (error) {
         if (options.signal?.aborted) {
           throw error;
         }
-        failedTileIds.push(tile.tileId);
-        completedTiles += 1;
-        options.onProgress?.({
-          stage: "running",
+        if (strictMultithread) {
+          throw error;
+        }
+        console.warn("[cache-admin] worker pool unavailable, falling back to sequential mode", {
           date,
-          dayIndex: dayOffset + 1,
-          daysTotal: request.days,
-          tileIndex: tileIndex + 1,
-          tilesTotal: tiles.length,
-          completedTiles,
-          totalTiles,
-          percent:
-            totalTiles === 0
-              ? 100
-              : Math.round((completedTiles / totalTiles) * 1000) / 10,
-          currentTileState: "failed",
-          currentTilePhase: null,
-          currentTileProgressPercent: 100,
-          currentTilePointCountTotal: null,
-          currentTilePointCountOutdoor: null,
-          currentTileFrameCountTotal: null,
-          currentTileFrameIndex: null,
+          workerCount,
+          error: error instanceof Error ? error.message : "unknown error",
         });
       }
+    }
+
+    if (!usedWorkerPool) {
+      await runSequentialTiles();
     }
 
     const manifest: PrecomputedSunlightManifest = {

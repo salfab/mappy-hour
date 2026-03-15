@@ -1,14 +1,5 @@
-import { normalizeShadowCalibration } from "../../src/lib/sun/shadow-calibration";
-import { getSunlightModelVersion } from "../../src/lib/precompute/model-version";
-import {
-  buildRegionTiles,
-  writePrecomputedSunlightManifest,
-  writePrecomputedSunlightTile,
-  type PrecomputedRegionName,
-  type PrecomputedSunlightManifest,
-} from "../../src/lib/precompute/sunlight-cache";
-import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "../../src/lib/precompute/constants";
-import { computeSunlightTileArtifact } from "../../src/lib/precompute/sunlight-tile-service";
+import { precomputeCacheRuns, type CachePrecomputeProgress } from "../../src/lib/admin/cache-admin";
+import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 
 interface ParsedArgs {
   region: PrecomputedRegionName;
@@ -20,6 +11,7 @@ interface ParsedArgs {
   startLocalTime: string;
   endLocalTime: string;
   buildingHeightBiasMeters: number;
+  skipExisting: boolean;
 }
 
 const DEFAULT_ARGS: ParsedArgs = {
@@ -32,7 +24,19 @@ const DEFAULT_ARGS: ParsedArgs = {
   startLocalTime: "00:00",
   endLocalTime: "23:59",
   buildingHeightBiasMeters: 0,
+  skipExisting: true,
 };
+
+function parseBoolean(value: string): boolean | null {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no") {
+    return false;
+  }
+  return null;
+}
 
 function parseArgs(argv: string[]): ParsedArgs {
   const result: ParsedArgs = { ...DEFAULT_ARGS };
@@ -90,94 +94,93 @@ function parseArgs(argv: string[]): ParsedArgs {
       result.buildingHeightBiasMeters = Number(
         arg.slice("--building-height-bias-meters=".length),
       );
+      continue;
+    }
+    if (arg.startsWith("--skip-existing=")) {
+      const parsed = parseBoolean(arg.slice("--skip-existing=".length));
+      if (parsed !== null) {
+        result.skipExisting = parsed;
+      }
+      continue;
     }
   }
   return result;
 }
 
-function addDays(dateInput: string, days: number): string {
-  const date = new Date(`${dateInput}T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) {
-    throw new Error(`Invalid date input: ${dateInput}`);
+function shouldLogProgress(
+  current: CachePrecomputeProgress,
+  previous: CachePrecomputeProgress | null,
+): boolean {
+  if (!previous) {
+    return true;
   }
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
+  if (current.date !== previous.date) {
+    return true;
+  }
+  if (current.currentTileState !== previous.currentTileState) {
+    return true;
+  }
+  if (current.currentTilePhase !== previous.currentTilePhase) {
+    return true;
+  }
+  if (current.tileIndex !== previous.tileIndex) {
+    if (
+      current.tileIndex <= 3 ||
+      current.tileIndex === current.tilesTotal ||
+      current.tileIndex % 100 === 0
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const tileSizeMeters = CANONICAL_PRECOMPUTE_TILE_SIZE_METERS;
-  const tiles = buildRegionTiles(args.region, tileSizeMeters);
-  const shadowCalibration = normalizeShadowCalibration({
-    buildingHeightBiasMeters: args.buildingHeightBiasMeters,
-  });
-  const modelVersion = await getSunlightModelVersion(args.region, shadowCalibration);
+  const workers =
+    process.env.MAPPY_PRECOMPUTE_WORKERS?.trim() ||
+    "(auto: min(4, max(2, cpu-1)))";
 
   console.log(
-    `[precompute] region=${args.region} model=${modelVersion.modelVersionHash} tiles=${tiles.length} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min tileSize=${tileSizeMeters}m`,
+    `[precompute] engine=cache-admin workers=${workers} region=${args.region} startDate=${args.startDate} days=${args.days} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} skipExisting=${args.skipExisting}`,
   );
 
-  for (let dayOffset = 0; dayOffset < args.days; dayOffset += 1) {
-    const date = addDays(args.startDate, dayOffset);
-    const succeededTileIds: string[] = [];
-    const failedTileIds: string[] = [];
+  let lastProgress: CachePrecomputeProgress | null = null;
+  const startedAt = Date.now();
 
-    console.log(`[precompute] date=${date} starting`);
-    for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
-      const tile = tiles[tileIndex];
-      try {
-        const artifact = await computeSunlightTileArtifact({
-          region: args.region,
-          modelVersionHash: modelVersion.modelVersionHash,
-          algorithmVersion: modelVersion.algorithmVersion,
-          date,
-          timezone: args.timezone,
-          sampleEveryMinutes: args.sampleEveryMinutes,
-          gridStepMeters: args.gridStepMeters,
-          startLocalTime: args.startLocalTime,
-          endLocalTime: args.endLocalTime,
-          tile,
-          shadowCalibration,
-        });
-        await writePrecomputedSunlightTile(artifact);
-        succeededTileIds.push(tile.tileId);
-        console.log(
-          `[precompute] date=${date} tile=${tileIndex + 1}/${tiles.length} ${tile.tileId} points=${artifact.stats.pointCount} frames=${artifact.frames.length} elapsedMs=${artifact.stats.elapsedMs}`,
-        );
-      } catch (error) {
-        failedTileIds.push(tile.tileId);
-        console.error(
-          `[precompute] date=${date} tile=${tileIndex + 1}/${tiles.length} ${tile.tileId} failed: ${error instanceof Error ? error.message : "unknown error"}`,
-        );
-      }
-    }
-
-    const manifest: PrecomputedSunlightManifest = {
-      artifactFormatVersion: modelVersion.artifactFormatVersion,
+  const result = await precomputeCacheRuns(
+    {
       region: args.region,
-      modelVersionHash: modelVersion.modelVersionHash,
-      date,
+      startDate: args.startDate,
+      days: args.days,
       timezone: args.timezone,
-      gridStepMeters: args.gridStepMeters,
       sampleEveryMinutes: args.sampleEveryMinutes,
+      gridStepMeters: args.gridStepMeters,
       startLocalTime: args.startLocalTime,
       endLocalTime: args.endLocalTime,
-      tileSizeMeters,
-      tileIds: succeededTileIds.sort(),
-      failedTileIds: failedTileIds.sort(),
-      bbox: {
-        minLon: Math.min(...tiles.map((tile) => tile.bbox.minLon)),
-        minLat: Math.min(...tiles.map((tile) => tile.bbox.minLat)),
-        maxLon: Math.max(...tiles.map((tile) => tile.bbox.maxLon)),
-        maxLat: Math.max(...tiles.map((tile) => tile.bbox.maxLat)),
+      skipExisting: args.skipExisting,
+      buildingHeightBiasMeters: args.buildingHeightBiasMeters,
+    },
+    {
+      onProgress: (progress) => {
+        if (!shouldLogProgress(progress, lastProgress)) {
+          return;
+        }
+        lastProgress = progress;
+        console.log(
+          `[precompute] date=${progress.date} day=${progress.dayIndex}/${progress.daysTotal} tile=${progress.tileIndex}/${progress.tilesTotal} state=${progress.currentTileState} phase=${progress.currentTilePhase ?? "none"} progress=${progress.percent.toFixed(1)}% tileProgress=${(progress.currentTileProgressPercent ?? 0).toFixed(1)}%`,
+        );
       },
-      generatedAt: new Date().toISOString(),
-      complete: failedTileIds.length === 0 && succeededTileIds.length === tiles.length,
-    };
+    },
+  );
 
-    await writePrecomputedSunlightManifest(manifest);
+  const elapsedMs = Date.now() - startedAt;
+  console.log(
+    `[precompute] completed region=${result.region} model=${result.modelVersionHash} totalDates=${result.totalDates} totalTiles=${result.totalTiles} elapsedMs=${elapsedMs}`,
+  );
+  for (const day of result.dates) {
     console.log(
-      `[precompute] date=${date} completed ok=${manifest.tileIds.length} failed=${manifest.failedTileIds.length} complete=${manifest.complete}`,
+      `[precompute] date=${day.date} ok=${day.succeededTiles} skipped=${day.skippedTiles} failed=${day.failedTiles} complete=${day.complete} elapsedMs=${day.elapsedMs}`,
     );
   }
 }
