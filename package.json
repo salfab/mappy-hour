@@ -17,6 +17,7 @@
     "benchmark:horizon:tile-vs-global:lausanne": "tsx scripts/benchmark/lausanne-horizon-tile-vs-global.ts",
     "benchmark:cache:warm": "tsx scripts/benchmark/precomputed-cache-hit-vs-warm.ts",
     "benchmark:precompute:cpu:lots": "tsx scripts/benchmark/precompute-cpu-lots-benchmark.ts",
+    "benchmark:precompute:workers": "tsx scripts/benchmark/precompute-workers-parallelism.ts",
     "precompute:region": "tsx scripts/precompute/precompute-region-sunlight.ts",
     "cache:verify": "tsx scripts/precompute/manage-sunlight-cache.ts --action=verify",
     "cache:purge": "tsx scripts/precompute/manage-sunlight-cache.ts --action=purge",
