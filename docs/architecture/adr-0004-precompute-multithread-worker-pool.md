@@ -1,7 +1,7 @@
 # ADR-0004 - Multithread Worker Pool for Precompute
 
 Date: 2026-03-14  
-Status: Proposed
+Status: Accepted (implemented with process workers)
 
 ## Context
 
@@ -15,7 +15,12 @@ This keeps correctness simple, but limits throughput for large regional/day work
 
 ## Decision
 
-Keep **one logical precompute job** at the API/product level, but execute tile computation with an internal bounded worker pool (`worker_threads`).
+Keep **one logical precompute job** at the API/product level, but execute tile computation with an internal bounded worker pool.
+
+Implementation note:
+- We use a bounded **process pool** (`child_process` + IPC) instead of `worker_threads`.
+- Rationale: `geotiff` currently crashes in `worker_threads` context via `web-worker` internals (`workerData` assumptions).
+- This still provides true multi-core parallelism and keeps the same API/UX semantics.
 
 Key principles:
 
@@ -30,7 +35,7 @@ Key principles:
 
 - Parent process:
   - builds tile work queue
-  - dispatches tasks to workers
+  - dispatches tasks to worker processes
   - aggregates progress and ETA
   - writes manifests when day batch is coherent
 - Worker process:
@@ -97,4 +102,3 @@ Expected improvement on commodity 6-10 core machines:
 - object storage migration
 
 These can be handled later if single-node multithread becomes insufficient.
-
