@@ -1,6 +1,8 @@
 import { wgs84ToLv95 } from "@/lib/geo/projection";
 import {
+  createDetailedBuildingShadowVerifier,
   evaluateBuildingsShadow,
+  evaluateBuildingsShadowTwoLevel,
   findContainingBuilding,
   loadBuildingsObstacleIndex,
 } from "@/lib/sun/buildings-shadow";
@@ -81,6 +83,11 @@ export interface PointEvaluationContext {
     checkedSamplesCount: number;
   };
 }
+
+const BUILDINGS_TWO_LEVEL_REFINEMENT_ENABLED =
+  process.env.MAPPY_BUILDINGS_TWO_LEVEL_REFINEMENT !== "0";
+const BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES = 2;
+const BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS = 3;
 
 export async function buildSharedPointEvaluationSources(
   options: BuildSharedPointEvaluationSourcesOptions = {},
@@ -179,20 +186,47 @@ export async function buildPointEvaluationContext(
 
   const buildingShadowEvaluator =
     buildingsIndex && pointElevationMeters !== null && !containment.insideBuilding
-      ? (sample: { azimuthDeg: number; altitudeDeg: number }) =>
-          evaluateBuildingsShadow(
-            buildingsIndex.obstacles,
-            {
-              pointX: pointLv95.easting,
-              pointY: pointLv95.northing,
-              pointElevation: pointElevationMeters,
-              buildingHeightBiasMeters:
-                shadowCalibration.buildingHeightBiasMeters,
-              solarAzimuthDeg: sample.azimuthDeg,
-              solarAltitudeDeg: sample.altitudeDeg,
-            },
-            buildingsIndex.spatialGrid,
-          )
+      ? (() => {
+          const detailedVerifier = BUILDINGS_TWO_LEVEL_REFINEMENT_ENABLED
+            ? createDetailedBuildingShadowVerifier(buildingsIndex.obstacles)
+            : null;
+
+          return (sample: { azimuthDeg: number; altitudeDeg: number }) =>
+            detailedVerifier
+              ? evaluateBuildingsShadowTwoLevel(
+                  buildingsIndex.obstacles,
+                  {
+                    pointX: pointLv95.easting,
+                    pointY: pointLv95.northing,
+                    pointElevation: pointElevationMeters,
+                    buildingHeightBiasMeters:
+                      shadowCalibration.buildingHeightBiasMeters,
+                    solarAzimuthDeg: sample.azimuthDeg,
+                    solarAltitudeDeg: sample.altitudeDeg,
+                  },
+                  buildingsIndex.spatialGrid,
+                  {
+                    detailedVerifier,
+                    nearThresholdDegrees:
+                      BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES,
+                    maxRefinementSteps:
+                      BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS,
+                  },
+                )
+              : evaluateBuildingsShadow(
+                  buildingsIndex.obstacles,
+                  {
+                    pointX: pointLv95.easting,
+                    pointY: pointLv95.northing,
+                    pointElevation: pointElevationMeters,
+                    buildingHeightBiasMeters:
+                      shadowCalibration.buildingHeightBiasMeters,
+                    solarAzimuthDeg: sample.azimuthDeg,
+                    solarAltitudeDeg: sample.altitudeDeg,
+                  },
+                  buildingsIndex.spatialGrid,
+                );
+        })()
       : undefined;
   const vegetationShadowEvaluator =
     vegetationSurfaceTiles &&
@@ -235,7 +269,13 @@ export async function buildPointEvaluationContext(
     indoorBuildingId: containment.buildingId,
     pointElevationMeters,
     terrainHorizonMethod: horizonMask?.method ?? "none",
-    buildingsShadowMethod: buildingsIndex?.method ?? "none",
+    buildingsShadowMethod: buildingsIndex
+      ? `${buildingsIndex.method}${
+          BUILDINGS_TWO_LEVEL_REFINEMENT_ENABLED
+            ? "|two-level-near-threshold-v1"
+            : ""
+        }`
+      : "none",
     vegetationShadowMethod:
       vegetationSurfaceTiles && vegetationSurfaceTiles.length > 0
         ? vegetationShadowMethod

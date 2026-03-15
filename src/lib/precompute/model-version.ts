@@ -17,7 +17,7 @@ import { adaptiveHorizonSharingConfig } from "@/lib/sun/adaptive-horizon-sharing
 import type { PrecomputedRegionName } from "./sunlight-cache";
 import { TtlCache } from "./runtime-cache";
 
-export const SUNLIGHT_CACHE_ALGORITHM_VERSION = "sunlight-cache-v3";
+export const SUNLIGHT_CACHE_ALGORITHM_VERSION = "sunlight-cache-v4";
 export const SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION = 2;
 
 interface ManifestSummary {

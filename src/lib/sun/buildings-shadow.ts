@@ -1,8 +1,14 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import path from "node:path";
 
+import AdmZip from "adm-zip";
 import { z } from "zod";
 
-import { PROCESSED_BUILDINGS_INDEX_PATH } from "@/lib/storage/data-paths";
+import {
+  PROCESSED_BUILDINGS_INDEX_PATH,
+  RAW_BUILDINGS_DIR,
+} from "@/lib/storage/data-paths";
 
 const footprintPointSchema = z.object({
   x: z.number(),
@@ -65,6 +71,7 @@ export interface BuildingShadowInput {
   solarAltitudeDeg: number;
   maxDistanceMeters?: number;
   buildingHeightBiasMeters?: number;
+  excludedBlockerIds?: ReadonlySet<string>;
 }
 
 export interface BuildingShadowResult {
@@ -80,9 +87,70 @@ export interface BuildingContainmentResult {
   buildingId: string | null;
 }
 
+interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+interface RawVertex {
+  x?: number;
+  y?: number;
+  z?: number;
+  flag?: number;
+  i1?: number;
+  i2?: number;
+  i3?: number;
+  i4?: number;
+}
+
+interface Polyface {
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
+  vertices: Vec3[];
+  faces: number[][];
+}
+
+interface DetailedObstacleMesh {
+  obstacleId: string;
+  triangles: Array<[Vec3, Vec3, Vec3]>;
+}
+
+export interface DetailedBuildingShadowVerificationInput {
+  blockerId: string;
+  pointX: number;
+  pointY: number;
+  pointElevation: number;
+  solarAzimuthDeg: number;
+  solarAltitudeDeg: number;
+  maxDistanceMeters: number;
+}
+
+export interface DetailedBuildingShadowVerificationResult {
+  blocked: boolean;
+  blockerDistanceMeters: number | null;
+}
+
+export interface BuildingsShadowTwoLevelOptions {
+  nearThresholdDegrees?: number;
+  maxRefinementSteps?: number;
+  detailedVerifier?: (
+    input: DetailedBuildingShadowVerificationInput,
+  ) => DetailedBuildingShadowVerificationResult;
+}
+
 let obstacleIndexCache: BuildingObstacleIndex | null | undefined;
+let buildingZipPathByNameCache: Map<string, string> | null = null;
+const zipPolyfaceCache = new Map<string, Polyface[]>();
+const detailedMeshCacheByObstacleId = new Map<string, DetailedObstacleMesh | null>();
 
 const DEFAULT_SPATIAL_GRID_CELL_SIZE_METERS = 64;
+const BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES = 2;
+const BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS = 3;
 
 export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleIndex | null> {
   if (obstacleIndexCache !== undefined) {
@@ -371,6 +439,463 @@ function isPointInsideBoundingBox(
   );
 }
 
+function parseNumber(value: string): number | null {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isFaceRecord(flag: number | undefined): boolean {
+  if (flag === undefined) {
+    return false;
+  }
+  return (flag & 128) !== 0 && (flag & 64) === 0;
+}
+
+function isCoordinateVertex(flag: number | undefined): boolean {
+  return !isFaceRecord(flag);
+}
+
+function finalizePolyface(rawVertices: RawVertex[]): Polyface | null {
+  const coordVertices: Vec3[] = [];
+  const faces: number[][] = [];
+
+  for (const vertex of rawVertices) {
+    if (isFaceRecord(vertex.flag)) {
+      const indices = [vertex.i1, vertex.i2, vertex.i3, vertex.i4]
+        .filter((value): value is number => Number.isFinite(value))
+        .map((value) => Math.trunc(value))
+        .filter((value) => value !== 0)
+        .map((value) => Math.abs(value));
+      if (indices.length >= 3) {
+        faces.push(indices);
+      }
+      continue;
+    }
+    if (
+      isCoordinateVertex(vertex.flag) &&
+      vertex.x !== undefined &&
+      vertex.y !== undefined &&
+      vertex.z !== undefined
+    ) {
+      coordVertices.push({
+        x: vertex.x,
+        y: vertex.y,
+        z: vertex.z,
+      });
+    }
+  }
+
+  if (coordVertices.length < 3 || faces.length === 0) {
+    return null;
+  }
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (const vertex of coordVertices) {
+    minX = Math.min(minX, vertex.x);
+    minY = Math.min(minY, vertex.y);
+    minZ = Math.min(minZ, vertex.z);
+    maxX = Math.max(maxX, vertex.x);
+    maxY = Math.max(maxY, vertex.y);
+    maxZ = Math.max(maxZ, vertex.z);
+  }
+
+  return {
+    minX,
+    minY,
+    minZ,
+    maxX,
+    maxY,
+    maxZ,
+    vertices: coordVertices,
+    faces,
+  };
+}
+
+function parsePolyfacesFromZip(zipPath: string): Polyface[] {
+  const zip = new AdmZip(zipPath);
+  const dxfEntry = zip
+    .getEntries()
+    .find((entry) => !entry.isDirectory && entry.entryName.toLowerCase().endsWith(".dxf"));
+  if (!dxfEntry) {
+    return [];
+  }
+
+  const lines = dxfEntry.getData().toString("latin1").split(/\r?\n/);
+  const polyfaces: Polyface[] = [];
+  let pendingSectionName = false;
+  let inEntities = false;
+  let inPolyline = false;
+  let currentVertices: RawVertex[] = [];
+  let currentVertex: RawVertex | null = null;
+
+  const flushVertex = () => {
+    if (!currentVertex) {
+      return;
+    }
+    currentVertices.push(currentVertex);
+    currentVertex = null;
+  };
+
+  const flushPolyline = () => {
+    flushVertex();
+    const polyface = finalizePolyface(currentVertices);
+    if (polyface) {
+      polyfaces.push(polyface);
+    }
+    currentVertices = [];
+    inPolyline = false;
+  };
+
+  for (let index = 0; index + 1 < lines.length; index += 2) {
+    const code = lines[index].trim();
+    const value = lines[index + 1].trim();
+
+    if (code === "0") {
+      flushVertex();
+      if (value === "SECTION") {
+        pendingSectionName = true;
+        continue;
+      }
+      if (value === "ENDSEC") {
+        pendingSectionName = false;
+        if (inPolyline) {
+          flushPolyline();
+        }
+        inEntities = false;
+        continue;
+      }
+      if (!inEntities) {
+        continue;
+      }
+      if (value === "POLYLINE") {
+        if (inPolyline) {
+          flushPolyline();
+        }
+        inPolyline = true;
+        currentVertices = [];
+        continue;
+      }
+      if (value === "VERTEX" && inPolyline) {
+        currentVertex = {};
+        continue;
+      }
+      if (value === "SEQEND" && inPolyline) {
+        flushPolyline();
+        continue;
+      }
+      if (inPolyline) {
+        flushPolyline();
+      }
+      continue;
+    }
+
+    if (pendingSectionName && code === "2") {
+      inEntities = value === "ENTITIES";
+      pendingSectionName = false;
+      continue;
+    }
+
+    if (!inEntities || !inPolyline || !currentVertex) {
+      continue;
+    }
+
+    if (code === "10") {
+      currentVertex.x = parseNumber(value) ?? undefined;
+      continue;
+    }
+    if (code === "20") {
+      currentVertex.y = parseNumber(value) ?? undefined;
+      continue;
+    }
+    if (code === "30") {
+      currentVertex.z = parseNumber(value) ?? undefined;
+      continue;
+    }
+    if (code === "70") {
+      const parsed = parseNumber(value);
+      currentVertex.flag = parsed === null ? undefined : Math.trunc(parsed);
+      continue;
+    }
+    if (code === "71") {
+      const parsed = parseNumber(value);
+      currentVertex.i1 = parsed === null ? undefined : Math.trunc(parsed);
+      continue;
+    }
+    if (code === "72") {
+      const parsed = parseNumber(value);
+      currentVertex.i2 = parsed === null ? undefined : Math.trunc(parsed);
+      continue;
+    }
+    if (code === "73") {
+      const parsed = parseNumber(value);
+      currentVertex.i3 = parsed === null ? undefined : Math.trunc(parsed);
+      continue;
+    }
+    if (code === "74") {
+      const parsed = parseNumber(value);
+      currentVertex.i4 = parsed === null ? undefined : Math.trunc(parsed);
+    }
+  }
+
+  if (inPolyline) {
+    flushPolyline();
+  }
+
+  return polyfaces;
+}
+
+function crossVec3(a: Vec3, b: Vec3): Vec3 {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function dotVec3(a: Vec3, b: Vec3): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function subVec3(a: Vec3, b: Vec3): Vec3 {
+  return {
+    x: a.x - b.x,
+    y: a.y - b.y,
+    z: a.z - b.z,
+  };
+}
+
+function rayTriangleIntersectionDistance(
+  origin: Vec3,
+  direction: Vec3,
+  a: Vec3,
+  b: Vec3,
+  c: Vec3,
+): number | null {
+  const epsilon = 1e-9;
+  const edge1 = subVec3(b, a);
+  const edge2 = subVec3(c, a);
+  const h = crossVec3(direction, edge2);
+  const det = dotVec3(edge1, h);
+  if (Math.abs(det) < epsilon) {
+    return null;
+  }
+  const invDet = 1 / det;
+  const s = subVec3(origin, a);
+  const u = invDet * dotVec3(s, h);
+  if (u < 0 || u > 1) {
+    return null;
+  }
+  const q = crossVec3(s, edge1);
+  const v = invDet * dotVec3(direction, q);
+  if (v < 0 || u + v > 1) {
+    return null;
+  }
+  const t = invDet * dotVec3(edge2, q);
+  if (t <= epsilon) {
+    return null;
+  }
+  return t;
+}
+
+function toTriangles(polyface: Polyface): Array<[Vec3, Vec3, Vec3]> {
+  const triangles: Array<[Vec3, Vec3, Vec3]> = [];
+  for (const face of polyface.faces) {
+    const valid = face
+      .map((index) => polyface.vertices[index - 1] ?? null)
+      .filter((value): value is Vec3 => value !== null);
+    if (valid.length < 3) {
+      continue;
+    }
+    if (valid.length === 3) {
+      triangles.push([valid[0], valid[1], valid[2]]);
+      continue;
+    }
+    triangles.push([valid[0], valid[1], valid[2]]);
+    triangles.push([valid[0], valid[2], valid[3]]);
+  }
+  return triangles;
+}
+
+function listZipFilesByBasenameSync(): Map<string, string> {
+  if (buildingZipPathByNameCache !== null) {
+    return buildingZipPathByNameCache;
+  }
+
+  const result = new Map<string, string>();
+  const stack = [RAW_BUILDINGS_DIR];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || !fsSync.existsSync(current)) {
+      continue;
+    }
+    const entries = fsSync.readdirSync(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+        continue;
+      }
+      if (entry.isFile() && entry.name.toLowerCase().endsWith(".zip")) {
+        result.set(entry.name, fullPath);
+      }
+    }
+  }
+
+  buildingZipPathByNameCache = result;
+  return result;
+}
+
+function matchPolyfaceToObstacle(
+  obstacle: BuildingObstacle,
+  polyfaces: Polyface[],
+): Polyface | null {
+  let best: { score: number; polyface: Polyface } | null = null;
+  for (const polyface of polyfaces) {
+    const score =
+      Math.abs(polyface.minX - obstacle.minX) +
+      Math.abs(polyface.minY - obstacle.minY) +
+      Math.abs(polyface.maxX - obstacle.maxX) +
+      Math.abs(polyface.maxY - obstacle.maxY) +
+      Math.abs(polyface.minZ - obstacle.minZ) * 0.15;
+    if (score > 6) {
+      continue;
+    }
+    if (!best || score < best.score) {
+      best = {
+        score,
+        polyface,
+      };
+    }
+  }
+  return best?.polyface ?? null;
+}
+
+function getObstacleById(
+  obstacles: BuildingObstacle[],
+  obstacleId: string,
+): BuildingObstacle | null {
+  for (const obstacle of obstacles) {
+    if (obstacle.id === obstacleId) {
+      return obstacle;
+    }
+  }
+  return null;
+}
+
+function loadObstacleMeshSync(
+  obstacles: BuildingObstacle[],
+  blockerId: string,
+): DetailedObstacleMesh | null {
+  const cached = detailedMeshCacheByObstacleId.get(blockerId);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const obstacle = getObstacleById(obstacles, blockerId);
+  if (!obstacle) {
+    detailedMeshCacheByObstacleId.set(blockerId, null);
+    return null;
+  }
+
+  const zipsByBasename = listZipFilesByBasenameSync();
+  const zipPath = zipsByBasename.get(obstacle.sourceZip);
+  if (!zipPath) {
+    detailedMeshCacheByObstacleId.set(blockerId, null);
+    return null;
+  }
+
+  let polyfaces = zipPolyfaceCache.get(zipPath);
+  if (!polyfaces) {
+    polyfaces = parsePolyfacesFromZip(zipPath);
+    zipPolyfaceCache.set(zipPath, polyfaces);
+  }
+  const matched = matchPolyfaceToObstacle(obstacle, polyfaces);
+  if (!matched) {
+    detailedMeshCacheByObstacleId.set(blockerId, null);
+    return null;
+  }
+
+  const mesh: DetailedObstacleMesh = {
+    obstacleId: blockerId,
+    triangles: toTriangles(matched),
+  };
+  detailedMeshCacheByObstacleId.set(blockerId, mesh);
+  return mesh;
+}
+
+export function createDetailedBuildingShadowVerifier(
+  obstacles: BuildingObstacle[],
+): (
+  input: DetailedBuildingShadowVerificationInput,
+) => DetailedBuildingShadowVerificationResult {
+  return (input: DetailedBuildingShadowVerificationInput) => {
+    if (input.solarAltitudeDeg <= 0) {
+      return {
+        blocked: false,
+        blockerDistanceMeters: null,
+      };
+    }
+
+    const mesh = loadObstacleMeshSync(obstacles, input.blockerId);
+    if (!mesh) {
+      return {
+        blocked: true,
+        blockerDistanceMeters: null,
+      };
+    }
+
+    const azimuthRad = (input.solarAzimuthDeg * Math.PI) / 180;
+    const altitudeRad = (input.solarAltitudeDeg * Math.PI) / 180;
+    const cosAlt = Math.cos(altitudeRad);
+    const direction: Vec3 = {
+      x: Math.sin(azimuthRad) * cosAlt,
+      y: Math.cos(azimuthRad) * cosAlt,
+      z: Math.sin(altitudeRad),
+    };
+    const maxT =
+      cosAlt <= 1e-6 ? Number.POSITIVE_INFINITY : input.maxDistanceMeters / cosAlt;
+    const point: Vec3 = {
+      x: input.pointX,
+      y: input.pointY,
+      z: input.pointElevation,
+    };
+
+    let bestT: number | null = null;
+    for (const triangle of mesh.triangles) {
+      const t = rayTriangleIntersectionDistance(
+        point,
+        direction,
+        triangle[0],
+        triangle[1],
+        triangle[2],
+      );
+      if (t === null || t > maxT) {
+        continue;
+      }
+      if (bestT === null || t < bestT) {
+        bestT = t;
+      }
+    }
+
+    if (bestT === null) {
+      return {
+        blocked: false,
+        blockerDistanceMeters: null,
+      };
+    }
+
+    return {
+      blocked: true,
+      blockerDistanceMeters: Math.round(bestT * cosAlt * 1000) / 1000,
+    };
+  };
+}
+
 export function findContainingBuilding(
   obstacles: BuildingObstacle[],
   pointX: number,
@@ -461,6 +986,9 @@ export function evaluateBuildingsShadow(
     if (!obstacle) {
       continue;
     }
+    if (input.excludedBlockerIds?.has(obstacle.id)) {
+      continue;
+    }
     const centerDistance = Math.hypot(
       obstacle.centerX - input.pointX,
       obstacle.centerY - input.pointY,
@@ -518,5 +1046,84 @@ export function evaluateBuildingsShadow(
         ? null
         : Math.round(blockerAltitudeAngleDeg * 1000) / 1000,
     checkedObstaclesCount,
+  };
+}
+
+export function evaluateBuildingsShadowTwoLevel(
+  obstacles: BuildingObstacle[],
+  input: BuildingShadowInput,
+  spatialGrid?: BuildingObstacleSpatialGrid,
+  options: BuildingsShadowTwoLevelOptions = {},
+): BuildingShadowResult {
+  const nearThresholdDegrees =
+    options.nearThresholdDegrees ?? BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES;
+  const maxRefinementSteps =
+    options.maxRefinementSteps ?? BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS;
+
+  if (!options.detailedVerifier || nearThresholdDegrees <= 0 || maxRefinementSteps <= 0) {
+    return evaluateBuildingsShadow(obstacles, input, spatialGrid);
+  }
+
+  const excludedBlockerIds = new Set<string>(input.excludedBlockerIds ?? []);
+  let totalCheckedObstaclesCount = 0;
+
+  for (let step = 0; step <= maxRefinementSteps; step += 1) {
+    const base = evaluateBuildingsShadow(
+      obstacles,
+      {
+        ...input,
+        excludedBlockerIds,
+      },
+      spatialGrid,
+    );
+    totalCheckedObstaclesCount += base.checkedObstaclesCount;
+
+    if (!base.blocked || !base.blockerId || base.blockerAltitudeAngleDeg === null) {
+      return {
+        ...base,
+        checkedObstaclesCount: totalCheckedObstaclesCount,
+      };
+    }
+
+    const marginDeg = base.blockerAltitudeAngleDeg - input.solarAltitudeDeg;
+    if (marginDeg > nearThresholdDegrees) {
+      return {
+        ...base,
+        checkedObstaclesCount: totalCheckedObstaclesCount,
+      };
+    }
+
+    const detailed = options.detailedVerifier({
+      blockerId: base.blockerId,
+      pointX: input.pointX,
+      pointY: input.pointY,
+      pointElevation: input.pointElevation,
+      solarAzimuthDeg: input.solarAzimuthDeg,
+      solarAltitudeDeg: input.solarAltitudeDeg,
+      maxDistanceMeters: input.maxDistanceMeters ?? 2500,
+    });
+
+    if (detailed.blocked) {
+      return {
+        ...base,
+        checkedObstaclesCount: totalCheckedObstaclesCount,
+      };
+    }
+
+    excludedBlockerIds.add(base.blockerId);
+  }
+
+  const fallback = evaluateBuildingsShadow(
+    obstacles,
+    {
+      ...input,
+      excludedBlockerIds,
+    },
+    spatialGrid,
+  );
+
+  return {
+    ...fallback,
+    checkedObstaclesCount: totalCheckedObstaclesCount + fallback.checkedObstaclesCount,
   };
 }

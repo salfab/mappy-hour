@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { evaluateBuildingsShadow, findContainingBuilding } from "./buildings-shadow";
+import {
+  evaluateBuildingsShadow,
+  evaluateBuildingsShadowTwoLevel,
+  findContainingBuilding,
+} from "./buildings-shadow";
 
 interface TestObstacle {
   id: string;
@@ -158,5 +162,80 @@ describe("buildings shadow spatial index", () => {
     expect(indexed.insideBuilding).toBe(true);
     expect(indexed.buildingId).toBe("inside");
   });
-});
 
+  it("two-level refinement drops near-threshold false blocker when detailed verifier says clear", () => {
+    const blocker = createRectangleObstacle({
+      id: "blocker",
+      centerX: 0,
+      centerY: 50,
+      width: 20,
+      depth: 20,
+      maxZ: 35,
+    });
+
+    const refined = evaluateBuildingsShadowTwoLevel(
+      [blocker],
+      {
+        pointX: 0,
+        pointY: 0,
+        pointElevation: 0,
+        solarAzimuthDeg: 0,
+        solarAltitudeDeg: 40.5,
+        maxDistanceMeters: 1200,
+      },
+      undefined,
+      {
+        nearThresholdDegrees: 2,
+        detailedVerifier: () => ({
+          blocked: false,
+          blockerDistanceMeters: null,
+        }),
+      },
+    );
+
+    expect(refined.blocked).toBe(false);
+    expect(refined.blockerId).toBe(null);
+  });
+
+  it("two-level refinement falls back to second blocker if first near-threshold blocker is rejected", () => {
+    const first = createRectangleObstacle({
+      id: "first",
+      centerX: 0,
+      centerY: 50,
+      width: 20,
+      depth: 20,
+      maxZ: 35,
+    });
+    const second = createRectangleObstacle({
+      id: "second",
+      centerX: 0,
+      centerY: 90,
+      width: 20,
+      depth: 20,
+      maxZ: 85,
+    });
+
+    const refined = evaluateBuildingsShadowTwoLevel(
+      [first, second],
+      {
+        pointX: 0,
+        pointY: 0,
+        pointElevation: 0,
+        solarAzimuthDeg: 0,
+        solarAltitudeDeg: 40.5,
+        maxDistanceMeters: 1200,
+      },
+      undefined,
+      {
+        nearThresholdDegrees: 2,
+        detailedVerifier: ({ blockerId }) => ({
+          blocked: blockerId !== "first",
+          blockerDistanceMeters: blockerId === "first" ? null : 90,
+        }),
+      },
+    );
+
+    expect(refined.blocked).toBe(true);
+    expect(refined.blockerId).toBe("second");
+  });
+});
