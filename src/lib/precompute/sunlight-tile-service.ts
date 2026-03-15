@@ -2,11 +2,14 @@ import { performance } from "node:perf_hooks";
 
 import SunCalc from "suncalc";
 
-import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import {
   buildPointEvaluationContext,
   buildSharedPointEvaluationSources,
 } from "@/lib/sun/evaluation-context";
+import {
+  adaptiveHorizonSharingConfig,
+  resolveAdaptiveTerrainHorizonForTile,
+} from "@/lib/sun/adaptive-horizon-sharing";
 import type { ShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { evaluateInstantSunlight } from "@/lib/sun/solar";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
@@ -355,25 +358,29 @@ export async function computeSunlightTileArtifact(params: {
   let indoorPointsExcluded = 0;
   let pointsWithElevation = 0;
   let terrainHorizonOverride:
-    | Awaited<ReturnType<typeof buildDynamicHorizonMask>>
+    | Awaited<ReturnType<typeof resolveAdaptiveTerrainHorizonForTile>>["horizonMask"]
     | undefined;
-
   try {
-    const tileCenterLat = (params.tile.bbox.minLat + params.tile.bbox.maxLat) / 2;
-    const tileCenterLon = (params.tile.bbox.minLon + params.tile.bbox.maxLon) / 2;
-    const dynamicMask = await buildDynamicHorizonMask({
-      lat: tileCenterLat,
-      lon: tileCenterLon,
+    const adaptiveHorizon = await resolveAdaptiveTerrainHorizonForTile({
+      region: params.region,
+      modelVersionHash: params.modelVersionHash,
+      tile: params.tile,
+      date: params.date,
+      timezone: params.timezone,
+      sampleEveryMinutes: params.sampleEveryMinutes,
+      startLocalTime: params.startLocalTime,
+      endLocalTime: params.endLocalTime,
+      gridStepMeters: params.gridStepMeters,
     });
-    if (dynamicMask) {
-      terrainHorizonOverride = dynamicMask;
-      terrainMethod = dynamicMask.method;
-    } else {
+    terrainHorizonOverride = adaptiveHorizon.horizonMask ?? undefined;
+    terrainMethod = adaptiveHorizon.terrainMethod;
+    warnings.push(...adaptiveHorizon.warnings);
+    if (!adaptiveHorizon.horizonMask) {
       warnings.push(`Dynamic terrain horizon unavailable for tile ${params.tile.tileId}.`);
     }
   } catch (error) {
     warnings.push(
-      `Dynamic terrain horizon build failed for tile ${params.tile.tileId} (${error instanceof Error ? error.message : "unknown error"}).`,
+      `Adaptive terrain horizon resolution failed for tile ${params.tile.tileId} (${error instanceof Error ? error.message : "unknown error"}).`,
     );
   }
 
@@ -613,7 +620,7 @@ export async function computeSunlightTileArtifact(params: {
       terrainHorizonMethod: terrainMethod,
       buildingsShadowMethod: buildingsMethod,
       vegetationShadowMethod: vegetationMethod,
-      algorithmVersion: params.algorithmVersion,
+      algorithmVersion: `${params.algorithmVersion}|${adaptiveHorizonSharingConfig.version}`,
       shadowCalibration: params.shadowCalibration,
     },
     warnings: Array.from(new Set(warnings)),

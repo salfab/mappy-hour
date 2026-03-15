@@ -69,6 +69,10 @@ export const PROCESSED_ROOT = path.join(DATA_ROOT, "processed");
 export const CACHE_ROOT = path.join(DATA_ROOT, "cache");
 export const CACHE_SUNLIGHT_DIR = path.join(CACHE_ROOT, "sunlight");
 export const PROCESSED_HORIZON_DIR = path.join(PROCESSED_ROOT, "horizon");
+export const PROCESSED_HORIZON_SHARING_DIR = path.join(
+  PROCESSED_HORIZON_DIR,
+  "adaptive-sharing",
+);
 export const PROCESSED_HORIZON_MASK_PATH = path.join(
   PROCESSED_HORIZON_DIR,
   "lausanne-horizon-mask.json",

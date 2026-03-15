@@ -13,10 +13,11 @@ import {
   RAW_VEGETATION_SURFACE_MANIFEST_NYON_PATH,
 } from "@/lib/storage/data-paths";
 import { loadBuildingsObstacleIndex } from "@/lib/sun/buildings-shadow";
+import { adaptiveHorizonSharingConfig } from "@/lib/sun/adaptive-horizon-sharing";
 import type { PrecomputedRegionName } from "./sunlight-cache";
 import { TtlCache } from "./runtime-cache";
 
-export const SUNLIGHT_CACHE_ALGORITHM_VERSION = "sunlight-cache-v2";
+export const SUNLIGHT_CACHE_ALGORITHM_VERSION = "sunlight-cache-v3";
 export const SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION = 2;
 
 interface ManifestSummary {
@@ -44,6 +45,7 @@ export interface SunlightModelVersion {
     terrainManifest: ManifestSummary;
     vegetationManifest: ManifestSummary;
     horizonManifest: ManifestSummary;
+    adaptiveHorizonSharing: Record<string, unknown>;
   };
 }
 
@@ -156,6 +158,7 @@ export async function getSunlightModelVersion(
     terrainManifest,
     vegetationManifest,
     horizonManifest,
+    adaptiveHorizonSharing: adaptiveHorizonSharingConfig,
   };
 
   const modelVersion: SunlightModelVersion = {
@@ -173,6 +176,7 @@ export async function getSunlightModelVersion(
       terrainManifest,
       vegetationManifest,
       horizonManifest,
+      adaptiveHorizonSharing: adaptiveHorizonSharingConfig,
     },
   };
 
