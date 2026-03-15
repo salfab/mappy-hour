@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
+import {
+  buildPointEvaluationContext,
+  buildSharedPointEvaluationSources,
+} from "@/lib/sun/evaluation-context";
 
 const { wgs84ToLv95Mock } = vi.hoisted(() => ({
   wgs84ToLv95Mock: vi.fn(() => ({ easting: 2_600_000, northing: 1_200_000 })),
@@ -20,16 +23,24 @@ const { loadLausanneHorizonMaskMock } = vi.hoisted(() => ({
   loadLausanneHorizonMaskMock: vi.fn(),
 }));
 
-const { sampleSwissTerrainElevationLv95Mock } = vi.hoisted(() => ({
+const {
+  sampleSwissTerrainElevationLv95Mock,
+  loadTerrainTilesForBoundsMock,
+  sampleSwissTerrainElevationLv95FromTilesMock,
+} = vi.hoisted(() => ({
   sampleSwissTerrainElevationLv95Mock: vi.fn(),
+  loadTerrainTilesForBoundsMock: vi.fn(),
+  sampleSwissTerrainElevationLv95FromTilesMock: vi.fn(),
 }));
 
 const {
   createVegetationShadowEvaluatorMock,
   loadVegetationSurfaceTilesForPointMock,
+  loadVegetationSurfaceTilesForBoundsMock,
 } = vi.hoisted(() => ({
   createVegetationShadowEvaluatorMock: vi.fn(() => vi.fn()),
   loadVegetationSurfaceTilesForPointMock: vi.fn(),
+  loadVegetationSurfaceTilesForBoundsMock: vi.fn(),
 }));
 
 vi.mock("@/lib/geo/projection", () => ({
@@ -48,11 +59,16 @@ vi.mock("@/lib/sun/horizon-mask", () => ({
 
 vi.mock("@/lib/terrain/swiss-terrain", () => ({
   sampleSwissTerrainElevationLv95: sampleSwissTerrainElevationLv95Mock,
+  loadTerrainTilesForBounds: loadTerrainTilesForBoundsMock,
+  sampleSwissTerrainElevationLv95FromTiles:
+    sampleSwissTerrainElevationLv95FromTilesMock,
 }));
 
 vi.mock("@/lib/sun/vegetation-shadow", () => ({
   createVegetationShadowEvaluator: createVegetationShadowEvaluatorMock,
   loadVegetationSurfaceTilesForPoint: loadVegetationSurfaceTilesForPointMock,
+  loadVegetationSurfaceTilesForBounds: loadVegetationSurfaceTilesForBoundsMock,
+  DEFAULT_VEGETATION_SHADOW_MAX_DISTANCE_METERS: 120,
   vegetationShadowMethod: "mock-vegetation",
 }));
 
@@ -67,6 +83,10 @@ function createMockHorizonMask() {
 }
 
 describe("buildPointEvaluationContext vegetation warnings", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("does not warn about missing vegetation raster when point is indoor", async () => {
     loadLausanneHorizonMaskMock.mockResolvedValue(createMockHorizonMask());
     loadBuildingsObstacleIndexMock.mockResolvedValue({
@@ -113,5 +133,52 @@ describe("buildPointEvaluationContext vegetation warnings", () => {
       true,
     );
     expect(loadVegetationSurfaceTilesForPointMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses shared tile sources without per-point vegetation lookup", async () => {
+    loadLausanneHorizonMaskMock.mockResolvedValue(createMockHorizonMask());
+    loadBuildingsObstacleIndexMock.mockResolvedValue({
+      method: "mock-buildings",
+      obstacles: [],
+      spatialGrid: undefined,
+    });
+    findContainingBuildingMock.mockReturnValue({
+      insideBuilding: false,
+      buildingId: null,
+    });
+    loadTerrainTilesForBoundsMock.mockResolvedValue([
+      {
+        filePath: "tile.tif",
+        minX: 2_599_000,
+        minY: 1_199_000,
+        maxX: 2_601_000,
+        maxY: 1_201_000,
+        width: 100,
+        height: 100,
+        nodata: null,
+        raster: new Float32Array(10_000).fill(510),
+      },
+    ]);
+    sampleSwissTerrainElevationLv95FromTilesMock.mockReturnValue(510);
+    loadVegetationSurfaceTilesForBoundsMock.mockResolvedValue([]);
+
+    const sharedSources = await buildSharedPointEvaluationSources({
+      lv95Bounds: {
+        minX: 2_599_900,
+        minY: 1_199_900,
+        maxX: 2_600_100,
+        maxY: 1_200_100,
+      },
+    });
+
+    await buildPointEvaluationContext(46.5, 6.6, {
+      skipTerrainSamplingWhenIndoor: true,
+      sharedSources,
+    });
+
+    expect(loadTerrainTilesForBoundsMock).toHaveBeenCalledTimes(1);
+    expect(sampleSwissTerrainElevationLv95FromTilesMock).toHaveBeenCalledTimes(1);
+    expect(loadVegetationSurfaceTilesForPointMock).not.toHaveBeenCalled();
+    expect(sampleSwissTerrainElevationLv95Mock).not.toHaveBeenCalled();
   });
 });

@@ -45,6 +45,8 @@ const DEFAULT_MAX_DISTANCE_METERS = 120;
 const DEFAULT_STEP_METERS = 2;
 const DEFAULT_MIN_CLEARANCE_METERS = 4;
 const VEGETATION_TILE_SIZE_METERS = 1000;
+export const DEFAULT_VEGETATION_SHADOW_MAX_DISTANCE_METERS =
+  DEFAULT_MAX_DISTANCE_METERS;
 
 let vegetationTileMetadataCachePromise:
   | Promise<VegetationSurfaceTileMetadata[] | null>
@@ -259,6 +261,15 @@ async function loadVegetationSurfaceTilesInBounds(bounds: {
   }
 
   return Promise.all(selectedMetadata.map((tile) => loadVegetationTileRaster(tile)));
+}
+
+export async function loadVegetationSurfaceTilesForBounds(bounds: {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}): Promise<VegetationSurfaceTile[] | null> {
+  return loadVegetationSurfaceTilesInBounds(bounds);
 }
 
 export async function loadVegetationSurfaceTiles(): Promise<

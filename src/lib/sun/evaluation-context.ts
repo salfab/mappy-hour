@@ -11,15 +11,45 @@ import {
 } from "@/lib/sun/shadow-calibration";
 import {
   createVegetationShadowEvaluator,
+  DEFAULT_VEGETATION_SHADOW_MAX_DISTANCE_METERS,
+  loadVegetationSurfaceTilesForBounds,
   loadVegetationSurfaceTilesForPoint,
   vegetationShadowMethod,
 } from "@/lib/sun/vegetation-shadow";
-import { sampleSwissTerrainElevationLv95 } from "@/lib/terrain/swiss-terrain";
+import {
+  loadTerrainTilesForBounds,
+  sampleSwissTerrainElevationLv95,
+  sampleSwissTerrainElevationLv95FromTiles,
+  TerrainTileSource,
+} from "@/lib/terrain/swiss-terrain";
+
+export interface Lv95Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+export interface BuildSharedPointEvaluationSourcesOptions {
+  terrainHorizonOverride?: HorizonMask;
+  lv95Bounds?: Lv95Bounds;
+  vegetationSearchDistanceMeters?: number;
+}
+
+export interface SharedPointEvaluationSources {
+  horizonMask: Awaited<ReturnType<typeof loadLausanneHorizonMask>>;
+  buildingsIndex: Awaited<ReturnType<typeof loadBuildingsObstacleIndex>>;
+  terrainTiles: TerrainTileSource[] | null;
+  vegetationSurfaceTiles: Awaited<
+    ReturnType<typeof loadVegetationSurfaceTilesForBounds>
+  >;
+}
 
 export interface BuildPointEvaluationContextOptions {
   skipTerrainSamplingWhenIndoor?: boolean;
   terrainHorizonOverride?: HorizonMask;
   shadowCalibration?: ShadowCalibration;
+  sharedSources?: SharedPointEvaluationSources;
 }
 
 export interface PointEvaluationContext {
@@ -52,6 +82,51 @@ export interface PointEvaluationContext {
   };
 }
 
+export async function buildSharedPointEvaluationSources(
+  options: BuildSharedPointEvaluationSourcesOptions = {},
+): Promise<SharedPointEvaluationSources> {
+  const [fallbackHorizonMask, buildingsIndex] = await Promise.all([
+    loadLausanneHorizonMask(),
+    loadBuildingsObstacleIndex(),
+  ]);
+  const horizonMask = options.terrainHorizonOverride ?? fallbackHorizonMask;
+  const terrainTiles = options.lv95Bounds
+    ? await loadTerrainTilesForBounds({
+        minX: options.lv95Bounds.minX,
+        minY: options.lv95Bounds.minY,
+        maxX: options.lv95Bounds.maxX,
+        maxY: options.lv95Bounds.maxY,
+      })
+    : null;
+  const vegetationSurfaceTiles = options.lv95Bounds
+    ? await loadVegetationSurfaceTilesForBounds({
+        minX:
+          options.lv95Bounds.minX -
+          (options.vegetationSearchDistanceMeters ??
+            DEFAULT_VEGETATION_SHADOW_MAX_DISTANCE_METERS),
+        minY:
+          options.lv95Bounds.minY -
+          (options.vegetationSearchDistanceMeters ??
+            DEFAULT_VEGETATION_SHADOW_MAX_DISTANCE_METERS),
+        maxX:
+          options.lv95Bounds.maxX +
+          (options.vegetationSearchDistanceMeters ??
+            DEFAULT_VEGETATION_SHADOW_MAX_DISTANCE_METERS),
+        maxY:
+          options.lv95Bounds.maxY +
+          (options.vegetationSearchDistanceMeters ??
+            DEFAULT_VEGETATION_SHADOW_MAX_DISTANCE_METERS),
+      })
+    : null;
+
+  return {
+    horizonMask,
+    buildingsIndex,
+    terrainTiles,
+    vegetationSurfaceTiles,
+  };
+}
+
 export async function buildPointEvaluationContext(
   lat: number,
   lon: number,
@@ -60,11 +135,13 @@ export async function buildPointEvaluationContext(
   const shadowCalibration =
     options.shadowCalibration ?? DEFAULT_SHADOW_CALIBRATION;
   const pointLv95 = wgs84ToLv95(lon, lat);
-  const [lausanneHorizonMask, buildingsIndex] = await Promise.all([
-    loadLausanneHorizonMask(),
-    loadBuildingsObstacleIndex(),
-  ]);
-  const horizonMask = options.terrainHorizonOverride ?? lausanneHorizonMask;
+  const sharedSources =
+    options.sharedSources ??
+    (await buildSharedPointEvaluationSources({
+      terrainHorizonOverride: options.terrainHorizonOverride,
+    }));
+  const horizonMask = sharedSources.horizonMask;
+  const buildingsIndex = sharedSources.buildingsIndex;
 
   const containment = buildingsIndex
     ? findContainingBuilding(
@@ -82,30 +159,41 @@ export async function buildPointEvaluationContext(
     options.skipTerrainSamplingWhenIndoor && containment.insideBuilding;
   const pointElevationMeters = shouldSkipTerrainSampling
     ? null
-    : await sampleSwissTerrainElevationLv95(pointLv95.easting, pointLv95.northing);
+    : sharedSources.terrainTiles && sharedSources.terrainTiles.length > 0
+      ? sampleSwissTerrainElevationLv95FromTiles(
+          sharedSources.terrainTiles,
+          pointLv95.easting,
+          pointLv95.northing,
+        )
+      : await sampleSwissTerrainElevationLv95(pointLv95.easting, pointLv95.northing);
 
   const shouldEvaluateVegetation =
     pointElevationMeters !== null && !containment.insideBuilding;
   const vegetationSurfaceTiles = shouldEvaluateVegetation
-    ? await loadVegetationSurfaceTilesForPoint(
+    ? sharedSources.vegetationSurfaceTiles ??
+      (await loadVegetationSurfaceTilesForPoint(
         pointLv95.easting,
         pointLv95.northing,
-      )
+      ))
     : null;
 
   const buildingShadowEvaluator =
     buildingsIndex && pointElevationMeters !== null && !containment.insideBuilding
       ? (sample: { azimuthDeg: number; altitudeDeg: number }) =>
-          evaluateBuildingsShadow(buildingsIndex.obstacles, {
-            pointX: pointLv95.easting,
-            pointY: pointLv95.northing,
-            pointElevation: pointElevationMeters,
-            observerHeightMeters: shadowCalibration.observerHeightMeters,
-            buildingHeightBiasMeters:
-              shadowCalibration.buildingHeightBiasMeters,
-            solarAzimuthDeg: sample.azimuthDeg,
-            solarAltitudeDeg: sample.altitudeDeg,
-          }, buildingsIndex.spatialGrid)
+          evaluateBuildingsShadow(
+            buildingsIndex.obstacles,
+            {
+              pointX: pointLv95.easting,
+              pointY: pointLv95.northing,
+              pointElevation: pointElevationMeters,
+              observerHeightMeters: shadowCalibration.observerHeightMeters,
+              buildingHeightBiasMeters:
+                shadowCalibration.buildingHeightBiasMeters,
+              solarAzimuthDeg: sample.azimuthDeg,
+              solarAltitudeDeg: sample.altitudeDeg,
+            },
+            buildingsIndex.spatialGrid,
+          )
       : undefined;
   const vegetationShadowEvaluator =
     vegetationSurfaceTiles &&

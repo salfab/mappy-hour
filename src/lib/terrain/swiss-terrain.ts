@@ -23,6 +23,18 @@ interface TerrainTileRaster {
   raster: TerrainRaster;
 }
 
+export interface TerrainTileSource {
+  filePath: string;
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  width: number;
+  height: number;
+  nodata: number | null;
+  raster: TerrainRaster;
+}
+
 let metadataCache: Promise<TerrainTileMetadata[]> | null = null;
 const terrainRasterCache = new Map<string, Promise<TerrainTileRaster>>();
 
@@ -111,11 +123,38 @@ function valueIsNoData(value: number, nodata: number | null): boolean {
   return Math.abs(value - nodata) < 1e-6;
 }
 
-function findContainingTile(
-  tiles: TerrainTileMetadata[],
+function boundsIntersect(
+  bounds: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  },
+  tile: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  },
+): boolean {
+  return !(
+    tile.maxX < bounds.minX ||
+    tile.minX > bounds.maxX ||
+    tile.maxY < bounds.minY ||
+    tile.minY > bounds.maxY
+  );
+}
+
+function findContainingTile<T extends {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}>(
+  tiles: T[],
   easting: number,
   northing: number,
-): TerrainTileMetadata | null {
+): T | null {
   for (const tile of tiles) {
     if (
       easting >= tile.minX &&
@@ -163,6 +202,65 @@ async function loadTerrainTileRaster(
 
   terrainRasterCache.set(tile.filePath, rasterPromise);
   return rasterPromise;
+}
+
+export async function loadTerrainTilesForBounds(bounds: {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}): Promise<TerrainTileSource[] | null> {
+  const metadata = await loadTerrainMetadata();
+  if (metadata.length === 0) {
+    return null;
+  }
+
+  const selected = metadata.filter((tile) => boundsIntersect(bounds, tile));
+  if (selected.length === 0) {
+    return [];
+  }
+
+  const withRasters = await Promise.all(
+    selected.map(async (tile) => {
+      const raster = await loadTerrainTileRaster(tile);
+      return {
+        filePath: tile.filePath,
+        minX: tile.minX,
+        minY: tile.minY,
+        maxX: tile.maxX,
+        maxY: tile.maxY,
+        width: tile.width,
+        height: tile.height,
+        nodata: raster.nodata,
+        raster: raster.raster,
+      } satisfies TerrainTileSource;
+    }),
+  );
+
+  return withRasters;
+}
+
+export function sampleSwissTerrainElevationLv95FromTiles(
+  tiles: TerrainTileSource[],
+  easting: number,
+  northing: number,
+): number | null {
+  const tile = findContainingTile(tiles, easting, northing);
+  if (!tile) {
+    return null;
+  }
+
+  const xRatio = (easting - tile.minX) / (tile.maxX - tile.minX);
+  const yRatio = (tile.maxY - northing) / (tile.maxY - tile.minY);
+  const x = clamp(Math.floor(xRatio * tile.width), 0, tile.width - 1);
+  const y = clamp(Math.floor(yRatio * tile.height), 0, tile.height - 1);
+  const index = y * tile.width + x;
+  const value = Number(tile.raster[index]);
+  if (!Number.isFinite(value) || valueIsNoData(value, tile.nodata)) {
+    return null;
+  }
+
+  return value;
 }
 
 export async function sampleSwissTerrainElevationLv95(

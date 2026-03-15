@@ -3,7 +3,10 @@ import { performance } from "node:perf_hooks";
 import SunCalc from "suncalc";
 
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
-import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
+import {
+  buildPointEvaluationContext,
+  buildSharedPointEvaluationSources,
+} from "@/lib/sun/evaluation-context";
 import type { ShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { evaluateInstantSunlight } from "@/lib/sun/solar";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
@@ -376,6 +379,15 @@ export async function computeSunlightTileArtifact(params: {
 
   const points: PrecomputedSunlightTileArtifact["points"] = [];
   const preparedOutdoorPoints: PreparedOutdoorPoint[] = [];
+  const sharedSources = await buildSharedPointEvaluationSources({
+    terrainHorizonOverride: terrainHorizonOverride ?? undefined,
+    lv95Bounds: {
+      minX: params.tile.minEasting,
+      minY: params.tile.minNorthing,
+      maxX: params.tile.maxEasting,
+      maxY: params.tile.maxNorthing,
+    },
+  });
 
   for (let rawPointIndex = 0; rawPointIndex < rawTilePoints.length; rawPointIndex += 1) {
     throwIfAborted(params.signal);
@@ -384,6 +396,7 @@ export async function computeSunlightTileArtifact(params: {
       skipTerrainSamplingWhenIndoor: true,
       terrainHorizonOverride: terrainHorizonOverride ?? undefined,
       shadowCalibration: params.shadowCalibration,
+      sharedSources,
     });
     terrainMethod = context.terrainHorizonMethod;
     buildingsMethod = context.buildingsShadowMethod;
