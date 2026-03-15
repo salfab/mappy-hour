@@ -2,8 +2,9 @@
 
 Source brute:
 - `docs/progress/benchmarks/precompute-workers-lausanne-2026-03-08-d1-g5-t4.json`
+- `docs/progress/benchmarks/precompute-workers-lausanne-2026-03-08-d1-g1-t4.json`
 
-## Configuration mesurée
+## Scénario A - Charge modérée (`grid=5m`)
 
 - région: `lausanne`
 - date: `2026-03-08`
@@ -17,7 +18,7 @@ Source brute:
 - workers comparés: `1, 2, 4, 6, 8, 12`
 - mode: `skipExisting=false` (recalcul effectif)
 
-## Résultats (médiane)
+### Résultats
 
 | Workers | Temps médian | Tiles/min médian | Speedup vs 1 worker |
 |---|---:|---:|---:|
@@ -37,9 +38,41 @@ Source brute:
 - Aucun échec tuile (`failedTiles=0`).
 - La courbe est clairement en plateau à partir de `4`.
 
+## Scénario B - Charge lourde (`grid=1m`)
+
+Configuration:
+
+- région: `lausanne`
+- date: `2026-03-08`
+- jours: `1`
+- tuiles: `4`
+- taille tuile: `250m`
+- grille: `1m`
+- pas temporel: `60 min`
+- fenêtre: `10:00-10:01` (1 frame, focus coût point/tuile)
+- repeats: `1`
+- workers comparés: `1, 2, 4, 6, 8`
+- mode: `skipExisting=false`
+
+### Résultats
+
+| Workers | Temps | Tiles/min | Speedup vs 1 worker |
+|---|---:|---:|---:|
+| 1 | 717853 ms | 0.334 | 1.000x |
+| 2 | 468191 ms | 0.513 | 1.533x |
+| 4 | 344334 ms | 0.697 | 2.085x |
+| 6 | 364615 ms | 0.658 | 1.969x |
+| 8 | 344087 ms | 0.697 | 2.086x |
+
+Observations:
+
+- En charge lourde, le gain continue jusqu'à `4` workers (x2.08).
+- `6` est moins bon que `4` (saturation/overhead).
+- `8` rejoint `4` mais ne fait pas mieux de façon significative.
+
 ## Recommandation opérationnelle
 
 - Valeur par défaut recommandée: `MAPPY_PRECOMPUTE_WORKERS=4`.
-- Optionnel: `6-8` si la machine est dédiée et stable I/O, mais l'intérêt restera faible.
+- `6+` n'est pas recommandé par défaut (gains nuls ou régressions selon la charge).
 - Garder `MAPPY_PRECOMPUTE_WORKERS_STRICT=1` en benchmark, et `0` en prod pour fallback séquentiel.
-- Étape suivante: refaire le même benchmark sur une charge plus lourde (`grid=1m`, plus de tuiles/jours) pour vérifier l'échelle du gain.
+- Étape suivante: benchmark `grid=1m` avec plus de tuiles/jours pour confirmer la stabilité du plateau sur des runs longs.

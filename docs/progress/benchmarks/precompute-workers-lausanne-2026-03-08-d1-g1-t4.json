@@ -1,0 +1,154 @@
+{
+  "generatedAt": "2026-03-15T21:10:12.205Z",
+  "params": {
+    "region": "lausanne",
+    "startDate": "2026-03-08",
+    "days": 1,
+    "timezone": "Europe/Zurich",
+    "sampleEveryMinutes": 60,
+    "gridStepMeters": 1,
+    "startLocalTime": "10:00",
+    "endLocalTime": "10:01",
+    "tileCount": 4,
+    "repeats": 1,
+    "workers": [
+      1,
+      2,
+      4,
+      6,
+      8
+    ]
+  },
+  "selectedTileIds": [
+    "e2538000_n1152250_s250",
+    "e2538000_n1152000_s250",
+    "e2537750_n1152250_s250",
+    "e2538250_n1152250_s250"
+  ],
+  "selectedTileCount": 4,
+  "baselineWorkerCount": 1,
+  "summary": [
+    {
+      "workerCount": 1,
+      "runs": 1,
+      "elapsedMs": {
+        "min": 717853.009,
+        "median": 717853.009,
+        "max": 717853.009
+      },
+      "tilesPerMinute": {
+        "min": 0.334,
+        "median": 0.334,
+        "max": 0.334
+      },
+      "totalFailedTiles": 0,
+      "speedupVsBaseline": 1
+    },
+    {
+      "workerCount": 2,
+      "runs": 1,
+      "elapsedMs": {
+        "min": 468191.145,
+        "median": 468191.145,
+        "max": 468191.145
+      },
+      "tilesPerMinute": {
+        "min": 0.513,
+        "median": 0.513,
+        "max": 0.513
+      },
+      "totalFailedTiles": 0,
+      "speedupVsBaseline": 1.533
+    },
+    {
+      "workerCount": 4,
+      "runs": 1,
+      "elapsedMs": {
+        "min": 344333.604,
+        "median": 344333.604,
+        "max": 344333.604
+      },
+      "tilesPerMinute": {
+        "min": 0.697,
+        "median": 0.697,
+        "max": 0.697
+      },
+      "totalFailedTiles": 0,
+      "speedupVsBaseline": 2.085
+    },
+    {
+      "workerCount": 6,
+      "runs": 1,
+      "elapsedMs": {
+        "min": 364615.384,
+        "median": 364615.384,
+        "max": 364615.384
+      },
+      "tilesPerMinute": {
+        "min": 0.658,
+        "median": 0.658,
+        "max": 0.658
+      },
+      "totalFailedTiles": 0,
+      "speedupVsBaseline": 1.969
+    },
+    {
+      "workerCount": 8,
+      "runs": 1,
+      "elapsedMs": {
+        "min": 344087.277,
+        "median": 344087.277,
+        "max": 344087.277
+      },
+      "tilesPerMinute": {
+        "min": 0.697,
+        "median": 0.697,
+        "max": 0.697
+      },
+      "totalFailedTiles": 0,
+      "speedupVsBaseline": 2.086
+    }
+  ],
+  "samples": [
+    {
+      "repeat": 1,
+      "workerCount": 1,
+      "elapsedMs": 717853.009,
+      "processedTiles": 4,
+      "tilePerMinute": 0.334,
+      "totalFailedTiles": 0
+    },
+    {
+      "repeat": 1,
+      "workerCount": 2,
+      "elapsedMs": 468191.145,
+      "processedTiles": 4,
+      "tilePerMinute": 0.513,
+      "totalFailedTiles": 0
+    },
+    {
+      "repeat": 1,
+      "workerCount": 4,
+      "elapsedMs": 344333.604,
+      "processedTiles": 4,
+      "tilePerMinute": 0.697,
+      "totalFailedTiles": 0
+    },
+    {
+      "repeat": 1,
+      "workerCount": 6,
+      "elapsedMs": 364615.384,
+      "processedTiles": 4,
+      "tilePerMinute": 0.658,
+      "totalFailedTiles": 0
+    },
+    {
+      "repeat": 1,
+      "workerCount": 8,
+      "elapsedMs": 344087.277,
+      "processedTiles": 4,
+      "tilePerMinute": 0.697,
+      "totalFailedTiles": 0
+    }
+  ]
+}
