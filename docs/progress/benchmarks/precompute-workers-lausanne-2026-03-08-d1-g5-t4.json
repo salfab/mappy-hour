@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-03-15T19:33:32.155Z",
+  "generatedAt": "2026-03-15T19:49:37.638Z",
   "params": {
     "region": "lausanne",
     "startDate": "2026-03-08",
@@ -10,11 +10,14 @@
     "startLocalTime": "10:00",
     "endLocalTime": "12:00",
     "tileCount": 4,
-    "repeats": 2,
+    "repeats": 1,
     "workers": [
       1,
       2,
-      4
+      4,
+      6,
+      8,
+      12
     ]
   },
   "selectedTileIds": [
@@ -28,100 +31,148 @@
   "summary": [
     {
       "workerCount": 1,
-      "runs": 2,
+      "runs": 1,
       "elapsedMs": {
-        "min": 98979.005,
-        "median": 113067.647,
-        "max": 127156.288
+        "min": 125745.615,
+        "median": 125745.615,
+        "max": 125745.615
       },
       "tilesPerMinute": {
-        "min": 1.887,
-        "median": 2.156,
-        "max": 2.425
+        "min": 1.909,
+        "median": 1.909,
+        "max": 1.909
       },
       "totalFailedTiles": 0,
       "speedupVsBaseline": 1
     },
     {
       "workerCount": 2,
-      "runs": 2,
+      "runs": 1,
       "elapsedMs": {
-        "min": 92375.403,
-        "median": 92476.685,
-        "max": 92577.968
+        "min": 91332.156,
+        "median": 91332.156,
+        "max": 91332.156
       },
       "tilesPerMinute": {
-        "min": 2.592,
-        "median": 2.595,
-        "max": 2.598
+        "min": 2.628,
+        "median": 2.628,
+        "max": 2.628
       },
       "totalFailedTiles": 0,
-      "speedupVsBaseline": 1.223
+      "speedupVsBaseline": 1.377
     },
     {
       "workerCount": 4,
-      "runs": 2,
+      "runs": 1,
       "elapsedMs": {
-        "min": 80840.742,
-        "median": 80889.328,
-        "max": 80937.913
+        "min": 80734.468,
+        "median": 80734.468,
+        "max": 80734.468
       },
       "tilesPerMinute": {
-        "min": 2.965,
-        "median": 2.967,
-        "max": 2.969
+        "min": 2.973,
+        "median": 2.973,
+        "max": 2.973
       },
       "totalFailedTiles": 0,
-      "speedupVsBaseline": 1.398
+      "speedupVsBaseline": 1.558
+    },
+    {
+      "workerCount": 6,
+      "runs": 1,
+      "elapsedMs": {
+        "min": 81129.057,
+        "median": 81129.057,
+        "max": 81129.057
+      },
+      "tilesPerMinute": {
+        "min": 2.958,
+        "median": 2.958,
+        "max": 2.958
+      },
+      "totalFailedTiles": 0,
+      "speedupVsBaseline": 1.55
+    },
+    {
+      "workerCount": 8,
+      "runs": 1,
+      "elapsedMs": {
+        "min": 80672.083,
+        "median": 80672.083,
+        "max": 80672.083
+      },
+      "tilesPerMinute": {
+        "min": 2.975,
+        "median": 2.975,
+        "max": 2.975
+      },
+      "totalFailedTiles": 0,
+      "speedupVsBaseline": 1.559
+    },
+    {
+      "workerCount": 12,
+      "runs": 1,
+      "elapsedMs": {
+        "min": 80033.722,
+        "median": 80033.722,
+        "max": 80033.722
+      },
+      "tilesPerMinute": {
+        "min": 2.999,
+        "median": 2.999,
+        "max": 2.999
+      },
+      "totalFailedTiles": 0,
+      "speedupVsBaseline": 1.571
     }
   ],
   "samples": [
     {
       "repeat": 1,
       "workerCount": 1,
-      "elapsedMs": 127156.288,
+      "elapsedMs": 125745.615,
       "processedTiles": 4,
-      "tilePerMinute": 1.887,
+      "tilePerMinute": 1.909,
       "totalFailedTiles": 0
     },
     {
       "repeat": 1,
       "workerCount": 2,
-      "elapsedMs": 92577.968,
+      "elapsedMs": 91332.156,
       "processedTiles": 4,
-      "tilePerMinute": 2.592,
+      "tilePerMinute": 2.628,
       "totalFailedTiles": 0
     },
     {
       "repeat": 1,
       "workerCount": 4,
-      "elapsedMs": 80840.742,
+      "elapsedMs": 80734.468,
       "processedTiles": 4,
-      "tilePerMinute": 2.969,
+      "tilePerMinute": 2.973,
       "totalFailedTiles": 0
     },
     {
-      "repeat": 2,
-      "workerCount": 4,
-      "elapsedMs": 80937.913,
+      "repeat": 1,
+      "workerCount": 6,
+      "elapsedMs": 81129.057,
       "processedTiles": 4,
-      "tilePerMinute": 2.965,
+      "tilePerMinute": 2.958,
       "totalFailedTiles": 0
     },
     {
-      "repeat": 2,
-      "workerCount": 2,
-      "elapsedMs": 92375.403,
+      "repeat": 1,
+      "workerCount": 8,
+      "elapsedMs": 80672.083,
       "processedTiles": 4,
-      "tilePerMinute": 2.598,
+      "tilePerMinute": 2.975,
       "totalFailedTiles": 0
     },
     {
-      "repeat": 2,
-      "workerCount": 1,
-      "elapsedMs": 98979.005,
+      "repeat": 1,
+      "workerCount": 12,
+      "elapsedMs": 80033.722,
       "processedTiles": 4,
-      "tilePerMinute": 2.425,
+      "tilePerMinute": 2.999,
       "totalFailedTiles": 0
     }
   ]
