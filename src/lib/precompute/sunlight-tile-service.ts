@@ -947,7 +947,6 @@ export function aggregateInstantAreaFromArtifacts(params: {
       vegetationShadowMethod: params.artifacts[0]?.model.vegetationShadowMethod ?? "none",
       terrainHorizonDebug: null,
       shadowCalibration: params.artifacts[0]?.model.shadowCalibration ?? {
-        observerHeightMeters: 0,
         buildingHeightBiasMeters: 0,
       },
     },
@@ -1068,7 +1067,6 @@ export function aggregateDailyAreaFromArtifacts(params: {
       vegetationShadowMethod: params.artifacts[0]?.model.vegetationShadowMethod ?? "none",
       terrainHorizonDebug: null,
       shadowCalibration: params.artifacts[0]?.model.shadowCalibration ?? {
-        observerHeightMeters: 0,
         buildingHeightBiasMeters: 0,
       },
     },
@@ -1175,7 +1173,6 @@ export function buildTimelineFromArtifacts(params: {
       vegetationShadowMethod: params.artifacts[0]?.model.vegetationShadowMethod ?? "none",
       terrainHorizonDebug: null,
       shadowCalibration: params.artifacts[0]?.model.shadowCalibration ?? {
-        observerHeightMeters: 0,
         buildingHeightBiasMeters: 0,
       },
     },

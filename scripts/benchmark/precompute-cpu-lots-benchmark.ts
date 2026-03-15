@@ -281,7 +281,6 @@ async function benchmarkLotC() {
   }
 
   const model = await getSunlightModelVersion("lausanne", {
-    observerHeightMeters: 0,
     buildingHeightBiasMeters: 0,
   });
 

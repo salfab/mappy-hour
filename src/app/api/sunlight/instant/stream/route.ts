@@ -25,7 +25,6 @@ const querySchema = z
     localTime: z.string().regex(/^\d{2}:\d{2}$/).default("12:00"),
     gridStepMeters: z.coerce.number().int().min(1).max(2000).default(250),
     maxPoints: z.coerce.number().int().min(1).max(5000).default(3000),
-    observerHeightMeters: z.coerce.number().min(-5).max(20).default(0),
     buildingHeightBiasMeters: z.coerce.number().min(-20).max(20).default(0),
   })
   .refine(
@@ -93,7 +92,6 @@ export async function GET(request: Request) {
     const started = performance.now();
     const query = parsed.data;
     const shadowCalibration = normalizeShadowCalibration({
-      observerHeightMeters: query.observerHeightMeters,
       buildingHeightBiasMeters: query.buildingHeightBiasMeters,
     });
     const grid = buildGridFromBbox(

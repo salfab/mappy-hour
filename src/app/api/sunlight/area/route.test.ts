@@ -372,7 +372,6 @@ describe("POST /api/sunlight/area", () => {
         vegetationShadowMethod: "precomputed-cache",
         terrainHorizonDebug: null,
         shadowCalibration: {
-          observerHeightMeters: 0,
           buildingHeightBiasMeters: 0,
         },
       },
@@ -467,7 +466,6 @@ describe("POST /api/sunlight/area", () => {
         vegetationShadowMethod: "precomputed-cache",
         terrainHorizonDebug: null,
         shadowCalibration: {
-          observerHeightMeters: 0,
           buildingHeightBiasMeters: 0,
         },
       },

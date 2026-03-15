@@ -186,7 +186,6 @@ export async function buildPointEvaluationContext(
               pointX: pointLv95.easting,
               pointY: pointLv95.northing,
               pointElevation: pointElevationMeters,
-              observerHeightMeters: shadowCalibration.observerHeightMeters,
               buildingHeightBiasMeters:
                 shadowCalibration.buildingHeightBiasMeters,
               solarAzimuthDeg: sample.azimuthDeg,
@@ -204,8 +203,7 @@ export async function buildPointEvaluationContext(
           tiles: vegetationSurfaceTiles,
           pointX: pointLv95.easting,
           pointY: pointLv95.northing,
-          pointElevation:
-            pointElevationMeters + shadowCalibration.observerHeightMeters,
+          pointElevation: pointElevationMeters,
         })
       : undefined;
 

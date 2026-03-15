@@ -1,10 +1,8 @@
 export interface ShadowCalibration {
-  observerHeightMeters: number;
   buildingHeightBiasMeters: number;
 }
 
 export const DEFAULT_SHADOW_CALIBRATION: ShadowCalibration = {
-  observerHeightMeters: 0,
   buildingHeightBiasMeters: 0,
 };
 
@@ -19,15 +17,11 @@ function clamp(value: number, min: number, max: number): number {
 export function normalizeShadowCalibration(
   input: Partial<ShadowCalibration> | undefined,
 ): ShadowCalibration {
-  const observerHeightMeters = Number.isFinite(input?.observerHeightMeters)
-    ? clamp(input!.observerHeightMeters as number, -5, 20)
-    : DEFAULT_SHADOW_CALIBRATION.observerHeightMeters;
   const buildingHeightBiasMeters = Number.isFinite(input?.buildingHeightBiasMeters)
     ? clamp(input!.buildingHeightBiasMeters as number, -20, 20)
     : DEFAULT_SHADOW_CALIBRATION.buildingHeightBiasMeters;
 
   return {
-    observerHeightMeters,
     buildingHeightBiasMeters,
   };
 }

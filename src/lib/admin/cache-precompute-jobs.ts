@@ -402,7 +402,6 @@ export async function rejectCachePrecomputeJob(
   }
 
   const shadowCalibration = normalizeShadowCalibration({
-    observerHeightMeters: existing.request.observerHeightMeters,
     buildingHeightBiasMeters: existing.request.buildingHeightBiasMeters,
   });
   const modelVersion = await getSunlightModelVersion(

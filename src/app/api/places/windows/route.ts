@@ -33,7 +33,6 @@ const requestSchema = z
     outdoorOnly: z.boolean().default(false),
     includeNonSunny: z.boolean().default(false),
     ignoreVegetation: z.boolean().default(false),
-    observerHeightMeters: z.number().min(-5).max(20).optional(),
     buildingHeightBiasMeters: z.number().min(-20).max(20).optional(),
     bbox: z
       .tuple([z.number(), z.number(), z.number(), z.number()])
@@ -303,7 +302,6 @@ async function pickOutdoorEvaluationPoint(
   },
   options: {
     shadowCalibration: {
-      observerHeightMeters: number;
       buildingHeightBiasMeters: number;
     };
   },
@@ -397,7 +395,6 @@ export async function POST(request: Request) {
   try {
     const started = performance.now();
     const shadowCalibration = normalizeShadowCalibration({
-      observerHeightMeters: parsed.data.observerHeightMeters,
       buildingHeightBiasMeters: parsed.data.buildingHeightBiasMeters,
     });
     const placesFile = await loadAllPlaces();

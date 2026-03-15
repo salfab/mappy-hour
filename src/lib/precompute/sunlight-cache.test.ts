@@ -112,7 +112,6 @@ describe("sunlight cache storage", () => {
         vegetationShadowMethod: "mock-vegetation",
         algorithmVersion: "sunlight-cache-v2",
         shadowCalibration: {
-          observerHeightMeters: 0,
           buildingHeightBiasMeters: 0,
         },
       },
@@ -218,7 +217,6 @@ describe("sunlight cache storage", () => {
         vegetationShadowMethod: "mock-vegetation",
         algorithmVersion: "sunlight-cache-v2",
         shadowCalibration: {
-          observerHeightMeters: 0,
           buildingHeightBiasMeters: 0,
         },
       },
@@ -350,7 +348,6 @@ describe("sunlight cache storage", () => {
               vegetationShadowMethod: "mock-vegetation",
               algorithmVersion: "sunlight-cache-v1",
               shadowCalibration: {
-                observerHeightMeters: 0,
                 buildingHeightBiasMeters: 0,
               },
             },

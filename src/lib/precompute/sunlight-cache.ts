@@ -85,7 +85,6 @@ export interface PrecomputedSunlightTileArtifact {
     vegetationShadowMethod: string;
     algorithmVersion: string;
     shadowCalibration: {
-      observerHeightMeters: number;
       buildingHeightBiasMeters: number;
     };
   };

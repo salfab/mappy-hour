@@ -19,7 +19,6 @@ interface ParsedArgs {
   gridStepMeters: number;
   startLocalTime: string;
   endLocalTime: string;
-  observerHeightMeters: number;
   buildingHeightBiasMeters: number;
 }
 
@@ -32,7 +31,6 @@ const DEFAULT_ARGS: ParsedArgs = {
   gridStepMeters: 1,
   startLocalTime: "00:00",
   endLocalTime: "23:59",
-  observerHeightMeters: 0,
   buildingHeightBiasMeters: 0,
 };
 
@@ -88,10 +86,6 @@ function parseArgs(argv: string[]): ParsedArgs {
       result.endLocalTime = arg.slice("--end-local-time=".length);
       continue;
     }
-    if (arg.startsWith("--observer-height-meters=")) {
-      result.observerHeightMeters = Number(arg.slice("--observer-height-meters=".length));
-      continue;
-    }
     if (arg.startsWith("--building-height-bias-meters=")) {
       result.buildingHeightBiasMeters = Number(
         arg.slice("--building-height-bias-meters=".length),
@@ -115,7 +109,6 @@ async function main() {
   const tileSizeMeters = CANONICAL_PRECOMPUTE_TILE_SIZE_METERS;
   const tiles = buildRegionTiles(args.region, tileSizeMeters);
   const shadowCalibration = normalizeShadowCalibration({
-    observerHeightMeters: args.observerHeightMeters,
     buildingHeightBiasMeters: args.buildingHeightBiasMeters,
   });
   const modelVersion = await getSunlightModelVersion(args.region, shadowCalibration);

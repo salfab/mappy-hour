@@ -17,7 +17,6 @@ Quand le soleil "disparait", on est a une condition de seuil:
 Ce seuil est tres sensible a:
 
 - hauteur effective de l'obstacle
-- altitude de l'observateur
 - georeferencement local (quelques metres peuvent suffire)
 
 Donc cette mesure permet de detecter rapidement un biais vertical (offset) ou geometrique.
@@ -42,7 +41,6 @@ Compensation recommandee:
 
 1. Choisir un point fixe bien identifiable (coordonnees precises).
 2. Preparer l'heure locale officielle: `Europe/Zurich`.
-3. Noter la hauteur d'observation approx. (yeux, terrasse, etc.).
 
 ## B. Sur site
 
@@ -52,7 +50,6 @@ Compensation recommandee:
    - heure locale exacte (`HH:MM:SS`) de disparition du soleil
    - heure de reapparition (si observable)
    - coordonnees du point
-   - hauteur observateur estimee
    - photos horodatees
 3. Ajouter une marge d'incertitude (ex: +/- 15 s, +/- 30 s).
 
@@ -64,7 +61,6 @@ Compensation recommandee:
    - timezone
    - coordonnees
 2. Tester les parametres experimentaux:
-   - `Obs +m (exp)`
    - `Toit bias m (exp)`
 3. Chercher la combinaison qui place le modele au seuil au meme instant que le terrain.
 
@@ -73,24 +69,21 @@ Compensation recommandee:
 Si l'ombre apparait trop tot dans le modele:
 
 - baisser `Toit bias m` (valeur negative)
-- ou augmenter `Obs +m`
 
 Si l'ombre apparait trop tard:
 
 - augmenter `Toit bias m`
-- ou diminuer `Obs +m`
 
 Regle pratique:
 
-- d'abord fixer `Obs +m` a la hauteur humaine realiste (ex: 1.7 m)
-- ensuite calibrer `Toit bias m`
+- calibrer `Toit bias m`
 - valider sur plusieurs points/heures
 
 ## Tableau de releve minimal
 
-| date | point lat/lon | disparition soleil (local) | reapparition (local) | obs +m estime | meteo | commentaire |
-|---|---|---|---|---|---|---|
-| 2026-03-08 | 46.522861, 6.633199 | 17:00:xx | - | 1.7 | ciel clair | esplanade Great Escape |
+| date | point lat/lon | disparition soleil (local) | reapparition (local) | meteo | commentaire |
+|---|---|---|---|---|---|
+| 2026-03-08 | 46.522861, 6.633199 | 17:00:xx | - | ciel clair | esplanade Great Escape |
 
 ## Conclusion
 

@@ -17,7 +17,6 @@ const requestSchema = z.object({
   mode: z.enum(["instant", "daily"]).default("instant"),
   localTime: z.string().regex(/^\d{2}:\d{2}$/).default("12:00"),
   sampleEveryMinutes: z.number().int().min(1).max(60).default(15),
-  observerHeightMeters: z.number().min(-5).max(20).optional(),
   buildingHeightBiasMeters: z.number().min(-20).max(20).optional(),
 });
 
@@ -70,7 +69,6 @@ export async function POST(request: Request) {
   try {
     const warnings: string[] = [];
     const shadowCalibration = normalizeShadowCalibration({
-      observerHeightMeters: parsed.data.observerHeightMeters,
       buildingHeightBiasMeters: parsed.data.buildingHeightBiasMeters,
     });
     let terrainHorizonOverride:

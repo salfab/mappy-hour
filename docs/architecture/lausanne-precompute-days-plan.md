@@ -134,7 +134,7 @@ Versionner chaque lot de precompute avec:
 - version donnees DEM local,
 - version DEM horizon,
 - version vegetation,
-- version calibration (`observerHeightMeters`, `buildingHeightBiasMeters`),
+- version calibration (`buildingHeightBiasMeters`),
 - version algo.
 
 Cle de cache recommande:

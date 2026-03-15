@@ -32,7 +32,6 @@ const requestSchema = z
     gridStepMeters: z.number().int().min(1).max(2000).default(250),
     maxPoints: z.number().int().min(1).max(5000).default(900),
     ignoreVegetation: z.boolean().default(false),
-    observerHeightMeters: z.number().min(-5).max(20).optional(),
     buildingHeightBiasMeters: z.number().min(-20).max(20).optional(),
   })
   .refine(
@@ -180,7 +179,6 @@ export async function POST(request: Request) {
     const started = performance.now();
     const [minLon, minLat, maxLon, maxLat] = parsed.data.bbox;
     const shadowCalibration = normalizeShadowCalibration({
-      observerHeightMeters: parsed.data.observerHeightMeters,
       buildingHeightBiasMeters: parsed.data.buildingHeightBiasMeters,
     });
 

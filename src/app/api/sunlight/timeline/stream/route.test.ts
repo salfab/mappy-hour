@@ -370,7 +370,6 @@ describe("GET /api/sunlight/timeline/stream", () => {
         vegetationShadowMethod: "precomputed-cache",
         terrainHorizonDebug: null,
         shadowCalibration: {
-          observerHeightMeters: 0,
           buildingHeightBiasMeters: 0,
         },
       },

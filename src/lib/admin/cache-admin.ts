@@ -117,7 +117,6 @@ export interface CachePrecomputeRequest {
   endLocalTime: string;
   tileIds?: string[];
   skipExisting?: boolean;
-  observerHeightMeters?: number;
   buildingHeightBiasMeters?: number;
 }
 
@@ -128,9 +127,8 @@ export interface CachePrecomputeResult {
   algorithmVersion: string;
   totalTiles: number;
   totalDates: number;
-  params: Omit<CachePrecomputeRequest, "observerHeightMeters" | "buildingHeightBiasMeters"> & {
+  params: Omit<CachePrecomputeRequest, "buildingHeightBiasMeters"> & {
     tileSizeMeters: number;
-    observerHeightMeters: number;
     buildingHeightBiasMeters: number;
   };
   dates: Array<{
@@ -587,7 +585,6 @@ export async function precomputeCacheRuns(
 ): Promise<CachePrecomputeResult> {
   const tileSizeMeters = CANONICAL_PRECOMPUTE_TILE_SIZE_METERS;
   const shadowCalibration = normalizeShadowCalibration({
-    observerHeightMeters: request.observerHeightMeters,
     buildingHeightBiasMeters: request.buildingHeightBiasMeters,
   });
   const modelVersion = await getSunlightModelVersion(request.region, shadowCalibration);
@@ -860,7 +857,6 @@ export async function precomputeCacheRuns(
       startLocalTime: request.startLocalTime,
       endLocalTime: request.endLocalTime,
       skipExisting,
-      observerHeightMeters: shadowCalibration.observerHeightMeters,
       buildingHeightBiasMeters: shadowCalibration.buildingHeightBiasMeters,
     },
     dates,

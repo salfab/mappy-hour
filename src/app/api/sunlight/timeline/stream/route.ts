@@ -31,7 +31,6 @@ const querySchema = z
     sampleEveryMinutes: z.coerce.number().int().min(1).max(60).default(15),
     gridStepMeters: z.coerce.number().int().min(1).max(2000).default(250),
     maxPoints: z.coerce.number().int().min(1).max(5000).default(3000),
-    observerHeightMeters: z.coerce.number().min(-5).max(20).default(0),
     buildingHeightBiasMeters: z.coerce.number().min(-20).max(20).default(0),
   })
   .refine(
@@ -161,7 +160,6 @@ export async function GET(request: Request) {
     const started = performance.now();
     const query = parsed.data;
     const shadowCalibration = normalizeShadowCalibration({
-      observerHeightMeters: query.observerHeightMeters,
       buildingHeightBiasMeters: query.buildingHeightBiasMeters,
     });
     const grid = buildGridFromBbox(
