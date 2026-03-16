@@ -52,6 +52,7 @@ export interface BuildPointEvaluationContextOptions {
   terrainHorizonOverride?: HorizonMask;
   shadowCalibration?: ShadowCalibration;
   sharedSources?: SharedPointEvaluationSources;
+  buildingShadowAllowedIds?: ReadonlySet<string>;
 }
 
 export interface PointEvaluationContext {
@@ -84,10 +85,23 @@ export interface PointEvaluationContext {
   };
 }
 
-const BUILDINGS_TWO_LEVEL_REFINEMENT_ENABLED =
-  process.env.MAPPY_BUILDINGS_TWO_LEVEL_REFINEMENT !== "0";
+type BuildingsShadowMode = "detailed" | "two-level" | "prism";
+
+function parseBuildingsShadowMode(): BuildingsShadowMode {
+  const raw = (process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "").trim().toLowerCase();
+  if (raw === "detailed" || raw === "two-level" || raw === "prism") {
+    return raw;
+  }
+  if (process.env.MAPPY_BUILDINGS_TWO_LEVEL_REFINEMENT === "0") {
+    return "prism";
+  }
+  return "detailed";
+}
+
+const BUILDINGS_SHADOW_MODE = parseBuildingsShadowMode();
 const BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES = 2;
 const BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS = 3;
+const BUILDINGS_DETAILED_MAX_REFINEMENT_STEPS = 32;
 
 export async function buildSharedPointEvaluationSources(
   options: BuildSharedPointEvaluationSourcesOptions = {},
@@ -187,45 +201,74 @@ export async function buildPointEvaluationContext(
   const buildingShadowEvaluator =
     buildingsIndex && pointElevationMeters !== null && !containment.insideBuilding
       ? (() => {
-          const detailedVerifier = BUILDINGS_TWO_LEVEL_REFINEMENT_ENABLED
-            ? createDetailedBuildingShadowVerifier(buildingsIndex.obstacles)
-            : null;
+          const detailedVerifier =
+            BUILDINGS_SHADOW_MODE === "prism"
+              ? null
+              : createDetailedBuildingShadowVerifier(buildingsIndex.obstacles);
 
-          return (sample: { azimuthDeg: number; altitudeDeg: number }) =>
-            detailedVerifier
-              ? evaluateBuildingsShadowTwoLevel(
-                  buildingsIndex.obstacles,
-                  {
-                    pointX: pointLv95.easting,
-                    pointY: pointLv95.northing,
-                    pointElevation: pointElevationMeters,
-                    buildingHeightBiasMeters:
-                      shadowCalibration.buildingHeightBiasMeters,
-                    solarAzimuthDeg: sample.azimuthDeg,
-                    solarAltitudeDeg: sample.altitudeDeg,
-                  },
-                  buildingsIndex.spatialGrid,
-                  {
-                    detailedVerifier,
-                    nearThresholdDegrees:
-                      BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES,
-                    maxRefinementSteps:
-                      BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS,
-                  },
-                )
-              : evaluateBuildingsShadow(
-                  buildingsIndex.obstacles,
-                  {
-                    pointX: pointLv95.easting,
-                    pointY: pointLv95.northing,
-                    pointElevation: pointElevationMeters,
-                    buildingHeightBiasMeters:
-                      shadowCalibration.buildingHeightBiasMeters,
-                    solarAzimuthDeg: sample.azimuthDeg,
-                    solarAltitudeDeg: sample.altitudeDeg,
-                  },
-                  buildingsIndex.spatialGrid,
-                );
+          return (sample: { azimuthDeg: number; altitudeDeg: number }) => {
+            if (!detailedVerifier || BUILDINGS_SHADOW_MODE === "prism") {
+              return evaluateBuildingsShadow(
+                buildingsIndex.obstacles,
+                {
+                  pointX: pointLv95.easting,
+                  pointY: pointLv95.northing,
+                  pointElevation: pointElevationMeters,
+                  allowedBlockerIds: options.buildingShadowAllowedIds,
+                  buildingHeightBiasMeters:
+                    shadowCalibration.buildingHeightBiasMeters,
+                  solarAzimuthDeg: sample.azimuthDeg,
+                  solarAltitudeDeg: sample.altitudeDeg,
+                },
+                buildingsIndex.spatialGrid,
+              );
+            }
+
+            if (BUILDINGS_SHADOW_MODE === "two-level") {
+              return evaluateBuildingsShadowTwoLevel(
+                buildingsIndex.obstacles,
+                {
+                  pointX: pointLv95.easting,
+                  pointY: pointLv95.northing,
+                  pointElevation: pointElevationMeters,
+                  allowedBlockerIds: options.buildingShadowAllowedIds,
+                  buildingHeightBiasMeters:
+                    shadowCalibration.buildingHeightBiasMeters,
+                  solarAzimuthDeg: sample.azimuthDeg,
+                  solarAltitudeDeg: sample.altitudeDeg,
+                },
+                buildingsIndex.spatialGrid,
+                {
+                  detailedVerifier,
+                  nearThresholdDegrees:
+                    BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES,
+                  maxRefinementSteps:
+                    BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS,
+                },
+              );
+            }
+
+            return evaluateBuildingsShadowTwoLevel(
+              buildingsIndex.obstacles,
+              {
+                pointX: pointLv95.easting,
+                pointY: pointLv95.northing,
+                pointElevation: pointElevationMeters,
+                allowedBlockerIds: options.buildingShadowAllowedIds,
+                buildingHeightBiasMeters:
+                  shadowCalibration.buildingHeightBiasMeters,
+                solarAzimuthDeg: sample.azimuthDeg,
+                solarAltitudeDeg: sample.altitudeDeg,
+              },
+              buildingsIndex.spatialGrid,
+              {
+                detailedVerifier,
+                nearThresholdDegrees: Number.POSITIVE_INFINITY,
+                maxRefinementSteps:
+                  BUILDINGS_DETAILED_MAX_REFINEMENT_STEPS,
+              },
+            );
+          };
         })()
       : undefined;
   const vegetationShadowEvaluator =
@@ -271,9 +314,11 @@ export async function buildPointEvaluationContext(
     terrainHorizonMethod: horizonMask?.method ?? "none",
     buildingsShadowMethod: buildingsIndex
       ? `${buildingsIndex.method}${
-          BUILDINGS_TWO_LEVEL_REFINEMENT_ENABLED
+          BUILDINGS_SHADOW_MODE === "two-level"
             ? "|two-level-near-threshold-v1"
-            : ""
+            : BUILDINGS_SHADOW_MODE === "detailed"
+              ? "|detailed-direct-v1"
+              : ""
         }`
       : "none",
     vegetationShadowMethod:

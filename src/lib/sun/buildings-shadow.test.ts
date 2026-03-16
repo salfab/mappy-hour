@@ -341,4 +341,53 @@ describe("buildings shadow spatial index", () => {
     const wouldBlockButFarther = debugPass.stats?.wouldBlockButFarther ?? 0;
     expect(skippedByCloser + wouldBlockButFarther).toBeGreaterThan(0);
   });
+
+  it("respects allowed blocker ids when evaluating obstacles", () => {
+    const blocker = createRectangleObstacle({
+      id: "allowed-blocker",
+      centerX: 0,
+      centerY: 45,
+      width: 20,
+      depth: 20,
+      maxZ: 42,
+    });
+    const disallowed = createRectangleObstacle({
+      id: "disallowed-blocker",
+      centerX: 0,
+      centerY: 30,
+      width: 20,
+      depth: 20,
+      maxZ: 42,
+    });
+    const spatialGrid = buildSpatialGrid([disallowed, blocker], 64);
+
+    const unrestricted = evaluateBuildingsShadow(
+      [disallowed, blocker],
+      {
+        pointX: 0,
+        pointY: 0,
+        pointElevation: 0,
+        solarAzimuthDeg: 0,
+        solarAltitudeDeg: 25,
+      },
+      spatialGrid,
+    );
+    const restricted = evaluateBuildingsShadow(
+      [disallowed, blocker],
+      {
+        pointX: 0,
+        pointY: 0,
+        pointElevation: 0,
+        solarAzimuthDeg: 0,
+        solarAltitudeDeg: 25,
+        allowedBlockerIds: new Set(["allowed-blocker"]),
+      },
+      spatialGrid,
+    );
+
+    expect(unrestricted.blocked).toBe(true);
+    expect(unrestricted.blockerId).toBe("disallowed-blocker");
+    expect(restricted.blocked).toBe(true);
+    expect(restricted.blockerId).toBe("allowed-blocker");
+  });
 });

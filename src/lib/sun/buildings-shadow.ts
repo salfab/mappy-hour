@@ -77,6 +77,7 @@ export interface BuildingShadowInput {
   solarAltitudeDeg: number;
   maxDistanceMeters?: number;
   buildingHeightBiasMeters?: number;
+  allowedBlockerIds?: ReadonlySet<string>;
   excludedBlockerIds?: ReadonlySet<string>;
   debugCollector?: (debug: BuildingShadowDebugPass) => void;
 }
@@ -101,6 +102,7 @@ export interface BuildingShadowDebugPass {
   checkedObstaclesCount: number;
   blockerId: string | null;
   stats?: {
+    skippedDisallowedBlockerId: number;
     skippedExcludedBlockerId: number;
     skippedDistance: number;
     skippedLateral: number;
@@ -1159,6 +1161,7 @@ export function evaluateBuildingsShadow(
   const checkedObstacleIds: string[] = [];
   const debugStats = collectDebug
     ? {
+        skippedDisallowedBlockerId: 0,
         skippedExcludedBlockerId: 0,
         skippedDistance: 0,
         skippedLateral: 0,
@@ -1196,6 +1199,12 @@ export function evaluateBuildingsShadow(
   for (const obstacleIndex of candidateIndices) {
     const obstacle = obstacles[obstacleIndex];
     if (!obstacle) {
+      continue;
+    }
+    if (input.allowedBlockerIds && !input.allowedBlockerIds.has(obstacle.id)) {
+      if (debugStats) {
+        debugStats.skippedDisallowedBlockerId += 1;
+      }
       continue;
     }
     if (input.excludedBlockerIds?.has(obstacle.id)) {

@@ -6,6 +6,7 @@ import {
   buildPointEvaluationContext,
   buildSharedPointEvaluationSources,
 } from "@/lib/sun/evaluation-context";
+import { lv95ToWgs84 } from "@/lib/geo/projection";
 import {
   adaptiveHorizonSharingConfig,
   resolveAdaptiveTerrainHorizonForTile,
@@ -38,9 +39,17 @@ import {
 
 const DEFAULT_CACHE_TILE_SIZE_METERS = 250;
 const RAD_TO_DEG = 180 / Math.PI;
+const BUILDING_SHADOW_MAX_DISTANCE_METERS = 2500;
+const BUILDING_TILE_ALLOWLIST_VERSION = "tile-allowlist-v1";
 const PRECOMPUTED_REGIONS: PrecomputedRegionName[] = ["lausanne", "nyon"];
 const manifestMemoryCache = new TtlCache<PrecomputedSunlightManifest | null>(60_000, 64);
 const tileMemoryCache = new TtlCache<PrecomputedSunlightTileArtifact | null>(60_000, 128);
+
+type BuildingsIndex = NonNullable<
+  Awaited<ReturnType<typeof buildSharedPointEvaluationSources>>["buildingsIndex"]
+>;
+type BuildingObstacle = BuildingsIndex["obstacles"][number];
+type BuildingSpatialGrid = NonNullable<BuildingsIndex["spatialGrid"]>;
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => {
@@ -184,6 +193,172 @@ function computeSolarGeometry(
     altitudeDeg: position.altitude * RAD_TO_DEG,
     azimuthDeg: fromNorth >= 0 ? fromNorth : fromNorth + 360,
   };
+}
+
+function buildSpatialCellKey(cellX: number, cellY: number): string {
+  return `${cellX}:${cellY}`;
+}
+
+function collectTileSampleCandidateObstacleIndices(params: {
+  obstacles: BuildingObstacle[];
+  spatialGrid: BuildingSpatialGrid;
+  centerX: number;
+  centerY: number;
+  tileRadiusMeters: number;
+  dirX: number;
+  dirY: number;
+  maxDistanceMeters: number;
+  maxObstacleHalfDiagonalMeters: number;
+}): Set<number> {
+  const cellSizeMeters = params.spatialGrid.cellSizeMeters;
+  if (!Number.isFinite(cellSizeMeters) || cellSizeMeters <= 0) {
+    return new Set(params.obstacles.map((_, index) => index));
+  }
+
+  const corridorLength = params.maxDistanceMeters + params.tileRadiusMeters;
+  const endX = params.centerX + params.dirX * corridorLength;
+  const endY = params.centerY + params.dirY * corridorLength;
+  const corridorPadding =
+    params.tileRadiusMeters + params.maxObstacleHalfDiagonalMeters + cellSizeMeters;
+  const minX = Math.min(params.centerX, endX) - corridorPadding;
+  const maxX = Math.max(params.centerX, endX) + corridorPadding;
+  const minY = Math.min(params.centerY, endY) - corridorPadding;
+  const maxY = Math.max(params.centerY, endY) + corridorPadding;
+  const minCellX = Math.floor(minX / cellSizeMeters);
+  const maxCellX = Math.floor(maxX / cellSizeMeters);
+  const minCellY = Math.floor(minY / cellSizeMeters);
+  const maxCellY = Math.floor(maxY / cellSizeMeters);
+
+  const cellHalfDiagonal = (Math.SQRT2 * cellSizeMeters) / 2;
+  const minDotThreshold = -(params.tileRadiusMeters + cellHalfDiagonal);
+  const maxCenterDistance =
+    params.maxDistanceMeters + params.tileRadiusMeters + cellHalfDiagonal;
+  const corridorHalfWidth =
+    params.tileRadiusMeters + cellHalfDiagonal + params.maxObstacleHalfDiagonalMeters;
+  const candidateIndices = new Set<number>();
+
+  for (let cellY = minCellY; cellY <= maxCellY; cellY += 1) {
+    for (let cellX = minCellX; cellX <= maxCellX; cellX += 1) {
+      const key = buildSpatialCellKey(cellX, cellY);
+      const indices = params.spatialGrid.cells[key];
+      if (!indices || indices.length === 0) {
+        continue;
+      }
+
+      const cellCenterX = (cellX + 0.5) * cellSizeMeters;
+      const cellCenterY = (cellY + 0.5) * cellSizeMeters;
+      const dx = cellCenterX - params.centerX;
+      const dy = cellCenterY - params.centerY;
+      const dot = dx * params.dirX + dy * params.dirY;
+      if (dot < minDotThreshold) {
+        continue;
+      }
+      const lateral = Math.abs(dx * params.dirY - dy * params.dirX);
+      if (lateral > corridorHalfWidth) {
+        continue;
+      }
+      const centerDistance = Math.hypot(dx, dy);
+      if (centerDistance > maxCenterDistance) {
+        continue;
+      }
+
+      for (const obstacleIndex of indices) {
+        candidateIndices.add(obstacleIndex);
+      }
+    }
+  }
+
+  return candidateIndices;
+}
+
+function collectTileWindowBuildingAllowlist(params: {
+  tile: RegionTileSpec;
+  samples: Date[];
+  buildingsIndex: BuildingsIndex | null;
+  maxDistanceMeters?: number;
+}): ReadonlySet<string> | undefined {
+  if (!params.buildingsIndex || params.samples.length === 0) {
+    return undefined;
+  }
+
+  const obstacles = params.buildingsIndex.obstacles;
+  if (obstacles.length === 0) {
+    return undefined;
+  }
+
+  const centerX = (params.tile.minEasting + params.tile.maxEasting) / 2;
+  const centerY = (params.tile.minNorthing + params.tile.maxNorthing) / 2;
+  const tileRadiusMeters =
+    Math.hypot(
+      params.tile.maxEasting - params.tile.minEasting,
+      params.tile.maxNorthing - params.tile.minNorthing,
+    ) / 2;
+  const centerWgs84 = lv95ToWgs84(centerX, centerY);
+  const maxDistanceMeters = params.maxDistanceMeters ?? BUILDING_SHADOW_MAX_DISTANCE_METERS;
+  const maxObstacleHalfDiagonalMeters = obstacles.reduce(
+    (maxValue, obstacle) => Math.max(maxValue, obstacle.halfDiagonal),
+    0,
+  );
+  const spatialGrid = params.buildingsIndex.spatialGrid;
+  const allowedBlockerIds = new Set<string>();
+  let aboveHorizonSamples = 0;
+
+  for (const sampleDate of params.samples) {
+    const solarGeometry = computeSolarGeometry(centerWgs84.lat, centerWgs84.lon, sampleDate);
+    if (solarGeometry.altitudeDeg <= 0) {
+      continue;
+    }
+
+    aboveHorizonSamples += 1;
+    const azimuthRad = (solarGeometry.azimuthDeg * Math.PI) / 180;
+    const dirX = Math.sin(azimuthRad);
+    const dirY = Math.cos(azimuthRad);
+    const candidateIndices = spatialGrid
+      ? collectTileSampleCandidateObstacleIndices({
+          obstacles,
+          spatialGrid,
+          centerX,
+          centerY,
+          tileRadiusMeters,
+          dirX,
+          dirY,
+          maxDistanceMeters,
+          maxObstacleHalfDiagonalMeters,
+        })
+      : new Set(obstacles.map((_, index) => index));
+
+    for (const obstacleIndex of candidateIndices) {
+      const obstacle = obstacles[obstacleIndex];
+      if (!obstacle) {
+        continue;
+      }
+      if (allowedBlockerIds.has(obstacle.id)) {
+        continue;
+      }
+
+      const dx = obstacle.centerX - centerX;
+      const dy = obstacle.centerY - centerY;
+      const dot = dx * dirX + dy * dirY;
+      if (dot < -(tileRadiusMeters + obstacle.halfDiagonal)) {
+        continue;
+      }
+      const lateral = Math.abs(dx * dirY - dy * dirX);
+      if (lateral > tileRadiusMeters + obstacle.halfDiagonal) {
+        continue;
+      }
+      const centerDistance = Math.hypot(dx, dy);
+      if (centerDistance > maxDistanceMeters + tileRadiusMeters + obstacle.halfDiagonal) {
+        continue;
+      }
+      allowedBlockerIds.add(obstacle.id);
+    }
+  }
+
+  if (aboveHorizonSamples === 0 || allowedBlockerIds.size === 0) {
+    return undefined;
+  }
+
+  return allowedBlockerIds;
 }
 
 function resolveRegionForBbox(bbox: RegionBbox): PrecomputedRegionName | null {
@@ -395,6 +570,26 @@ export async function computeSunlightTileArtifact(params: {
       maxY: params.tile.maxNorthing,
     },
   });
+  const samples = createUtcSamples(
+    params.date,
+    params.timezone,
+    params.sampleEveryMinutes,
+    params.startLocalTime,
+    params.endLocalTime,
+  );
+  if (samples.length === 0) {
+    throw new Error(
+      `No samples produced for ${params.date} ${params.startLocalTime}-${params.endLocalTime}.`,
+    );
+  }
+  const tileBuildingAllowlist = collectTileWindowBuildingAllowlist({
+    tile: params.tile,
+    samples,
+    buildingsIndex: sharedSources.buildingsIndex,
+  });
+  const buildingMethodSuffix = tileBuildingAllowlist
+    ? `|${BUILDING_TILE_ALLOWLIST_VERSION}`
+    : "";
 
   for (let rawPointIndex = 0; rawPointIndex < rawTilePoints.length; rawPointIndex += 1) {
     throwIfAborted(params.signal);
@@ -404,9 +599,10 @@ export async function computeSunlightTileArtifact(params: {
       terrainHorizonOverride: terrainHorizonOverride ?? undefined,
       shadowCalibration: params.shadowCalibration,
       sharedSources,
+      buildingShadowAllowedIds: tileBuildingAllowlist,
     });
     terrainMethod = context.terrainHorizonMethod;
-    buildingsMethod = context.buildingsShadowMethod;
+    buildingsMethod = `${context.buildingsShadowMethod}${buildingMethodSuffix}`;
     vegetationMethod = context.vegetationShadowMethod ?? "none";
     warnings.push(...context.warnings);
 
@@ -470,19 +666,6 @@ export async function computeSunlightTileArtifact(params: {
     frameCountTotal: 0,
     frameIndex: null,
   });
-
-  const samples = createUtcSamples(
-    params.date,
-    params.timezone,
-    params.sampleEveryMinutes,
-    params.startLocalTime,
-    params.endLocalTime,
-  );
-  if (samples.length === 0) {
-    throw new Error(
-      `No samples produced for ${params.date} ${params.startLocalTime}-${params.endLocalTime}.`,
-    );
-  }
 
   const frames: PrecomputedSunlightTileArtifact["frames"] = [];
   const totalFrameEvaluations = preparedOutdoorPoints.length * samples.length;

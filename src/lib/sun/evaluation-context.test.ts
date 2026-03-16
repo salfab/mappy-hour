@@ -187,4 +187,74 @@ describe("buildPointEvaluationContext vegetation warnings", () => {
     expect(loadVegetationSurfaceTilesForPointMock).not.toHaveBeenCalled();
     expect(sampleSwissTerrainElevationLv95Mock).not.toHaveBeenCalled();
   });
+
+  it("uses detailed building verification by default", async () => {
+    loadLausanneHorizonMaskMock.mockResolvedValue(createMockHorizonMask());
+    loadBuildingsObstacleIndexMock.mockResolvedValue({
+      method: "mock-buildings",
+      obstacles: [],
+      spatialGrid: undefined,
+    });
+    findContainingBuildingMock.mockReturnValue({
+      insideBuilding: false,
+      buildingId: null,
+    });
+    sampleSwissTerrainElevationLv95Mock.mockResolvedValue(510);
+    loadVegetationSurfaceTilesForPointMock.mockResolvedValue(null);
+    evaluateBuildingsShadowTwoLevelMock.mockReturnValue({
+      blocked: false,
+      blockerId: null,
+      blockerDistanceMeters: null,
+      blockerAltitudeAngleDeg: null,
+      checkedObstaclesCount: 0,
+    });
+
+    const context = await buildPointEvaluationContext(46.5, 6.6, {
+      skipTerrainSamplingWhenIndoor: true,
+    });
+
+    expect(context.buildingShadowEvaluator).toBeDefined();
+    context.buildingShadowEvaluator?.({ azimuthDeg: 180, altitudeDeg: 20 });
+
+    expect(createDetailedBuildingShadowVerifierMock).toHaveBeenCalledTimes(1);
+    expect(evaluateBuildingsShadowTwoLevelMock).toHaveBeenCalledTimes(1);
+    expect(evaluateBuildingsShadowMock).not.toHaveBeenCalled();
+    expect(context.buildingsShadowMethod).toContain("detailed-direct-v1");
+  });
+
+  it("forwards allowed blocker ids into the building evaluator", async () => {
+    loadLausanneHorizonMaskMock.mockResolvedValue(createMockHorizonMask());
+    loadBuildingsObstacleIndexMock.mockResolvedValue({
+      method: "mock-buildings",
+      obstacles: [],
+      spatialGrid: undefined,
+    });
+    findContainingBuildingMock.mockReturnValue({
+      insideBuilding: false,
+      buildingId: null,
+    });
+    sampleSwissTerrainElevationLv95Mock.mockResolvedValue(510);
+    loadVegetationSurfaceTilesForPointMock.mockResolvedValue(null);
+    evaluateBuildingsShadowTwoLevelMock.mockReturnValue({
+      blocked: false,
+      blockerId: null,
+      blockerDistanceMeters: null,
+      blockerAltitudeAngleDeg: null,
+      checkedObstaclesCount: 0,
+    });
+    const allowed = new Set(["b-1"]);
+
+    const context = await buildPointEvaluationContext(46.5, 6.6, {
+      skipTerrainSamplingWhenIndoor: true,
+      buildingShadowAllowedIds: allowed,
+    });
+
+    context.buildingShadowEvaluator?.({ azimuthDeg: 190, altitudeDeg: 18 });
+    expect(evaluateBuildingsShadowTwoLevelMock).toHaveBeenCalledTimes(1);
+    expect(evaluateBuildingsShadowTwoLevelMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        allowedBlockerIds: allowed,
+      }),
+    );
+  });
 });
