@@ -490,6 +490,7 @@ export async function computeSunlightTileArtifact(params: {
   for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
     throwIfAborted(params.signal);
     const sampleDate = samples[sampleIndex];
+    const frameLocalDateTime = formatDateTimeLocal(sampleDate, params.timezone);
     const sunnyMask = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
     const sunnyMaskNoVegetation = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
     const terrainMask = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
@@ -501,7 +502,7 @@ export async function computeSunlightTileArtifact(params: {
     const vegetationBlockerDistanceMetersByPoint: Array<number | null> = [];
     let sunnyCount = 0;
     let sunnyCountNoVegetation = 0;
-    let localTime = "";
+    const localTime = frameLocalDateTime.slice(11, 16);
 
     for (let pointIndex = 0; pointIndex < preparedOutdoorPoints.length; pointIndex += 1) {
       throwIfAborted(params.signal);
@@ -511,11 +512,11 @@ export async function computeSunlightTileArtifact(params: {
         lon: point.lon,
         utcDate: sampleDate,
         timeZone: params.timezone,
+        localDateTimeOverride: frameLocalDateTime,
         horizonMask: point.horizonMask,
         buildingShadowEvaluator: point.buildingShadowEvaluator,
         vegetationShadowEvaluator: point.vegetationShadowEvaluator,
       });
-      localTime = localTime || sample.localTime.slice(11, 16);
       horizonAngleDegByPoint.push(
         sample.horizonAngleDeg === null ? null : Math.round(sample.horizonAngleDeg * 1000) / 1000,
       );

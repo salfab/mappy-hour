@@ -166,4 +166,17 @@ describe("evaluateInstantSunlight", () => {
     expect(profiler.buildingsEvaluatorCalls).toBe(1);
     expect(profiler.vegetationEvaluatorCalls).toBe(1);
   });
+
+  it("uses localDateTimeOverride when provided", () => {
+    const sample = evaluateInstantSunlight({
+      lat: 46.52,
+      lon: 6.63,
+      utcDate: new Date("2026-06-21T12:00:00.000Z"),
+      timeZone: "Europe/Zurich",
+      localDateTimeOverride: "2099-12-31 23:59:59",
+      horizonMask: createUniformHorizonMask(-10),
+    });
+
+    expect(sample.localTime).toBe("2099-12-31 23:59:59");
+  });
 });

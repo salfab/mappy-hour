@@ -354,13 +354,25 @@ async function profileTile(params: {
   });
 
   const evaluationStartedAt = performance.now();
+  const localDateTimeFormatter = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: params.args.timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
   for (const utcSample of params.utcSamples) {
+    const localDateTimeOverride = localDateTimeFormatter.format(utcSample);
     for (const point of wrappedPoints) {
       const sample = evaluateInstantSunlight({
         lat: point.lat,
         lon: point.lon,
         utcDate: utcSample,
         timeZone: params.args.timezone,
+        localDateTimeOverride,
         horizonMask: point.horizonMask,
         buildingShadowEvaluator: point.buildingShadowEvaluator,
         vegetationShadowEvaluator: point.vegetationShadowEvaluator,

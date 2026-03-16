@@ -84,6 +84,7 @@ export interface InstantSunlightInput {
   lon: number;
   utcDate: Date;
   timeZone: string;
+  localDateTimeOverride?: string;
   horizonMask: HorizonMask | null;
   buildingShadowEvaluator?: PointSunlightInput["buildingShadowEvaluator"];
   vegetationShadowEvaluator?: PointSunlightInput["vegetationShadowEvaluator"];
@@ -257,9 +258,13 @@ export function evaluateInstantSunlight(
       !buildingsBlocked &&
       !vegetationBlocked;
 
+    const localDateTime =
+      input.localDateTimeOverride ??
+      formatDateTimeLocal(input.utcDate, input.timeZone);
+
     return {
       utcTime: input.utcDate.toISOString(),
-      localTime: formatDateTimeLocal(input.utcDate, input.timeZone),
+      localTime: localDateTime,
       azimuthDeg,
       altitudeDeg,
       horizonAngleDeg,
@@ -352,10 +357,13 @@ export function evaluateInstantSunlight(
     !buildingsBlocked &&
     !vegetationBlocked;
   const finalizeStarted = performance.now();
+  const localDateTime =
+    input.localDateTimeOverride ??
+    formatDateTimeLocal(input.utcDate, input.timeZone);
 
   const result: SunSample = {
     utcTime: input.utcDate.toISOString(),
-    localTime: formatDateTimeLocal(input.utcDate, input.timeZone),
+    localTime: localDateTime,
     azimuthDeg,
     altitudeDeg,
     horizonAngleDeg,

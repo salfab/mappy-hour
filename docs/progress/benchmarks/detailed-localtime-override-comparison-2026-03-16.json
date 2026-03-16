@@ -1,0 +1,55 @@
+{
+  "generatedAt": "2026-03-16T13:21:11.263Z",
+  "scenario": {
+    "region": "lausanne",
+    "date": "2026-03-08",
+    "window": "08:00-12:00",
+    "tileCount": 8,
+    "gridStepMeters": 5,
+    "sampleEveryMinutes": 15,
+    "workers": 1,
+    "mode": "detailed"
+  },
+  "precomputeWorkers": {
+    "beforeMs": 353575.312,
+    "afterMs": 329183.343,
+    "deltaMs": -24391.969,
+    "improvementPercent": 6.899,
+    "beforeTilesPerMin": 1.358,
+    "afterTilesPerMin": 1.458,
+    "throughputImprovementPercent": 7.364
+  },
+  "cpuBreakdownEvalLoop": {
+    "beforeMs": 483669.271,
+    "afterMs": 291015.26,
+    "deltaMs": -192654.011,
+    "improvementPercent": 39.832,
+    "beforeFinalizeMs": 53301.516,
+    "afterFinalizeMs": 1078.754,
+    "beforeFinalizePctOfEval": 11.02,
+    "afterFinalizePctOfEval": 0.371,
+    "beforeFinalizeMicrosPerEval": 333.869,
+    "afterFinalizeMicrosPerEval": 6.757
+  },
+  "precisionComparison": {
+    "tileCount": 8,
+    "totalPointFrames": 319600,
+    "differences": {
+      "sunMaskBits": 0,
+      "sunMaskNoVegetationBits": 0,
+      "terrainBlockedBits": 0,
+      "buildingsBlockedBits": 0,
+      "vegetationBlockedBits": 0,
+      "buildingBlockerIdEntries": 0,
+      "horizonAngleEntries": 0,
+      "buildingBlockerDistanceEntries": 0
+    }
+  },
+  "artifacts": {
+    "beforeWorkers": "docs/progress/benchmarks/precompute-workers-lausanne-2026-03-08-d1-g5-t8-detailed-p0-r1.json",
+    "afterWorkers": "docs/progress/benchmarks/precompute-workers-lausanne-2026-03-08-d1-g5-t8-detailed-localtime-r1.json",
+    "beforeBreakdownCommit": "08ac596",
+    "afterBreakdown": "docs/progress/benchmarks/precompute-cpu-breakdown-lausanne-2026-03-08-t0800-1200-g5-tiles8.json",
+    "precisionDiff": "docs/progress/analysis/detailed-p0-vs-localtime-lausanne-8tiles-20260308-0800-1200.json"
+  }
+}
