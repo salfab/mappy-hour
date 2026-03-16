@@ -85,6 +85,14 @@ function buildSpatialGrid(obstacles: TestObstacle[], cellSizeMeters: number) {
   };
 }
 
+function createDeterministicRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(1664525, state) + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+}
+
 describe("buildings shadow spatial index", () => {
   it("keeps shadow decision equivalent while reducing checked obstacles", () => {
     const blocker = createRectangleObstacle({
@@ -389,6 +397,64 @@ describe("buildings shadow spatial index", () => {
     expect(unrestricted.blockerId).toBe("disallowed-blocker");
     expect(restricted.blocked).toBe(true);
     expect(restricted.blockerId).toBe("allowed-blocker");
+  });
+
+  it("keeps grid-vs-no-grid decisions equivalent across random scenarios", () => {
+    const rand = createDeterministicRandom(42);
+    const obstacles = Array.from({ length: 180 }, (_, index) => {
+      const centerX = -400 + rand() * 800;
+      const centerY = -400 + rand() * 800;
+      const width = 6 + rand() * 24;
+      const depth = 6 + rand() * 24;
+      const maxZ = 8 + rand() * 80;
+      return createRectangleObstacle({
+        id: `r-${index}`,
+        centerX,
+        centerY,
+        width,
+        depth,
+        maxZ,
+      });
+    });
+    const spatialGrid = buildSpatialGrid(obstacles, 64);
+
+    for (let i = 0; i < 80; i += 1) {
+      const pointX = -300 + rand() * 600;
+      const pointY = -300 + rand() * 600;
+      const pointElevation = rand() * 20;
+      const solarAzimuthDeg = rand() * 360;
+      const solarAltitudeDeg = 5 + rand() * 55;
+      const maxDistanceMeters = 1200;
+      const buildingHeightBiasMeters = -2 + rand() * 4;
+
+      const baseline = evaluateBuildingsShadow(obstacles, {
+        pointX,
+        pointY,
+        pointElevation,
+        solarAzimuthDeg,
+        solarAltitudeDeg,
+        maxDistanceMeters,
+        buildingHeightBiasMeters,
+      });
+      const indexed = evaluateBuildingsShadow(
+        obstacles,
+        {
+          pointX,
+          pointY,
+          pointElevation,
+          solarAzimuthDeg,
+          solarAltitudeDeg,
+          maxDistanceMeters,
+          buildingHeightBiasMeters,
+        },
+        spatialGrid,
+      );
+
+      expect(indexed.blocked).toBe(baseline.blocked);
+      expect(indexed.blockerId).toBe(baseline.blockerId);
+      expect(indexed.blockerDistanceMeters).toBe(baseline.blockerDistanceMeters);
+      expect(indexed.blockerAltitudeAngleDeg).toBe(baseline.blockerAltitudeAngleDeg);
+    }
   });
 
 });

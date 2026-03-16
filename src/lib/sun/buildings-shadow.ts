@@ -69,6 +69,13 @@ type BuildingObstacleIndex = z.infer<typeof buildingIndexSchema>;
 type BuildingObstacleSpatialGrid = z.infer<typeof spatialGridSchema>;
 type FootprintPoint = z.infer<typeof footprintPointSchema>;
 
+interface SpatialGridCellEntry {
+  key: string;
+  cellY: number;
+  obstacleIndices: number[];
+  cellMaxZ: number | undefined;
+}
+
 export interface BuildingShadowInput {
   pointX: number;
   pointY: number;
@@ -157,7 +164,35 @@ interface Polyface {
 
 interface DetailedObstacleMesh {
   obstacleId: string;
-  triangles: Array<[Vec3, Vec3, Vec3]>;
+  triangles: PreparedTriangle[];
+  bvh: TriangleBvhNode | null;
+}
+
+interface PreparedTriangle {
+  a: Vec3;
+  edge1: Vec3;
+  edge2: Vec3;
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
+  centroidX: number;
+  centroidY: number;
+  centroidZ: number;
+}
+
+interface TriangleBvhNode {
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
+  left: TriangleBvhNode | null;
+  right: TriangleBvhNode | null;
+  triangleIndices: number[] | null;
 }
 
 export interface DetailedBuildingShadowVerificationInput {
@@ -188,10 +223,15 @@ let obstacleIndexCache: BuildingObstacleIndex | null | undefined;
 let buildingZipPathByNameCache: Map<string, string> | null = null;
 const zipPolyfaceCache = new Map<string, Polyface[]>();
 const detailedMeshCacheByObstacleId = new Map<string, DetailedObstacleMesh | null>();
+const spatialGridColumnsCache = new WeakMap<
+  BuildingObstacleSpatialGrid,
+  Map<number, SpatialGridCellEntry[]>
+>();
 
 const DEFAULT_SPATIAL_GRID_CELL_SIZE_METERS = 64;
 const BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES = 2;
 const BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS = 3;
+const DETAILED_MESH_BVH_LEAF_TRIANGLE_COUNT = 12;
 
 export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleIndex | null> {
   if (obstacleIndexCache !== undefined) {
@@ -332,6 +372,61 @@ function normalizeAzimuthDeg(value: number): number {
   return normalized >= 0 ? normalized : normalized + 360;
 }
 
+function lowerBoundCellY(entries: SpatialGridCellEntry[], targetCellY: number): number {
+  let low = 0;
+  let high = entries.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (entries[mid].cellY < targetCellY) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  return low;
+}
+
+function buildSpatialGridColumns(
+  spatialGrid: BuildingObstacleSpatialGrid,
+): Map<number, SpatialGridCellEntry[]> {
+  const cached = spatialGridColumnsCache.get(spatialGrid);
+  if (cached) {
+    return cached;
+  }
+
+  const columns = new Map<number, SpatialGridCellEntry[]>();
+  for (const [key, obstacleIndices] of Object.entries(spatialGrid.cells)) {
+    const separatorIndex = key.indexOf(":");
+    if (separatorIndex <= 0 || separatorIndex >= key.length - 1) {
+      continue;
+    }
+    const cellX = Number.parseInt(key.slice(0, separatorIndex), 10);
+    const cellY = Number.parseInt(key.slice(separatorIndex + 1), 10);
+    if (!Number.isFinite(cellX) || !Number.isFinite(cellY)) {
+      continue;
+    }
+
+    const entry: SpatialGridCellEntry = {
+      key,
+      cellY,
+      obstacleIndices,
+      cellMaxZ: spatialGrid.cellMaxZ?.[key],
+    };
+    const column = columns.get(cellX);
+    if (column) {
+      column.push(entry);
+    } else {
+      columns.set(cellX, [entry]);
+    }
+  }
+
+  for (const column of columns.values()) {
+    column.sort((left, right) => left.cellY - right.cellY);
+  }
+  spatialGridColumnsCache.set(spatialGrid, columns);
+  return columns;
+}
+
 function collectObstacleIndicesInBounds(params: {
   spatialGrid: BuildingObstacleSpatialGrid;
   minX: number;
@@ -402,21 +497,26 @@ function collectCandidateObstacleIndices(params: {
   const candidateCellKeys: string[] = [];
   const cellHalfDiagonal = (Math.SQRT2 * cellSizeMeters) / 2;
   const corridorHalfWidth = cellHalfDiagonal + maxHalfDiagonal;
+  const spatialGridColumns = buildSpatialGridColumns(params.spatialGrid);
   const canUseAltitudeCulling =
     Number.isFinite(params.solarAltitudeTan) &&
     params.solarAltitudeTan > 0 &&
     Number.isFinite(params.pointElevation);
 
-  for (let cellY = minCellY; cellY <= maxCellY; cellY += 1) {
-    for (let cellX = minCellX; cellX <= maxCellX; cellX += 1) {
-      const key = buildCellKey(cellX, cellY);
-      const indices = params.spatialGrid.cells[key];
-      if (!indices || indices.length === 0) {
-        continue;
-      }
+  for (let cellX = minCellX; cellX <= maxCellX; cellX += 1) {
+    const column = spatialGridColumns.get(cellX);
+    if (!column || column.length === 0) {
+      continue;
+    }
 
+    for (
+      let columnIndex = lowerBoundCellY(column, minCellY);
+      columnIndex < column.length && column[columnIndex].cellY <= maxCellY;
+      columnIndex += 1
+    ) {
+      const cell = column[columnIndex];
       const centerX = (cellX + 0.5) * cellSizeMeters;
-      const centerY = (cellY + 0.5) * cellSizeMeters;
+      const centerY = (cell.cellY + 0.5) * cellSizeMeters;
       const dx = centerX - params.pointX;
       const dy = centerY - params.pointY;
       const dot = dx * params.dirX + dy * params.dirY;
@@ -432,22 +532,18 @@ function collectCandidateObstacleIndices(params: {
         continue;
       }
 
-      if (canUseAltitudeCulling && params.spatialGrid.cellMaxZ) {
-        const cellMaxTop = params.spatialGrid.cellMaxZ[key];
-        if (cellMaxTop !== undefined) {
-          const minRayDistance = Math.max(0, dot - cellHalfDiagonal);
-          const requiredTop =
-            params.pointElevation + minRayDistance * params.solarAltitudeTan;
-          if (cellMaxTop + params.buildingHeightBiasMeters < requiredTop) {
-            continue;
-          }
+      if (canUseAltitudeCulling && cell.cellMaxZ !== undefined) {
+        const minRayDistance = Math.max(0, dot - cellHalfDiagonal);
+        const requiredTop = params.pointElevation + minRayDistance * params.solarAltitudeTan;
+        if (cell.cellMaxZ + params.buildingHeightBiasMeters < requiredTop) {
+          continue;
         }
       }
       if (params.collectCandidateCellKeys) {
-        candidateCellKeys.push(key);
+        candidateCellKeys.push(cell.key);
       }
 
-      for (const obstacleIndex of indices) {
+      for (const obstacleIndex of cell.obstacleIndices) {
         candidateIndices.add(obstacleIndex);
       }
     }
@@ -871,41 +967,62 @@ function subVec3(a: Vec3, b: Vec3): Vec3 {
   };
 }
 
-function rayTriangleIntersectionDistance(
+function rayPreparedTriangleIntersectionDistance(
   origin: Vec3,
   direction: Vec3,
-  a: Vec3,
-  b: Vec3,
-  c: Vec3,
+  triangle: PreparedTriangle,
 ): number | null {
   const epsilon = 1e-9;
-  const edge1 = subVec3(b, a);
-  const edge2 = subVec3(c, a);
-  const h = crossVec3(direction, edge2);
-  const det = dotVec3(edge1, h);
+  const h = crossVec3(direction, triangle.edge2);
+  const det = dotVec3(triangle.edge1, h);
   if (Math.abs(det) < epsilon) {
     return null;
   }
   const invDet = 1 / det;
-  const s = subVec3(origin, a);
+  const s = subVec3(origin, triangle.a);
   const u = invDet * dotVec3(s, h);
   if (u < 0 || u > 1) {
     return null;
   }
-  const q = crossVec3(s, edge1);
+  const q = crossVec3(s, triangle.edge1);
   const v = invDet * dotVec3(direction, q);
   if (v < 0 || u + v > 1) {
     return null;
   }
-  const t = invDet * dotVec3(edge2, q);
+  const t = invDet * dotVec3(triangle.edge2, q);
   if (t <= epsilon) {
     return null;
   }
   return t;
 }
 
-function toTriangles(polyface: Polyface): Array<[Vec3, Vec3, Vec3]> {
-  const triangles: Array<[Vec3, Vec3, Vec3]> = [];
+function prepareTriangle(a: Vec3, b: Vec3, c: Vec3): PreparedTriangle {
+  const edge1 = subVec3(b, a);
+  const edge2 = subVec3(c, a);
+  const minX = Math.min(a.x, b.x, c.x);
+  const minY = Math.min(a.y, b.y, c.y);
+  const minZ = Math.min(a.z, b.z, c.z);
+  const maxX = Math.max(a.x, b.x, c.x);
+  const maxY = Math.max(a.y, b.y, c.y);
+  const maxZ = Math.max(a.z, b.z, c.z);
+  return {
+    a,
+    edge1,
+    edge2,
+    minX,
+    minY,
+    minZ,
+    maxX,
+    maxY,
+    maxZ,
+    centroidX: (a.x + b.x + c.x) / 3,
+    centroidY: (a.y + b.y + c.y) / 3,
+    centroidZ: (a.z + b.z + c.z) / 3,
+  };
+}
+
+function toPreparedTriangles(polyface: Polyface): PreparedTriangle[] {
+  const triangles: PreparedTriangle[] = [];
   for (const face of polyface.faces) {
     const valid = face
       .map((index) => polyface.vertices[index - 1] ?? null)
@@ -914,13 +1031,171 @@ function toTriangles(polyface: Polyface): Array<[Vec3, Vec3, Vec3]> {
       continue;
     }
     if (valid.length === 3) {
-      triangles.push([valid[0], valid[1], valid[2]]);
+      triangles.push(prepareTriangle(valid[0], valid[1], valid[2]));
       continue;
     }
-    triangles.push([valid[0], valid[1], valid[2]]);
-    triangles.push([valid[0], valid[2], valid[3]]);
+    triangles.push(prepareTriangle(valid[0], valid[1], valid[2]));
+    triangles.push(prepareTriangle(valid[0], valid[2], valid[3]));
   }
   return triangles;
+}
+
+function rayAabbIntersectionDistance(
+  origin: Vec3,
+  direction: Vec3,
+  minX: number,
+  minY: number,
+  minZ: number,
+  maxX: number,
+  maxY: number,
+  maxZ: number,
+  maxDistance: number,
+): number | null {
+  let tMin = 0;
+  let tMax = maxDistance;
+  const epsilon = 1e-12;
+
+  if (Math.abs(direction.x) < epsilon) {
+    if (origin.x < minX || origin.x > maxX) {
+      return null;
+    }
+  } else {
+    const tx1 = (minX - origin.x) / direction.x;
+    const tx2 = (maxX - origin.x) / direction.x;
+    tMin = Math.max(tMin, Math.min(tx1, tx2));
+    tMax = Math.min(tMax, Math.max(tx1, tx2));
+    if (tMin > tMax) {
+      return null;
+    }
+  }
+
+  if (Math.abs(direction.y) < epsilon) {
+    if (origin.y < minY || origin.y > maxY) {
+      return null;
+    }
+  } else {
+    const ty1 = (minY - origin.y) / direction.y;
+    const ty2 = (maxY - origin.y) / direction.y;
+    tMin = Math.max(tMin, Math.min(ty1, ty2));
+    tMax = Math.min(tMax, Math.max(ty1, ty2));
+    if (tMin > tMax) {
+      return null;
+    }
+  }
+
+  if (Math.abs(direction.z) < epsilon) {
+    if (origin.z < minZ || origin.z > maxZ) {
+      return null;
+    }
+  } else {
+    const tz1 = (minZ - origin.z) / direction.z;
+    const tz2 = (maxZ - origin.z) / direction.z;
+    tMin = Math.max(tMin, Math.min(tz1, tz2));
+    tMax = Math.min(tMax, Math.max(tz1, tz2));
+    if (tMin > tMax) {
+      return null;
+    }
+  }
+
+  if (tMax < 0) {
+    return null;
+  }
+  return Math.max(0, tMin);
+}
+
+function buildTriangleBvhNode(
+  triangles: PreparedTriangle[],
+  indices: number[],
+): TriangleBvhNode {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+
+  for (const index of indices) {
+    const triangle = triangles[index];
+    minX = Math.min(minX, triangle.minX);
+    minY = Math.min(minY, triangle.minY);
+    minZ = Math.min(minZ, triangle.minZ);
+    maxX = Math.max(maxX, triangle.maxX);
+    maxY = Math.max(maxY, triangle.maxY);
+    maxZ = Math.max(maxZ, triangle.maxZ);
+  }
+
+  if (indices.length <= DETAILED_MESH_BVH_LEAF_TRIANGLE_COUNT) {
+    return {
+      minX,
+      minY,
+      minZ,
+      maxX,
+      maxY,
+      maxZ,
+      left: null,
+      right: null,
+      triangleIndices: indices,
+    };
+  }
+
+  const extentX = maxX - minX;
+  const extentY = maxY - minY;
+  const extentZ = maxZ - minZ;
+  const splitAxis: "x" | "y" | "z" =
+    extentX >= extentY && extentX >= extentZ
+      ? "x"
+      : extentY >= extentZ
+        ? "y"
+        : "z";
+
+  const sorted = [...indices].sort((leftIndex, rightIndex) => {
+    const leftTriangle = triangles[leftIndex];
+    const rightTriangle = triangles[rightIndex];
+    if (splitAxis === "x") {
+      return leftTriangle.centroidX - rightTriangle.centroidX;
+    }
+    if (splitAxis === "y") {
+      return leftTriangle.centroidY - rightTriangle.centroidY;
+    }
+    return leftTriangle.centroidZ - rightTriangle.centroidZ;
+  });
+  const mid = Math.floor(sorted.length / 2);
+  const leftIndices = sorted.slice(0, mid);
+  const rightIndices = sorted.slice(mid);
+
+  if (leftIndices.length === 0 || rightIndices.length === 0) {
+    return {
+      minX,
+      minY,
+      minZ,
+      maxX,
+      maxY,
+      maxZ,
+      left: null,
+      right: null,
+      triangleIndices: indices,
+    };
+  }
+
+  return {
+    minX,
+    minY,
+    minZ,
+    maxX,
+    maxY,
+    maxZ,
+    left: buildTriangleBvhNode(triangles, leftIndices),
+    right: buildTriangleBvhNode(triangles, rightIndices),
+    triangleIndices: null,
+  };
+}
+
+function buildTriangleBvh(triangles: PreparedTriangle[]): TriangleBvhNode | null {
+  if (triangles.length === 0) {
+    return null;
+  }
+  const indices = Array.from({ length: triangles.length }, (_, index) => index);
+  return buildTriangleBvhNode(triangles, indices);
 }
 
 function listZipFilesByBasenameSync(): Map<string, string> {
@@ -1024,10 +1299,123 @@ function loadObstacleMeshSync(
 
   const mesh: DetailedObstacleMesh = {
     obstacleId: blockerId,
-    triangles: toTriangles(matched),
+    triangles: toPreparedTriangles(matched),
+    bvh: null,
   };
+  mesh.bvh = buildTriangleBvh(mesh.triangles);
   detailedMeshCacheByObstacleId.set(blockerId, mesh);
   return mesh;
+}
+
+function findNearestIntersectionInMesh(
+  mesh: DetailedObstacleMesh,
+  point: Vec3,
+  direction: Vec3,
+  maxT: number,
+): number | null {
+  if (mesh.triangles.length === 0) {
+    return null;
+  }
+
+  const root = mesh.bvh;
+  if (!root) {
+    let bestT: number | null = null;
+    for (const triangle of mesh.triangles) {
+      const t = rayPreparedTriangleIntersectionDistance(point, direction, triangle);
+      if (t === null || t > maxT) {
+        continue;
+      }
+      if (bestT === null || t < bestT) {
+        bestT = t;
+      }
+    }
+    return bestT;
+  }
+
+  const rootEntry = rayAabbIntersectionDistance(
+    point,
+    direction,
+    root.minX,
+    root.minY,
+    root.minZ,
+    root.maxX,
+    root.maxY,
+    root.maxZ,
+    maxT,
+  );
+  if (rootEntry === null) {
+    return null;
+  }
+
+  const stack: TriangleBvhNode[] = [root];
+  let bestT: number | null = null;
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) {
+      continue;
+    }
+    const maxDistanceForNode = bestT === null ? maxT : Math.min(maxT, bestT);
+
+    if (current.triangleIndices) {
+      for (const triangleIndex of current.triangleIndices) {
+        const triangle = mesh.triangles[triangleIndex];
+        const t = rayPreparedTriangleIntersectionDistance(point, direction, triangle);
+        if (t === null || t > maxDistanceForNode) {
+          continue;
+        }
+        if (bestT === null || t < bestT) {
+          bestT = t;
+        }
+      }
+      continue;
+    }
+
+    const left = current.left;
+    const right = current.right;
+    const leftEntry =
+      left &&
+      rayAabbIntersectionDistance(
+        point,
+        direction,
+        left.minX,
+        left.minY,
+        left.minZ,
+        left.maxX,
+        left.maxY,
+        left.maxZ,
+        maxDistanceForNode,
+      );
+    const rightEntry =
+      right &&
+      rayAabbIntersectionDistance(
+        point,
+        direction,
+        right.minX,
+        right.minY,
+        right.minZ,
+        right.maxX,
+        right.maxY,
+        right.maxZ,
+        maxDistanceForNode,
+      );
+
+    if (left && right && leftEntry !== null && rightEntry !== null) {
+      if (leftEntry <= rightEntry) {
+        stack.push(right);
+        stack.push(left);
+      } else {
+        stack.push(left);
+        stack.push(right);
+      }
+    } else if (left && leftEntry !== null) {
+      stack.push(left);
+    } else if (right && rightEntry !== null) {
+      stack.push(right);
+    }
+  }
+
+  return bestT;
 }
 
 export function createDetailedBuildingShadowVerifier(
@@ -1067,22 +1455,7 @@ export function createDetailedBuildingShadowVerifier(
       z: input.pointElevation,
     };
 
-    let bestT: number | null = null;
-    for (const triangle of mesh.triangles) {
-      const t = rayTriangleIntersectionDistance(
-        point,
-        direction,
-        triangle[0],
-        triangle[1],
-        triangle[2],
-      );
-      if (t === null || t > maxT) {
-        continue;
-      }
-      if (bestT === null || t < bestT) {
-        bestT = t;
-      }
-    }
+    const bestT = findNearestIntersectionInMesh(mesh, point, direction, maxT);
 
     if (bestT === null) {
       return {
