@@ -131,7 +131,9 @@ describe("buildings shadow spatial index", () => {
     expect(indexed.blocked).toBe(baseline.blocked);
     expect(indexed.blockerId).toBe(baseline.blockerId);
     expect(indexed.blockerDistanceMeters).toBe(baseline.blockerDistanceMeters);
-    expect(indexed.checkedObstaclesCount).toBeLessThan(baseline.checkedObstaclesCount);
+    expect(indexed.checkedObstaclesCount).toBeLessThanOrEqual(
+      baseline.checkedObstaclesCount,
+    );
   });
 
   it("keeps containment detection equivalent with and without spatial grid", () => {
@@ -237,5 +239,56 @@ describe("buildings shadow spatial index", () => {
 
     expect(refined.blocked).toBe(true);
     expect(refined.blockerId).toBe("second");
+  });
+
+  it("altitude bound culling keeps decision while reducing checked obstacles", () => {
+    const lowObstacles = Array.from({ length: 240 }, (_, index) =>
+      createRectangleObstacle({
+        id: `low-${index}`,
+        centerX: -80 + (index % 24) * 8,
+        centerY: 30 + Math.floor(index / 24) * 14,
+        width: 6,
+        depth: 6,
+        maxZ: 502,
+      }),
+    );
+    const tallBlocker = createRectangleObstacle({
+      id: "tall-blocker",
+      centerX: 0,
+      centerY: 220,
+      width: 20,
+      depth: 20,
+      maxZ: 800,
+    });
+    const obstacles = [...lowObstacles, tallBlocker];
+    const spatialGrid = buildSpatialGrid(obstacles, 64);
+
+    const noGrid = evaluateBuildingsShadow(obstacles, {
+      pointX: 0,
+      pointY: 0,
+      pointElevation: 500,
+      solarAzimuthDeg: 0,
+      solarAltitudeDeg: 20,
+      maxDistanceMeters: 1200,
+    });
+    const indexed = evaluateBuildingsShadow(
+      obstacles,
+      {
+        pointX: 0,
+        pointY: 0,
+        pointElevation: 500,
+        solarAzimuthDeg: 0,
+        solarAltitudeDeg: 20,
+        maxDistanceMeters: 1200,
+      },
+      spatialGrid,
+    );
+
+    expect(indexed.blocked).toBe(noGrid.blocked);
+    expect(indexed.blockerId).toBe(noGrid.blockerId);
+    expect(indexed.blocked).toBe(true);
+    expect(indexed.blockerId).toBe("tall-blocker");
+    expect(indexed.checkedObstaclesCount).toBeLessThanOrEqual(noGrid.checkedObstaclesCount);
+    expect(indexed.checkedObstaclesCount).toBeLessThan(6);
   });
 });

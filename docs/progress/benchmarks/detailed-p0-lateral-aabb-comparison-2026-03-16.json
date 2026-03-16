@@ -1,0 +1,80 @@
+{
+  "generatedAt": "2026-03-16T12:11:34.719Z",
+  "scenario": {
+    "region": "lausanne",
+    "date": "2026-03-08",
+    "days": 1,
+    "gridStepMeters": 5,
+    "sampleEveryMinutes": 15,
+    "startLocalTime": "08:00",
+    "endLocalTime": "12:00",
+    "tileCount": 8,
+    "workers": 1,
+    "mode": "detailed"
+  },
+  "performanceMs": {
+    "detailedRun1BeforeCulling": 1111528,
+    "detailedRun2BeforeCulling": 841275.101,
+    "detailedAfterAltitudeCullingRun1": 509161,
+    "detailedAfterP0Run1": 353575.312
+  },
+  "performanceDelta": {
+    "vsAltitudeCulling": {
+      "elapsedMs": -155585.688,
+      "improvementPercent": 30.557
+    },
+    "vsRun2BeforeCulling": {
+      "elapsedMs": -487699.789,
+      "improvementPercent": 57.971
+    },
+    "vsRun1BeforeCulling": {
+      "elapsedMs": -757952.688,
+      "improvementPercent": 68.19
+    }
+  },
+  "throughputTilesPerMinute": {
+    "detailedRun1BeforeCulling": 0.432,
+    "detailedRun2BeforeCulling": 0.571,
+    "detailedAfterAltitudeCullingRun1": 0.943,
+    "detailedAfterP0Run1": 1.358
+  },
+  "throughputDelta": {
+    "vsAltitudeCulling": {
+      "absolute": 0.415,
+      "improvementPercent": 44.008
+    },
+    "vsRun2BeforeCulling": {
+      "absolute": 0.787,
+      "improvementPercent": 137.828
+    },
+    "vsRun1BeforeCulling": {
+      "absolute": 0.926,
+      "improvementPercent": 214.352
+    }
+  },
+  "precisionComparison": {
+    "baseline": {
+      "modelVersionHash": "e658bad72d727ddb",
+      "label": "detailed-r2 (before culling)"
+    },
+    "candidate": {
+      "modelVersionHash": "abf2ec3295aa6c1f",
+      "label": "detailed-p0-r1"
+    },
+    "totalPointFrames": 319600,
+    "differences": {
+      "sunMaskBits": 0,
+      "sunMaskNoVegetationBits": 0,
+      "terrainBlockedBits": 0,
+      "buildingsBlockedBits": 0,
+      "vegetationBlockedBits": 0,
+      "buildingBlockerIdEntries": 0,
+      "horizonAngleEntries": 0,
+      "buildingBlockerDistanceEntries": 0
+    }
+  },
+  "artifacts": {
+    "benchmarkDetailedAfterP0": "docs/progress/benchmarks/precompute-workers-lausanne-2026-03-08-d1-g5-t8-detailed-p0-r1.json",
+    "precisionDiffReport": "docs/progress/analysis/detailed-baseline-vs-detailed-p0-lausanne-8tiles-20260308-0800-1200.json"
+  }
+}

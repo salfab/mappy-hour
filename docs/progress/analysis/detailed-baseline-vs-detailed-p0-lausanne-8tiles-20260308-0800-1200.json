@@ -1,0 +1,24 @@
+{
+  "comparedAt": "2026-03-16T12:10:30.271Z",
+  "baselineRun": {
+    "modelVersionHash": "e658bad72d727ddb",
+    "path": "C:/sources/MappyHour/mappy-hour/data/cache/sunlight-mode-compare/lausanne/e658bad72d727ddb/g5/m15/2026-03-08/t0800-1200/detailed-r2"
+  },
+  "candidateRun": {
+    "modelVersionHash": "abf2ec3295aa6c1f",
+    "path": "C:/sources/MappyHour/mappy-hour/data/cache/sunlight-mode-compare/lausanne/abf2ec3295aa6c1f/g5/m15/2026-03-08/t0800-1200/detailed-p0-r1"
+  },
+  "tileCount": 8,
+  "skippedTileCount": 0,
+  "totalPointFrames": 319600,
+  "differences": {
+    "sunMaskBits": 0,
+    "sunMaskNoVegetationBits": 0,
+    "terrainBlockedBits": 0,
+    "buildingsBlockedBits": 0,
+    "vegetationBlockedBits": 0,
+    "buildingBlockerIdEntries": 0,
+    "horizonAngleEntries": 0,
+    "buildingBlockerDistanceEntries": 0
+  }
+}

@@ -4,6 +4,11 @@ import path from "node:path";
 
 import AdmZip from "adm-zip";
 import { z } from "zod";
+import {
+  normalizeBuildingFootprint,
+  polygonArea,
+  type FootprintPoint as NormalizedFootprintPoint,
+} from "@/lib/sun/building-footprint";
 
 import {
   PROCESSED_BUILDINGS_INDEX_PATH,
@@ -36,6 +41,7 @@ const spatialGridSchema = z.object({
   version: z.number().int().min(1),
   cellSizeMeters: z.number().positive(),
   cells: z.record(z.string(), z.array(z.number().int().nonnegative())),
+  cellMaxZ: z.record(z.string(), z.number().finite()).optional(),
   stats: z
     .object({
       cellCount: z.number().int().nonnegative(),
@@ -72,6 +78,7 @@ export interface BuildingShadowInput {
   maxDistanceMeters?: number;
   buildingHeightBiasMeters?: number;
   excludedBlockerIds?: ReadonlySet<string>;
+  debugCollector?: (debug: BuildingShadowDebugPass) => void;
 }
 
 export interface BuildingShadowResult {
@@ -85,6 +92,14 @@ export interface BuildingShadowResult {
 export interface BuildingContainmentResult {
   insideBuilding: boolean;
   buildingId: string | null;
+}
+
+export interface BuildingShadowDebugPass {
+  candidateCellKeys: string[];
+  candidateObstacleCount: number;
+  checkedObstacleIds: string[];
+  checkedObstaclesCount: number;
+  blockerId: string | null;
 }
 
 interface Vec3 {
@@ -160,9 +175,22 @@ export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleInde
   try {
     const raw = await fs.readFile(PROCESSED_BUILDINGS_INDEX_PATH, "utf8");
     const parsed = buildingIndexSchema.parse(JSON.parse(raw));
+    let sanitizedFootprintsCount = 0;
+    const sanitizedObstacles = parsed.obstacles.map((obstacle) => {
+      const sanitized = sanitizeObstacleFootprint(obstacle);
+      if (sanitized.wasSanitized) {
+        sanitizedFootprintsCount += 1;
+      }
+      return sanitized.obstacle;
+    });
     obstacleIndexCache = {
       ...parsed,
-      spatialGrid: sanitizeSpatialGrid(parsed.spatialGrid, parsed.obstacles.length),
+      method:
+        sanitizedFootprintsCount > 0
+          ? `${parsed.method}|runtime-footprint-sanitize-v1(${sanitizedFootprintsCount})`
+          : parsed.method,
+      obstacles: sanitizedObstacles,
+      spatialGrid: sanitizeSpatialGrid(parsed.spatialGrid, sanitizedObstacles),
     };
     return obstacleIndexCache;
   } catch (error) {
@@ -182,7 +210,7 @@ export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleInde
 
 function sanitizeSpatialGrid(
   spatialGrid: BuildingObstacleSpatialGrid | undefined,
-  obstacleCount: number,
+  obstacles: BuildingObstacle[],
 ): BuildingObstacleSpatialGrid | undefined {
   if (!spatialGrid) {
     return undefined;
@@ -190,13 +218,83 @@ function sanitizeSpatialGrid(
 
   for (const indices of Object.values(spatialGrid.cells)) {
     for (const index of indices) {
-      if (index < 0 || index >= obstacleCount) {
+      if (index < 0 || index >= obstacles.length) {
         return undefined;
       }
     }
   }
 
-  return spatialGrid;
+  const computedCellMaxZ: Record<string, number> = {};
+  for (const [key, indices] of Object.entries(spatialGrid.cells)) {
+    let maxZ = Number.NEGATIVE_INFINITY;
+    for (const index of indices) {
+      const obstacle = obstacles[index];
+      if (!obstacle) {
+        continue;
+      }
+      maxZ = Math.max(maxZ, obstacle.maxZ);
+    }
+    if (Number.isFinite(maxZ)) {
+      computedCellMaxZ[key] = Math.round(maxZ * 1000) / 1000;
+    }
+  }
+
+  const validProvidedCellMaxZ =
+    spatialGrid.cellMaxZ &&
+    Object.entries(spatialGrid.cellMaxZ).every(
+      ([key, value]) => Number.isFinite(value) && key in spatialGrid.cells,
+    )
+      ? spatialGrid.cellMaxZ
+      : null;
+
+  return {
+    ...spatialGrid,
+    cellMaxZ: validProvidedCellMaxZ ?? computedCellMaxZ,
+  };
+}
+
+function sanitizeObstacleFootprint(
+  obstacle: BuildingObstacle,
+): { obstacle: BuildingObstacle; wasSanitized: boolean } {
+  if (!obstacle.footprint || obstacle.footprint.length < 3) {
+    return {
+      obstacle,
+      wasSanitized: false,
+    };
+  }
+
+  const normalized = normalizeBuildingFootprint(
+    obstacle.footprint as NormalizedFootprintPoint[],
+  );
+  if (!normalized.footprint || normalized.footprint.length < 3) {
+    return {
+      obstacle: {
+        ...obstacle,
+        footprint: undefined,
+        footprintArea: undefined,
+      },
+      wasSanitized: true,
+    };
+  }
+
+  if (!normalized.usedConvexHullFallback) {
+    return {
+      obstacle,
+      wasSanitized: false,
+    };
+  }
+
+  return {
+    obstacle: {
+      ...obstacle,
+      footprint: normalized.footprint.map((point) => ({
+        x: Math.round(point.x * 1000) / 1000,
+        y: Math.round(point.y * 1000) / 1000,
+      })),
+      footprintArea: Math.round(polygonArea(normalized.footprint) * 1000) / 1000,
+    },
+    wasSanitized: true,
+  };
 }
 
 function buildCellKey(cellX: number, cellY: number): string {
@@ -241,10 +339,17 @@ function collectCandidateObstacleIndices(params: {
   dirX: number;
   dirY: number;
   maxDistanceMeters: number;
-}): number[] {
+  pointElevation: number;
+  buildingHeightBiasMeters: number;
+  solarAltitudeTan: number;
+  collectCandidateCellKeys?: boolean;
+}): { indices: number[]; candidateCellKeys: string[] } {
   const cellSizeMeters = params.spatialGrid.cellSizeMeters;
   if (!Number.isFinite(cellSizeMeters) || cellSizeMeters <= 0) {
-    return params.obstacles.map((_, index) => index);
+    return {
+      indices: params.obstacles.map((_, index) => index),
+      candidateCellKeys: [],
+    };
   }
 
   const maxHalfDiagonal = params.obstacles.reduce(
@@ -258,13 +363,64 @@ function collectCandidateObstacleIndices(params: {
   const maxX = Math.max(params.pointX, endX) + corridorPadding;
   const minY = Math.min(params.pointY, endY) - corridorPadding;
   const maxY = Math.max(params.pointY, endY) + corridorPadding;
-  const candidateIndices = collectObstacleIndicesInBounds({
-    spatialGrid: params.spatialGrid,
-    minX,
-    maxX,
-    minY,
-    maxY,
-  });
+  const minCellX = Math.floor(minX / cellSizeMeters);
+  const maxCellX = Math.floor(maxX / cellSizeMeters);
+  const minCellY = Math.floor(minY / cellSizeMeters);
+  const maxCellY = Math.floor(maxY / cellSizeMeters);
+  const candidateIndices = new Set<number>();
+  const candidateCellKeys: string[] = [];
+  const cellHalfDiagonal = (Math.SQRT2 * cellSizeMeters) / 2;
+  const corridorHalfWidth = cellHalfDiagonal + maxHalfDiagonal;
+  const canUseAltitudeCulling =
+    Number.isFinite(params.solarAltitudeTan) &&
+    params.solarAltitudeTan > 0 &&
+    Number.isFinite(params.pointElevation);
+
+  for (let cellY = minCellY; cellY <= maxCellY; cellY += 1) {
+    for (let cellX = minCellX; cellX <= maxCellX; cellX += 1) {
+      const key = buildCellKey(cellX, cellY);
+      const indices = params.spatialGrid.cells[key];
+      if (!indices || indices.length === 0) {
+        continue;
+      }
+
+      const centerX = (cellX + 0.5) * cellSizeMeters;
+      const centerY = (cellY + 0.5) * cellSizeMeters;
+      const dx = centerX - params.pointX;
+      const dy = centerY - params.pointY;
+      const dot = dx * params.dirX + dy * params.dirY;
+      if (dot < -cellHalfDiagonal) {
+        continue;
+      }
+      const lateral = Math.abs(dx * params.dirY - dy * params.dirX);
+      if (lateral > corridorHalfWidth) {
+        continue;
+      }
+      const centerDistance = Math.hypot(dx, dy);
+      if (centerDistance > params.maxDistanceMeters + cellHalfDiagonal) {
+        continue;
+      }
+
+      if (canUseAltitudeCulling && params.spatialGrid.cellMaxZ) {
+        const cellMaxTop = params.spatialGrid.cellMaxZ[key];
+        if (cellMaxTop !== undefined) {
+          const minRayDistance = Math.max(0, dot - cellHalfDiagonal);
+          const requiredTop =
+            params.pointElevation + minRayDistance * params.solarAltitudeTan;
+          if (cellMaxTop + params.buildingHeightBiasMeters < requiredTop) {
+            continue;
+          }
+        }
+      }
+      if (params.collectCandidateCellKeys) {
+        candidateCellKeys.push(key);
+      }
+
+      for (const obstacleIndex of indices) {
+        candidateIndices.add(obstacleIndex);
+      }
+    }
+  }
   const filteredIndices: number[] = [];
 
   for (const obstacleIndex of candidateIndices) {
@@ -278,14 +434,29 @@ function collectCandidateObstacleIndices(params: {
     if (dot < -obstacle.halfDiagonal) {
       continue;
     }
+    const lateral = Math.abs(dx * params.dirY - dy * params.dirX);
+    if (lateral > obstacle.halfDiagonal) {
+      continue;
+    }
     const centerDistance = Math.hypot(dx, dy);
     if (centerDistance > params.maxDistanceMeters + obstacle.halfDiagonal) {
       continue;
     }
+    if (canUseAltitudeCulling) {
+      const minRayDistance = Math.max(0, dot - obstacle.halfDiagonal);
+      const requiredTop =
+        params.pointElevation + minRayDistance * params.solarAltitudeTan;
+      if (obstacle.maxZ + params.buildingHeightBiasMeters < requiredTop) {
+        continue;
+      }
+    }
     filteredIndices.push(obstacleIndex);
   }
 
-  return filteredIndices;
+  return {
+    indices: filteredIndices,
+    candidateCellKeys,
+  };
 }
 
 function cross(ax: number, ay: number, bx: number, by: number): number {
@@ -964,12 +1135,15 @@ export function evaluateBuildingsShadow(
   const azimuthRad = (input.solarAzimuthDeg * Math.PI) / 180;
   const dirX = Math.sin(azimuthRad);
   const dirY = Math.cos(azimuthRad);
+  const solarAltitudeTan = Math.tan((input.solarAltitudeDeg * Math.PI) / 180);
 
   let blockerId: string | null = null;
   let blockerDistanceMeters: number | null = null;
   let blockerAltitudeAngleDeg: number | null = null;
   let checkedObstaclesCount = 0;
-  const candidateIndices = spatialGrid
+  const collectDebug = typeof input.debugCollector === "function";
+  const checkedObstacleIds: string[] = [];
+  const candidateSelection = spatialGrid
     ? collectCandidateObstacleIndices({
         obstacles,
         spatialGrid,
@@ -978,8 +1152,16 @@ export function evaluateBuildingsShadow(
         dirX,
         dirY,
         maxDistanceMeters,
+        pointElevation: effectivePointElevation,
+        buildingHeightBiasMeters,
+        solarAltitudeTan,
+        collectCandidateCellKeys: collectDebug,
       })
-    : obstacles.map((_, index) => index);
+    : {
+        indices: obstacles.map((_, index) => index),
+        candidateCellKeys: [],
+      };
+  const candidateIndices = candidateSelection.indices;
 
   for (const obstacleIndex of candidateIndices) {
     const obstacle = obstacles[obstacleIndex];
@@ -996,8 +1178,38 @@ export function evaluateBuildingsShadow(
     if (centerDistance > maxDistanceMeters + obstacle.halfDiagonal) {
       continue;
     }
+    const lateral = Math.abs(
+      (obstacle.centerX - input.pointX) * dirY -
+        (obstacle.centerY - input.pointY) * dirX,
+    );
+    if (lateral > obstacle.halfDiagonal) {
+      continue;
+    }
+    const bboxEntryDistance = rayBoxIntersectionDistance(
+      input.pointX,
+      input.pointY,
+      dirX,
+      dirY,
+      obstacle,
+    );
+    if (bboxEntryDistance === null || bboxEntryDistance > maxDistanceMeters) {
+      continue;
+    }
+    if (blockerDistanceMeters !== null && bboxEntryDistance >= blockerDistanceMeters) {
+      continue;
+    }
+    if (Number.isFinite(solarAltitudeTan) && solarAltitudeTan > 0) {
+      const minRayDistance = Math.max(0, bboxEntryDistance);
+      const requiredTop = effectivePointElevation + minRayDistance * solarAltitudeTan;
+      if (obstacle.maxZ + buildingHeightBiasMeters < requiredTop) {
+        continue;
+      }
+    }
 
     checkedObstaclesCount += 1;
+    if (collectDebug) {
+      checkedObstacleIds.push(obstacle.id);
+    }
 
     const intersectionDistance =
       obstacle.footprint && obstacle.footprint.length >= 3
@@ -1008,7 +1220,7 @@ export function evaluateBuildingsShadow(
             dirY,
             obstacle.footprint,
           )
-        : rayBoxIntersectionDistance(input.pointX, input.pointY, dirX, dirY, obstacle);
+        : bboxEntryDistance;
 
     if (intersectionDistance === null || intersectionDistance > maxDistanceMeters) {
       continue;
@@ -1032,6 +1244,16 @@ export function evaluateBuildingsShadow(
       blockerDistanceMeters = intersectionDistance;
       blockerAltitudeAngleDeg = altitudeAngleDeg;
     }
+  }
+
+  if (collectDebug) {
+    input.debugCollector?.({
+      candidateCellKeys: candidateSelection.candidateCellKeys,
+      candidateObstacleCount: candidateIndices.length,
+      checkedObstacleIds,
+      checkedObstaclesCount,
+      blockerId,
+    });
   }
 
   return {
