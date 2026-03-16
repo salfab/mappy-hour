@@ -1,6 +1,10 @@
 import SunCalc from "suncalc";
 
 import {
+  getBuildingShadowGuardMaxAltitudeDeg,
+  type BuildingShadowAzimuthGuard,
+} from "@/lib/sun/buildings-shadow";
+import {
   getHorizonAngleForAzimuth,
   HorizonMask,
   isTerrainBlockedByHorizon,
@@ -9,6 +13,7 @@ import { getZonedDayRangeUtc } from "@/lib/time/zoned-date";
 
 const RAD_TO_DEG = 180 / Math.PI;
 const TERRAIN_HORIZON_SKIP_MARGIN_DEG = 0.25;
+const BUILDING_SHADOW_AZIMUTH_GUARD_MARGIN_DEG = 0.15;
 const horizonMaxAngleCache = new WeakMap<HorizonMask, number>();
 
 export interface PointSunlightInput {
@@ -29,6 +34,7 @@ export interface PointSunlightInput {
     blockerAltitudeAngleDeg: number | null;
     checkedObstaclesCount: number;
   };
+  buildingShadowAzimuthGuard?: BuildingShadowAzimuthGuard | null;
   vegetationShadowEvaluator?: (sample: {
     azimuthDeg: number;
     altitudeDeg: number;
@@ -87,6 +93,7 @@ export interface InstantSunlightInput {
   localDateTimeOverride?: string;
   horizonMask: HorizonMask | null;
   buildingShadowEvaluator?: PointSunlightInput["buildingShadowEvaluator"];
+  buildingShadowAzimuthGuard?: PointSunlightInput["buildingShadowAzimuthGuard"];
   vegetationShadowEvaluator?: PointSunlightInput["vegetationShadowEvaluator"];
   evaluateAllBlockers?: boolean;
   profiler?: InstantSunlightProfiler;
@@ -104,6 +111,7 @@ export interface InstantSunlightProfiler {
   terrainCheckNeededCount: number;
   terrainBlockedCount: number;
   secondarySkippedByTerrainCount: number;
+  buildingsSkippedByAzimuthGuardCount: number;
   buildingsEvaluatorCalls: number;
   vegetationEvaluatorCalls: number;
 }
@@ -230,9 +238,22 @@ export function evaluateInstantSunlight(
     const evaluateSecondaryBlockers =
       aboveAstronomicalHorizon &&
       (input.evaluateAllBlockers === true || !terrainBlocked);
+    const buildingCheckAllowedByGuard =
+      input.buildingShadowAzimuthGuard === undefined ||
+      input.buildingShadowAzimuthGuard === null ||
+      altitudeDeg <=
+        getBuildingShadowGuardMaxAltitudeDeg(
+          input.buildingShadowAzimuthGuard,
+          azimuthDeg,
+        ) +
+          BUILDING_SHADOW_AZIMUTH_GUARD_MARGIN_DEG;
+    const shouldEvaluateBuildings =
+      evaluateSecondaryBlockers &&
+      !!input.buildingShadowEvaluator &&
+      buildingCheckAllowedByGuard;
     const buildingShadow =
-      evaluateSecondaryBlockers && input.buildingShadowEvaluator
-        ? input.buildingShadowEvaluator({
+      shouldEvaluateBuildings
+        ? input.buildingShadowEvaluator!({
             azimuthDeg,
             altitudeDeg,
             utcDate: input.utcDate,
@@ -321,12 +342,25 @@ export function evaluateInstantSunlight(
   const evaluateSecondaryBlockers =
     aboveAstronomicalHorizon &&
     (input.evaluateAllBlockers === true || !terrainBlocked);
+  const buildingCheckAllowedByGuard =
+    input.buildingShadowAzimuthGuard === undefined ||
+    input.buildingShadowAzimuthGuard === null ||
+    altitudeDeg <=
+      getBuildingShadowGuardMaxAltitudeDeg(
+        input.buildingShadowAzimuthGuard,
+        azimuthDeg,
+      ) +
+        BUILDING_SHADOW_AZIMUTH_GUARD_MARGIN_DEG;
+  const shouldEvaluateBuildings =
+    evaluateSecondaryBlockers &&
+    !!input.buildingShadowEvaluator &&
+    buildingCheckAllowedByGuard;
   const buildingsStarted = performance.now();
   const buildingShadow = (() => {
-    if (!evaluateSecondaryBlockers || !input.buildingShadowEvaluator) {
+    if (!shouldEvaluateBuildings) {
       return null;
     }
-    return input.buildingShadowEvaluator({
+    return input.buildingShadowEvaluator!({
       azimuthDeg,
       altitudeDeg,
       utcDate: input.utcDate,
@@ -411,7 +445,14 @@ export function evaluateInstantSunlight(
   ) {
     profiler.secondarySkippedByTerrainCount += 1;
   }
-  if (evaluateSecondaryBlockers && input.buildingShadowEvaluator) {
+  if (
+    evaluateSecondaryBlockers &&
+    input.buildingShadowEvaluator &&
+    !buildingCheckAllowedByGuard
+  ) {
+    profiler.buildingsSkippedByAzimuthGuardCount += 1;
+  }
+  if (shouldEvaluateBuildings) {
     profiler.buildingsEvaluatorCalls += 1;
   }
   if (evaluateSecondaryBlockers && input.vegetationShadowEvaluator) {
@@ -442,6 +483,7 @@ export function evaluatePointSunlight(
         timeZone: input.timeZone,
         horizonMask: input.horizonMask,
         buildingShadowEvaluator: input.buildingShadowEvaluator,
+        buildingShadowAzimuthGuard: input.buildingShadowAzimuthGuard,
         vegetationShadowEvaluator: input.vegetationShadowEvaluator,
       }),
     );

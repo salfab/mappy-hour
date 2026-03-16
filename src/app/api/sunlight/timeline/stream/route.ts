@@ -63,6 +63,9 @@ interface PreparedPoint {
   buildingShadowEvaluator: Awaited<
     ReturnType<typeof buildPointEvaluationContext>
   >["buildingShadowEvaluator"];
+  buildingShadowAzimuthGuard: Awaited<
+    ReturnType<typeof buildPointEvaluationContext>
+  >["buildingShadowAzimuthGuard"];
   vegetationShadowEvaluator: Awaited<
     ReturnType<typeof buildPointEvaluationContext>
   >["vegetationShadowEvaluator"];
@@ -386,6 +389,7 @@ export async function GET(request: Request) {
                 pointElevationMeters: context.pointElevationMeters,
                 horizonMask: context.horizonMask,
                 buildingShadowEvaluator: context.buildingShadowEvaluator,
+                buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
                 vegetationShadowEvaluator: context.vegetationShadowEvaluator,
               });
             }
@@ -488,6 +492,7 @@ export async function GET(request: Request) {
                 timeZone: query.timezone,
                 horizonMask: point.horizonMask,
                 buildingShadowEvaluator: point.buildingShadowEvaluator,
+                buildingShadowAzimuthGuard: point.buildingShadowAzimuthGuard,
                 vegetationShadowEvaluator: point.vegetationShadowEvaluator,
               });
               if (!localTime) {

@@ -17,7 +17,7 @@ import { adaptiveHorizonSharingConfig } from "@/lib/sun/adaptive-horizon-sharing
 import type { PrecomputedRegionName } from "./sunlight-cache";
 import { TtlCache } from "./runtime-cache";
 
-export const SUNLIGHT_CACHE_ALGORITHM_VERSION = "sunlight-cache-v7";
+export const SUNLIGHT_CACHE_ALGORITHM_VERSION = "sunlight-cache-v8";
 export const SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION = 2;
 
 interface ManifestSummary {
@@ -46,11 +46,16 @@ export interface SunlightModelVersion {
     vegetationManifest: ManifestSummary;
     horizonManifest: ManifestSummary;
     adaptiveHorizonSharing: Record<string, unknown>;
+    buildingAzimuthGuard: {
+      enabled: boolean;
+    };
   };
 }
 
 const manifestCache = new TtlCache<ManifestSummary>(5 * 60_000, 32);
 const modelVersionCache = new TtlCache<SunlightModelVersion>(5 * 60_000, 32);
+const BUILDING_AZIMUTH_GUARD_ENABLED =
+  process.env.MAPPY_BUILDINGS_AZIMUTH_GUARD === "1";
 
 function manifestPathForRegion(region: PrecomputedRegionName, kind: "buildings" | "terrain" | "vegetation" | "horizon"): string {
   if (kind === "buildings") {
@@ -159,6 +164,9 @@ export async function getSunlightModelVersion(
     vegetationManifest,
     horizonManifest,
     adaptiveHorizonSharing: adaptiveHorizonSharingConfig,
+    buildingAzimuthGuard: {
+      enabled: BUILDING_AZIMUTH_GUARD_ENABLED,
+    },
   };
 
   const modelVersion: SunlightModelVersion = {
@@ -177,6 +185,9 @@ export async function getSunlightModelVersion(
       vegetationManifest,
       horizonManifest,
       adaptiveHorizonSharing: adaptiveHorizonSharingConfig,
+      buildingAzimuthGuard: {
+        enabled: BUILDING_AZIMUTH_GUARD_ENABLED,
+      },
     },
   };
 

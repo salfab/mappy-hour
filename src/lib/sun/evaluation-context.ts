@@ -1,9 +1,11 @@
 import { wgs84ToLv95 } from "@/lib/geo/projection";
 import {
+  buildBuildingShadowAzimuthGuard,
   createDetailedBuildingShadowVerifier,
   evaluateBuildingsShadow,
   evaluateBuildingsShadowTwoLevel,
   findContainingBuilding,
+  type BuildingShadowAzimuthGuard,
   loadBuildingsObstacleIndex,
 } from "@/lib/sun/buildings-shadow";
 import { HorizonMask, loadLausanneHorizonMask } from "@/lib/sun/horizon-mask";
@@ -75,6 +77,7 @@ export interface PointEvaluationContext {
     blockerAltitudeAngleDeg: number | null;
     checkedObstaclesCount: number;
   };
+  buildingShadowAzimuthGuard?: BuildingShadowAzimuthGuard | null;
   vegetationShadowEvaluator?: (sample: { azimuthDeg: number; altitudeDeg: number }) => {
     blocked: boolean;
     blockerDistanceMeters: number | null;
@@ -102,6 +105,8 @@ const BUILDINGS_SHADOW_MODE = parseBuildingsShadowMode();
 const BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES = 2;
 const BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS = 3;
 const BUILDINGS_DETAILED_MAX_REFINEMENT_STEPS = 32;
+const BUILDINGS_AZIMUTH_GUARD_ENABLED =
+  process.env.MAPPY_BUILDINGS_AZIMUTH_GUARD === "1";
 
 export async function buildSharedPointEvaluationSources(
   options: BuildSharedPointEvaluationSourcesOptions = {},
@@ -271,6 +276,23 @@ export async function buildPointEvaluationContext(
           };
         })()
       : undefined;
+  const buildingShadowAzimuthGuard =
+    BUILDINGS_AZIMUTH_GUARD_ENABLED &&
+    buildingsIndex &&
+    pointElevationMeters !== null &&
+    !containment.insideBuilding
+      ? buildBuildingShadowAzimuthGuard(
+          buildingsIndex.obstacles,
+          {
+            pointX: pointLv95.easting,
+            pointY: pointLv95.northing,
+            pointElevation: pointElevationMeters,
+            buildingHeightBiasMeters: shadowCalibration.buildingHeightBiasMeters,
+            allowedBlockerIds: options.buildingShadowAllowedIds,
+          },
+          buildingsIndex.spatialGrid,
+        )
+      : null;
   const vegetationShadowEvaluator =
     vegetationSurfaceTiles &&
     vegetationSurfaceTiles.length > 0 &&
@@ -319,7 +341,7 @@ export async function buildPointEvaluationContext(
             : BUILDINGS_SHADOW_MODE === "detailed"
               ? "|detailed-direct-v1"
               : ""
-        }`
+        }${BUILDINGS_AZIMUTH_GUARD_ENABLED ? "|azimuth-guard-v1" : ""}`
       : "none",
     vegetationShadowMethod:
       vegetationSurfaceTiles && vegetationSurfaceTiles.length > 0
@@ -328,6 +350,7 @@ export async function buildPointEvaluationContext(
     warnings,
     horizonMask,
     buildingShadowEvaluator,
+    buildingShadowAzimuthGuard,
     vegetationShadowEvaluator,
   };
 }

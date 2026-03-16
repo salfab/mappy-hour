@@ -269,6 +269,7 @@ export async function GET(request: Request) {
                 timeZone: query.timezone,
                 horizonMask: context.horizonMask,
                 buildingShadowEvaluator: context.buildingShadowEvaluator,
+                buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
                 vegetationShadowEvaluator: context.vegetationShadowEvaluator,
               });
 

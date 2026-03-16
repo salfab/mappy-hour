@@ -1,0 +1,31 @@
+{
+  "comparedAt": "2026-03-16T17:45:40.765Z",
+  "params": {
+    "region": "lausanne",
+    "startDate": "2026-03-08",
+    "days": 1,
+    "timezone": "Europe/Zurich",
+    "sampleEveryMinutes": 15,
+    "gridStepMeters": 5,
+    "startLocalTime": "08:00",
+    "endLocalTime": "12:00",
+    "tileCount": 8,
+    "repeats": 1,
+    "workers": [
+      1
+    ]
+  },
+  "azimuthGuardOff": {
+    "elapsedMs": 428793.41,
+    "tilesPerMinute": 1.119
+  },
+  "azimuthGuardOn": {
+    "elapsedMs": 443788.228,
+    "tilesPerMinute": 1.082
+  },
+  "delta": {
+    "elapsedMs": 14994.818000000028,
+    "elapsedPct": 3.496979582778576,
+    "tilesPerMinutePct": -3.306523681858795
+  }
+}

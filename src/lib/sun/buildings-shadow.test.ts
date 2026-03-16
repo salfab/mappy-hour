@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildBuildingShadowAzimuthGuard,
   type BuildingShadowDebugPass,
   evaluateBuildingsShadow,
   evaluateBuildingsShadowTwoLevel,
   findContainingBuilding,
+  getBuildingShadowGuardMaxAltitudeDeg,
 } from "./buildings-shadow";
 
 interface TestObstacle {
@@ -389,5 +391,35 @@ describe("buildings shadow spatial index", () => {
     expect(unrestricted.blockerId).toBe("disallowed-blocker");
     expect(restricted.blocked).toBe(true);
     expect(restricted.blockerId).toBe("allowed-blocker");
+  });
+
+  it("computes azimuth guard that keeps blocker azimuth above threshold", () => {
+    const blocker = createRectangleObstacle({
+      id: "blocker",
+      centerX: 0,
+      centerY: 40,
+      width: 20,
+      depth: 20,
+      maxZ: 40,
+    });
+    const guard = buildBuildingShadowAzimuthGuard(
+      [blocker],
+      {
+        pointX: 0,
+        pointY: 0,
+        pointElevation: 0,
+        maxDistanceMeters: 1200,
+      },
+      buildSpatialGrid([blocker], 64),
+    );
+
+    expect(guard).not.toBeNull();
+    if (!guard) {
+      return;
+    }
+    const atNorth = getBuildingShadowGuardMaxAltitudeDeg(guard, 0);
+    const atEast = getBuildingShadowGuardMaxAltitudeDeg(guard, 90);
+    expect(atNorth).toBeGreaterThan(30);
+    expect(atEast).toBeLessThan(1);
   });
 });

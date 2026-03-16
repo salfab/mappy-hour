@@ -518,6 +518,7 @@ export async function POST(request: Request) {
           timeZone: parsed.data.timezone,
           horizonMask: context.horizonMask,
           buildingShadowEvaluator: context.buildingShadowEvaluator,
+          buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
           vegetationShadowEvaluator: context.vegetationShadowEvaluator,
         });
         const isSunny = isSampleSunny(sample, parsed.data.ignoreVegetation);
@@ -567,6 +568,7 @@ export async function POST(request: Request) {
           timeZone: parsed.data.timezone,
           horizonMask: context.horizonMask,
           buildingShadowEvaluator: context.buildingShadowEvaluator,
+          buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
           vegetationShadowEvaluator: context.vegetationShadowEvaluator,
         }),
       );

@@ -2,8 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 
+import SunCalc from "suncalc";
+
 import { LAUSANNE_CENTER } from "@/lib/config/lausanne";
 import { NYON_CENTER } from "@/lib/config/nyon";
+import { lv95ToWgs84 } from "@/lib/geo/projection";
 import { getSunlightModelVersion } from "@/lib/precompute/model-version";
 import {
   buildRegionTiles,
@@ -72,6 +75,7 @@ interface TileProfile {
 
 const OUTPUT_DIR = path.join(process.cwd(), "docs", "progress", "benchmarks");
 const FIXED_TILE_SIZE_METERS = 250;
+const BUILDING_SHADOW_MAX_DISTANCE_METERS = 2500;
 
 const DEFAULT_ARGS: ParsedArgs = {
   region: "lausanne",
@@ -174,6 +178,187 @@ function round3(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
+type BuildingsIndex = NonNullable<
+  Awaited<ReturnType<typeof buildSharedPointEvaluationSources>>["buildingsIndex"]
+>;
+type BuildingObstacle = BuildingsIndex["obstacles"][number];
+type BuildingSpatialGrid = NonNullable<BuildingsIndex["spatialGrid"]>;
+
+function computeSolarGeometry(
+  lat: number,
+  lon: number,
+  utcDate: Date,
+): { altitudeDeg: number; azimuthDeg: number } {
+  const position = SunCalc.getPosition(utcDate, lat, lon);
+  const fromNorth = ((position.azimuth * 180) / Math.PI + 180) % 360;
+  return {
+    altitudeDeg: (position.altitude * 180) / Math.PI,
+    azimuthDeg: fromNorth >= 0 ? fromNorth : fromNorth + 360,
+  };
+}
+
+function buildSpatialCellKey(cellX: number, cellY: number): string {
+  return `${cellX}:${cellY}`;
+}
+
+function collectTileSampleCandidateObstacleIndices(params: {
+  obstacles: BuildingObstacle[];
+  spatialGrid: BuildingSpatialGrid;
+  centerX: number;
+  centerY: number;
+  tileRadiusMeters: number;
+  dirX: number;
+  dirY: number;
+  maxDistanceMeters: number;
+  maxObstacleHalfDiagonalMeters: number;
+}): Set<number> {
+  const cellSizeMeters = params.spatialGrid.cellSizeMeters;
+  if (!Number.isFinite(cellSizeMeters) || cellSizeMeters <= 0) {
+    return new Set(params.obstacles.map((_, index) => index));
+  }
+
+  const corridorLength = params.maxDistanceMeters + params.tileRadiusMeters;
+  const endX = params.centerX + params.dirX * corridorLength;
+  const endY = params.centerY + params.dirY * corridorLength;
+  const corridorPadding =
+    params.tileRadiusMeters + params.maxObstacleHalfDiagonalMeters + cellSizeMeters;
+  const minX = Math.min(params.centerX, endX) - corridorPadding;
+  const maxX = Math.max(params.centerX, endX) + corridorPadding;
+  const minY = Math.min(params.centerY, endY) - corridorPadding;
+  const maxY = Math.max(params.centerY, endY) + corridorPadding;
+  const minCellX = Math.floor(minX / cellSizeMeters);
+  const maxCellX = Math.floor(maxX / cellSizeMeters);
+  const minCellY = Math.floor(minY / cellSizeMeters);
+  const maxCellY = Math.floor(maxY / cellSizeMeters);
+
+  const cellHalfDiagonal = (Math.SQRT2 * cellSizeMeters) / 2;
+  const minDotThreshold = -(params.tileRadiusMeters + cellHalfDiagonal);
+  const maxCenterDistance =
+    params.maxDistanceMeters + params.tileRadiusMeters + cellHalfDiagonal;
+  const corridorHalfWidth =
+    params.tileRadiusMeters + cellHalfDiagonal + params.maxObstacleHalfDiagonalMeters;
+  const candidateIndices = new Set<number>();
+
+  for (let cellY = minCellY; cellY <= maxCellY; cellY += 1) {
+    for (let cellX = minCellX; cellX <= maxCellX; cellX += 1) {
+      const key = buildSpatialCellKey(cellX, cellY);
+      const indices = params.spatialGrid.cells[key];
+      if (!indices || indices.length === 0) {
+        continue;
+      }
+
+      const cellCenterX = (cellX + 0.5) * cellSizeMeters;
+      const cellCenterY = (cellY + 0.5) * cellSizeMeters;
+      const dx = cellCenterX - params.centerX;
+      const dy = cellCenterY - params.centerY;
+      const dot = dx * params.dirX + dy * params.dirY;
+      if (dot < minDotThreshold) {
+        continue;
+      }
+      const lateral = Math.abs(dx * params.dirY - dy * params.dirX);
+      if (lateral > corridorHalfWidth) {
+        continue;
+      }
+      const centerDistance = Math.hypot(dx, dy);
+      if (centerDistance > maxCenterDistance) {
+        continue;
+      }
+
+      for (const obstacleIndex of indices) {
+        candidateIndices.add(obstacleIndex);
+      }
+    }
+  }
+
+  return candidateIndices;
+}
+
+function collectTileWindowBuildingAllowlist(params: {
+  tile: RegionTileSpec;
+  samples: Date[];
+  buildingsIndex: BuildingsIndex | null;
+  maxDistanceMeters?: number;
+}): ReadonlySet<string> | undefined {
+  if (!params.buildingsIndex || params.samples.length === 0) {
+    return undefined;
+  }
+  const obstacles = params.buildingsIndex.obstacles;
+  if (obstacles.length === 0) {
+    return undefined;
+  }
+
+  const centerX = (params.tile.minEasting + params.tile.maxEasting) / 2;
+  const centerY = (params.tile.minNorthing + params.tile.maxNorthing) / 2;
+  const tileRadiusMeters =
+    Math.hypot(
+      params.tile.maxEasting - params.tile.minEasting,
+      params.tile.maxNorthing - params.tile.minNorthing,
+    ) / 2;
+  const centerWgs84 = lv95ToWgs84(centerX, centerY);
+  const maxDistanceMeters = params.maxDistanceMeters ?? BUILDING_SHADOW_MAX_DISTANCE_METERS;
+  const maxObstacleHalfDiagonalMeters = obstacles.reduce(
+    (maxValue, obstacle) => Math.max(maxValue, obstacle.halfDiagonal),
+    0,
+  );
+  const spatialGrid = params.buildingsIndex.spatialGrid;
+  const allowedBlockerIds = new Set<string>();
+
+  for (const sampleDate of params.samples) {
+    const solarGeometry = computeSolarGeometry(centerWgs84.lat, centerWgs84.lon, sampleDate);
+    if (solarGeometry.altitudeDeg <= 0) {
+      continue;
+    }
+
+    const azimuthRad = (solarGeometry.azimuthDeg * Math.PI) / 180;
+    const dirX = Math.sin(azimuthRad);
+    const dirY = Math.cos(azimuthRad);
+    const candidateIndices = spatialGrid
+      ? collectTileSampleCandidateObstacleIndices({
+          obstacles,
+          spatialGrid,
+          centerX,
+          centerY,
+          tileRadiusMeters,
+          dirX,
+          dirY,
+          maxDistanceMeters,
+          maxObstacleHalfDiagonalMeters,
+        })
+      : new Set(obstacles.map((_, index) => index));
+
+    for (const obstacleIndex of candidateIndices) {
+      const obstacle = obstacles[obstacleIndex];
+      if (!obstacle) {
+        continue;
+      }
+      if (allowedBlockerIds.has(obstacle.id)) {
+        continue;
+      }
+
+      const dx = obstacle.centerX - centerX;
+      const dy = obstacle.centerY - centerY;
+      const dot = dx * dirX + dy * dirY;
+      if (dot < -(tileRadiusMeters + obstacle.halfDiagonal)) {
+        continue;
+      }
+      const lateral = Math.abs(dx * dirY - dy * dirX);
+      if (lateral > tileRadiusMeters + obstacle.halfDiagonal) {
+        continue;
+      }
+      const centerDistance = Math.hypot(dx, dy);
+      if (centerDistance > maxDistanceMeters + tileRadiusMeters + obstacle.halfDiagonal) {
+        continue;
+      }
+      allowedBlockerIds.add(obstacle.id);
+    }
+  }
+
+  if (allowedBlockerIds.size === 0) {
+    return undefined;
+  }
+  return allowedBlockerIds;
+}
+
 function createInstantProfiler(): InstantSunlightProfiler {
   return {
     evaluations: 0,
@@ -187,6 +372,7 @@ function createInstantProfiler(): InstantSunlightProfiler {
     terrainCheckNeededCount: 0,
     terrainBlockedCount: 0,
     secondarySkippedByTerrainCount: 0,
+    buildingsSkippedByAzimuthGuardCount: 0,
     buildingsEvaluatorCalls: 0,
     vegetationEvaluatorCalls: 0,
   };
@@ -254,6 +440,9 @@ async function profileTile(params: {
     lat: number;
     lon: number;
     horizonMask: Awaited<ReturnType<typeof buildPointEvaluationContext>>["horizonMask"];
+    buildingShadowAzimuthGuard: Awaited<
+      ReturnType<typeof buildPointEvaluationContext>
+    >["buildingShadowAzimuthGuard"];
     buildingShadowEvaluator?: (sample: {
       azimuthDeg: number;
       altitudeDeg: number;
@@ -280,12 +469,18 @@ async function profileTile(params: {
   }> = [];
 
   let indoorPointCount = 0;
+  const tileBuildingAllowlist = collectTileWindowBuildingAllowlist({
+    tile: params.tile,
+    samples: params.utcSamples,
+    buildingsIndex: sharedSources.buildingsIndex,
+  });
   for (const point of selectedPoints) {
     const context = await buildPointEvaluationContext(point.lat, point.lon, {
       skipTerrainSamplingWhenIndoor: true,
       terrainHorizonOverride: adaptiveHorizon.horizonMask ?? undefined,
       shadowCalibration: DEFAULT_SHADOW_CALIBRATION,
       sharedSources,
+      buildingShadowAllowedIds: tileBuildingAllowlist,
     });
     if (context.insideBuilding) {
       indoorPointCount += 1;
@@ -295,6 +490,7 @@ async function profileTile(params: {
       lat: point.lat,
       lon: point.lon,
       horizonMask: context.horizonMask,
+      buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
       buildingShadowEvaluator: context.buildingShadowEvaluator,
       vegetationShadowEvaluator: context.vegetationShadowEvaluator,
     });
@@ -348,6 +544,7 @@ async function profileTile(params: {
       lat: point.lat,
       lon: point.lon,
       horizonMask: point.horizonMask,
+      buildingShadowAzimuthGuard: point.buildingShadowAzimuthGuard,
       buildingShadowEvaluator: wrappedBuilding,
       vegetationShadowEvaluator: wrappedVegetation,
     };
@@ -374,6 +571,7 @@ async function profileTile(params: {
         timeZone: params.args.timezone,
         localDateTimeOverride,
         horizonMask: point.horizonMask,
+        buildingShadowAzimuthGuard: point.buildingShadowAzimuthGuard,
         buildingShadowEvaluator: point.buildingShadowEvaluator,
         vegetationShadowEvaluator: point.vegetationShadowEvaluator,
         profiler: instantProfiler,
@@ -489,6 +687,8 @@ async function main() {
       acc.instantProfiler.terrainBlockedCount += tile.instantProfiler.terrainBlockedCount;
       acc.instantProfiler.secondarySkippedByTerrainCount +=
         tile.instantProfiler.secondarySkippedByTerrainCount;
+      acc.instantProfiler.buildingsSkippedByAzimuthGuardCount +=
+        tile.instantProfiler.buildingsSkippedByAzimuthGuardCount;
       acc.instantProfiler.buildingsEvaluatorCalls +=
         tile.instantProfiler.buildingsEvaluatorCalls;
       acc.instantProfiler.vegetationEvaluatorCalls +=
