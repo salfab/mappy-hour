@@ -88,6 +88,15 @@ export interface BuildingShadowResult {
   blockerDistanceMeters: number | null;
   blockerAltitudeAngleDeg: number | null;
   checkedObstaclesCount: number;
+  profiling?: {
+    mode: "base" | "two-level";
+    basePasses: number;
+    nearThresholdHits: number;
+    detailedVerifierCalls: number;
+    detailedVerifierBlocked: number;
+    detailedVerifierCleared: number;
+    fallbackPassUsed: boolean;
+  };
 }
 
 export interface BuildingContainmentResult {
@@ -1148,6 +1157,15 @@ export function evaluateBuildingsShadow(
       blockerDistanceMeters: null,
       blockerAltitudeAngleDeg: null,
       checkedObstaclesCount: 0,
+      profiling: {
+        mode: "base",
+        basePasses: 1,
+        nearThresholdHits: 0,
+        detailedVerifierCalls: 0,
+        detailedVerifierBlocked: 0,
+        detailedVerifierCleared: 0,
+        fallbackPassUsed: false,
+      },
     };
   }
 
@@ -1353,6 +1371,15 @@ export function evaluateBuildingsShadow(
         ? null
         : Math.round(blockerAltitudeAngleDeg * 1000) / 1000,
     checkedObstaclesCount,
+    profiling: {
+      mode: "base",
+      basePasses: 1,
+      nearThresholdHits: 0,
+      detailedVerifierCalls: 0,
+      detailedVerifierBlocked: 0,
+      detailedVerifierCleared: 0,
+      fallbackPassUsed: false,
+    },
   };
 }
 
@@ -1366,9 +1393,29 @@ export function evaluateBuildingsShadowTwoLevel(
     options.nearThresholdDegrees ?? BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES;
   const maxRefinementSteps =
     options.maxRefinementSteps ?? BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS;
+  let basePasses = 0;
+  let nearThresholdHits = 0;
+  let detailedVerifierCalls = 0;
+  let detailedVerifierBlocked = 0;
+  let detailedVerifierCleared = 0;
+  let fallbackPassUsed = false;
+  const withTwoLevelProfiling = (result: BuildingShadowResult): BuildingShadowResult => ({
+    ...result,
+    profiling: {
+      mode: "two-level",
+      basePasses,
+      nearThresholdHits,
+      detailedVerifierCalls,
+      detailedVerifierBlocked,
+      detailedVerifierCleared,
+      fallbackPassUsed,
+    },
+  });
 
   if (!options.detailedVerifier || nearThresholdDegrees <= 0 || maxRefinementSteps <= 0) {
-    return evaluateBuildingsShadow(obstacles, input, spatialGrid);
+    const base = evaluateBuildingsShadow(obstacles, input, spatialGrid);
+    basePasses = 1;
+    return withTwoLevelProfiling(base);
   }
 
   const excludedBlockerIds = new Set<string>(input.excludedBlockerIds ?? []);
@@ -1383,23 +1430,26 @@ export function evaluateBuildingsShadowTwoLevel(
       },
       spatialGrid,
     );
+    basePasses += 1;
     totalCheckedObstaclesCount += base.checkedObstaclesCount;
 
     if (!base.blocked || !base.blockerId || base.blockerAltitudeAngleDeg === null) {
-      return {
+      return withTwoLevelProfiling({
         ...base,
         checkedObstaclesCount: totalCheckedObstaclesCount,
-      };
+      });
     }
 
     const marginDeg = base.blockerAltitudeAngleDeg - input.solarAltitudeDeg;
     if (marginDeg > nearThresholdDegrees) {
-      return {
+      return withTwoLevelProfiling({
         ...base,
         checkedObstaclesCount: totalCheckedObstaclesCount,
-      };
+      });
     }
+    nearThresholdHits += 1;
 
+    detailedVerifierCalls += 1;
     const detailed = options.detailedVerifier({
       blockerId: base.blockerId,
       pointX: input.pointX,
@@ -1411,15 +1461,18 @@ export function evaluateBuildingsShadowTwoLevel(
     });
 
     if (detailed.blocked) {
-      return {
+      detailedVerifierBlocked += 1;
+      return withTwoLevelProfiling({
         ...base,
         checkedObstaclesCount: totalCheckedObstaclesCount,
-      };
+      });
     }
+    detailedVerifierCleared += 1;
 
     excludedBlockerIds.add(base.blockerId);
   }
 
+  fallbackPassUsed = true;
   const fallback = evaluateBuildingsShadow(
     obstacles,
     {
@@ -1428,9 +1481,10 @@ export function evaluateBuildingsShadowTwoLevel(
     },
     spatialGrid,
   );
+  basePasses += 1;
 
-  return {
+  return withTwoLevelProfiling({
     ...fallback,
     checkedObstaclesCount: totalCheckedObstaclesCount + fallback.checkedObstaclesCount,
-  };
+  });
 }

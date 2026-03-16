@@ -57,6 +57,13 @@ interface TileProfile {
     buildingCalls: number;
     buildingBlockedCalls: number;
     buildingCheckedObstaclesTotal: number;
+    buildingTwoLevelCalls: number;
+    buildingTwoLevelBasePassesTotal: number;
+    buildingTwoLevelNearThresholdHits: number;
+    buildingDetailedVerifierCalls: number;
+    buildingDetailedVerifierBlocked: number;
+    buildingDetailedVerifierCleared: number;
+    buildingTwoLevelFallbackPasses: number;
     vegetationCalls: number;
     vegetationBlockedCalls: number;
     vegetationCheckedSamplesTotal: number;
@@ -449,6 +456,15 @@ async function profileTile(params: {
       blockerDistanceMeters: number | null;
       blockerAltitudeAngleDeg: number | null;
       checkedObstaclesCount: number;
+      profiling?: {
+        mode: "base" | "two-level";
+        basePasses: number;
+        nearThresholdHits: number;
+        detailedVerifierCalls: number;
+        detailedVerifierBlocked: number;
+        detailedVerifierCleared: number;
+        fallbackPassUsed: boolean;
+      };
     };
     vegetationShadowEvaluator?: (sample: {
       azimuthDeg: number;
@@ -497,6 +513,13 @@ async function profileTile(params: {
     buildingCalls: 0,
     buildingBlockedCalls: 0,
     buildingCheckedObstaclesTotal: 0,
+    buildingTwoLevelCalls: 0,
+    buildingTwoLevelBasePassesTotal: 0,
+    buildingTwoLevelNearThresholdHits: 0,
+    buildingDetailedVerifierCalls: 0,
+    buildingDetailedVerifierBlocked: 0,
+    buildingDetailedVerifierCleared: 0,
+    buildingTwoLevelFallbackPasses: 0,
     vegetationCalls: 0,
     vegetationBlockedCalls: 0,
     vegetationCheckedSamplesTotal: 0,
@@ -518,6 +541,22 @@ async function profileTile(params: {
             shadowEvaluators.buildingCheckedObstaclesTotal += result.checkedObstaclesCount;
             if (result.blocked) {
               shadowEvaluators.buildingBlockedCalls += 1;
+            }
+            if (result.profiling?.mode === "two-level") {
+              shadowEvaluators.buildingTwoLevelCalls += 1;
+              shadowEvaluators.buildingTwoLevelBasePassesTotal +=
+                result.profiling.basePasses;
+              shadowEvaluators.buildingTwoLevelNearThresholdHits +=
+                result.profiling.nearThresholdHits;
+              shadowEvaluators.buildingDetailedVerifierCalls +=
+                result.profiling.detailedVerifierCalls;
+              shadowEvaluators.buildingDetailedVerifierBlocked +=
+                result.profiling.detailedVerifierBlocked;
+              shadowEvaluators.buildingDetailedVerifierCleared +=
+                result.profiling.detailedVerifierCleared;
+              if (result.profiling.fallbackPassUsed) {
+                shadowEvaluators.buildingTwoLevelFallbackPasses += 1;
+              }
             }
             return result;
           };
@@ -688,6 +727,20 @@ async function main() {
       acc.shadowEvaluators.buildingBlockedCalls += tile.shadowEvaluators.buildingBlockedCalls;
       acc.shadowEvaluators.buildingCheckedObstaclesTotal +=
         tile.shadowEvaluators.buildingCheckedObstaclesTotal;
+      acc.shadowEvaluators.buildingTwoLevelCalls +=
+        tile.shadowEvaluators.buildingTwoLevelCalls;
+      acc.shadowEvaluators.buildingTwoLevelBasePassesTotal +=
+        tile.shadowEvaluators.buildingTwoLevelBasePassesTotal;
+      acc.shadowEvaluators.buildingTwoLevelNearThresholdHits +=
+        tile.shadowEvaluators.buildingTwoLevelNearThresholdHits;
+      acc.shadowEvaluators.buildingDetailedVerifierCalls +=
+        tile.shadowEvaluators.buildingDetailedVerifierCalls;
+      acc.shadowEvaluators.buildingDetailedVerifierBlocked +=
+        tile.shadowEvaluators.buildingDetailedVerifierBlocked;
+      acc.shadowEvaluators.buildingDetailedVerifierCleared +=
+        tile.shadowEvaluators.buildingDetailedVerifierCleared;
+      acc.shadowEvaluators.buildingTwoLevelFallbackPasses +=
+        tile.shadowEvaluators.buildingTwoLevelFallbackPasses;
       acc.shadowEvaluators.vegetationCalls += tile.shadowEvaluators.vegetationCalls;
       acc.shadowEvaluators.vegetationBlockedCalls +=
         tile.shadowEvaluators.vegetationBlockedCalls;
@@ -716,6 +769,13 @@ async function main() {
         buildingCalls: 0,
         buildingBlockedCalls: 0,
         buildingCheckedObstaclesTotal: 0,
+        buildingTwoLevelCalls: 0,
+        buildingTwoLevelBasePassesTotal: 0,
+        buildingTwoLevelNearThresholdHits: 0,
+        buildingDetailedVerifierCalls: 0,
+        buildingDetailedVerifierBlocked: 0,
+        buildingDetailedVerifierCleared: 0,
+        buildingTwoLevelFallbackPasses: 0,
         vegetationCalls: 0,
         vegetationBlockedCalls: 0,
         vegetationCheckedSamplesTotal: 0,
@@ -796,6 +856,27 @@ async function main() {
             : round3(
                 aggregate.shadowEvaluators.buildingCheckedObstaclesTotal /
                   aggregate.shadowEvaluators.buildingCalls,
+              ),
+        avgTwoLevelBasePassesPerBuildingCall:
+          aggregate.shadowEvaluators.buildingTwoLevelCalls === 0
+            ? 0
+            : round3(
+                aggregate.shadowEvaluators.buildingTwoLevelBasePassesTotal /
+                  aggregate.shadowEvaluators.buildingTwoLevelCalls,
+              ),
+        detailedVerifierCallRatePerBuildingCall:
+          aggregate.shadowEvaluators.buildingTwoLevelCalls === 0
+            ? 0
+            : round3(
+                aggregate.shadowEvaluators.buildingDetailedVerifierCalls /
+                  aggregate.shadowEvaluators.buildingTwoLevelCalls,
+              ),
+        detailedVerifierClearRate:
+          aggregate.shadowEvaluators.buildingDetailedVerifierCalls === 0
+            ? 0
+            : round3(
+                aggregate.shadowEvaluators.buildingDetailedVerifierCleared /
+                  aggregate.shadowEvaluators.buildingDetailedVerifierCalls,
               ),
         avgCheckedVegetationSamplesPerCall:
           aggregate.shadowEvaluators.vegetationCalls === 0

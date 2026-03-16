@@ -1,0 +1,38 @@
+{
+  "generatedAt": "2026-03-16T18:54:12.8152385Z",
+  "scenario": {
+    "tileCount": 1,
+    "timezone": "Europe/Zurich",
+    "window": "08:00-12:00",
+    "date": "2026-03-08",
+    "gridStepMeters": 5,
+    "region": "lausanne"
+  },
+  "detailed": {
+    "elapsedMs": 59036.222,
+    "evaluationsMs": 39027.988,
+    "detailedVerifierCalls": 16873,
+    "avgCheckedObstaclesPerCall": 2.324,
+    "avgBasePassesPerCall": 1.093,
+    "detailedVerifierClearRate": 0.11,
+    "buildingsMs": 38673.232,
+    "detailedVerifierCallRate": 0.845,
+    "buildingCalls": 19968
+  },
+  "twoLevel": {
+    "elapsedMs": 57304.101,
+    "evaluationsMs": 37236.472,
+    "detailedVerifierCalls": 881,
+    "avgCheckedObstaclesPerCall": 2.255,
+    "avgBasePassesPerCall": 1.033,
+    "detailedVerifierClearRate": 0.748,
+    "buildingsMs": 36911.713,
+    "detailedVerifierCallRate": 0.044,
+    "buildingCalls": 19968
+  },
+  "keyFindings": [
+    "Detailed mode triggers detailed verifier on most calls (~84.5%).",
+    "Detailed verifier clear-rate is low (~11%), meaning most expensive verifier calls confirm blocking.",
+    "Two-level mode keeps verifier call-rate low (~4.4%), explaining CPU gain in buildings."
+  ]
+}

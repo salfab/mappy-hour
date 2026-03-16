@@ -28,6 +28,15 @@ export interface PointSunlightInput {
     blockerDistanceMeters: number | null;
     blockerAltitudeAngleDeg: number | null;
     checkedObstaclesCount: number;
+    profiling?: {
+      mode: "base" | "two-level";
+      basePasses: number;
+      nearThresholdHits: number;
+      detailedVerifierCalls: number;
+      detailedVerifierBlocked: number;
+      detailedVerifierCleared: number;
+      fallbackPassUsed: boolean;
+    };
   };
   vegetationShadowEvaluator?: (sample: {
     azimuthDeg: number;
