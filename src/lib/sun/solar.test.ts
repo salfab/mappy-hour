@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { HorizonMask } from "@/lib/sun/horizon-mask";
 
-import { evaluateInstantSunlight } from "./solar";
+import { evaluateInstantSunlight, type InstantSunlightProfiler } from "./solar";
 
 function createUniformHorizonMask(angleDeg: number): HorizonMask {
   return {
@@ -124,5 +124,46 @@ describe("evaluateInstantSunlight", () => {
     expect(sample.buildingsBlocked).toBe(false);
     expect(sample.vegetationBlocked).toBe(true);
     expect(sample.isSunny).toBe(false);
+  });
+
+  it("collects per-component profiling counters when profiler is provided", () => {
+    const buildingEvaluator = createBuildingEvaluator(false);
+    const vegetationEvaluator = createVegetationEvaluator(false);
+    const profiler: InstantSunlightProfiler = {
+      evaluations: 0,
+      totalMs: 0,
+      solarPositionMs: 0,
+      terrainMs: 0,
+      buildingsMs: 0,
+      vegetationMs: 0,
+      finalizeMs: 0,
+      belowAstronomicalHorizonCount: 0,
+      terrainCheckNeededCount: 0,
+      terrainBlockedCount: 0,
+      secondarySkippedByTerrainCount: 0,
+      buildingsEvaluatorCalls: 0,
+      vegetationEvaluatorCalls: 0,
+    };
+
+    evaluateInstantSunlight({
+      lat: 46.52,
+      lon: 6.63,
+      utcDate: new Date("2026-06-21T12:00:00.000Z"),
+      timeZone: "Europe/Zurich",
+      horizonMask: createUniformHorizonMask(-10),
+      buildingShadowEvaluator: buildingEvaluator,
+      vegetationShadowEvaluator: vegetationEvaluator,
+      profiler,
+    });
+
+    expect(profiler.evaluations).toBe(1);
+    expect(profiler.totalMs).toBeGreaterThanOrEqual(0);
+    expect(profiler.solarPositionMs).toBeGreaterThanOrEqual(0);
+    expect(profiler.terrainMs).toBeGreaterThanOrEqual(0);
+    expect(profiler.buildingsMs).toBeGreaterThanOrEqual(0);
+    expect(profiler.vegetationMs).toBeGreaterThanOrEqual(0);
+    expect(profiler.finalizeMs).toBeGreaterThanOrEqual(0);
+    expect(profiler.buildingsEvaluatorCalls).toBe(1);
+    expect(profiler.vegetationEvaluatorCalls).toBe(1);
   });
 });

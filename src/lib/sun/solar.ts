@@ -88,6 +88,23 @@ export interface InstantSunlightInput {
   buildingShadowEvaluator?: PointSunlightInput["buildingShadowEvaluator"];
   vegetationShadowEvaluator?: PointSunlightInput["vegetationShadowEvaluator"];
   evaluateAllBlockers?: boolean;
+  profiler?: InstantSunlightProfiler;
+}
+
+export interface InstantSunlightProfiler {
+  evaluations: number;
+  totalMs: number;
+  solarPositionMs: number;
+  terrainMs: number;
+  buildingsMs: number;
+  vegetationMs: number;
+  finalizeMs: number;
+  belowAstronomicalHorizonCount: number;
+  terrainCheckNeededCount: number;
+  terrainBlockedCount: number;
+  secondarySkippedByTerrainCount: number;
+  buildingsEvaluatorCalls: number;
+  vegetationEvaluatorCalls: number;
 }
 
 function normalizeAzimuthDegrees(azimuthDegreesFromSunCalc: number): number {
@@ -191,45 +208,65 @@ function buildSunnyWindows(
 export function evaluateInstantSunlight(
   input: InstantSunlightInput,
 ): SunSample {
+  const evaluationStarted = performance.now();
+  const solarStarted = performance.now();
   const position = SunCalc.getPosition(input.utcDate, input.lat, input.lon);
+  const solarElapsedMs = performance.now() - solarStarted;
 
   const altitudeDeg = position.altitude * RAD_TO_DEG;
   const azimuthDeg = normalizeAzimuthDegrees(position.azimuth * RAD_TO_DEG);
   const aboveAstronomicalHorizon = altitudeDeg > 0;
-  const horizonAngleDeg = input.horizonMask
-    ? getHorizonAngleForAzimuth(input.horizonMask, azimuthDeg)
-    : null;
-  const terrainCheckNeeded =
-    aboveAstronomicalHorizon &&
-    input.horizonMask !== null &&
-    altitudeDeg <=
-      getMaxHorizonAngle(input.horizonMask) + TERRAIN_HORIZON_SKIP_MARGIN_DEG;
-  const terrainBlocked =
-    terrainCheckNeeded &&
-    input.horizonMask !== null &&
-    isTerrainBlockedByHorizon(input.horizonMask, azimuthDeg, altitudeDeg);
+  const terrainStarted = performance.now();
+  const horizonAngleDeg =
+    input.horizonMask === null
+      ? null
+      : getHorizonAngleForAzimuth(input.horizonMask, azimuthDeg);
+  const terrainCheckNeeded = (() => {
+    if (!aboveAstronomicalHorizon || input.horizonMask === null) {
+      return false;
+    }
+    return (
+      altitudeDeg <=
+      getMaxHorizonAngle(input.horizonMask) + TERRAIN_HORIZON_SKIP_MARGIN_DEG
+    );
+  })();
+  const terrainBlocked = (() => {
+    if (!terrainCheckNeeded || input.horizonMask === null) {
+      return false;
+    }
+    return isTerrainBlockedByHorizon(input.horizonMask, azimuthDeg, altitudeDeg);
+  })();
+  const terrainElapsedMs = performance.now() - terrainStarted;
   const evaluateSecondaryBlockers =
     aboveAstronomicalHorizon &&
     (input.evaluateAllBlockers === true || !terrainBlocked);
-  const buildingShadow =
-    evaluateSecondaryBlockers && input.buildingShadowEvaluator
-      ? input.buildingShadowEvaluator({
-          azimuthDeg,
-          altitudeDeg,
-          utcDate: input.utcDate,
-        })
-      : null;
+  const buildingsStarted = performance.now();
+  const buildingShadow = (() => {
+    if (!evaluateSecondaryBlockers || !input.buildingShadowEvaluator) {
+      return null;
+    }
+    return input.buildingShadowEvaluator({
+      azimuthDeg,
+      altitudeDeg,
+      utcDate: input.utcDate,
+    });
+  })();
+  const buildingsElapsedMs = performance.now() - buildingsStarted;
   const buildingsBlocked = aboveAstronomicalHorizon
     ? (buildingShadow?.blocked ?? false)
     : false;
-  const vegetationShadow =
-    evaluateSecondaryBlockers && input.vegetationShadowEvaluator
-      ? input.vegetationShadowEvaluator({
-          azimuthDeg,
-          altitudeDeg,
-          utcDate: input.utcDate,
-        })
-      : null;
+  const vegetationStarted = performance.now();
+  const vegetationShadow = (() => {
+    if (!evaluateSecondaryBlockers || !input.vegetationShadowEvaluator) {
+      return null;
+    }
+    return input.vegetationShadowEvaluator({
+      azimuthDeg,
+      altitudeDeg,
+      utcDate: input.utcDate,
+    });
+  })();
+  const vegetationElapsedMs = performance.now() - vegetationStarted;
   const vegetationBlocked = aboveAstronomicalHorizon
     ? (vegetationShadow?.blocked ?? false)
     : false;
@@ -238,8 +275,9 @@ export function evaluateInstantSunlight(
     !terrainBlocked &&
     !buildingsBlocked &&
     !vegetationBlocked;
+  const finalizeStarted = performance.now();
 
-  return {
+  const result: SunSample = {
     utcTime: input.utcDate.toISOString(),
     localTime: formatDateTimeLocal(input.utcDate, input.timeZone),
     azimuthDeg,
@@ -263,6 +301,42 @@ export function evaluateInstantSunlight(
       vegetationShadow?.blockerClearanceMeters ?? null,
     isSunny,
   };
+  const finalizeElapsedMs = performance.now() - finalizeStarted;
+  const totalElapsedMs = performance.now() - evaluationStarted;
+
+  if (input.profiler) {
+    input.profiler.evaluations += 1;
+    input.profiler.totalMs += totalElapsedMs;
+    input.profiler.solarPositionMs += solarElapsedMs;
+    input.profiler.terrainMs += terrainElapsedMs;
+    input.profiler.buildingsMs += buildingsElapsedMs;
+    input.profiler.vegetationMs += vegetationElapsedMs;
+    input.profiler.finalizeMs += finalizeElapsedMs;
+    if (!aboveAstronomicalHorizon) {
+      input.profiler.belowAstronomicalHorizonCount += 1;
+    }
+    if (terrainCheckNeeded) {
+      input.profiler.terrainCheckNeededCount += 1;
+    }
+    if (terrainBlocked) {
+      input.profiler.terrainBlockedCount += 1;
+    }
+    if (
+      aboveAstronomicalHorizon &&
+      terrainBlocked &&
+      input.evaluateAllBlockers !== true
+    ) {
+      input.profiler.secondarySkippedByTerrainCount += 1;
+    }
+    if (evaluateSecondaryBlockers && input.buildingShadowEvaluator) {
+      input.profiler.buildingsEvaluatorCalls += 1;
+    }
+    if (evaluateSecondaryBlockers && input.vegetationShadowEvaluator) {
+      input.profiler.vegetationEvaluatorCalls += 1;
+    }
+  }
+
+  return result;
 }
 
 export function evaluatePointSunlight(
