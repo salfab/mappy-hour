@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  type BuildingShadowDebugPass,
   evaluateBuildingsShadow,
   evaluateBuildingsShadowTwoLevel,
   findContainingBuilding,
@@ -290,5 +291,54 @@ describe("buildings shadow spatial index", () => {
     expect(indexed.blockerId).toBe("tall-blocker");
     expect(indexed.checkedObstaclesCount).toBeLessThanOrEqual(noGrid.checkedObstaclesCount);
     expect(indexed.checkedObstaclesCount).toBeLessThan(6);
+  });
+
+  it("emits debug stats for blockers skipped behind a closer blocker", () => {
+    const near = createRectangleObstacle({
+      id: "near",
+      centerX: 0,
+      centerY: 50,
+      width: 18,
+      depth: 18,
+      maxZ: 40,
+    });
+    const far = createRectangleObstacle({
+      id: "far",
+      centerX: 0,
+      centerY: 95,
+      width: 18,
+      depth: 18,
+      maxZ: 60,
+    });
+    const obstacles = [near, far];
+    const spatialGrid = buildSpatialGrid(obstacles, 64);
+    const debugPasses: BuildingShadowDebugPass[] = [];
+
+    const result = evaluateBuildingsShadow(
+      obstacles,
+      {
+        pointX: 0,
+        pointY: 0,
+        pointElevation: 0,
+        solarAzimuthDeg: 0,
+        solarAltitudeDeg: 10,
+        maxDistanceMeters: 1200,
+        debugCollector: (debug) => {
+          debugPasses.push(debug);
+        },
+      },
+      spatialGrid,
+    );
+
+    expect(result.blocked).toBe(true);
+    expect(result.blockerId).toBe("near");
+    const debugPass = debugPasses.at(-1);
+    if (!debugPass) {
+      throw new Error("Expected debug collector to capture one pass.");
+    }
+    expect(debugPass.stats).toBeDefined();
+    const skippedByCloser = debugPass.stats?.skippedByExistingCloserBlocker ?? 0;
+    const wouldBlockButFarther = debugPass.stats?.wouldBlockButFarther ?? 0;
+    expect(skippedByCloser + wouldBlockButFarther).toBeGreaterThan(0);
   });
 });

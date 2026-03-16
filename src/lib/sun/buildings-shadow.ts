@@ -100,6 +100,20 @@ export interface BuildingShadowDebugPass {
   checkedObstacleIds: string[];
   checkedObstaclesCount: number;
   blockerId: string | null;
+  stats?: {
+    skippedExcludedBlockerId: number;
+    skippedDistance: number;
+    skippedLateral: number;
+    skippedBBoxMissOrTooFar: number;
+    skippedByExistingCloserBlocker: number;
+    skippedBelowRayAltitude: number;
+    rejectedNoIntersection: number;
+    rejectedIntersectionTooFar: number;
+    rejectedVerticalClearance: number;
+    rejectedByAltitudeAngle: number;
+    wouldBlockButFarther: number;
+    acceptedAsBlocker: number;
+  };
 }
 
 interface Vec3 {
@@ -1143,6 +1157,22 @@ export function evaluateBuildingsShadow(
   let checkedObstaclesCount = 0;
   const collectDebug = typeof input.debugCollector === "function";
   const checkedObstacleIds: string[] = [];
+  const debugStats = collectDebug
+    ? {
+        skippedExcludedBlockerId: 0,
+        skippedDistance: 0,
+        skippedLateral: 0,
+        skippedBBoxMissOrTooFar: 0,
+        skippedByExistingCloserBlocker: 0,
+        skippedBelowRayAltitude: 0,
+        rejectedNoIntersection: 0,
+        rejectedIntersectionTooFar: 0,
+        rejectedVerticalClearance: 0,
+        rejectedByAltitudeAngle: 0,
+        wouldBlockButFarther: 0,
+        acceptedAsBlocker: 0,
+      }
+    : null;
   const candidateSelection = spatialGrid
     ? collectCandidateObstacleIndices({
         obstacles,
@@ -1169,6 +1199,9 @@ export function evaluateBuildingsShadow(
       continue;
     }
     if (input.excludedBlockerIds?.has(obstacle.id)) {
+      if (debugStats) {
+        debugStats.skippedExcludedBlockerId += 1;
+      }
       continue;
     }
     const centerDistance = Math.hypot(
@@ -1176,6 +1209,9 @@ export function evaluateBuildingsShadow(
       obstacle.centerY - input.pointY,
     );
     if (centerDistance > maxDistanceMeters + obstacle.halfDiagonal) {
+      if (debugStats) {
+        debugStats.skippedDistance += 1;
+      }
       continue;
     }
     const lateral = Math.abs(
@@ -1183,6 +1219,9 @@ export function evaluateBuildingsShadow(
         (obstacle.centerY - input.pointY) * dirX,
     );
     if (lateral > obstacle.halfDiagonal) {
+      if (debugStats) {
+        debugStats.skippedLateral += 1;
+      }
       continue;
     }
     const bboxEntryDistance = rayBoxIntersectionDistance(
@@ -1193,15 +1232,24 @@ export function evaluateBuildingsShadow(
       obstacle,
     );
     if (bboxEntryDistance === null || bboxEntryDistance > maxDistanceMeters) {
+      if (debugStats) {
+        debugStats.skippedBBoxMissOrTooFar += 1;
+      }
       continue;
     }
     if (blockerDistanceMeters !== null && bboxEntryDistance >= blockerDistanceMeters) {
+      if (debugStats) {
+        debugStats.skippedByExistingCloserBlocker += 1;
+      }
       continue;
     }
     if (Number.isFinite(solarAltitudeTan) && solarAltitudeTan > 0) {
       const minRayDistance = Math.max(0, bboxEntryDistance);
       const requiredTop = effectivePointElevation + minRayDistance * solarAltitudeTan;
       if (obstacle.maxZ + buildingHeightBiasMeters < requiredTop) {
+        if (debugStats) {
+          debugStats.skippedBelowRayAltitude += 1;
+        }
         continue;
       }
     }
@@ -1222,13 +1270,26 @@ export function evaluateBuildingsShadow(
           )
         : bboxEntryDistance;
 
-    if (intersectionDistance === null || intersectionDistance > maxDistanceMeters) {
+    if (intersectionDistance === null) {
+      if (debugStats) {
+        debugStats.rejectedNoIntersection += 1;
+      }
+      continue;
+    }
+
+    if (intersectionDistance > maxDistanceMeters) {
+      if (debugStats) {
+        debugStats.rejectedIntersectionTooFar += 1;
+      }
       continue;
     }
 
     const effectiveObstacleTop = obstacle.maxZ + buildingHeightBiasMeters;
     const verticalClearance = effectiveObstacleTop - effectivePointElevation;
     if (verticalClearance <= 0) {
+      if (debugStats) {
+        debugStats.rejectedVerticalClearance += 1;
+      }
       continue;
     }
 
@@ -1236,6 +1297,9 @@ export function evaluateBuildingsShadow(
       (Math.atan2(verticalClearance, Math.max(1, intersectionDistance)) * 180) /
       Math.PI;
     if (input.solarAltitudeDeg > altitudeAngleDeg) {
+      if (debugStats) {
+        debugStats.rejectedByAltitudeAngle += 1;
+      }
       continue;
     }
 
@@ -1243,6 +1307,11 @@ export function evaluateBuildingsShadow(
       blockerId = obstacle.id;
       blockerDistanceMeters = intersectionDistance;
       blockerAltitudeAngleDeg = altitudeAngleDeg;
+      if (debugStats) {
+        debugStats.acceptedAsBlocker += 1;
+      }
+    } else if (debugStats) {
+      debugStats.wouldBlockButFarther += 1;
     }
   }
 
@@ -1253,6 +1322,7 @@ export function evaluateBuildingsShadow(
       checkedObstacleIds,
       checkedObstaclesCount,
       blockerId,
+      stats: debugStats ?? undefined,
     });
   }
 

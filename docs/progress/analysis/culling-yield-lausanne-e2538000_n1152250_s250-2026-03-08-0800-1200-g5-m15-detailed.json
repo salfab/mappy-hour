@@ -1,0 +1,401 @@
+{
+  "generatedAt": "2026-03-16T14:36:25.604Z",
+  "params": {
+    "region": "lausanne",
+    "tileId": "e2538000_n1152250_s250",
+    "date": "2026-03-08",
+    "timezone": "Europe/Zurich",
+    "startLocalTime": "08:00",
+    "endLocalTime": "12:00",
+    "sampleEveryMinutes": 15,
+    "gridStepMeters": 5,
+    "mode": "detailed"
+  },
+  "tile": {
+    "tileId": "e2538000_n1152250_s250",
+    "tileSizeMeters": 250,
+    "minEasting": 2538000,
+    "minNorthing": 1152250,
+    "maxEasting": 2538250,
+    "maxNorthing": 1152500,
+    "bbox": {
+      "minLon": 6.63069326585674,
+      "minLat": 46.5186707263954,
+      "maxLon": 6.633917409750418,
+      "maxLat": 46.520942662645005
+    }
+  },
+  "modelVersionHash": "abf2ec3295aa6c1f",
+  "adaptiveTerrainMethod": "copernicus-dem30-runtime-raycast-v1|adaptive-shared-v1",
+  "counts": {
+    "totalPoints": 2497,
+    "indoorPoints": 1249,
+    "outdoorPoints": 1248,
+    "pointsWithoutElevation": 0,
+    "sampleCount": 16,
+    "totalPointFrames": 19968,
+    "totalSamplesEvaluated": 19968,
+    "buildingEvaluatorCalls": 19968,
+    "buildingEvaluationPasses": 21817,
+    "samplesWithBuildingBlocked": 15021
+  },
+  "cullingYield": {
+    "cells": {
+      "keptCount": 122,
+      "impactedCount": 36,
+      "keptButNoImpactCount": 86,
+      "keptButNoImpactRatio": 0.7049180327868853
+    },
+    "buildings": {
+      "keptCount": 168,
+      "impactedCount": 90,
+      "keptButNoImpactCount": 78,
+      "keptButNoImpactRatio": 0.4642857142857143
+    }
+  },
+  "workload": {
+    "totalCandidateObstacles": 117914,
+    "totalCheckedObstacles": 46304,
+    "avgCandidateObstaclesPerPass": 5.404684420406105,
+    "avgCheckedObstaclesPerPass": 2.1223816290049045
+  },
+  "categories": {
+    "category1_legitimateFinalBlockerForPoint": {
+      "occurrences": 15021,
+      "ratioOfSamples": 0.7522536057692307
+    },
+    "category2_checkedOnBuildingThatImpactsTileButNotThisPoint": {
+      "occurrences": 26869,
+      "ratioOfChecked": 0.5802738424326193
+    },
+    "category3_wouldBlockButBehindCloserBuilding": {
+      "occurrences": 901,
+      "ratioOfChecked": 0.01945836212854181
+    },
+    "category4_checkedOnBuildingThatNeverImpactsTile": {
+      "occurrences": 4414,
+      "ratioOfChecked": 0.09532653766413268
+    }
+  },
+  "operationsBreakdown": {
+    "skippedExcludedBlockerId": 2054,
+    "skippedDistance": 0,
+    "skippedLateral": 0,
+    "skippedBBoxMissOrTooFar": 22567,
+    "skippedByExistingCloserBlocker": 38887,
+    "skippedBelowRayAltitude": 8102,
+    "rejectedNoIntersection": 16115,
+    "rejectedIntersectionTooFar": 0,
+    "rejectedVerticalClearance": 0,
+    "rejectedByAltitudeAngle": 2508,
+    "wouldBlockButFarther": 901,
+    "acceptedAsBlocker": 26780,
+    "checkedOnImpactedBuildings": 41890,
+    "checkedOnNeverImpactedBuildings": 4414,
+    "blockerPassesTotal": 16870
+  },
+  "topUnusedCells": [
+    {
+      "cellKey": "39661:18006",
+      "keptCount": 9684,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39660:18008",
+      "keptCount": 9596,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39661:18005",
+      "keptCount": 7539,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39661:18007",
+      "keptCount": 7378,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39661:18008",
+      "keptCount": 6670,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39662:18006",
+      "keptCount": 5009,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39662:18005",
+      "keptCount": 4877,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39659:18009",
+      "keptCount": 4689,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39660:18009",
+      "keptCount": 4018,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39662:18008",
+      "keptCount": 3752,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39658:18009",
+      "keptCount": 3737,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39662:18007",
+      "keptCount": 3452,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39654:18005",
+      "keptCount": 2898,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39662:18004",
+      "keptCount": 2807,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39661:18009",
+      "keptCount": 2733,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39663:18006",
+      "keptCount": 2664,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39663:18007",
+      "keptCount": 2549,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39654:18004",
+      "keptCount": 2343,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39655:18003",
+      "keptCount": 2046,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39663:18005",
+      "keptCount": 1831,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39655:18002",
+      "keptCount": 1586,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39657:18009",
+      "keptCount": 1556,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39662:18009",
+      "keptCount": 1408,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39654:18006",
+      "keptCount": 1226,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39657:18002",
+      "keptCount": 1206,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39658:18010",
+      "keptCount": 1171,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39664:18006",
+      "keptCount": 1155,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39663:18004",
+      "keptCount": 1132,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39664:18007",
+      "keptCount": 1057,
+      "impactedCount": 0
+    },
+    {
+      "cellKey": "39659:18010",
+      "keptCount": 929,
+      "impactedCount": 0
+    }
+  ],
+  "topUnusedBuildings": [
+    {
+      "obstacleId": "obs-30891",
+      "keptCount": 352,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-27344",
+      "keptCount": 325,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-29058",
+      "keptCount": 240,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-27137",
+      "keptCount": 230,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-23935",
+      "keptCount": 176,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-23733",
+      "keptCount": 164,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-23780",
+      "keptCount": 156,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-23748",
+      "keptCount": 152,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-29284",
+      "keptCount": 151,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-25405",
+      "keptCount": 148,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-25817",
+      "keptCount": 129,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-23352",
+      "keptCount": 128,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-31368",
+      "keptCount": 124,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-30444",
+      "keptCount": 123,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-22544",
+      "keptCount": 122,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-29808",
+      "keptCount": 118,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-23971",
+      "keptCount": 116,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-29861",
+      "keptCount": 98,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-23474",
+      "keptCount": 83,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-28750",
+      "keptCount": 80,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-22984",
+      "keptCount": 73,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-27148",
+      "keptCount": 71,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-24808",
+      "keptCount": 65,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-27785",
+      "keptCount": 64,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-24776",
+      "keptCount": 58,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-26543",
+      "keptCount": 55,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-28064",
+      "keptCount": 53,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-27593",
+      "keptCount": 53,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-31301",
+      "keptCount": 52,
+      "impactedCount": 0
+    },
+    {
+      "obstacleId": "obs-31192",
+      "keptCount": 40,
+      "impactedCount": 0
+    }
+  ]
+}
