@@ -610,7 +610,7 @@ async function main() {
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
   const outputPath = path.join(
     OUTPUT_DIR,
-    `precompute-cpu-breakdown-${args.region}-${args.date}-g${args.gridStepMeters}-t${selectedTiles.length}.json`,
+    `precompute-cpu-breakdown-${args.region}-${args.date}-t${args.startLocalTime.replace(":", "")}-${args.endLocalTime.replace(":", "")}-g${args.gridStepMeters}-tiles${selectedTiles.length}.json`,
   );
   await fs.writeFile(outputPath, JSON.stringify(report, null, 2), "utf8");
   console.log(`[profile:cpu-breakdown] wrote ${outputPath}`);
@@ -622,4 +622,3 @@ void main().catch((error) => {
   );
   process.exitCode = 1;
 });
-
