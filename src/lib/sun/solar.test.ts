@@ -126,27 +126,6 @@ describe("evaluateInstantSunlight", () => {
     expect(sample.isSunny).toBe(false);
   });
 
-  it("skips building evaluator when azimuth guard says sun is above all blockers", () => {
-    const buildingEvaluator = createBuildingEvaluator(true);
-
-    const sample = evaluateInstantSunlight({
-      lat: 46.52,
-      lon: 6.63,
-      utcDate: new Date("2026-06-21T12:00:00.000Z"),
-      timeZone: "Europe/Zurich",
-      horizonMask: createUniformHorizonMask(-10),
-      buildingShadowEvaluator: buildingEvaluator,
-      buildingShadowAzimuthGuard: {
-        version: "building-shadow-azimuth-guard-v1",
-        binSizeDeg: 1,
-        maxAltitudeDegByBin: Array.from({ length: 360 }, () => -5),
-      },
-    });
-
-    expect(buildingEvaluator).not.toHaveBeenCalled();
-    expect(sample.buildingsBlocked).toBe(false);
-  });
-
   it("collects per-component profiling counters when profiler is provided", () => {
     const buildingEvaluator = createBuildingEvaluator(false);
     const vegetationEvaluator = createVegetationEvaluator(false);
@@ -162,7 +141,6 @@ describe("evaluateInstantSunlight", () => {
       terrainCheckNeededCount: 0,
       terrainBlockedCount: 0,
       secondarySkippedByTerrainCount: 0,
-      buildingsSkippedByAzimuthGuardCount: 0,
       buildingsEvaluatorCalls: 0,
       vegetationEvaluatorCalls: 0,
     };

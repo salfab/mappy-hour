@@ -174,21 +174,6 @@ export interface BuildingsShadowTwoLevelOptions {
   ) => DetailedBuildingShadowVerificationResult;
 }
 
-export interface BuildingShadowAzimuthGuard {
-  version: "building-shadow-azimuth-guard-v1";
-  binSizeDeg: number;
-  maxAltitudeDegByBin: number[];
-}
-
-export interface BuildingShadowAzimuthGuardInput {
-  pointX: number;
-  pointY: number;
-  pointElevation: number;
-  maxDistanceMeters?: number;
-  buildingHeightBiasMeters?: number;
-  allowedBlockerIds?: ReadonlySet<string>;
-  excludedBlockerIds?: ReadonlySet<string>;
-}
 
 let obstacleIndexCache: BuildingObstacleIndex | null | undefined;
 let buildingZipPathByNameCache: Map<string, string> | null = null;
@@ -198,10 +183,6 @@ const detailedMeshCacheByObstacleId = new Map<string, DetailedObstacleMesh | nul
 const DEFAULT_SPATIAL_GRID_CELL_SIZE_METERS = 64;
 const BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES = 2;
 const BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS = 3;
-const BUILDING_SHADOW_GUARD_BIN_SIZE_DEG = 1;
-const BUILDING_SHADOW_GUARD_BIN_COUNT = Math.floor(
-  360 / BUILDING_SHADOW_GUARD_BIN_SIZE_DEG,
-);
 
 export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleIndex | null> {
   if (obstacleIndexCache !== undefined) {
@@ -342,59 +323,6 @@ function normalizeAzimuthDeg(value: number): number {
   return normalized >= 0 ? normalized : normalized + 360;
 }
 
-function azimuthToGuardBinIndex(azimuthDeg: number): number {
-  const normalized = normalizeAzimuthDeg(azimuthDeg);
-  const index = Math.floor(normalized / BUILDING_SHADOW_GUARD_BIN_SIZE_DEG);
-  if (index < 0) {
-    return 0;
-  }
-  if (index >= BUILDING_SHADOW_GUARD_BIN_COUNT) {
-    return BUILDING_SHADOW_GUARD_BIN_COUNT - 1;
-  }
-  return index;
-}
-
-function updateGuardBins(
-  maxAltitudeDegByBin: number[],
-  centerAzimuthDeg: number,
-  halfSpanDeg: number,
-  altitudeDeg: number,
-): void {
-  const normalizedCenter = normalizeAzimuthDeg(centerAzimuthDeg);
-  const span = Math.min(180, Math.max(0, halfSpanDeg));
-  const minAzimuth = normalizedCenter - span;
-  const maxAzimuth = normalizedCenter + span;
-
-  if (maxAzimuth - minAzimuth >= 360) {
-    for (let index = 0; index < maxAltitudeDegByBin.length; index += 1) {
-      maxAltitudeDegByBin[index] = Math.max(maxAltitudeDegByBin[index], altitudeDeg);
-    }
-    return;
-  }
-
-  const updateRange = (startAzimuth: number, endAzimuth: number) => {
-    const start = azimuthToGuardBinIndex(startAzimuth);
-    const end = azimuthToGuardBinIndex(endAzimuth);
-    for (let index = start; index <= end; index += 1) {
-      maxAltitudeDegByBin[index] = Math.max(maxAltitudeDegByBin[index], altitudeDeg);
-    }
-  };
-
-  if (minAzimuth >= 0 && maxAzimuth < 360) {
-    updateRange(minAzimuth, maxAzimuth);
-    return;
-  }
-
-  if (minAzimuth < 0) {
-    updateRange(0, maxAzimuth);
-    updateRange(360 + minAzimuth, 360 - 1e-9);
-    return;
-  }
-
-  updateRange(minAzimuth, 360 - 1e-9);
-  updateRange(0, maxAzimuth - 360);
-}
-
 function collectObstacleIndicesInBounds(params: {
   spatialGrid: BuildingObstacleSpatialGrid;
   minX: number;
@@ -423,113 +351,6 @@ function collectObstacleIndicesInBounds(params: {
   }
 
   return candidateIndices;
-}
-
-export function buildBuildingShadowAzimuthGuard(
-  obstacles: BuildingObstacle[],
-  input: BuildingShadowAzimuthGuardInput,
-  spatialGrid?: BuildingObstacleSpatialGrid,
-): BuildingShadowAzimuthGuard | null {
-  if (!Number.isFinite(input.pointElevation)) {
-    return null;
-  }
-
-  const maxDistanceMeters = input.maxDistanceMeters ?? 2500;
-  const buildingHeightBiasMeters = input.buildingHeightBiasMeters ?? 0;
-  const maxHalfDiagonal = obstacles.reduce(
-    (maxValue, obstacle) => Math.max(maxValue, obstacle.halfDiagonal),
-    0,
-  );
-  const searchPadding = maxDistanceMeters + maxHalfDiagonal;
-  const candidateIndices = spatialGrid
-    ? collectObstacleIndicesInBounds({
-        spatialGrid,
-        minX: input.pointX - searchPadding,
-        maxX: input.pointX + searchPadding,
-        minY: input.pointY - searchPadding,
-        maxY: input.pointY + searchPadding,
-      })
-    : new Set(obstacles.map((_, index) => index));
-  const maxAltitudeDegByBin = Array.from(
-    { length: BUILDING_SHADOW_GUARD_BIN_COUNT },
-    () => Number.NEGATIVE_INFINITY,
-  );
-  let hasCandidate = false;
-
-  for (const obstacleIndex of candidateIndices) {
-    const obstacle = obstacles[obstacleIndex];
-    if (!obstacle) {
-      continue;
-    }
-    if (input.allowedBlockerIds && !input.allowedBlockerIds.has(obstacle.id)) {
-      continue;
-    }
-    if (input.excludedBlockerIds?.has(obstacle.id)) {
-      continue;
-    }
-
-    const dx = obstacle.centerX - input.pointX;
-    const dy = obstacle.centerY - input.pointY;
-    const centerDistance = Math.hypot(dx, dy);
-    if (centerDistance > maxDistanceMeters + obstacle.halfDiagonal) {
-      continue;
-    }
-
-    const effectiveObstacleTop = obstacle.maxZ + buildingHeightBiasMeters;
-    const verticalClearance = effectiveObstacleTop - input.pointElevation;
-    if (verticalClearance <= 0) {
-      continue;
-    }
-
-    const minDistance = Math.max(0.001, centerDistance - obstacle.halfDiagonal);
-    const maxAltitudeDeg = (Math.atan2(verticalClearance, minDistance) * 180) / Math.PI;
-    const centerAzimuthDeg = normalizeAzimuthDeg((Math.atan2(dx, dy) * 180) / Math.PI);
-    const halfSpanDeg =
-      centerDistance <= obstacle.halfDiagonal || centerDistance <= 0.001
-        ? 180
-        : (Math.asin(Math.min(1, obstacle.halfDiagonal / centerDistance)) * 180) / Math.PI;
-    // Add one bin as safety margin for discretization.
-    const paddedHalfSpanDeg = Math.min(
-      180,
-      halfSpanDeg + BUILDING_SHADOW_GUARD_BIN_SIZE_DEG,
-    );
-    updateGuardBins(
-      maxAltitudeDegByBin,
-      centerAzimuthDeg,
-      paddedHalfSpanDeg,
-      maxAltitudeDeg,
-    );
-    hasCandidate = true;
-  }
-
-  if (!hasCandidate) {
-    return null;
-  }
-
-  return {
-    version: "building-shadow-azimuth-guard-v1",
-    binSizeDeg: BUILDING_SHADOW_GUARD_BIN_SIZE_DEG,
-    maxAltitudeDegByBin: maxAltitudeDegByBin.map((value) =>
-      Number.isFinite(value) ? value : -90,
-    ),
-  };
-}
-
-export function getBuildingShadowGuardMaxAltitudeDeg(
-  guard: BuildingShadowAzimuthGuard,
-  solarAzimuthDeg: number,
-): number {
-  const binCount = guard.maxAltitudeDegByBin.length;
-  if (binCount <= 0) {
-    return Number.POSITIVE_INFINITY;
-  }
-  const rawIndex = Math.floor(normalizeAzimuthDeg(solarAzimuthDeg) / guard.binSizeDeg);
-  const index =
-    rawIndex >= 0 && rawIndex < binCount
-      ? rawIndex
-      : ((rawIndex % binCount) + binCount) % binCount;
-  const value = guard.maxAltitudeDegByBin[index];
-  return Number.isFinite(value) ? value : Number.POSITIVE_INFINITY;
 }
 
 function collectCandidateObstacleIndices(params: {

@@ -396,7 +396,6 @@ export async function POST(request: Request) {
           timeZone: parsed.data.timezone,
           horizonMask: context.horizonMask,
           buildingShadowEvaluator: context.buildingShadowEvaluator,
-          buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
           vegetationShadowEvaluator: context.vegetationShadowEvaluator,
         });
 
@@ -518,7 +517,6 @@ export async function POST(request: Request) {
         sampleEveryMinutes: parsed.data.sampleEveryMinutes,
         horizonMask: context.horizonMask,
         buildingShadowEvaluator: context.buildingShadowEvaluator,
-        buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
         vegetationShadowEvaluator: context.vegetationShadowEvaluator,
       });
 

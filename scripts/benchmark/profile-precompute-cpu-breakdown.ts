@@ -372,7 +372,6 @@ function createInstantProfiler(): InstantSunlightProfiler {
     terrainCheckNeededCount: 0,
     terrainBlockedCount: 0,
     secondarySkippedByTerrainCount: 0,
-    buildingsSkippedByAzimuthGuardCount: 0,
     buildingsEvaluatorCalls: 0,
     vegetationEvaluatorCalls: 0,
   };
@@ -440,9 +439,6 @@ async function profileTile(params: {
     lat: number;
     lon: number;
     horizonMask: Awaited<ReturnType<typeof buildPointEvaluationContext>>["horizonMask"];
-    buildingShadowAzimuthGuard: Awaited<
-      ReturnType<typeof buildPointEvaluationContext>
-    >["buildingShadowAzimuthGuard"];
     buildingShadowEvaluator?: (sample: {
       azimuthDeg: number;
       altitudeDeg: number;
@@ -490,7 +486,6 @@ async function profileTile(params: {
       lat: point.lat,
       lon: point.lon,
       horizonMask: context.horizonMask,
-      buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
       buildingShadowEvaluator: context.buildingShadowEvaluator,
       vegetationShadowEvaluator: context.vegetationShadowEvaluator,
     });
@@ -544,7 +539,6 @@ async function profileTile(params: {
       lat: point.lat,
       lon: point.lon,
       horizonMask: point.horizonMask,
-      buildingShadowAzimuthGuard: point.buildingShadowAzimuthGuard,
       buildingShadowEvaluator: wrappedBuilding,
       vegetationShadowEvaluator: wrappedVegetation,
     };
@@ -571,7 +565,6 @@ async function profileTile(params: {
         timeZone: params.args.timezone,
         localDateTimeOverride,
         horizonMask: point.horizonMask,
-        buildingShadowAzimuthGuard: point.buildingShadowAzimuthGuard,
         buildingShadowEvaluator: point.buildingShadowEvaluator,
         vegetationShadowEvaluator: point.vegetationShadowEvaluator,
         profiler: instantProfiler,
@@ -687,8 +680,6 @@ async function main() {
       acc.instantProfiler.terrainBlockedCount += tile.instantProfiler.terrainBlockedCount;
       acc.instantProfiler.secondarySkippedByTerrainCount +=
         tile.instantProfiler.secondarySkippedByTerrainCount;
-      acc.instantProfiler.buildingsSkippedByAzimuthGuardCount +=
-        tile.instantProfiler.buildingsSkippedByAzimuthGuardCount;
       acc.instantProfiler.buildingsEvaluatorCalls +=
         tile.instantProfiler.buildingsEvaluatorCalls;
       acc.instantProfiler.vegetationEvaluatorCalls +=

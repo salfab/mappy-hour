@@ -15,14 +15,12 @@ const {
   evaluateBuildingsShadowMock,
   evaluateBuildingsShadowTwoLevelMock,
   createDetailedBuildingShadowVerifierMock,
-  buildBuildingShadowAzimuthGuardMock,
 } = vi.hoisted(() => ({
   loadBuildingsObstacleIndexMock: vi.fn(),
   findContainingBuildingMock: vi.fn(),
   evaluateBuildingsShadowMock: vi.fn(),
   evaluateBuildingsShadowTwoLevelMock: vi.fn(),
   createDetailedBuildingShadowVerifierMock: vi.fn(() => vi.fn()),
-  buildBuildingShadowAzimuthGuardMock: vi.fn(() => null),
 }));
 
 const { loadLausanneHorizonMaskMock } = vi.hoisted(() => ({
@@ -59,7 +57,6 @@ vi.mock("@/lib/sun/buildings-shadow", () => ({
   evaluateBuildingsShadow: evaluateBuildingsShadowMock,
   evaluateBuildingsShadowTwoLevel: evaluateBuildingsShadowTwoLevelMock,
   createDetailedBuildingShadowVerifier: createDetailedBuildingShadowVerifierMock,
-  buildBuildingShadowAzimuthGuard: buildBuildingShadowAzimuthGuardMock,
 }));
 
 vi.mock("@/lib/sun/horizon-mask", () => ({

@@ -516,11 +516,10 @@ export async function POST(request: Request) {
           lon: selectedPoint.lon,
           utcDate: instantUtcDate,
           timeZone: parsed.data.timezone,
-          horizonMask: context.horizonMask,
-          buildingShadowEvaluator: context.buildingShadowEvaluator,
-          buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
-          vegetationShadowEvaluator: context.vegetationShadowEvaluator,
-        });
+            horizonMask: context.horizonMask,
+            buildingShadowEvaluator: context.buildingShadowEvaluator,
+            vegetationShadowEvaluator: context.vegetationShadowEvaluator,
+          });
         const isSunny = isSampleSunny(sample, parsed.data.ignoreVegetation);
         if (!parsed.data.includeNonSunny && !isSunny) {
           continue;
@@ -566,11 +565,10 @@ export async function POST(request: Request) {
           lon: selectedPoint.lon,
           utcDate,
           timeZone: parsed.data.timezone,
-          horizonMask: context.horizonMask,
-          buildingShadowEvaluator: context.buildingShadowEvaluator,
-          buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
-          vegetationShadowEvaluator: context.vegetationShadowEvaluator,
-        }),
+            horizonMask: context.horizonMask,
+            buildingShadowEvaluator: context.buildingShadowEvaluator,
+            vegetationShadowEvaluator: context.vegetationShadowEvaluator,
+          }),
       );
       const sunnyWindows = buildSunnyWindows(
         samples.map((sample) => ({

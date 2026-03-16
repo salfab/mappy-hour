@@ -126,7 +126,6 @@ export async function POST(request: Request) {
         timeZone: parsed.data.timezone,
         horizonMask: context.horizonMask,
         buildingShadowEvaluator: context.buildingShadowEvaluator,
-        buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
         vegetationShadowEvaluator: context.vegetationShadowEvaluator,
       });
       const ridgePoint = terrainHorizonOverride?.ridgePoints?.find(
@@ -157,7 +156,6 @@ export async function POST(request: Request) {
       sampleEveryMinutes: parsed.data.sampleEveryMinutes,
       horizonMask: context.horizonMask,
       buildingShadowEvaluator: context.buildingShadowEvaluator,
-      buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
       vegetationShadowEvaluator: context.vegetationShadowEvaluator,
     });
 

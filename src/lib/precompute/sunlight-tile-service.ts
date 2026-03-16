@@ -63,9 +63,6 @@ interface PreparedOutdoorPoint {
   pointElevationMeters: number | null;
   horizonMask: Awaited<ReturnType<typeof buildPointEvaluationContext>>["horizonMask"];
   buildingShadowEvaluator: Awaited<ReturnType<typeof buildPointEvaluationContext>>["buildingShadowEvaluator"];
-  buildingShadowAzimuthGuard: Awaited<
-    ReturnType<typeof buildPointEvaluationContext>
-  >["buildingShadowAzimuthGuard"];
   vegetationShadowEvaluator: Awaited<ReturnType<typeof buildPointEvaluationContext>>["vegetationShadowEvaluator"];
 }
 
@@ -631,7 +628,6 @@ export async function computeSunlightTileArtifact(params: {
       pointElevationMeters: context.pointElevationMeters,
       horizonMask: context.horizonMask,
       buildingShadowEvaluator: context.buildingShadowEvaluator,
-      buildingShadowAzimuthGuard: context.buildingShadowAzimuthGuard,
       vegetationShadowEvaluator: context.vegetationShadowEvaluator,
     });
     points.push({
@@ -702,7 +698,6 @@ export async function computeSunlightTileArtifact(params: {
         localDateTimeOverride: frameLocalDateTime,
         horizonMask: point.horizonMask,
         buildingShadowEvaluator: point.buildingShadowEvaluator,
-        buildingShadowAzimuthGuard: point.buildingShadowAzimuthGuard,
         vegetationShadowEvaluator: point.vegetationShadowEvaluator,
       });
       horizonAngleDegByPoint.push(
