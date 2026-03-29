@@ -30,7 +30,7 @@ const requestSchema = z
     localTime: z.string().regex(/^\d{2}:\d{2}$/).default("12:00"),
     sampleEveryMinutes: z.number().int().min(1).max(60).default(15),
     gridStepMeters: z.number().int().min(1).max(2000).default(250),
-    maxPoints: z.number().int().min(1).max(5000).default(900),
+    maxPoints: z.number().int().min(1).max(12000).default(3000),
     ignoreVegetation: z.boolean().default(false),
     buildingHeightBiasMeters: z.number().min(-20).max(20).optional(),
   })

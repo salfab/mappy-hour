@@ -24,7 +24,7 @@ const querySchema = z
     timezone: z.string().default("Europe/Zurich"),
     localTime: z.string().regex(/^\d{2}:\d{2}$/).default("12:00"),
     gridStepMeters: z.coerce.number().int().min(1).max(2000).default(250),
-    maxPoints: z.coerce.number().int().min(1).max(5000).default(3000),
+    maxPoints: z.coerce.number().int().min(1).max(12000).default(6000),
     buildingHeightBiasMeters: z.coerce.number().min(-20).max(20).default(0),
   })
   .refine(
