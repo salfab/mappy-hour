@@ -20,6 +20,7 @@
     "benchmark:precompute:cpu:breakdown": "tsx scripts/benchmark/profile-precompute-cpu-breakdown.ts",
     "benchmark:precompute:workers": "tsx scripts/benchmark/precompute-workers-parallelism.ts",
     "precompute:region": "tsx scripts/precompute/precompute-region-sunlight.ts",
+    "precompute:lausanne:terraces:next-weekends": "tsx scripts/precompute/precompute-lausanne-terraces-next-two-weekends.ts",
     "cache:verify": "tsx scripts/precompute/manage-sunlight-cache.ts --action=verify",
     "cache:purge": "tsx scripts/precompute/manage-sunlight-cache.ts --action=purge",
     "ingest:lausanne:buildings": "tsx scripts/ingest/download-lausanne-buildings.ts",

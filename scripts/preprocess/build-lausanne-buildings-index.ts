@@ -3,6 +3,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 
 import AdmZip from "adm-zip";
+import { normalizeBuildingFootprint } from "../../src/lib/sun/building-footprint";
 
 import {
   PROCESSED_BUILDINGS_INDEX_PATH,
@@ -41,6 +42,7 @@ interface BuildingSpatialGrid {
   version: number;
   cellSizeMeters: number;
   cells: Record<string, number[]>;
+  cellMaxZ: Record<string, number>;
   stats: {
     cellCount: number;
     maxObstaclesPerCell: number;
@@ -159,31 +161,6 @@ function dedupePoints(points: Point2D[]): Point2D[] {
     }
   }
   return Array.from(unique.values());
-}
-
-function sortPointsByAngle(points: Point2D[]): Point2D[] {
-  if (points.length < 3) {
-    return points;
-  }
-
-  const center = points.reduce(
-    (acc, point) => ({
-      x: acc.x + point.x / points.length,
-      y: acc.y + point.y / points.length,
-    }),
-    { x: 0, y: 0 },
-  );
-
-  return [...points].sort((a, b) => {
-    const angleA = Math.atan2(a.y - center.y, a.x - center.x);
-    const angleB = Math.atan2(b.y - center.y, b.x - center.x);
-    if (angleA !== angleB) {
-      return angleA - angleB;
-    }
-    const distA = distance(a, center);
-    const distB = distance(b, center);
-    return distA - distB;
-  });
 }
 
 function simplifyRingPoints(points: Point2D[]): Point2D[] {
@@ -337,17 +314,12 @@ function extractGroundFootprint(vertices: Point3D[], minZ: number): Point2D[] | 
     return null;
   }
 
-  // The DXF vertex stream may not always be ring-ordered. Try both source order
-  // and angle-sorted order before falling back to hull.
+  // Keep source order only when it already forms a simple ring.
+  // Angle sorting can generate star-shaped spikes on complex polyfaces.
   const sourceOrdered = simplifyRingPoints(groundVertices);
 
   if (sourceOrdered.length >= 3 && isSimplePolygon(sourceOrdered)) {
     return sourceOrdered;
-  }
-
-  const angleOrdered = simplifyRingPoints(sortPointsByAngle(groundVertices));
-  if (angleOrdered.length >= 3 && isSimplePolygon(angleOrdered)) {
-    return angleOrdered;
   }
 
   return null;
@@ -357,19 +329,29 @@ function chooseFootprint(vertices: Point3D[], minZ: number): Point2D[] | null {
   const groundFootprint = extractGroundFootprint(vertices, minZ);
   if (groundFootprint && polygonArea(groundFootprint) >= 4) {
     const simplified = simplifyFootprintGeometry(groundFootprint);
-    if (simplified.length >= 3 && isSimplePolygon(simplified)) {
-      return simplified;
+    const normalized = normalizeBuildingFootprint(simplified);
+    if (
+      normalized.footprint &&
+      normalized.footprint.length >= 3 &&
+      polygonArea(normalized.footprint) >= 4
+    ) {
+      return normalized.footprint;
     }
-    if (isSimplePolygon(groundFootprint)) {
-      return groundFootprint;
+    if (isSimplePolygon(simplified)) {
+      return simplified;
     }
   }
 
   const groundVertices = collectGroundVertices(vertices, minZ);
   if (groundVertices.length >= 3) {
     const groundHull = convexHull(dedupePoints(groundVertices));
-    if (groundHull.length >= 3 && polygonArea(groundHull) >= 4) {
-      return groundHull;
+    const normalizedHull = normalizeBuildingFootprint(groundHull);
+    if (
+      normalizedHull.footprint &&
+      normalizedHull.footprint.length >= 3 &&
+      polygonArea(normalizedHull.footprint) >= 4
+    ) {
+      return normalizedHull.footprint;
     }
   }
 
@@ -378,7 +360,8 @@ function chooseFootprint(vertices: Point3D[], minZ: number): Point2D[] | null {
     return null;
   }
 
-  return allHull;
+  const normalizedAllHull = normalizeBuildingFootprint(allHull);
+  return normalizedAllHull.footprint;
 }
 
 function obstacleKey(obstacle: BuildingObstacle): string {
@@ -419,18 +402,31 @@ function buildSpatialGrid(
   }
 
   const serializedCells: Record<string, number[]> = {};
+  const cellMaxZ: Record<string, number> = {};
   let maxObstaclesPerCell = 0;
   let sumObstaclesPerCell = 0;
   for (const [key, bucket] of cells.entries()) {
     serializedCells[key] = bucket;
     maxObstaclesPerCell = Math.max(maxObstaclesPerCell, bucket.length);
     sumObstaclesPerCell += bucket.length;
+    let maxZ = Number.NEGATIVE_INFINITY;
+    for (const obstacleIndex of bucket) {
+      const obstacle = obstacles[obstacleIndex];
+      if (!obstacle) {
+        continue;
+      }
+      maxZ = Math.max(maxZ, obstacle.maxZ);
+    }
+    if (Number.isFinite(maxZ)) {
+      cellMaxZ[key] = round3(maxZ);
+    }
   }
 
   return {
     version: 1,
     cellSizeMeters,
     cells: serializedCells,
+    cellMaxZ,
     stats: {
       cellCount: cells.size,
       maxObstaclesPerCell,
@@ -800,8 +796,8 @@ async function main() {
   const elapsedSeconds = round3((performance.now() - startedAt) / 1000);
   const payload = {
     generatedAt: new Date().toISOString(),
-    method: "dxf-footprint-prism-v3-balanced-simplification-spatial-grid",
-    indexVersion: 3,
+    method: "dxf-footprint-prism-v5-source-order-hull-cell-maxz",
+    indexVersion: 5,
     sourceSelectionStrategy: "latest-zip-per-tile",
     sourceDirectory: RAW_BUILDINGS_DIR,
     zipFilesProcessed: zipFiles.length,

@@ -225,6 +225,7 @@ async function main() {
   const impactedCellCounts = new Map<string, number>();
   const impactedBuildingCounts = new Map<string, number>();
   const debugStatsTotals = {
+    skippedDisallowedBlockerId: 0,
     skippedExcludedBlockerId: 0,
     skippedDistance: 0,
     skippedLateral: 0,
@@ -285,6 +286,8 @@ async function main() {
         incrementCount(blockerBuildingCounts, debug.blockerId);
       }
       if (debug.stats) {
+        debugStatsTotals.skippedDisallowedBlockerId +=
+          debug.stats.skippedDisallowedBlockerId;
         debugStatsTotals.skippedExcludedBlockerId += debug.stats.skippedExcludedBlockerId;
         debugStatsTotals.skippedDistance += debug.stats.skippedDistance;
         debugStatsTotals.skippedLateral += debug.stats.skippedLateral;
