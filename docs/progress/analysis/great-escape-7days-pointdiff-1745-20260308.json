@@ -1,0 +1,190 @@
+{
+  "generatedAt": "2026-03-17T06:07:52.958Z",
+  "assumptions": {
+    "bbox": {
+      "minLon": 6.6322,
+      "minLat": 46.52255,
+      "maxLon": 6.63335,
+      "maxLat": 46.52305
+    },
+    "timezone": "Europe/Zurich",
+    "startDate": "2026-03-08",
+    "days": 7,
+    "gridStepMeters": 1,
+    "localTime": "17:45"
+  },
+  "preparedOutdoorPoints": 3098,
+  "dailySunnyCounts": [
+    {
+      "date": "2026-03-08",
+      "sunnyCount": 21,
+      "sunnyRatioPct": 0.678
+    },
+    {
+      "date": "2026-03-09",
+      "sunnyCount": 32,
+      "sunnyRatioPct": 1.033
+    },
+    {
+      "date": "2026-03-10",
+      "sunnyCount": 36,
+      "sunnyRatioPct": 1.162
+    },
+    {
+      "date": "2026-03-11",
+      "sunnyCount": 43,
+      "sunnyRatioPct": 1.388
+    },
+    {
+      "date": "2026-03-12",
+      "sunnyCount": 53,
+      "sunnyRatioPct": 1.711
+    },
+    {
+      "date": "2026-03-13",
+      "sunnyCount": 62,
+      "sunnyRatioPct": 2.001
+    },
+    {
+      "date": "2026-03-14",
+      "sunnyCount": 71,
+      "sunnyRatioPct": 2.292
+    }
+  ],
+  "dayToDay": [
+    {
+      "fromDate": "2026-03-08",
+      "toDate": "2026-03-09",
+      "localTime": "17:45",
+      "sunnyCountDelta": 11,
+      "sharedPointCount": 3098,
+      "changedIsSunny": 11,
+      "changedIsSunnyRatioPct": 0.355,
+      "becameSunny": 11,
+      "becameShaded": 0
+    },
+    {
+      "fromDate": "2026-03-09",
+      "toDate": "2026-03-10",
+      "localTime": "17:45",
+      "sunnyCountDelta": 4,
+      "sharedPointCount": 3098,
+      "changedIsSunny": 4,
+      "changedIsSunnyRatioPct": 0.129,
+      "becameSunny": 4,
+      "becameShaded": 0
+    },
+    {
+      "fromDate": "2026-03-10",
+      "toDate": "2026-03-11",
+      "localTime": "17:45",
+      "sunnyCountDelta": 7,
+      "sharedPointCount": 3098,
+      "changedIsSunny": 7,
+      "changedIsSunnyRatioPct": 0.226,
+      "becameSunny": 7,
+      "becameShaded": 0
+    },
+    {
+      "fromDate": "2026-03-11",
+      "toDate": "2026-03-12",
+      "localTime": "17:45",
+      "sunnyCountDelta": 10,
+      "sharedPointCount": 3098,
+      "changedIsSunny": 10,
+      "changedIsSunnyRatioPct": 0.323,
+      "becameSunny": 10,
+      "becameShaded": 0
+    },
+    {
+      "fromDate": "2026-03-12",
+      "toDate": "2026-03-13",
+      "localTime": "17:45",
+      "sunnyCountDelta": 9,
+      "sharedPointCount": 3098,
+      "changedIsSunny": 9,
+      "changedIsSunnyRatioPct": 0.291,
+      "becameSunny": 9,
+      "becameShaded": 0
+    },
+    {
+      "fromDate": "2026-03-13",
+      "toDate": "2026-03-14",
+      "localTime": "17:45",
+      "sunnyCountDelta": 9,
+      "sharedPointCount": 3098,
+      "changedIsSunny": 13,
+      "changedIsSunnyRatioPct": 0.42,
+      "becameSunny": 11,
+      "becameShaded": 2
+    }
+  ],
+  "versusFirstDay": [
+    {
+      "fromDate": "2026-03-08",
+      "toDate": "2026-03-09",
+      "localTime": "17:45",
+      "sunnyCountDelta": 11,
+      "sharedPointCount": 3098,
+      "changedIsSunny": 11,
+      "changedIsSunnyRatioPct": 0.355,
+      "becameSunny": 11,
+      "becameShaded": 0
+    },
+    {
+      "fromDate": "2026-03-08",
+      "toDate": "2026-03-10",
+      "localTime": "17:45",
+      "sunnyCountDelta": 15,
+      "sharedPointCount": 3098,
+      "changedIsSunny": 15,
+      "changedIsSunnyRatioPct": 0.484,
+      "becameSunny": 15,
+      "becameShaded": 0
+    },
+    {
+      "fromDate": "2026-03-08",
+      "toDate": "2026-03-11",
+      "localTime": "17:45",
+      "sunnyCountDelta": 22,
+      "sharedPointCount": 3098,
+      "changedIsSunny": 22,
+      "changedIsSunnyRatioPct": 0.71,
+      "becameSunny": 22,
+      "becameShaded": 0
+    },
+    {
+      "fromDate": "2026-03-08",
+      "toDate": "2026-03-12",
+      "localTime": "17:45",
+      "sunnyCountDelta": 32,
+      "sharedPointCount": 3098,
+      "changedIsSunny": 32,
+      "changedIsSunnyRatioPct": 1.033,
+      "becameSunny": 32,
+      "becameShaded": 0
+    },
+    {
+      "fromDate": "2026-03-08",
+      "toDate": "2026-03-13",
+      "localTime": "17:45",
+      "sunnyCountDelta": 41,
+      "sharedPointCount": 3098,
+      "changedIsSunny": 41,
+      "changedIsSunnyRatioPct": 1.323,
+      "becameSunny": 41,
+      "becameShaded": 0
+    },
+    {
+      "fromDate": "2026-03-08",
+      "toDate": "2026-03-14",
+      "localTime": "17:45",
+      "sunnyCountDelta": 50,
+      "sharedPointCount": 3098,
+      "changedIsSunny": 50,
+      "changedIsSunnyRatioPct": 1.614,
+      "becameSunny": 50,
+      "becameShaded": 0
+    }
+  ]
+}

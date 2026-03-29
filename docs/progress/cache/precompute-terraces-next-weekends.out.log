@@ -1,0 +1,9 @@
+
+> mappy-hour@0.1.0 precompute:lausanne:terraces:next-weekends C:\sources\MappyHour\mappy-hour
+> tsx scripts/precompute/precompute-lausanne-terraces-next-two-weekends.ts
+
+[precompute:terraces-weekend] region=lausanne zones=3 selectedTiles=10
+[precompute:terraces-weekend] tileIds=e2537250_n1151500_s250,e2537250_n1151750_s250,e2537500_n1151500_s250,e2537500_n1151750_s250,e2538000_n1152250_s250,e2538000_n1152500_s250,e2538250_n1152250_s250,e2538250_n1152500_s250,e2538500_n1152250_s250,e2538500_n1152500_s250
+[precompute:terraces-weekend] start date=2026-03-20 window=15:00-23:59
+[precompute:terraces-weekend] done date=2026-03-20 ok=10 skipped=10 failed=0 complete=true elapsedMs=1874.443
+[precompute:terraces-weekend] start date=2026-03-21 window=00:00-23:59

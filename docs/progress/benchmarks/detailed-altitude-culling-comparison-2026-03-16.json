@@ -1,0 +1,70 @@
+{
+  "generatedAt": "2026-03-16T11:35:00.000Z",
+  "scenario": {
+    "region": "lausanne",
+    "date": "2026-03-08",
+    "days": 1,
+    "gridStepMeters": 5,
+    "sampleEveryMinutes": 15,
+    "startLocalTime": "08:00",
+    "endLocalTime": "12:00",
+    "tileCount": 8,
+    "workers": 1,
+    "mode": "detailed"
+  },
+  "performanceMs": {
+    "detailedRun1BeforeCulling": 1111528,
+    "detailedRun2BeforeCulling": 841275.101,
+    "detailedAfterCullingRun1": 509161
+  },
+  "performanceDelta": {
+    "vsRun2": {
+      "elapsedMs": -332114.101,
+      "improvementPercent": 39.477
+    },
+    "vsRun1": {
+      "elapsedMs": -602367,
+      "improvementPercent": 54.192
+    }
+  },
+  "throughputTilesPerMinute": {
+    "detailedRun1BeforeCulling": 0.432,
+    "detailedRun2BeforeCulling": 0.571,
+    "detailedAfterCullingRun1": 0.943
+  },
+  "throughputDelta": {
+    "vsRun2": {
+      "absolute": 0.372,
+      "improvementPercent": 65.149
+    },
+    "vsRun1": {
+      "absolute": 0.511,
+      "improvementPercent": 118.287
+    }
+  },
+  "precisionComparison": {
+    "baseline": {
+      "modelVersionHash": "e658bad72d727ddb",
+      "label": "detailed-r2 (before culling)"
+    },
+    "candidate": {
+      "modelVersionHash": "8b2fcb183ae3f7b9",
+      "label": "detailed-culling-r1"
+    },
+    "totalPointFrames": 319600,
+    "differences": {
+      "sunMaskBits": 0,
+      "sunMaskNoVegetationBits": 0,
+      "terrainBlockedBits": 0,
+      "buildingsBlockedBits": 0,
+      "vegetationBlockedBits": 0,
+      "buildingBlockerIdEntries": 0,
+      "horizonAngleEntries": 0,
+      "buildingBlockerDistanceEntries": 0
+    }
+  },
+  "artifacts": {
+    "benchmarkDetailedAfterCulling": "docs/progress/benchmarks/precompute-workers-lausanne-2026-03-08-d1-g5-t8-detailed-culling-r1.json",
+    "precisionDiffReport": "docs/progress/analysis/detailed-baseline-vs-detailed-culling-lausanne-8tiles-20260308-0800-1200.json"
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "generatedAt": "2026-03-16T09:30:00.000Z",
+  "notes": [
+    "Comparison run with identical precompute parameters and workers=1.",
+    "t8 measurements come from benchmark CLI output (same script/params, executed back-to-back).",
+    "t2 measurements are persisted as dedicated reports in this directory."
+  ],
+  "comparison": [
+    {
+      "name": "lausanne-d1-g5-t8-08:00-12:00-s15",
+      "params": {
+        "region": "lausanne",
+        "startDate": "2026-03-08",
+        "days": 1,
+        "gridStepMeters": 5,
+        "sampleEveryMinutes": 15,
+        "startLocalTime": "08:00",
+        "endLocalTime": "12:00",
+        "tileCount": 8,
+        "workers": 1
+      },
+      "twoLevel": {
+        "elapsedMs": 700347,
+        "tilesPerMinute": 0.685
+      },
+      "detailed": {
+        "elapsedMs": 1111528,
+        "tilesPerMinute": 0.432
+      },
+      "detailedSecondRun": {
+        "elapsedMs": 841275.101,
+        "tilesPerMinute": 0.571,
+        "sourceReportPath": "docs/progress/benchmarks/precompute-workers-lausanne-2026-03-08-d1-g5-t8-detailed-r2.json"
+      },
+      "delta": {
+        "elapsedMs": 411181,
+        "slowerPercent": 58.71,
+        "throughputPercent": -36.93
+      },
+      "deltaSecondRunVsTwoLevel": {
+        "elapsedMs": 140928.101,
+        "slowerPercent": 20.12,
+        "throughputPercent": -16.64
+      }
+    },
+    {
+      "name": "lausanne-d1-g5-t2-08:00-10:00-s15",
+      "params": {
+        "region": "lausanne",
+        "startDate": "2026-03-08",
+        "days": 1,
+        "gridStepMeters": 5,
+        "sampleEveryMinutes": 15,
+        "startLocalTime": "08:00",
+        "endLocalTime": "10:00",
+        "tileCount": 2,
+        "workers": 1
+      },
+      "sources": {
+        "twoLevelReportPath": "docs/progress/benchmarks/precompute-workers-lausanne-2026-03-08-d1-g5-t2-two-level.json",
+        "detailedReportPath": "docs/progress/benchmarks/precompute-workers-lausanne-2026-03-08-d1-g5-t2-detailed.json"
+      },
+      "twoLevel": {
+        "elapsedMs": 171165.65,
+        "tilesPerMinute": 0.701
+      },
+      "detailed": {
+        "elapsedMs": 169171.64,
+        "tilesPerMinute": 0.709
+      },
+      "delta": {
+        "elapsedMs": -1994.01,
+        "fasterPercent": 1.16,
+        "throughputPercent": 1.14
+      }
+    }
+  ]
+}

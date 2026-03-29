@@ -1,0 +1,51 @@
+{
+  "generatedAt": "2026-03-15T21:32:10.702Z",
+  "params": {
+    "region": "lausanne",
+    "startDate": "2026-03-08",
+    "days": 1,
+    "timezone": "Europe/Zurich",
+    "sampleEveryMinutes": 60,
+    "gridStepMeters": 2000,
+    "startLocalTime": "00:00",
+    "endLocalTime": "23:59",
+    "tileCount": 1,
+    "repeats": 1,
+    "workers": [
+      4
+    ]
+  },
+  "selectedTileIds": [
+    "e2538000_n1152250_s250"
+  ],
+  "selectedTileCount": 1,
+  "baselineWorkerCount": 4,
+  "summary": [
+    {
+      "workerCount": 4,
+      "runs": 1,
+      "elapsedMs": {
+        "min": 50964.814,
+        "median": 50964.814,
+        "max": 50964.814
+      },
+      "tilesPerMinute": {
+        "min": 1.177,
+        "median": 1.177,
+        "max": 1.177
+      },
+      "totalFailedTiles": 0,
+      "speedupVsBaseline": 1
+    }
+  ],
+  "samples": [
+    {
+      "repeat": 1,
+      "workerCount": 4,
+      "elapsedMs": 50964.814,
+      "processedTiles": 1,
+      "tilePerMinute": 1.177,
+      "totalFailedTiles": 0
+    }
+  ]
+}

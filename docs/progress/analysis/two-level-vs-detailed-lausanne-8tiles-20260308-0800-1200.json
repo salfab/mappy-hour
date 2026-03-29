@@ -1,0 +1,105 @@
+{
+  "comparedAt": "2026-03-16T10:58:47.727Z",
+  "detailedDir": "c:\\sources\\MappyHour\\mappy-hour\\data\\cache\\sunlight-mode-compare\\lausanne\\e658bad72d727ddb\\g5\\m15\\2026-03-08\\t0800-1200\\detailed-r2",
+  "twoLevelDir": "c:\\sources\\MappyHour\\mappy-hour\\data\\cache\\sunlight-mode-compare\\lausanne\\e658bad72d727ddb\\g5\\m15\\2026-03-08\\t0800-1200\\two-level-r3",
+  "tileCount": 8,
+  "framesCompared": 128,
+  "pointsCompared": 19975,
+  "totalPointFrames": 319600,
+  "differences": {
+    "sunMaskBits": 5296,
+    "sunMaskNoVegetationBits": 10658,
+    "terrainBlockedBits": 0,
+    "buildingsBlockedBits": 10658,
+    "vegetationBlockedBits": 0,
+    "buildingBlockerIdEntries": 12453
+  },
+  "directional": {
+    "sunMaskBits": {
+      "detailedOneTwoLevelZero": 5296,
+      "detailedZeroTwoLevelOne": 0
+    },
+    "sunMaskNoVegetationBits": {
+      "detailedOneTwoLevelZero": 10658,
+      "detailedZeroTwoLevelOne": 0
+    },
+    "buildingsBlockedBits": {
+      "detailedOneTwoLevelZero": 0,
+      "detailedZeroTwoLevelOne": 10658
+    }
+  },
+  "ratios": {
+    "sunMaskBits": 0.016570713391739676,
+    "sunMaskNoVegetationBits": 0.03334793491864831,
+    "terrainBlockedBits": 0,
+    "buildingsBlockedBits": 0.03334793491864831,
+    "vegetationBlockedBits": 0,
+    "buildingBlockerIdEntries": 0.03896433041301627
+  },
+  "perTile": [
+    {
+      "tileId": "e2537750_n1152000_s250",
+      "pointCount": 2496,
+      "frameCount": 16,
+      "diffSunBits": 1356,
+      "diffBuildingsBits": 2557,
+      "diffBuildingBlockerId": 2943
+    },
+    {
+      "tileId": "e2537750_n1152250_s250",
+      "pointCount": 2496,
+      "frameCount": 16,
+      "diffSunBits": 357,
+      "diffBuildingsBits": 1346,
+      "diffBuildingBlockerId": 1575
+    },
+    {
+      "tileId": "e2537750_n1152500_s250",
+      "pointCount": 2496,
+      "frameCount": 16,
+      "diffSunBits": 286,
+      "diffBuildingsBits": 433,
+      "diffBuildingBlockerId": 509
+    },
+    {
+      "tileId": "e2538000_n1152000_s250",
+      "pointCount": 2497,
+      "frameCount": 16,
+      "diffSunBits": 736,
+      "diffBuildingsBits": 1210,
+      "diffBuildingBlockerId": 1570
+    },
+    {
+      "tileId": "e2538000_n1152250_s250",
+      "pointCount": 2497,
+      "frameCount": 16,
+      "diffSunBits": 446,
+      "diffBuildingsBits": 811,
+      "diffBuildingBlockerId": 1051
+    },
+    {
+      "tileId": "e2538000_n1152500_s250",
+      "pointCount": 2497,
+      "frameCount": 16,
+      "diffSunBits": 472,
+      "diffBuildingsBits": 968,
+      "diffBuildingBlockerId": 1106
+    },
+    {
+      "tileId": "e2538250_n1152000_s250",
+      "pointCount": 2498,
+      "frameCount": 16,
+      "diffSunBits": 809,
+      "diffBuildingsBits": 1836,
+      "diffBuildingBlockerId": 1958
+    },
+    {
+      "tileId": "e2538250_n1152250_s250",
+      "pointCount": 2498,
+      "frameCount": 16,
+      "diffSunBits": 834,
+      "diffBuildingsBits": 1497,
+      "diffBuildingBlockerId": 1741
+    }
+  ]
+}

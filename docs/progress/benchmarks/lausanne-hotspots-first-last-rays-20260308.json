@@ -1,0 +1,242 @@
+{
+  "generatedAt": "2026-03-16T20:48:51.298Z",
+  "setup": {
+    "date": "2026-03-08",
+    "timezone": "Europe/Zurich",
+    "gridStepMeters": 1,
+    "sunOffsetMinutes": 10
+  },
+  "hotspots": [
+    {
+      "id": "pepinet-mccarthys",
+      "name": "Place Pépinet / Mc Carthy's",
+      "bbox": {
+        "minLon": 6.63195,
+        "minLat": 46.5213,
+        "maxLon": 6.63255,
+        "maxLat": 46.5217
+      },
+      "pointsEvaluated": 2051,
+      "sunTimes": {
+        "sunriseLocal": "2026-03-08 07:01:51",
+        "sunsetLocal": "2026-03-08 18:29:40"
+      },
+      "windows": [
+        {
+          "key": "first-rays",
+          "localDateTime": "2026-03-08 07:11:51",
+          "utcTime": "2026-03-08T06:11:51.884Z",
+          "performance": {
+            "detailedElapsedMs": 183.509,
+            "twoLevelElapsedMs": 227.755,
+            "speedupX": 0.806,
+            "detailedProfiler": {
+              "totalMs": 181.601,
+              "buildingsMs": 0.183,
+              "terrainMs": 1.047,
+              "vegetationMs": 0.162
+            },
+            "twoLevelProfiler": {
+              "totalMs": 225.543,
+              "buildingsMs": 0.108,
+              "terrainMs": 1.157,
+              "vegetationMs": 0.107
+            }
+          },
+          "precision": {
+            "mismatchIsSunny": 0,
+            "mismatchBuildingsBlocked": 0,
+            "mismatchBuildingBlockerId": 0,
+            "mismatchAny": 0,
+            "mismatchRatioPct": 0,
+            "sampleMismatches": []
+          }
+        },
+        {
+          "key": "last-rays",
+          "localDateTime": "2026-03-08 18:19:40",
+          "utcTime": "2026-03-08T17:19:40.030Z",
+          "performance": {
+            "detailedElapsedMs": 175.974,
+            "twoLevelElapsedMs": 181.64,
+            "speedupX": 0.969,
+            "detailedProfiler": {
+              "totalMs": 175.141,
+              "buildingsMs": 0.085,
+              "terrainMs": 0.577,
+              "vegetationMs": 0.091
+            },
+            "twoLevelProfiler": {
+              "totalMs": 178.207,
+              "buildingsMs": 0.096,
+              "terrainMs": 0.584,
+              "vegetationMs": 0.096
+            }
+          },
+          "precision": {
+            "mismatchIsSunny": 0,
+            "mismatchBuildingsBlocked": 0,
+            "mismatchBuildingBlockerId": 0,
+            "mismatchAny": 0,
+            "mismatchRatioPct": 0,
+            "sampleMismatches": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "grandes-roches",
+      "name": "Terrasse des Grandes Roches",
+      "bbox": {
+        "minLon": 6.63555,
+        "minLat": 46.52125,
+        "maxLon": 6.6362,
+        "maxLat": 46.52165
+      },
+      "pointsEvaluated": 2213,
+      "sunTimes": {
+        "sunriseLocal": "2026-03-08 07:01:51",
+        "sunsetLocal": "2026-03-08 18:29:39"
+      },
+      "windows": [
+        {
+          "key": "first-rays",
+          "localDateTime": "2026-03-08 07:11:51",
+          "utcTime": "2026-03-08T06:11:51.013Z",
+          "performance": {
+            "detailedElapsedMs": 189.321,
+            "twoLevelElapsedMs": 186.547,
+            "speedupX": 1.015,
+            "detailedProfiler": {
+              "totalMs": 188.823,
+              "buildingsMs": 0.098,
+              "terrainMs": 0.585,
+              "vegetationMs": 0.106
+            },
+            "twoLevelProfiler": {
+              "totalMs": 186.039,
+              "buildingsMs": 0.094,
+              "terrainMs": 0.601,
+              "vegetationMs": 0.098
+            }
+          },
+          "precision": {
+            "mismatchIsSunny": 0,
+            "mismatchBuildingsBlocked": 0,
+            "mismatchBuildingBlockerId": 0,
+            "mismatchAny": 0,
+            "mismatchRatioPct": 0,
+            "sampleMismatches": []
+          }
+        },
+        {
+          "key": "last-rays",
+          "localDateTime": "2026-03-08 18:19:39",
+          "utcTime": "2026-03-08T17:19:39.161Z",
+          "performance": {
+            "detailedElapsedMs": 194.319,
+            "twoLevelElapsedMs": 193.974,
+            "speedupX": 1.002,
+            "detailedProfiler": {
+              "totalMs": 193.803,
+              "buildingsMs": 0.095,
+              "terrainMs": 0.55,
+              "vegetationMs": 0.104
+            },
+            "twoLevelProfiler": {
+              "totalMs": 193.472,
+              "buildingsMs": 0.099,
+              "terrainMs": 0.559,
+              "vegetationMs": 0.101
+            }
+          },
+          "precision": {
+            "mismatchIsSunny": 0,
+            "mismatchBuildingsBlocked": 0,
+            "mismatchBuildingBlockerId": 0,
+            "mismatchAny": 0,
+            "mismatchRatioPct": 0,
+            "sampleMismatches": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "great-escape-rumine",
+      "name": "The Great Escape / Rumine",
+      "bbox": {
+        "minLon": 6.6322,
+        "minLat": 46.52255,
+        "maxLon": 6.63335,
+        "maxLat": 46.52305
+      },
+      "pointsEvaluated": 4911,
+      "sunTimes": {
+        "sunriseLocal": "2026-03-08 07:01:51",
+        "sunsetLocal": "2026-03-08 18:29:39"
+      },
+      "windows": [
+        {
+          "key": "first-rays",
+          "localDateTime": "2026-03-08 07:11:51",
+          "utcTime": "2026-03-08T06:11:51.808Z",
+          "performance": {
+            "detailedElapsedMs": 422.751,
+            "twoLevelElapsedMs": 465.616,
+            "speedupX": 0.908,
+            "detailedProfiler": {
+              "totalMs": 421.797,
+              "buildingsMs": 0.217,
+              "terrainMs": 1.208,
+              "vegetationMs": 0.217
+            },
+            "twoLevelProfiler": {
+              "totalMs": 464.469,
+              "buildingsMs": 0.227,
+              "terrainMs": 1.544,
+              "vegetationMs": 0.278
+            }
+          },
+          "precision": {
+            "mismatchIsSunny": 0,
+            "mismatchBuildingsBlocked": 0,
+            "mismatchBuildingBlockerId": 0,
+            "mismatchAny": 0,
+            "mismatchRatioPct": 0,
+            "sampleMismatches": []
+          }
+        },
+        {
+          "key": "last-rays",
+          "localDateTime": "2026-03-08 18:19:39",
+          "utcTime": "2026-03-08T17:19:39.854Z",
+          "performance": {
+            "detailedElapsedMs": 427.713,
+            "twoLevelElapsedMs": 538.658,
+            "speedupX": 0.794,
+            "detailedProfiler": {
+              "totalMs": 426.805,
+              "buildingsMs": 0.212,
+              "terrainMs": 1.096,
+              "vegetationMs": 0.223
+            },
+            "twoLevelProfiler": {
+              "totalMs": 537.399,
+              "buildingsMs": 0.258,
+              "terrainMs": 1.836,
+              "vegetationMs": 0.331
+            }
+          },
+          "precision": {
+            "mismatchIsSunny": 0,
+            "mismatchBuildingsBlocked": 0,
+            "mismatchBuildingBlockerId": 0,
+            "mismatchAny": 0,
+            "mismatchRatioPct": 0,
+            "sampleMismatches": []
+          }
+        }
+      ]
+    }
+  ]
+}

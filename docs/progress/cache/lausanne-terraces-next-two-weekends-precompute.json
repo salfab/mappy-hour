@@ -1,0 +1,116 @@
+{
+  "generatedAt": "2026-03-18T01:36:47.569Z",
+  "region": "lausanne",
+  "timezone": "Europe/Zurich",
+  "sampleEveryMinutes": 15,
+  "gridStepMeters": 1,
+  "buildingHeightBiasMeters": 0,
+  "skipExisting": true,
+  "zones": [
+    {
+      "id": "grandes-roches",
+      "label": "Terrasse des Grandes Roches",
+      "lat": 46.521448,
+      "lon": 6.6359,
+      "radiusMeters": 40
+    },
+    {
+      "id": "montriond",
+      "label": "Le Cabanon du Montriond",
+      "lat": 46.514974,
+      "lon": 6.625165,
+      "radiusMeters": 40
+    },
+    {
+      "id": "mccarthys",
+      "label": "Mc Carthy's",
+      "lat": 46.52137,
+      "lon": 6.632301,
+      "radiusMeters": 40
+    }
+  ],
+  "selectedTileCount": 3,
+  "selectedTileIds": [
+    "e2537500_n1151750_s250",
+    "e2538000_n1152500_s250",
+    "e2538250_n1152500_s250"
+  ],
+  "weekends": [
+    "2026-03-20",
+    "2026-03-27"
+  ],
+  "runs": [
+    {
+      "date": "2026-03-20",
+      "startLocalTime": "15:00",
+      "endLocalTime": "18:00",
+      "modelVersionHash": "66c0c0159b44f2de",
+      "algorithmVersion": "sunlight-cache-v9",
+      "succeededTiles": 3,
+      "skippedTiles": 3,
+      "failedTiles": 0,
+      "complete": true,
+      "elapsedMs": 853.895
+    },
+    {
+      "date": "2026-03-21",
+      "startLocalTime": "15:00",
+      "endLocalTime": "18:00",
+      "modelVersionHash": "66c0c0159b44f2de",
+      "algorithmVersion": "sunlight-cache-v9",
+      "succeededTiles": 3,
+      "skippedTiles": 3,
+      "failedTiles": 0,
+      "complete": true,
+      "elapsedMs": 1144.726
+    },
+    {
+      "date": "2026-03-22",
+      "startLocalTime": "15:00",
+      "endLocalTime": "18:00",
+      "modelVersionHash": "66c0c0159b44f2de",
+      "algorithmVersion": "sunlight-cache-v9",
+      "succeededTiles": 3,
+      "skippedTiles": 1,
+      "failedTiles": 0,
+      "complete": true,
+      "elapsedMs": 727593.837
+    },
+    {
+      "date": "2026-03-27",
+      "startLocalTime": "15:00",
+      "endLocalTime": "18:00",
+      "modelVersionHash": "66c0c0159b44f2de",
+      "algorithmVersion": "sunlight-cache-v9",
+      "succeededTiles": 3,
+      "skippedTiles": 0,
+      "failedTiles": 0,
+      "complete": true,
+      "elapsedMs": 916128.799
+    },
+    {
+      "date": "2026-03-28",
+      "startLocalTime": "15:00",
+      "endLocalTime": "18:00",
+      "modelVersionHash": "66c0c0159b44f2de",
+      "algorithmVersion": "sunlight-cache-v9",
+      "succeededTiles": 3,
+      "skippedTiles": 0,
+      "failedTiles": 0,
+      "complete": true,
+      "elapsedMs": 912319.629
+    },
+    {
+      "date": "2026-03-29",
+      "startLocalTime": "15:00",
+      "endLocalTime": "18:00",
+      "modelVersionHash": "66c0c0159b44f2de",
+      "algorithmVersion": "sunlight-cache-v9",
+      "succeededTiles": 3,
+      "skippedTiles": 0,
+      "failedTiles": 0,
+      "complete": true,
+      "elapsedMs": 923972.961
+    }
+  ]
+}

@@ -1,0 +1,146 @@
+{
+  "generatedAt": "2026-03-16T18:12:46.091Z",
+  "params": {
+    "region": "lausanne",
+    "date": "2026-03-08",
+    "timezone": "Europe/Zurich",
+    "sampleEveryMinutes": 15,
+    "gridStepMeters": 5,
+    "startLocalTime": "08:00",
+    "endLocalTime": "12:00",
+    "tileCount": 1,
+    "maxPointsPerTile": 0
+  },
+  "modelVersionHash": "66c0c0159b44f2de",
+  "buildingsShadowMode": "two-level",
+  "selectedTileIds": [
+    "e2538000_n1152250_s250"
+  ],
+  "aggregate": {
+    "counts": {
+      "gridPoints": 2497,
+      "outdoorPoints": 1248,
+      "indoorPoints": 1249,
+      "utcSamples": 16,
+      "evaluations": 19968
+    },
+    "phaseMs": {
+      "adaptiveHorizon": 18636.384,
+      "sharedSources": 2683.098,
+      "pointContexts": 42.01,
+      "evaluations": 37872.091,
+      "total": 59242.896
+    },
+    "phasePctOfTotal": {
+      "adaptiveHorizon": 31.458,
+      "sharedSources": 4.529,
+      "pointContexts": 0.071,
+      "evaluations": 63.927
+    },
+    "instantProfilerMs": {
+      "total": 37822.131,
+      "solarPosition": 32.458,
+      "terrain": 24.705,
+      "buildings": 37535.838,
+      "vegetation": 84.896,
+      "finalize": 127.443
+    },
+    "instantProfilerPctOfEvalLoop": {
+      "total": 99.868,
+      "solarPosition": 0.086,
+      "terrain": 0.065,
+      "buildings": 99.112,
+      "vegetation": 0.224,
+      "finalize": 0.337
+    },
+    "instantProfilerCounts": {
+      "evaluations": 19968,
+      "totalMs": 37822.131,
+      "solarPositionMs": 32.458,
+      "terrainMs": 24.705,
+      "buildingsMs": 37535.838,
+      "vegetationMs": 84.896,
+      "finalizeMs": 127.443,
+      "belowAstronomicalHorizonCount": 0,
+      "terrainCheckNeededCount": 0,
+      "terrainBlockedCount": 0,
+      "secondarySkippedByTerrainCount": 0,
+      "buildingsEvaluatorCalls": 19968,
+      "vegetationEvaluatorCalls": 19968
+    },
+    "perEvaluationMicros": {
+      "total": 1894.137,
+      "solarPosition": 1.626,
+      "terrain": 1.237,
+      "buildings": 1879.8,
+      "vegetation": 4.252,
+      "finalize": 6.382
+    },
+    "shadowEvaluators": {
+      "buildingCalls": 19968,
+      "buildingBlockedCalls": 15835,
+      "buildingCheckedObstaclesTotal": 45024,
+      "vegetationCalls": 19968,
+      "vegetationBlockedCalls": 17005,
+      "vegetationCheckedSamplesTotal": 284149,
+      "avgCheckedObstaclesPerBuildingCall": 2.255,
+      "avgCheckedVegetationSamplesPerCall": 14.23
+    },
+    "blockerOutcomes": {
+      "terrainBlocked": 0,
+      "buildingsBlocked": 15835,
+      "vegetationBlocked": 17005,
+      "sunny": 2408
+    }
+  },
+  "tiles": [
+    {
+      "tileId": "e2538000_n1152250_s250",
+      "gridPointCount": 2497,
+      "outdoorPointCount": 1248,
+      "indoorPointCount": 1249,
+      "sampleCount": 16,
+      "evaluationCount": 19968,
+      "phaseMs": {
+        "adaptiveHorizon": 18636.384,
+        "sharedSources": 2683.098,
+        "pointContexts": 42.01,
+        "evaluations": 37872.091,
+        "total": 59242.896
+      },
+      "instantProfiler": {
+        "evaluations": 19968,
+        "totalMs": 37822.131,
+        "solarPositionMs": 32.458,
+        "terrainMs": 24.705,
+        "buildingsMs": 37535.838,
+        "vegetationMs": 84.896,
+        "finalizeMs": 127.443,
+        "belowAstronomicalHorizonCount": 0,
+        "terrainCheckNeededCount": 0,
+        "terrainBlockedCount": 0,
+        "secondarySkippedByTerrainCount": 0,
+        "buildingsEvaluatorCalls": 19968,
+        "vegetationEvaluatorCalls": 19968
+      },
+      "shadowEvaluators": {
+        "buildingCalls": 19968,
+        "buildingBlockedCalls": 15835,
+        "buildingCheckedObstaclesTotal": 45024,
+        "vegetationCalls": 19968,
+        "vegetationBlockedCalls": 17005,
+        "vegetationCheckedSamplesTotal": 284149
+      },
+      "blockerOutcomes": {
+        "terrainBlocked": 0,
+        "buildingsBlocked": 15835,
+        "vegetationBlocked": 17005,
+        "sunny": 2408
+      },
+      "adaptiveHorizon": {
+        "strategy": "shared",
+        "warnings": []
+      }
+    }
+  ]
+}

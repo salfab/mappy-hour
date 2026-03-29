@@ -1,0 +1,146 @@
+{
+  "generatedAt": "2026-03-16T18:13:58.693Z",
+  "params": {
+    "region": "lausanne",
+    "date": "2026-03-08",
+    "timezone": "Europe/Zurich",
+    "sampleEveryMinutes": 15,
+    "gridStepMeters": 5,
+    "startLocalTime": "08:00",
+    "endLocalTime": "12:00",
+    "tileCount": 1,
+    "maxPointsPerTile": 0
+  },
+  "modelVersionHash": "66c0c0159b44f2de",
+  "buildingsShadowMode": "detailed",
+  "selectedTileIds": [
+    "e2538000_n1152250_s250"
+  ],
+  "aggregate": {
+    "counts": {
+      "gridPoints": 2497,
+      "outdoorPoints": 1248,
+      "indoorPoints": 1249,
+      "utcSamples": 16,
+      "evaluations": 19968
+    },
+    "phaseMs": {
+      "adaptiveHorizon": 19270.647,
+      "sharedSources": 2686.06,
+      "pointContexts": 38.841,
+      "evaluations": 40114.971,
+      "total": 62119.37
+    },
+    "phasePctOfTotal": {
+      "adaptiveHorizon": 31.022,
+      "sharedSources": 4.324,
+      "pointContexts": 0.063,
+      "evaluations": 64.577
+    },
+    "instantProfilerMs": {
+      "total": 40059.123,
+      "solarPosition": 34.966,
+      "terrain": 32.383,
+      "buildings": 39758.046,
+      "vegetation": 78.305,
+      "finalize": 133.106
+    },
+    "instantProfilerPctOfEvalLoop": {
+      "total": 99.861,
+      "solarPosition": 0.087,
+      "terrain": 0.081,
+      "buildings": 99.11,
+      "vegetation": 0.195,
+      "finalize": 0.332
+    },
+    "instantProfilerCounts": {
+      "evaluations": 19968,
+      "totalMs": 40059.123,
+      "solarPositionMs": 34.966,
+      "terrainMs": 32.383,
+      "buildingsMs": 39758.046,
+      "vegetationMs": 78.305,
+      "finalizeMs": 133.106,
+      "belowAstronomicalHorizonCount": 0,
+      "terrainCheckNeededCount": 0,
+      "terrainBlockedCount": 0,
+      "secondarySkippedByTerrainCount": 0,
+      "buildingsEvaluatorCalls": 19968,
+      "vegetationEvaluatorCalls": 19968
+    },
+    "perEvaluationMicros": {
+      "total": 2006.166,
+      "solarPosition": 1.751,
+      "terrain": 1.622,
+      "buildings": 1991.088,
+      "vegetation": 3.922,
+      "finalize": 6.666
+    },
+    "shadowEvaluators": {
+      "buildingCalls": 19968,
+      "buildingBlockedCalls": 15024,
+      "buildingCheckedObstaclesTotal": 46414,
+      "vegetationCalls": 19968,
+      "vegetationBlockedCalls": 17005,
+      "vegetationCheckedSamplesTotal": 284149,
+      "avgCheckedObstaclesPerBuildingCall": 2.324,
+      "avgCheckedVegetationSamplesPerCall": 14.23
+    },
+    "blockerOutcomes": {
+      "terrainBlocked": 0,
+      "buildingsBlocked": 15024,
+      "vegetationBlocked": 17005,
+      "sunny": 2854
+    }
+  },
+  "tiles": [
+    {
+      "tileId": "e2538000_n1152250_s250",
+      "gridPointCount": 2497,
+      "outdoorPointCount": 1248,
+      "indoorPointCount": 1249,
+      "sampleCount": 16,
+      "evaluationCount": 19968,
+      "phaseMs": {
+        "adaptiveHorizon": 19270.647,
+        "sharedSources": 2686.06,
+        "pointContexts": 38.841,
+        "evaluations": 40114.971,
+        "total": 62119.37
+      },
+      "instantProfiler": {
+        "evaluations": 19968,
+        "totalMs": 40059.123,
+        "solarPositionMs": 34.966,
+        "terrainMs": 32.383,
+        "buildingsMs": 39758.046,
+        "vegetationMs": 78.305,
+        "finalizeMs": 133.106,
+        "belowAstronomicalHorizonCount": 0,
+        "terrainCheckNeededCount": 0,
+        "terrainBlockedCount": 0,
+        "secondarySkippedByTerrainCount": 0,
+        "buildingsEvaluatorCalls": 19968,
+        "vegetationEvaluatorCalls": 19968
+      },
+      "shadowEvaluators": {
+        "buildingCalls": 19968,
+        "buildingBlockedCalls": 15024,
+        "buildingCheckedObstaclesTotal": 46414,
+        "vegetationCalls": 19968,
+        "vegetationBlockedCalls": 17005,
+        "vegetationCheckedSamplesTotal": 284149
+      },
+      "blockerOutcomes": {
+        "terrainBlocked": 0,
+        "buildingsBlocked": 15024,
+        "vegetationBlocked": 17005,
+        "sunny": 2854
+      },
+      "adaptiveHorizon": {
+        "strategy": "shared",
+        "warnings": []
+      }
+    }
+  ]
+}

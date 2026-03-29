@@ -1,0 +1,163 @@
+{
+  "generatedAt": "2026-03-16T20:29:32.414Z",
+  "params": {
+    "region": "lausanne",
+    "date": "2026-03-08",
+    "timezone": "Europe/Zurich",
+    "sampleEveryMinutes": 15,
+    "gridStepMeters": 5,
+    "startLocalTime": "08:00",
+    "endLocalTime": "12:00",
+    "tileCount": 1,
+    "maxPointsPerTile": 0
+  },
+  "modelVersionHash": "66c0c0159b44f2de",
+  "buildingsShadowMode": "(default)",
+  "selectedTileIds": [
+    "e2538000_n1152250_s250"
+  ],
+  "aggregate": {
+    "counts": {
+      "gridPoints": 2497,
+      "outdoorPoints": 1248,
+      "indoorPoints": 1249,
+      "utcSamples": 16,
+      "evaluations": 19968
+    },
+    "phaseMs": {
+      "adaptiveHorizon": 17548.597,
+      "sharedSources": 2545.008,
+      "pointContexts": 41.393,
+      "evaluations": 30793.439,
+      "total": 50938.125
+    },
+    "phasePctOfTotal": {
+      "adaptiveHorizon": 34.451,
+      "sharedSources": 4.996,
+      "pointContexts": 0.081,
+      "evaluations": 60.453
+    },
+    "instantProfilerMs": {
+      "total": 30743.443,
+      "solarPosition": 32.946,
+      "terrain": 29.804,
+      "buildings": 30452.663,
+      "vegetation": 77.792,
+      "finalize": 127.778
+    },
+    "instantProfilerPctOfEvalLoop": {
+      "total": 99.838,
+      "solarPosition": 0.107,
+      "terrain": 0.097,
+      "buildings": 98.893,
+      "vegetation": 0.253,
+      "finalize": 0.415
+    },
+    "instantProfilerCounts": {
+      "evaluations": 19968,
+      "totalMs": 30743.443,
+      "solarPositionMs": 32.946,
+      "terrainMs": 29.804,
+      "buildingsMs": 30452.663,
+      "vegetationMs": 77.792,
+      "finalizeMs": 127.778,
+      "belowAstronomicalHorizonCount": 0,
+      "terrainCheckNeededCount": 0,
+      "terrainBlockedCount": 0,
+      "secondarySkippedByTerrainCount": 0,
+      "buildingsEvaluatorCalls": 19968,
+      "vegetationEvaluatorCalls": 19968
+    },
+    "perEvaluationMicros": {
+      "total": 1539.636,
+      "solarPosition": 1.65,
+      "terrain": 1.493,
+      "buildings": 1525.073,
+      "vegetation": 3.896,
+      "finalize": 6.399
+    },
+    "shadowEvaluators": {
+      "buildingCalls": 19968,
+      "buildingBlockedCalls": 15024,
+      "buildingCheckedObstaclesTotal": 41538,
+      "buildingTwoLevelCalls": 19968,
+      "buildingTwoLevelBasePassesTotal": 21817,
+      "buildingTwoLevelNearThresholdHits": 16873,
+      "buildingDetailedVerifierCalls": 16873,
+      "buildingDetailedVerifierBlocked": 15024,
+      "buildingDetailedVerifierCleared": 1849,
+      "buildingTwoLevelFallbackPasses": 0,
+      "vegetationCalls": 19968,
+      "vegetationBlockedCalls": 17005,
+      "vegetationCheckedSamplesTotal": 284149,
+      "avgCheckedObstaclesPerBuildingCall": 2.08,
+      "avgTwoLevelBasePassesPerBuildingCall": 1.093,
+      "detailedVerifierCallRatePerBuildingCall": 0.845,
+      "detailedVerifierClearRate": 0.11,
+      "avgCheckedVegetationSamplesPerCall": 14.23
+    },
+    "blockerOutcomes": {
+      "terrainBlocked": 0,
+      "buildingsBlocked": 15024,
+      "vegetationBlocked": 17005,
+      "sunny": 2854
+    }
+  },
+  "tiles": [
+    {
+      "tileId": "e2538000_n1152250_s250",
+      "gridPointCount": 2497,
+      "outdoorPointCount": 1248,
+      "indoorPointCount": 1249,
+      "sampleCount": 16,
+      "evaluationCount": 19968,
+      "phaseMs": {
+        "adaptiveHorizon": 17548.597,
+        "sharedSources": 2545.008,
+        "pointContexts": 41.393,
+        "evaluations": 30793.439,
+        "total": 50938.125
+      },
+      "instantProfiler": {
+        "evaluations": 19968,
+        "totalMs": 30743.443,
+        "solarPositionMs": 32.946,
+        "terrainMs": 29.804,
+        "buildingsMs": 30452.663,
+        "vegetationMs": 77.792,
+        "finalizeMs": 127.778,
+        "belowAstronomicalHorizonCount": 0,
+        "terrainCheckNeededCount": 0,
+        "terrainBlockedCount": 0,
+        "secondarySkippedByTerrainCount": 0,
+        "buildingsEvaluatorCalls": 19968,
+        "vegetationEvaluatorCalls": 19968
+      },
+      "shadowEvaluators": {
+        "buildingCalls": 19968,
+        "buildingBlockedCalls": 15024,
+        "buildingCheckedObstaclesTotal": 41538,
+        "buildingTwoLevelCalls": 19968,
+        "buildingTwoLevelBasePassesTotal": 21817,
+        "buildingTwoLevelNearThresholdHits": 16873,
+        "buildingDetailedVerifierCalls": 16873,
+        "buildingDetailedVerifierBlocked": 15024,
+        "buildingDetailedVerifierCleared": 1849,
+        "buildingTwoLevelFallbackPasses": 0,
+        "vegetationCalls": 19968,
+        "vegetationBlockedCalls": 17005,
+        "vegetationCheckedSamplesTotal": 284149
+      },
+      "blockerOutcomes": {
+        "terrainBlocked": 0,
+        "buildingsBlocked": 15024,
+        "vegetationBlocked": 17005,
+        "sunny": 2854
+      },
+      "adaptiveHorizon": {
+        "strategy": "shared",
+        "warnings": []
+      }
+    }
+  ]
+}

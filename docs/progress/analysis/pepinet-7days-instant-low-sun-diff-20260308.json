@@ -1,0 +1,182 @@
+{
+  "generatedAt": "2026-03-17T04:55:09.179Z",
+  "assumptions": {
+    "startDate": "2026-03-08",
+    "days": 7,
+    "timezone": "Europe/Zurich",
+    "gridStepMeters": 1,
+    "bbox": {
+      "minLon": 6.63195,
+      "minLat": 46.5213,
+      "maxLon": 6.63255,
+      "maxLat": 46.5217
+    },
+    "localTimes": [
+      "14:00"
+    ],
+    "notableThresholdPct": 5
+  },
+  "preparedPoints": 1091,
+  "perTime": {
+    "14:00": {
+      "days": [
+        {
+          "date": "2026-03-08",
+          "utcTime": "2026-03-08T13:00:00.000Z",
+          "pointCount": 1091,
+          "sunnyCount": 43,
+          "sunnyRatioPct": 3.941,
+          "terrainBlockedCount": 0,
+          "buildingsBlockedCount": 1025,
+          "vegetationBlockedCount": 1040
+        },
+        {
+          "date": "2026-03-09",
+          "utcTime": "2026-03-09T13:00:00.000Z",
+          "pointCount": 1091,
+          "sunnyCount": 44,
+          "sunnyRatioPct": 4.033,
+          "terrainBlockedCount": 0,
+          "buildingsBlockedCount": 1018,
+          "vegetationBlockedCount": 1041
+        },
+        {
+          "date": "2026-03-10",
+          "utcTime": "2026-03-10T13:00:00.000Z",
+          "pointCount": 1091,
+          "sunnyCount": 50,
+          "sunnyRatioPct": 4.583,
+          "terrainBlockedCount": 0,
+          "buildingsBlockedCount": 1013,
+          "vegetationBlockedCount": 1037
+        },
+        {
+          "date": "2026-03-11",
+          "utcTime": "2026-03-11T13:00:00.000Z",
+          "pointCount": 1091,
+          "sunnyCount": 55,
+          "sunnyRatioPct": 5.041,
+          "terrainBlockedCount": 0,
+          "buildingsBlockedCount": 1007,
+          "vegetationBlockedCount": 1032
+        },
+        {
+          "date": "2026-03-12",
+          "utcTime": "2026-03-12T13:00:00.000Z",
+          "pointCount": 1091,
+          "sunnyCount": 58,
+          "sunnyRatioPct": 5.316,
+          "terrainBlockedCount": 0,
+          "buildingsBlockedCount": 1004,
+          "vegetationBlockedCount": 1028
+        },
+        {
+          "date": "2026-03-13",
+          "utcTime": "2026-03-13T13:00:00.000Z",
+          "pointCount": 1091,
+          "sunnyCount": 63,
+          "sunnyRatioPct": 5.775,
+          "terrainBlockedCount": 0,
+          "buildingsBlockedCount": 996,
+          "vegetationBlockedCount": 1024
+        },
+        {
+          "date": "2026-03-14",
+          "utcTime": "2026-03-14T13:00:00.000Z",
+          "pointCount": 1091,
+          "sunnyCount": 69,
+          "sunnyRatioPct": 6.324,
+          "terrainBlockedCount": 0,
+          "buildingsBlockedCount": 992,
+          "vegetationBlockedCount": 1017
+        }
+      ],
+      "dayToDay": [
+        {
+          "fromDate": "2026-03-08",
+          "toDate": "2026-03-09",
+          "localTime": "14:00",
+          "sharedPointCount": 1091,
+          "changedIsSunny": 7,
+          "changedIsSunnyRatioPct": 0.642,
+          "becameSunny": 4,
+          "becameShaded": 3,
+          "changedTerrainBlocked": 0,
+          "changedBuildingsBlocked": 7,
+          "changedVegetationBlocked": 7,
+          "sunnyCountDelta": 1
+        },
+        {
+          "fromDate": "2026-03-09",
+          "toDate": "2026-03-10",
+          "localTime": "14:00",
+          "sharedPointCount": 1091,
+          "changedIsSunny": 8,
+          "changedIsSunnyRatioPct": 0.733,
+          "becameSunny": 7,
+          "becameShaded": 1,
+          "changedTerrainBlocked": 0,
+          "changedBuildingsBlocked": 7,
+          "changedVegetationBlocked": 6,
+          "sunnyCountDelta": 6
+        },
+        {
+          "fromDate": "2026-03-10",
+          "toDate": "2026-03-11",
+          "localTime": "14:00",
+          "sharedPointCount": 1091,
+          "changedIsSunny": 5,
+          "changedIsSunnyRatioPct": 0.458,
+          "becameSunny": 5,
+          "becameShaded": 0,
+          "changedTerrainBlocked": 0,
+          "changedBuildingsBlocked": 6,
+          "changedVegetationBlocked": 5,
+          "sunnyCountDelta": 5
+        },
+        {
+          "fromDate": "2026-03-11",
+          "toDate": "2026-03-12",
+          "localTime": "14:00",
+          "sharedPointCount": 1091,
+          "changedIsSunny": 3,
+          "changedIsSunnyRatioPct": 0.275,
+          "becameSunny": 3,
+          "becameShaded": 0,
+          "changedTerrainBlocked": 0,
+          "changedBuildingsBlocked": 3,
+          "changedVegetationBlocked": 4,
+          "sunnyCountDelta": 3
+        },
+        {
+          "fromDate": "2026-03-12",
+          "toDate": "2026-03-13",
+          "localTime": "14:00",
+          "sharedPointCount": 1091,
+          "changedIsSunny": 5,
+          "changedIsSunnyRatioPct": 0.458,
+          "becameSunny": 5,
+          "becameShaded": 0,
+          "changedTerrainBlocked": 0,
+          "changedBuildingsBlocked": 10,
+          "changedVegetationBlocked": 6,
+          "sunnyCountDelta": 5
+        },
+        {
+          "fromDate": "2026-03-13",
+          "toDate": "2026-03-14",
+          "localTime": "14:00",
+          "sharedPointCount": 1091,
+          "changedIsSunny": 8,
+          "changedIsSunnyRatioPct": 0.733,
+          "becameSunny": 7,
+          "becameShaded": 1,
+          "changedTerrainBlocked": 0,
+          "changedBuildingsBlocked": 6,
+          "changedVegetationBlocked": 11,
+          "sunnyCountDelta": 6
+        }
+      ]
+    }
+  }
+}

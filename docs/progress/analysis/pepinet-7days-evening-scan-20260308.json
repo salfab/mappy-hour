@@ -1,0 +1,919 @@
+{
+  "generatedAt": "2026-03-17T04:54:03.164Z",
+  "assumptions": {
+    "startDate": "2026-03-08",
+    "days": 7,
+    "timezone": "Europe/Zurich",
+    "bbox": {
+      "minLon": 6.63195,
+      "minLat": 46.5213,
+      "maxLon": 6.63255,
+      "maxLat": 46.5217
+    },
+    "gridStepMeters": 1,
+    "scanStartLocalTime": "14:00",
+    "slotMinutes": 15,
+    "thresholdsPct": [
+      50,
+      40,
+      30,
+      20,
+      10
+    ]
+  },
+  "preparedOutdoorPoints": 1091,
+  "recommendedFixedComparisonSlot": null,
+  "days": [
+    {
+      "date": "2026-03-08",
+      "sunsetLocal": "18:29",
+      "slots": [
+        {
+          "localTime": "14:00",
+          "sunnyCount": 43,
+          "sunnyRatioPct": 3.941
+        },
+        {
+          "localTime": "14:15",
+          "sunnyCount": 42,
+          "sunnyRatioPct": 3.85
+        },
+        {
+          "localTime": "14:30",
+          "sunnyCount": 39,
+          "sunnyRatioPct": 3.575
+        },
+        {
+          "localTime": "14:45",
+          "sunnyCount": 35,
+          "sunnyRatioPct": 3.208
+        },
+        {
+          "localTime": "15:00",
+          "sunnyCount": 31,
+          "sunnyRatioPct": 2.841
+        },
+        {
+          "localTime": "15:15",
+          "sunnyCount": 27,
+          "sunnyRatioPct": 2.475
+        },
+        {
+          "localTime": "15:30",
+          "sunnyCount": 23,
+          "sunnyRatioPct": 2.108
+        },
+        {
+          "localTime": "15:45",
+          "sunnyCount": 13,
+          "sunnyRatioPct": 1.192
+        },
+        {
+          "localTime": "16:00",
+          "sunnyCount": 4,
+          "sunnyRatioPct": 0.367
+        },
+        {
+          "localTime": "16:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        }
+      ],
+      "lastMomentByThreshold": [
+        {
+          "thresholdPct": 50,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 40,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 30,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 20,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 10,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        }
+      ]
+    },
+    {
+      "date": "2026-03-09",
+      "sunsetLocal": "18:31",
+      "slots": [
+        {
+          "localTime": "14:00",
+          "sunnyCount": 44,
+          "sunnyRatioPct": 4.033
+        },
+        {
+          "localTime": "14:15",
+          "sunnyCount": 49,
+          "sunnyRatioPct": 4.491
+        },
+        {
+          "localTime": "14:30",
+          "sunnyCount": 43,
+          "sunnyRatioPct": 3.941
+        },
+        {
+          "localTime": "14:45",
+          "sunnyCount": 40,
+          "sunnyRatioPct": 3.666
+        },
+        {
+          "localTime": "15:00",
+          "sunnyCount": 33,
+          "sunnyRatioPct": 3.025
+        },
+        {
+          "localTime": "15:15",
+          "sunnyCount": 33,
+          "sunnyRatioPct": 3.025
+        },
+        {
+          "localTime": "15:30",
+          "sunnyCount": 24,
+          "sunnyRatioPct": 2.2
+        },
+        {
+          "localTime": "15:45",
+          "sunnyCount": 17,
+          "sunnyRatioPct": 1.558
+        },
+        {
+          "localTime": "16:00",
+          "sunnyCount": 6,
+          "sunnyRatioPct": 0.55
+        },
+        {
+          "localTime": "16:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        }
+      ],
+      "lastMomentByThreshold": [
+        {
+          "thresholdPct": 50,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 40,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 30,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 20,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 10,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        }
+      ]
+    },
+    {
+      "date": "2026-03-10",
+      "sunsetLocal": "18:32",
+      "slots": [
+        {
+          "localTime": "14:00",
+          "sunnyCount": 50,
+          "sunnyRatioPct": 4.583
+        },
+        {
+          "localTime": "14:15",
+          "sunnyCount": 54,
+          "sunnyRatioPct": 4.95
+        },
+        {
+          "localTime": "14:30",
+          "sunnyCount": 47,
+          "sunnyRatioPct": 4.308
+        },
+        {
+          "localTime": "14:45",
+          "sunnyCount": 46,
+          "sunnyRatioPct": 4.216
+        },
+        {
+          "localTime": "15:00",
+          "sunnyCount": 38,
+          "sunnyRatioPct": 3.483
+        },
+        {
+          "localTime": "15:15",
+          "sunnyCount": 35,
+          "sunnyRatioPct": 3.208
+        },
+        {
+          "localTime": "15:30",
+          "sunnyCount": 29,
+          "sunnyRatioPct": 2.658
+        },
+        {
+          "localTime": "15:45",
+          "sunnyCount": 22,
+          "sunnyRatioPct": 2.016
+        },
+        {
+          "localTime": "16:00",
+          "sunnyCount": 8,
+          "sunnyRatioPct": 0.733
+        },
+        {
+          "localTime": "16:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        }
+      ],
+      "lastMomentByThreshold": [
+        {
+          "thresholdPct": 50,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 40,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 30,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 20,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 10,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        }
+      ]
+    },
+    {
+      "date": "2026-03-11",
+      "sunsetLocal": "18:33",
+      "slots": [
+        {
+          "localTime": "14:00",
+          "sunnyCount": 55,
+          "sunnyRatioPct": 5.041
+        },
+        {
+          "localTime": "14:15",
+          "sunnyCount": 56,
+          "sunnyRatioPct": 5.133
+        },
+        {
+          "localTime": "14:30",
+          "sunnyCount": 52,
+          "sunnyRatioPct": 4.766
+        },
+        {
+          "localTime": "14:45",
+          "sunnyCount": 49,
+          "sunnyRatioPct": 4.491
+        },
+        {
+          "localTime": "15:00",
+          "sunnyCount": 41,
+          "sunnyRatioPct": 3.758
+        },
+        {
+          "localTime": "15:15",
+          "sunnyCount": 38,
+          "sunnyRatioPct": 3.483
+        },
+        {
+          "localTime": "15:30",
+          "sunnyCount": 33,
+          "sunnyRatioPct": 3.025
+        },
+        {
+          "localTime": "15:45",
+          "sunnyCount": 23,
+          "sunnyRatioPct": 2.108
+        },
+        {
+          "localTime": "16:00",
+          "sunnyCount": 10,
+          "sunnyRatioPct": 0.917
+        },
+        {
+          "localTime": "16:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        }
+      ],
+      "lastMomentByThreshold": [
+        {
+          "thresholdPct": 50,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 40,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 30,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 20,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 10,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        }
+      ]
+    },
+    {
+      "date": "2026-03-12",
+      "sunsetLocal": "18:35",
+      "slots": [
+        {
+          "localTime": "14:00",
+          "sunnyCount": 58,
+          "sunnyRatioPct": 5.316
+        },
+        {
+          "localTime": "14:15",
+          "sunnyCount": 62,
+          "sunnyRatioPct": 5.683
+        },
+        {
+          "localTime": "14:30",
+          "sunnyCount": 60,
+          "sunnyRatioPct": 5.5
+        },
+        {
+          "localTime": "14:45",
+          "sunnyCount": 50,
+          "sunnyRatioPct": 4.583
+        },
+        {
+          "localTime": "15:00",
+          "sunnyCount": 45,
+          "sunnyRatioPct": 4.125
+        },
+        {
+          "localTime": "15:15",
+          "sunnyCount": 41,
+          "sunnyRatioPct": 3.758
+        },
+        {
+          "localTime": "15:30",
+          "sunnyCount": 34,
+          "sunnyRatioPct": 3.116
+        },
+        {
+          "localTime": "15:45",
+          "sunnyCount": 26,
+          "sunnyRatioPct": 2.383
+        },
+        {
+          "localTime": "16:00",
+          "sunnyCount": 11,
+          "sunnyRatioPct": 1.008
+        },
+        {
+          "localTime": "16:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        }
+      ],
+      "lastMomentByThreshold": [
+        {
+          "thresholdPct": 50,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 40,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 30,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 20,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 10,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        }
+      ]
+    },
+    {
+      "date": "2026-03-13",
+      "sunsetLocal": "18:36",
+      "slots": [
+        {
+          "localTime": "14:00",
+          "sunnyCount": 63,
+          "sunnyRatioPct": 5.775
+        },
+        {
+          "localTime": "14:15",
+          "sunnyCount": 64,
+          "sunnyRatioPct": 5.866
+        },
+        {
+          "localTime": "14:30",
+          "sunnyCount": 65,
+          "sunnyRatioPct": 5.958
+        },
+        {
+          "localTime": "14:45",
+          "sunnyCount": 56,
+          "sunnyRatioPct": 5.133
+        },
+        {
+          "localTime": "15:00",
+          "sunnyCount": 51,
+          "sunnyRatioPct": 4.675
+        },
+        {
+          "localTime": "15:15",
+          "sunnyCount": 48,
+          "sunnyRatioPct": 4.4
+        },
+        {
+          "localTime": "15:30",
+          "sunnyCount": 41,
+          "sunnyRatioPct": 3.758
+        },
+        {
+          "localTime": "15:45",
+          "sunnyCount": 29,
+          "sunnyRatioPct": 2.658
+        },
+        {
+          "localTime": "16:00",
+          "sunnyCount": 12,
+          "sunnyRatioPct": 1.1
+        },
+        {
+          "localTime": "16:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        }
+      ],
+      "lastMomentByThreshold": [
+        {
+          "thresholdPct": 50,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 40,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 30,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 20,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 10,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        }
+      ]
+    },
+    {
+      "date": "2026-03-14",
+      "sunsetLocal": "18:38",
+      "slots": [
+        {
+          "localTime": "14:00",
+          "sunnyCount": 69,
+          "sunnyRatioPct": 6.324
+        },
+        {
+          "localTime": "14:15",
+          "sunnyCount": 67,
+          "sunnyRatioPct": 6.141
+        },
+        {
+          "localTime": "14:30",
+          "sunnyCount": 69,
+          "sunnyRatioPct": 6.324
+        },
+        {
+          "localTime": "14:45",
+          "sunnyCount": 64,
+          "sunnyRatioPct": 5.866
+        },
+        {
+          "localTime": "15:00",
+          "sunnyCount": 57,
+          "sunnyRatioPct": 5.225
+        },
+        {
+          "localTime": "15:15",
+          "sunnyCount": 52,
+          "sunnyRatioPct": 4.766
+        },
+        {
+          "localTime": "15:30",
+          "sunnyCount": 44,
+          "sunnyRatioPct": 4.033
+        },
+        {
+          "localTime": "15:45",
+          "sunnyCount": 33,
+          "sunnyRatioPct": 3.025
+        },
+        {
+          "localTime": "16:00",
+          "sunnyCount": 14,
+          "sunnyRatioPct": 1.283
+        },
+        {
+          "localTime": "16:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "16:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "17:45",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:00",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:15",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        },
+        {
+          "localTime": "18:30",
+          "sunnyCount": 0,
+          "sunnyRatioPct": 0
+        }
+      ],
+      "lastMomentByThreshold": [
+        {
+          "thresholdPct": 50,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 40,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 30,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 20,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        },
+        {
+          "thresholdPct": 10,
+          "lastLocalTime": null,
+          "sunnyRatioPct": null
+        }
+      ]
+    }
+  ]
+}
