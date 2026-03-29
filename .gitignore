@@ -54,3 +54,6 @@ next-env.d.ts
 /.tmp/**
 /.tmp-*.*
 /scripts/tmp/**
+
+# local assistant/session metadata
+.claude/
