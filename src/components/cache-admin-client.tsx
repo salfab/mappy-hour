@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
 import { PrecomputeTileSelectorMap, type TileSelectorBbox, type TileSelectorEntry } from "@/components/precompute-tile-selector-map";
 
@@ -36,6 +37,12 @@ interface CacheRunSummary {
   runDir: string;
   sizeBytes: number;
   fileCount: number | null;
+  bbox?: {
+    minLon: number;
+    minLat: number;
+    maxLon: number;
+    maxLat: number;
+  };
 }
 
 interface CacheRunsOverview {
@@ -151,6 +158,15 @@ interface CachePrecomputeTilesResponse {
   bbox: TileSelectorBbox;
   tileCount: number;
   tiles: TileSelectorEntry[];
+}
+
+interface CacheRunDetailResponse {
+  bbox: {
+    minLon: number;
+    minLat: number;
+    maxLon: number;
+    maxLat: number;
+  };
 }
 
 function formatBytes(value: number): string {
@@ -347,9 +363,92 @@ function buildRunsUrl(filters: {
   return `/api/admin/cache/runs?${params.toString()}`;
 }
 
+function buildRunFocusHref(run: CacheRunSummary): string {
+  const params = new URLSearchParams({
+    focusRunRegion: run.region,
+    focusRunModel: run.modelVersionHash,
+    focusRunDate: run.date,
+    focusRunGrid: String(run.gridStepMeters),
+    focusRunSample: String(run.sampleEveryMinutes),
+    focusRunStart: run.startLocalTime,
+    focusRunEnd: run.endLocalTime,
+  });
+  return `/?${params.toString()}`;
+}
+
+function formatCoordinate(value: number): string {
+  return value.toFixed(6);
+}
+
+function formatDistanceMeters(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "n/a";
+  }
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(2)} km`;
+  }
+  return `${Math.round(value)} m`;
+}
+
+function computeBboxMetrics(bbox: CacheRunSummary["bbox"]) {
+  if (!bbox) {
+    return null;
+  }
+  const centerLat = (bbox.minLat + bbox.maxLat) / 2;
+  const centerLon = (bbox.minLon + bbox.maxLon) / 2;
+  const latSpanDeg = Math.max(0, bbox.maxLat - bbox.minLat);
+  const lonSpanDeg = Math.max(0, bbox.maxLon - bbox.minLon);
+  const metersPerDegreeLat = 111_320;
+  const metersPerDegreeLon =
+    metersPerDegreeLat * Math.max(Math.cos((centerLat * Math.PI) / 180), 0.01);
+  const heightMeters = latSpanDeg * metersPerDegreeLat;
+  const widthMeters = lonSpanDeg * metersPerDegreeLon;
+  const areaKm2 = (Math.max(0, widthMeters) * Math.max(0, heightMeters)) / 1_000_000;
+
+  return {
+    centerLat,
+    centerLon,
+    widthMeters,
+    heightMeters,
+    areaKm2,
+  };
+}
+
+function buildRunDeepLinkHref(
+  run: CacheRunSummary,
+  bboxOverride?: CacheRunSummary["bbox"],
+): string {
+  const bbox = bboxOverride ?? run.bbox;
+  if (!bbox) {
+    return buildRunFocusHref(run);
+  }
+  const params = new URLSearchParams({
+    mode: "daily",
+    date: run.date,
+    dailyStart: run.startLocalTime,
+    dailyEnd: run.endLocalTime,
+    grid: String(run.gridStepMeters),
+    sample: String(run.sampleEveryMinutes),
+    bias: "0",
+    basemap: "satellite",
+    ignoreVegetation: "0",
+    showSunny: "1",
+    showShadow: "1",
+    showBuildings: "1",
+    showTerrain: "1",
+    showVegetation: "1",
+    showHeatmap: "1",
+    showPlaces: "1",
+    autoRun: "1",
+    bbox: `${formatCoordinate(bbox.minLon)},${formatCoordinate(bbox.minLat)},${formatCoordinate(bbox.maxLon)},${formatCoordinate(bbox.maxLat)}`,
+  });
+  return `/?${params.toString()}`;
+}
+
 export function CacheAdminClient() {
   const lastJobStreamSignalAtRef = useRef<number>(0);
   const precomputeTilesRequestIdRef = useRef(0);
+  const loadingRunBboxDirsRef = useRef(new Set<string>());
   const [region, setRegion] = useState<RegionFilter>("all");
   const [modelVersionHash, setModelVersionHash] = useState("");
   const [startDate, setStartDate] = useState("");
@@ -369,6 +468,10 @@ export function CacheAdminClient() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [jobsLoadError, setJobsLoadError] = useState<string | null>(null);
+  const [copiedLinkRunDir, setCopiedLinkRunDir] = useState<string | null>(null);
+  const [runBboxByDir, setRunBboxByDir] = useState<
+    Record<string, NonNullable<CacheRunSummary["bbox"]>>
+  >({});
   const [jobActionPending, setJobActionPending] = useState<{
     jobId: string;
     action: "cancel" | "resume";
@@ -482,6 +585,82 @@ export function CacheAdminClient() {
   useEffect(() => {
     void refreshRuns();
   }, [refreshRuns]);
+
+  useEffect(() => {
+    if (!overview?.runs?.length) {
+      return;
+    }
+
+    const missingRuns = overview.runs.filter(
+      (run) =>
+        !run.bbox &&
+        !runBboxByDir[run.runDir] &&
+        !loadingRunBboxDirsRef.current.has(run.runDir),
+    );
+    if (missingRuns.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    const loadMissingRunBboxes = async () => {
+      const fetchedEntries: Array<{
+        runDir: string;
+        bbox: NonNullable<CacheRunSummary["bbox"]>;
+      }> = [];
+
+      await Promise.all(
+        missingRuns.map(async (run) => {
+          loadingRunBboxDirsRef.current.add(run.runDir);
+          try {
+            const params = new URLSearchParams({
+              region: run.region,
+              modelVersionHash: run.modelVersionHash,
+              date: run.date,
+              gridStepMeters: String(run.gridStepMeters),
+              sampleEveryMinutes: String(run.sampleEveryMinutes),
+              startLocalTime: run.startLocalTime,
+              endLocalTime: run.endLocalTime,
+            });
+            const response = await fetch(
+              `/api/admin/cache/runs/detail?${params.toString()}`,
+              { cache: "no-store" },
+            );
+            if (!response.ok) {
+              return;
+            }
+            const payload = (await response.json()) as CacheRunDetailResponse;
+            if (!payload?.bbox) {
+              return;
+            }
+            fetchedEntries.push({
+              runDir: run.runDir,
+              bbox: payload.bbox,
+            });
+          } catch {
+            // Ignore bbox fallback errors; the row still has focus-run link.
+          } finally {
+            loadingRunBboxDirsRef.current.delete(run.runDir);
+          }
+        }),
+      );
+
+      if (cancelled || fetchedEntries.length === 0) {
+        return;
+      }
+      setRunBboxByDir((current) => {
+        const next = { ...current };
+        for (const entry of fetchedEntries) {
+          next[entry.runDir] = entry.bbox;
+        }
+        return next;
+      });
+    };
+
+    void loadMissingRunBboxes();
+    return () => {
+      cancelled = true;
+    };
+  }, [overview?.runs, runBboxByDir]);
 
   const refreshActiveJobs = useCallback(async () => {
     try {
@@ -863,6 +1042,41 @@ export function CacheAdminClient() {
     [refreshActiveJobs, refreshRuns],
   );
 
+  const copyRunDeepLink = useCallback(
+    async (
+      run: CacheRunSummary,
+      bboxOverride?: CacheRunSummary["bbox"],
+    ) => {
+    const bbox = bboxOverride ?? run.bbox;
+    if (!bbox) {
+      setActionError(
+        "La bbox de ce run n'est pas disponible dans la réponse courante. Utilise le lien contour run.",
+      );
+      return;
+    }
+    try {
+      const href = buildRunDeepLinkHref(run, bbox);
+      const absoluteHref =
+        typeof window === "undefined" ? href : `${window.location.origin}${href}`;
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        await navigator.clipboard.writeText(absoluteHref);
+      } else {
+        throw new Error("Clipboard API indisponible.");
+      }
+      setCopiedLinkRunDir(run.runDir);
+      setActionError(null);
+      window.setTimeout(() => {
+        setCopiedLinkRunDir((current) => (current === run.runDir ? null : current));
+      }, 1800);
+    } catch (error) {
+      setActionError(
+        error instanceof Error
+          ? `Impossible de copier le lien: ${error.message}`
+          : "Impossible de copier le lien.",
+      );
+    }
+  }, []);
+
   useEffect(() => {
     const jobId = precomputeJob?.jobId;
     const status = precomputeJob?.status;
@@ -1228,43 +1442,94 @@ export function CacheAdminClient() {
                 <tr>
                   <th className="px-5 py-3">Run</th>
                   <th className="px-5 py-3">Paramètres</th>
+                  <th className="px-5 py-3">Zone &amp; liens</th>
                   <th className="px-5 py-3">État</th>
                   <th className="px-5 py-3">Stockage</th>
                 </tr>
               </thead>
               <tbody>
                 {overview?.runs.length ? (
-                  overview.runs.map((run) => (
-                    <tr key={run.runDir} className="border-t border-white/8 align-top">
-                      <td className="px-5 py-4">
-                        <p className="text-xs uppercase tracking-[0.2em] text-sky-200">
-                          {run.region}
-                        </p>
-                        <p className="font-medium">{run.date}</p>
-                        <p className="font-mono text-xs text-slate-400">{run.modelVersionHash}</p>
-                      </td>
-                      <td className="px-5 py-4">
-                        <p>{run.startLocalTime} - {run.endLocalTime}</p>
-                        <p>grille {run.gridStepMeters} m</p>
-                        <p>pas temps {run.sampleEveryMinutes} min</p>
-                      </td>
-                      <td className="px-5 py-4">
-                        <p>{run.complete ? "complet" : "incomplet"}</p>
-                        <p>{run.tileCount} tuiles</p>
-                        <p>{run.failedTileCount} échecs</p>
-                      </td>
-                      <td className="px-5 py-4">
-                        <p>{run.sizeBytes === null ? "n/a" : formatBytes(run.sizeBytes)}</p>
-                        <p>
-                          {run.fileCount === null ? "n/a" : `${run.fileCount} fichiers`}
-                        </p>
-                        <p className="text-xs text-slate-500">{formatDateTime(run.generatedAt)}</p>
-                      </td>
-                    </tr>
-                  ))
+                  overview.runs.map((run) => {
+                    const effectiveBbox = run.bbox ?? runBboxByDir[run.runDir];
+                    const bboxMetrics = computeBboxMetrics(effectiveBbox);
+                    const hasBbox = Boolean(effectiveBbox && bboxMetrics);
+                    return (
+                      <tr key={run.runDir} className="border-t border-white/8 align-top">
+                        <td className="px-5 py-4">
+                          <p className="text-xs uppercase tracking-[0.2em] text-sky-200">
+                            {run.region}
+                          </p>
+                          <p className="font-medium">{run.date}</p>
+                          <p className="font-mono text-xs text-slate-400">{run.modelVersionHash}</p>
+                        </td>
+                        <td className="px-5 py-4">
+                          <p>{run.startLocalTime} - {run.endLocalTime}</p>
+                          <p>grille {run.gridStepMeters} m</p>
+                          <p>pas temps {run.sampleEveryMinutes} min</p>
+                        </td>
+                        <td className="px-5 py-4">
+                          {hasBbox && effectiveBbox && bboxMetrics ? (
+                            <>
+                              <p className="text-xs text-slate-300">
+                                bbox [{formatCoordinate(effectiveBbox.minLon)}, {formatCoordinate(effectiveBbox.minLat)}] → [{formatCoordinate(effectiveBbox.maxLon)}, {formatCoordinate(effectiveBbox.maxLat)}]
+                              </p>
+                              <p className="text-xs text-slate-300">
+                                centre {formatCoordinate(bboxMetrics.centerLat)}, {formatCoordinate(bboxMetrics.centerLon)}
+                              </p>
+                              <p className="text-xs text-slate-300">
+                                ~{formatDistanceMeters(bboxMetrics.widthMeters)} × {formatDistanceMeters(bboxMetrics.heightMeters)} ({bboxMetrics.areaKm2.toFixed(3)} km²)
+                              </p>
+                            </>
+                          ) : (
+                            <p className="text-xs text-amber-100">
+                              Zone non fournie par l&apos;API runs (bbox absente).
+                            </p>
+                          )}
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <Link
+                              href={buildRunFocusHref(run)}
+                              className="inline-flex rounded-full border border-sky-300/30 px-3 py-1 text-xs text-sky-100 transition hover:border-sky-200/70 hover:bg-sky-500/20"
+                            >
+                              Ouvrir (contour run)
+                            </Link>
+                            <Link
+                              href={buildRunDeepLinkHref(run, effectiveBbox)}
+                              className={`inline-flex rounded-full border px-3 py-1 text-xs transition ${
+                                hasBbox
+                                  ? "border-cyan-300/30 text-cyan-100 hover:border-cyan-200/70 hover:bg-cyan-500/20"
+                                  : "pointer-events-none border-slate-600/40 text-slate-400"
+                              }`}
+                            >
+                              Ouvrir (deeplink zone)
+                            </Link>
+                            <button
+                              type="button"
+                              onClick={() => void copyRunDeepLink(run, effectiveBbox)}
+                              disabled={!hasBbox}
+                              className="inline-flex rounded-full border border-white/20 px-3 py-1 text-xs text-slate-100 transition hover:border-white/40 hover:bg-white/10"
+                            >
+                              {copiedLinkRunDir === run.runDir ? "Lien copié" : "Copier lien"}
+                            </button>
+                          </div>
+                        </td>
+                        <td className="px-5 py-4">
+                          <p>{run.complete ? "complet" : "incomplet"}</p>
+                          <p>{run.tileCount} tuiles</p>
+                          <p>{run.failedTileCount} échecs</p>
+                        </td>
+                        <td className="px-5 py-4">
+                          <p>{run.sizeBytes === null ? "n/a" : formatBytes(run.sizeBytes)}</p>
+                          <p>
+                            {run.fileCount === null ? "n/a" : `${run.fileCount} fichiers`}
+                          </p>
+                          <p className="text-xs text-slate-500">{formatDateTime(run.generatedAt)}</p>
+                        </td>
+                      </tr>
+                    );
+                  })
                 ) : (
                   <tr>
-                    <td colSpan={4} className="px-5 py-8 text-center text-slate-400">
+                    <td colSpan={5} className="px-5 py-8 text-center text-slate-400">
                       Aucun run de cache ne correspond aux filtres actuels.
                     </td>
                   </tr>

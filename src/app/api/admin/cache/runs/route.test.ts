@@ -54,6 +54,12 @@ describe("GET /api/admin/cache/runs", () => {
           runDir: "C:\\cache\\run-a",
           sizeBytes: 2048,
           fileCount: 17,
+          bbox: {
+            minLon: 6.6,
+            minLat: 46.5,
+            maxLon: 6.7,
+            maxLat: 46.6,
+          },
         },
       ],
     });

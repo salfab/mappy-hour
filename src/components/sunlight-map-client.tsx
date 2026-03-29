@@ -9,6 +9,7 @@ import type {
   Map as LeafletMap,
   TileLayer,
 } from "leaflet";
+import type { CacheRunDetailResponse } from "@/lib/admin/cache-run-detail";
 
 type AreaMode = "instant" | "daily";
 type BaseMapStyle = "map" | "satellite";
@@ -289,10 +290,99 @@ const MAP_MAX_NATIVE_ZOOM = 19;
 const MAP_MAX_ZOOM = 23;
 const MAP_VIEW_STORAGE_KEY = "mappy-hour:map:view";
 const UI_PARAMS_STORAGE_KEY = "mappy-hour:ui:params";
+const FOCUS_RUN_QUERY_KEYS = {
+  region: "focusRunRegion",
+  modelVersionHash: "focusRunModel",
+  date: "focusRunDate",
+  gridStepMeters: "focusRunGrid",
+  sampleEveryMinutes: "focusRunSample",
+  startLocalTime: "focusRunStart",
+  endLocalTime: "focusRunEnd",
+} as const;
+const DEEP_LINK_QUERY_KEYS = {
+  mode: "mode",
+  date: "date",
+  localTime: "time",
+  dailyStartLocalTime: "dailyStart",
+  dailyEndLocalTime: "dailyEnd",
+  gridStepMeters: "grid",
+  sampleEveryMinutes: "sample",
+  buildingHeightBiasMeters: "bias",
+  baseMapStyle: "basemap",
+  ignoreVegetationShadow: "ignoreVegetation",
+  showSunny: "showSunny",
+  showShadow: "showShadow",
+  showBuildings: "showBuildings",
+  showTerrain: "showTerrain",
+  showVegetation: "showVegetation",
+  showHeatmap: "showHeatmap",
+  showPlaces: "showPlaces",
+  bbox: "bbox",
+  center: "center",
+  zoom: "zoom",
+  autoRun: "autoRun",
+} as const;
 type XY = [number, number];
 type Ring = XY[];
 type Polygon = Ring[];
 type MultiPolygon = Polygon[];
+
+interface FocusRunParams {
+  region: "lausanne" | "nyon";
+  modelVersionHash: string;
+  date: string;
+  gridStepMeters: number;
+  sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
+}
+
+interface FocusRunOverlayState {
+  token: string;
+  bbox: {
+    minLon: number;
+    minLat: number;
+    maxLon: number;
+    maxLat: number;
+  };
+  outlineRings: Array<Array<[number, number]>>;
+}
+
+interface DeepLinkMapState {
+  bbox?: {
+    minLon: number;
+    minLat: number;
+    maxLon: number;
+    maxLat: number;
+  };
+  center?: {
+    lat: number;
+    lon: number;
+  };
+  zoom?: number;
+}
+
+interface DeepLinkParams {
+  mode?: AreaMode;
+  date?: string;
+  localTime?: string;
+  dailyStartLocalTime?: string;
+  dailyEndLocalTime?: string;
+  gridStepMeters?: number;
+  sampleEveryMinutes?: number;
+  buildingHeightBiasMeters?: number;
+  baseMapStyle?: BaseMapStyle;
+  ignoreVegetationShadow?: boolean;
+  showSunny?: boolean;
+  showShadow?: boolean;
+  showBuildings?: boolean;
+  showTerrain?: boolean;
+  showVegetation?: boolean;
+  showHeatmap?: boolean;
+  showPlaces?: boolean;
+  map?: DeepLinkMapState;
+  autoRun: boolean;
+}
 
 interface ParsedPoint {
   row: number;
@@ -471,6 +561,264 @@ function persistUiParams(params: StoredUiParams): void {
   } catch {
     // Ignore storage errors to avoid blocking interactions.
   }
+}
+
+function parseBoundedInteger(
+  value: string | null,
+  bounds: { min: number; max: number },
+): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) {
+    return null;
+  }
+  if (parsed < bounds.min || parsed > bounds.max) {
+    return null;
+  }
+  return parsed;
+}
+
+function parseBoundedFloat(
+  value: string | null,
+  bounds: { min: number; max: number },
+): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  if (parsed < bounds.min || parsed > bounds.max) {
+    return null;
+  }
+  return parsed;
+}
+
+function parseQueryBoolean(value: string | null): boolean | null {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return null;
+}
+
+function parseBboxQuery(value: string | null): DeepLinkMapState["bbox"] | null {
+  if (!value) {
+    return null;
+  }
+  const parts = value.split(",").map((part) => Number(part.trim()));
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) {
+    return null;
+  }
+  const [minLon, minLat, maxLon, maxLat] = parts;
+  if (
+    minLon < -180 ||
+    maxLon > 180 ||
+    minLat < -90 ||
+    maxLat > 90 ||
+    minLon >= maxLon ||
+    minLat >= maxLat
+  ) {
+    return null;
+  }
+  return { minLon, minLat, maxLon, maxLat };
+}
+
+function parseCenterQuery(value: string | null): DeepLinkMapState["center"] | null {
+  if (!value) {
+    return null;
+  }
+  const parts = value.split(",").map((part) => Number(part.trim()));
+  if (parts.length !== 2 || parts.some((part) => !Number.isFinite(part))) {
+    return null;
+  }
+  const [lat, lon] = parts;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+    return null;
+  }
+  return { lat, lon };
+}
+
+function parseDeepLinkParams(searchParams: URLSearchParams): DeepLinkParams | null {
+  const parsed: DeepLinkParams = {
+    autoRun: parseQueryBoolean(searchParams.get(DEEP_LINK_QUERY_KEYS.autoRun)) ?? false,
+  };
+  let hasValue = parsed.autoRun;
+
+  const mode = searchParams.get(DEEP_LINK_QUERY_KEYS.mode);
+  if (mode === "instant" || mode === "daily") {
+    parsed.mode = mode;
+    hasValue = true;
+  }
+
+  const date = searchParams.get(DEEP_LINK_QUERY_KEYS.date);
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    parsed.date = date;
+    hasValue = true;
+  }
+
+  const localTime = searchParams.get(DEEP_LINK_QUERY_KEYS.localTime);
+  if (localTime && /^\d{2}:\d{2}$/.test(localTime)) {
+    parsed.localTime = localTime;
+    hasValue = true;
+  }
+
+  const dailyStartLocalTime = searchParams.get(DEEP_LINK_QUERY_KEYS.dailyStartLocalTime);
+  if (dailyStartLocalTime && /^\d{2}:\d{2}$/.test(dailyStartLocalTime)) {
+    parsed.dailyStartLocalTime = dailyStartLocalTime;
+    hasValue = true;
+  }
+
+  const dailyEndLocalTime = searchParams.get(DEEP_LINK_QUERY_KEYS.dailyEndLocalTime);
+  if (dailyEndLocalTime && /^\d{2}:\d{2}$/.test(dailyEndLocalTime)) {
+    parsed.dailyEndLocalTime = dailyEndLocalTime;
+    hasValue = true;
+  }
+
+  const gridStepMeters = parseBoundedInteger(
+    searchParams.get(DEEP_LINK_QUERY_KEYS.gridStepMeters),
+    { min: 1, max: 2000 },
+  );
+  if (gridStepMeters !== null) {
+    parsed.gridStepMeters = gridStepMeters;
+    hasValue = true;
+  }
+
+  const sampleEveryMinutes = parseBoundedInteger(
+    searchParams.get(DEEP_LINK_QUERY_KEYS.sampleEveryMinutes),
+    { min: 1, max: 60 },
+  );
+  if (sampleEveryMinutes !== null) {
+    parsed.sampleEveryMinutes = sampleEveryMinutes;
+    hasValue = true;
+  }
+
+  const buildingHeightBiasMeters = parseBoundedFloat(
+    searchParams.get(DEEP_LINK_QUERY_KEYS.buildingHeightBiasMeters),
+    { min: -20, max: 20 },
+  );
+  if (buildingHeightBiasMeters !== null) {
+    parsed.buildingHeightBiasMeters = buildingHeightBiasMeters;
+    hasValue = true;
+  }
+
+  const baseMapStyle = searchParams.get(DEEP_LINK_QUERY_KEYS.baseMapStyle);
+  if (baseMapStyle === "map" || baseMapStyle === "satellite") {
+    parsed.baseMapStyle = baseMapStyle;
+    hasValue = true;
+  }
+
+  const booleanMappings: Array<[keyof DeepLinkParams, string]> = [
+    ["ignoreVegetationShadow", DEEP_LINK_QUERY_KEYS.ignoreVegetationShadow],
+    ["showSunny", DEEP_LINK_QUERY_KEYS.showSunny],
+    ["showShadow", DEEP_LINK_QUERY_KEYS.showShadow],
+    ["showBuildings", DEEP_LINK_QUERY_KEYS.showBuildings],
+    ["showTerrain", DEEP_LINK_QUERY_KEYS.showTerrain],
+    ["showVegetation", DEEP_LINK_QUERY_KEYS.showVegetation],
+    ["showHeatmap", DEEP_LINK_QUERY_KEYS.showHeatmap],
+    ["showPlaces", DEEP_LINK_QUERY_KEYS.showPlaces],
+  ];
+  for (const [targetKey, queryKey] of booleanMappings) {
+    const parsedBoolean = parseQueryBoolean(searchParams.get(queryKey));
+    if (parsedBoolean !== null) {
+      (parsed[targetKey] as boolean | undefined) = parsedBoolean;
+      hasValue = true;
+    }
+  }
+
+  const mapBbox = parseBboxQuery(searchParams.get(DEEP_LINK_QUERY_KEYS.bbox));
+  const mapCenter = parseCenterQuery(searchParams.get(DEEP_LINK_QUERY_KEYS.center));
+  const mapZoom = parseBoundedInteger(searchParams.get(DEEP_LINK_QUERY_KEYS.zoom), {
+    min: 0,
+    max: MAP_MAX_ZOOM,
+  });
+  if (mapBbox || mapCenter || mapZoom !== null) {
+    parsed.map = {};
+    if (mapBbox) {
+      parsed.map.bbox = mapBbox;
+    }
+    if (mapCenter) {
+      parsed.map.center = mapCenter;
+    }
+    if (mapZoom !== null) {
+      parsed.map.zoom = mapZoom;
+    }
+    hasValue = true;
+  }
+
+  return hasValue ? parsed : null;
+}
+
+function deepLinkToken(params: DeepLinkParams): string {
+  return JSON.stringify(params);
+}
+
+function parseFocusRunParams(
+  searchParams: URLSearchParams,
+): FocusRunParams | null {
+  const region = searchParams.get(FOCUS_RUN_QUERY_KEYS.region);
+  const modelVersionHash = searchParams.get(FOCUS_RUN_QUERY_KEYS.modelVersionHash);
+  const date = searchParams.get(FOCUS_RUN_QUERY_KEYS.date);
+  const gridStepMeters = parseBoundedInteger(
+    searchParams.get(FOCUS_RUN_QUERY_KEYS.gridStepMeters),
+    { min: 1, max: 2000 },
+  );
+  const sampleEveryMinutes = parseBoundedInteger(
+    searchParams.get(FOCUS_RUN_QUERY_KEYS.sampleEveryMinutes),
+    { min: 1, max: 60 },
+  );
+  const startLocalTime = searchParams.get(FOCUS_RUN_QUERY_KEYS.startLocalTime);
+  const endLocalTime = searchParams.get(FOCUS_RUN_QUERY_KEYS.endLocalTime);
+
+  if (region !== "lausanne" && region !== "nyon") {
+    return null;
+  }
+  if (!modelVersionHash || modelVersionHash.trim().length === 0) {
+    return null;
+  }
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return null;
+  }
+  if (!startLocalTime || !/^\d{2}:\d{2}$/.test(startLocalTime)) {
+    return null;
+  }
+  if (!endLocalTime || !/^\d{2}:\d{2}$/.test(endLocalTime)) {
+    return null;
+  }
+  if (gridStepMeters === null || sampleEveryMinutes === null) {
+    return null;
+  }
+
+  return {
+    region,
+    modelVersionHash: modelVersionHash.trim(),
+    date,
+    gridStepMeters,
+    sampleEveryMinutes,
+    startLocalTime,
+    endLocalTime,
+  };
+}
+
+function focusRunToken(params: FocusRunParams): string {
+  return [
+    params.region,
+    params.modelVersionHash,
+    params.date,
+    params.gridStepMeters,
+    params.sampleEveryMinutes,
+    params.startLocalTime,
+    params.endLocalTime,
+  ].join("|");
 }
 
 function decodeBase64ToBytes(base64: string): Uint8Array {
@@ -656,18 +1004,27 @@ function zurichNowDateAndTime(): { date: string; time: string } {
 }
 
 function parseGridPointId(id: string): { row: number; col: number } | null {
-  const match = /^r(\d+)c(\d+)$/.exec(id);
-  if (!match) {
+  const gridMatch = /^r(-?\d+)c(-?\d+)$/.exec(id);
+  if (gridMatch) {
+    const row = Number(gridMatch[1]);
+    const col = Number(gridMatch[2]);
+    if (Number.isInteger(row) && Number.isInteger(col)) {
+      return { row, col };
+    }
     return null;
   }
 
-  const row = Number(match[1]);
-  const col = Number(match[2]);
-  if (!Number.isInteger(row) || !Number.isInteger(col)) {
-    return null;
+  // Cached tile artifacts use canonical LV95 indices (`ix{col}-iy{row}`).
+  const lv95Match = /^ix(-?\d+)-iy(-?\d+)$/.exec(id);
+  if (lv95Match) {
+    const col = Number(lv95Match[1]);
+    const row = Number(lv95Match[2]);
+    if (Number.isInteger(row) && Number.isInteger(col)) {
+      return { row, col };
+    }
   }
 
-  return { row, col };
+  return null;
 }
 
 function buildBoundsFromCenters(centers: number[], fallbackHalfStep: number): number[] {
@@ -1289,12 +1646,16 @@ export function SunlightMapClient() {
   const vegetationLayerRef = useRef<LayerGroup | null>(null);
   const buildingsLayerRef = useRef<LayerGroup | null>(null);
   const terrainLayerRef = useRef<LayerGroup | null>(null);
+  const cacheFocusLayerRef = useRef<LayerGroup | null>(null);
   const heatmapLayerRef = useRef<LayerGroup | null>(null);
   const placesLayerRef = useRef<LayerGroup | null>(null);
   const clickHighlightLayerRef = useRef<LayerGroup | null>(null);
   const lastBuildingsRef = useRef<BuildingsAreaApiResponse | null>(null);
   const leafletModuleRef = useRef<typeof import("leaflet") | null>(null);
   const placesRequestIdRef = useRef(0);
+  const focusRunLoadedTokenRef = useRef<string | null>(null);
+  const focusRunAutoAppliedTokenRef = useRef<string | null>(null);
+  const deepLinkMapAppliedTokenRef = useRef<string | null>(null);
   const clickDebugParamsRef = useRef<{
     mode: AreaMode;
     date: string;
@@ -1348,6 +1709,34 @@ export function SunlightMapClient() {
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showPlaces, setShowPlaces] = useState(true);
   const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
+  const [isMapReady, setIsMapReady] = useState(false);
+  const [focusRunParamsFromUrl, setFocusRunParamsFromUrl] =
+    useState<FocusRunParams | null>(null);
+  const [deepLinkParamsFromUrl, setDeepLinkParamsFromUrl] =
+    useState<DeepLinkParams | null>(null);
+  const [focusRunOverlay, setFocusRunOverlay] = useState<FocusRunOverlayState | null>(
+    null,
+  );
+  const [focusRunMessage, setFocusRunMessage] = useState<string | null>(null);
+  const [focusRunMessageIsError, setFocusRunMessageIsError] = useState(false);
+  const activeFocusRunParams = focusRunParamsFromUrl;
+  const activeFocusRunToken = useMemo(
+    () => (activeFocusRunParams ? focusRunToken(activeFocusRunParams) : null),
+    [activeFocusRunParams],
+  );
+  const activeDeepLinkToken = useMemo(
+    () => (deepLinkParamsFromUrl ? deepLinkToken(deepLinkParamsFromUrl) : null),
+    [deepLinkParamsFromUrl],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const searchParams = new URLSearchParams(window.location.search);
+    setFocusRunParamsFromUrl(parseFocusRunParams(searchParams));
+    setDeepLinkParamsFromUrl(parseDeepLinkParams(searchParams));
+  }, []);
 
   useEffect(() => {
     lastBuildingsRef.current = lastBuildings;
@@ -1894,8 +2283,63 @@ export function SunlightMapClient() {
       setShowHeatmap(stored.showHeatmap);
       setShowPlaces(stored.showPlaces);
     }
+
+    if (deepLinkParamsFromUrl) {
+      if (deepLinkParamsFromUrl.mode) {
+        setMode(deepLinkParamsFromUrl.mode);
+      }
+      if (deepLinkParamsFromUrl.date) {
+        setDate(deepLinkParamsFromUrl.date);
+      }
+      if (deepLinkParamsFromUrl.localTime) {
+        setLocalTime(deepLinkParamsFromUrl.localTime);
+      }
+      if (deepLinkParamsFromUrl.dailyStartLocalTime) {
+        setDailyStartLocalTime(deepLinkParamsFromUrl.dailyStartLocalTime);
+      }
+      if (deepLinkParamsFromUrl.dailyEndLocalTime) {
+        setDailyEndLocalTime(deepLinkParamsFromUrl.dailyEndLocalTime);
+      }
+      if (typeof deepLinkParamsFromUrl.gridStepMeters === "number") {
+        setGridStepMeters(deepLinkParamsFromUrl.gridStepMeters);
+      }
+      if (typeof deepLinkParamsFromUrl.sampleEveryMinutes === "number") {
+        setSampleEveryMinutes(deepLinkParamsFromUrl.sampleEveryMinutes);
+      }
+      if (typeof deepLinkParamsFromUrl.buildingHeightBiasMeters === "number") {
+        setBuildingHeightBiasMeters(deepLinkParamsFromUrl.buildingHeightBiasMeters);
+      }
+      if (deepLinkParamsFromUrl.baseMapStyle) {
+        setBaseMapStyle(deepLinkParamsFromUrl.baseMapStyle);
+      }
+      if (typeof deepLinkParamsFromUrl.ignoreVegetationShadow === "boolean") {
+        setIgnoreVegetationShadow(deepLinkParamsFromUrl.ignoreVegetationShadow);
+      }
+      if (typeof deepLinkParamsFromUrl.showSunny === "boolean") {
+        setShowSunny(deepLinkParamsFromUrl.showSunny);
+      }
+      if (typeof deepLinkParamsFromUrl.showShadow === "boolean") {
+        setShowShadow(deepLinkParamsFromUrl.showShadow);
+      }
+      if (typeof deepLinkParamsFromUrl.showBuildings === "boolean") {
+        setShowBuildings(deepLinkParamsFromUrl.showBuildings);
+      }
+      if (typeof deepLinkParamsFromUrl.showTerrain === "boolean") {
+        setShowTerrain(deepLinkParamsFromUrl.showTerrain);
+      }
+      if (typeof deepLinkParamsFromUrl.showVegetation === "boolean") {
+        setShowVegetation(deepLinkParamsFromUrl.showVegetation);
+      }
+      if (typeof deepLinkParamsFromUrl.showHeatmap === "boolean") {
+        setShowHeatmap(deepLinkParamsFromUrl.showHeatmap);
+      }
+      if (typeof deepLinkParamsFromUrl.showPlaces === "boolean") {
+        setShowPlaces(deepLinkParamsFromUrl.showPlaces);
+      }
+    }
+
     setUiParamsHydrated(true);
-  }, []);
+  }, [deepLinkParamsFromUrl]);
 
   useEffect(() => {
     if (!uiParamsHydrated) {
@@ -1941,6 +2385,97 @@ export function SunlightMapClient() {
     showPlaces,
     uiParamsHydrated,
   ]);
+
+  useEffect(() => {
+    if (!uiParamsHydrated) {
+      return;
+    }
+
+    if (!activeFocusRunParams || !activeFocusRunToken) {
+      setFocusRunOverlay(null);
+      setFocusRunMessage(null);
+      setFocusRunMessageIsError(false);
+      return;
+    }
+
+    if (focusRunLoadedTokenRef.current === activeFocusRunToken) {
+      return;
+    }
+    focusRunLoadedTokenRef.current = activeFocusRunToken;
+
+    let cancelled = false;
+    const loadFocusRun = async () => {
+      setFocusRunMessage("Chargement du contexte cache sélectionné...");
+      setFocusRunMessageIsError(false);
+      try {
+        const params = new URLSearchParams({
+          region: activeFocusRunParams.region,
+          modelVersionHash: activeFocusRunParams.modelVersionHash,
+          date: activeFocusRunParams.date,
+          gridStepMeters: String(activeFocusRunParams.gridStepMeters),
+          sampleEveryMinutes: String(activeFocusRunParams.sampleEveryMinutes),
+          startLocalTime: activeFocusRunParams.startLocalTime,
+          endLocalTime: activeFocusRunParams.endLocalTime,
+        });
+        const response = await fetch(
+          `/api/admin/cache/runs/detail?${params.toString()}`,
+          {
+            cache: "no-store",
+          },
+        );
+        const payload = (await response.json()) as
+          | CacheRunDetailResponse
+          | { error?: string; details?: string };
+
+        if (!response.ok) {
+          const asError = payload as { error?: string; details?: string };
+          throw new Error(
+            asError.details ??
+              asError.error ??
+              `HTTP ${response.status} while loading cache run detail.`,
+          );
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        const detail = payload as CacheRunDetailResponse;
+        setMode("daily");
+        setDate(detail.run.date);
+        setLocalTime(detail.run.startLocalTime);
+        setDailyStartLocalTime(detail.run.startLocalTime);
+        setDailyEndLocalTime(detail.run.endLocalTime);
+        setGridStepMeters(detail.run.gridStepMeters);
+        setSampleEveryMinutes(detail.run.sampleEveryMinutes);
+        setFocusRunOverlay({
+          token: activeFocusRunToken,
+          bbox: detail.bbox,
+          outlineRings: detail.outlineRings,
+        });
+        setFocusRunMessage(
+          `Run cache chargé (${detail.run.region}, ${detail.run.date}, grille ${detail.run.gridStepMeters}m, pas ${detail.run.sampleEveryMinutes}min).`,
+        );
+        setFocusRunMessageIsError(false);
+      } catch (loadError) {
+        if (cancelled) {
+          return;
+        }
+        setFocusRunOverlay(null);
+        setFocusRunMessage(
+          loadError instanceof Error
+            ? loadError.message
+            : "Impossible de charger le détail du run cache sélectionné.",
+        );
+        setFocusRunMessageIsError(true);
+      }
+    };
+
+    void loadFocusRun();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeFocusRunParams, activeFocusRunToken, uiParamsHydrated]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1996,10 +2531,12 @@ export function SunlightMapClient() {
       vegetationLayerRef.current = L.layerGroup().addTo(map);
       buildingsLayerRef.current = L.layerGroup().addTo(map);
       terrainLayerRef.current = L.layerGroup().addTo(map);
+      cacheFocusLayerRef.current = L.layerGroup().addTo(map);
       heatmapLayerRef.current = L.layerGroup().addTo(map);
       placesLayerRef.current = L.layerGroup().addTo(map);
       clickHighlightLayerRef.current = L.layerGroup().addTo(map);
       mapRef.current = map;
+      setIsMapReady(true);
 
       map.on("click", (event: LeafletMouseEvent) => {
         const message = `Lat ${event.latlng.lat.toFixed(5)}, Lon ${event.latlng.lng.toFixed(5)}`;
@@ -2047,6 +2584,7 @@ export function SunlightMapClient() {
       vegetationLayerRef.current = null;
       buildingsLayerRef.current = null;
       terrainLayerRef.current = null;
+      cacheFocusLayerRef.current = null;
       heatmapLayerRef.current = null;
       placesLayerRef.current = null;
       clickHighlightLayerRef.current = null;
@@ -2056,6 +2594,7 @@ export function SunlightMapClient() {
         active: "map",
       };
       leafletModuleRef.current = null;
+      setIsMapReady(false);
     };
   }, [runPointClickDiagnostics]);
 
@@ -2363,6 +2902,49 @@ export function SunlightMapClient() {
   ]);
 
   useEffect(() => {
+    if (!isMapReady) {
+      return;
+    }
+    const L = leafletModuleRef.current;
+    const focusLayer = cacheFocusLayerRef.current;
+    if (!L || !focusLayer) {
+      return;
+    }
+
+    focusLayer.clearLayers();
+    if (!focusRunOverlay) {
+      return;
+    }
+
+    const { bbox, outlineRings } = focusRunOverlay;
+    for (const ring of outlineRings) {
+      if (ring.length < 2) {
+        continue;
+      }
+      L.polyline(ring, {
+        color: "#22d3ee",
+        weight: 2.2,
+        opacity: 0.9,
+        dashArray: "10 6",
+      }).addTo(focusLayer);
+    }
+
+    L.rectangle(
+      [
+        [bbox.minLat, bbox.minLon],
+        [bbox.maxLat, bbox.maxLon],
+      ],
+      {
+        color: "#67e8f9",
+        weight: 1.2,
+        opacity: 0.5,
+        fillOpacity: 0,
+        dashArray: "4 4",
+      },
+    ).addTo(focusLayer);
+  }, [focusRunOverlay, isMapReady]);
+
+  useEffect(() => {
     if (mode === "daily") {
       if (instantStreamRef.current) {
         instantCancelledRef.current = true;
@@ -2497,7 +3079,9 @@ export function SunlightMapClient() {
     ],
   );
 
-  const runAreaCalculation = useCallback(async () => {
+  const runAreaCalculation = useCallback(async (options?: {
+    bboxOverride?: [number, number, number, number];
+  }) => {
     const map = mapRef.current;
     if (!map) {
       return;
@@ -2508,13 +3092,22 @@ export function SunlightMapClient() {
       return;
     }
 
-    const bounds = map.getBounds();
-    const bbox: [number, number, number, number] = [
-      Number(bounds.getWest().toFixed(6)),
-      Number(bounds.getSouth().toFixed(6)),
-      Number(bounds.getEast().toFixed(6)),
-      Number(bounds.getNorth().toFixed(6)),
-    ];
+    const bbox: [number, number, number, number] = options?.bboxOverride
+      ? [
+          Number(options.bboxOverride[0].toFixed(6)),
+          Number(options.bboxOverride[1].toFixed(6)),
+          Number(options.bboxOverride[2].toFixed(6)),
+          Number(options.bboxOverride[3].toFixed(6)),
+        ]
+      : (() => {
+          const bounds = map.getBounds();
+          return [
+            Number(bounds.getWest().toFixed(6)),
+            Number(bounds.getSouth().toFixed(6)),
+            Number(bounds.getEast().toFixed(6)),
+            Number(bounds.getNorth().toFixed(6)),
+          ];
+        })();
 
     if (timelineStreamRef.current) {
       timelineCancelledRef.current = true;
@@ -2614,7 +3207,7 @@ export function SunlightMapClient() {
         timezone: "Europe/Zurich",
         localTime,
         gridStepMeters: String(gridStepMeters),
-        maxPoints: "3000",
+        maxPoints: "6000",
         buildingHeightBiasMeters: String(buildingHeightBiasMeters),
       });
 
@@ -2812,7 +3405,7 @@ export function SunlightMapClient() {
       endLocalTime: dailyEndLocalTime,
       sampleEveryMinutes: String(sampleEveryMinutes),
       gridStepMeters: String(gridStepMeters),
-      maxPoints: "3000",
+      maxPoints: "6000",
       buildingHeightBiasMeters: String(buildingHeightBiasMeters),
     });
 
@@ -2976,6 +3569,93 @@ export function SunlightMapClient() {
     localTime,
     mode,
     sampleEveryMinutes,
+  ]);
+
+  useEffect(() => {
+    if (!focusRunOverlay || !isMapReady) {
+      return;
+    }
+
+    if (focusRunAutoAppliedTokenRef.current === focusRunOverlay.token) {
+      return;
+    }
+
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+
+    map.fitBounds(
+      [
+        [focusRunOverlay.bbox.minLat, focusRunOverlay.bbox.minLon],
+        [focusRunOverlay.bbox.maxLat, focusRunOverlay.bbox.maxLon],
+      ],
+      { padding: [28, 28], animate: false },
+    );
+    focusRunAutoAppliedTokenRef.current = focusRunOverlay.token;
+    void runAreaCalculation();
+  }, [focusRunOverlay, isMapReady, runAreaCalculation]);
+
+  useEffect(() => {
+    if (!isMapReady || !uiParamsHydrated) {
+      return;
+    }
+    if (!deepLinkParamsFromUrl || !activeDeepLinkToken) {
+      return;
+    }
+    if (activeFocusRunParams) {
+      return;
+    }
+    if (deepLinkMapAppliedTokenRef.current === activeDeepLinkToken) {
+      return;
+    }
+
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+
+    const mapParams = deepLinkParamsFromUrl.map;
+    if (mapParams?.bbox) {
+      map.fitBounds(
+        [
+          [mapParams.bbox.minLat, mapParams.bbox.minLon],
+          [mapParams.bbox.maxLat, mapParams.bbox.maxLon],
+        ],
+        { padding: [28, 28], animate: false },
+      );
+      if (typeof mapParams.zoom === "number") {
+        map.setZoom(mapParams.zoom, { animate: false });
+      }
+    } else if (mapParams?.center) {
+      map.setView(
+        [mapParams.center.lat, mapParams.center.lon],
+        mapParams.zoom ?? map.getZoom(),
+        { animate: false },
+      );
+    } else if (typeof mapParams?.zoom === "number") {
+      map.setZoom(mapParams.zoom, { animate: false });
+    }
+
+    deepLinkMapAppliedTokenRef.current = activeDeepLinkToken;
+    if (deepLinkParamsFromUrl.autoRun) {
+      const bboxOverride = mapParams?.bbox
+        ? ([
+            mapParams.bbox.minLon,
+            mapParams.bbox.minLat,
+            mapParams.bbox.maxLon,
+            mapParams.bbox.maxLat,
+          ] as [number, number, number, number])
+        : undefined;
+      void runAreaCalculation({ bboxOverride });
+    }
+  }, [
+    activeDeepLinkToken,
+    activeFocusRunParams,
+    deepLinkParamsFromUrl,
+    isMapReady,
+    runAreaCalculation,
+    uiParamsHydrated,
   ]);
 
   return (
@@ -3267,6 +3947,17 @@ export function SunlightMapClient() {
       ) : null}
 
       <p className="text-sm text-slate-200">{helperText}</p>
+      {focusRunMessage ? (
+        <p
+          className={`rounded px-3 py-2 text-sm ${
+            focusRunMessageIsError
+              ? "border border-rose-300/40 bg-rose-500/20 text-rose-100"
+              : "border border-cyan-300/35 bg-cyan-500/10 text-cyan-100"
+          }`}
+        >
+          {focusRunMessage}
+        </p>
+      ) : null}
       {error ? (
         <p className="rounded border border-red-300/40 bg-red-500/20 px-3 py-2 text-sm text-red-100">
           {error}

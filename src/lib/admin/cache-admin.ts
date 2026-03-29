@@ -6,6 +6,7 @@ import { performance } from "node:perf_hooks";
 
 import {
   buildRegionTiles,
+  loadPrecomputedSunlightManifest,
   loadPrecomputedSunlightTile,
   writePrecomputedSunlightManifest,
   writePrecomputedSunlightTile,
@@ -17,6 +18,11 @@ import { getSunlightModelVersion, SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from 
 import { computeSunlightTileArtifact } from "@/lib/precompute/sunlight-tile-service";
 import { getSunlightCacheStorage } from "@/lib/precompute/sunlight-cache-storage";
 import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
+import { buildOutlineRingsFromTileIds } from "@/lib/admin/cache-run-outline";
+import type {
+  CacheRunCanonicalRef,
+  CacheRunDetailResponse,
+} from "@/lib/admin/cache-run-detail";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 
@@ -60,6 +66,12 @@ export interface CacheRunSummary {
   runDir: string;
   sizeBytes: number | null;
   fileCount: number | null;
+  bbox: {
+    minLon: number;
+    minLat: number;
+    maxLon: number;
+    maxLat: number;
+  };
 }
 
 export interface CacheRunsOverview {
@@ -84,6 +96,8 @@ export interface CacheRunsOverview {
   };
   runs: CacheRunSummary[];
 }
+
+export type CacheRunDetailRequest = CacheRunCanonicalRef;
 
 export interface CacheVerifyResult {
   generatedAt: string;
@@ -756,6 +770,54 @@ function toRunSummary(
     runDir,
     sizeBytes: null,
     fileCount: null,
+    bbox: manifest.bbox,
+  };
+}
+
+export async function getCacheRunDetail(
+  request: CacheRunDetailRequest,
+): Promise<CacheRunDetailResponse | null> {
+  const manifest = await loadPrecomputedSunlightManifest({
+    region: request.region,
+    modelVersionHash: request.modelVersionHash,
+    date: request.date,
+    gridStepMeters: request.gridStepMeters,
+    sampleEveryMinutes: request.sampleEveryMinutes,
+    startLocalTime: request.startLocalTime,
+    endLocalTime: request.endLocalTime,
+  });
+  if (!manifest) {
+    return null;
+  }
+
+  const run = toRunSummary(manifest);
+  const outlineRings = buildOutlineRingsFromTileIds(manifest.tileIds);
+  const fallbackBboxRing: Array<[number, number]> = [
+    [manifest.bbox.minLat, manifest.bbox.minLon],
+    [manifest.bbox.minLat, manifest.bbox.maxLon],
+    [manifest.bbox.maxLat, manifest.bbox.maxLon],
+    [manifest.bbox.maxLat, manifest.bbox.minLon],
+    [manifest.bbox.minLat, manifest.bbox.minLon],
+  ];
+
+  return {
+    run: {
+      region: run.region,
+      modelVersionHash: run.modelVersionHash,
+      date: run.date,
+      timezone: run.timezone,
+      gridStepMeters: run.gridStepMeters,
+      sampleEveryMinutes: run.sampleEveryMinutes,
+      startLocalTime: run.startLocalTime,
+      endLocalTime: run.endLocalTime,
+      tileSizeMeters: run.tileSizeMeters,
+      tileCount: run.tileCount,
+      failedTileCount: run.failedTileCount,
+      complete: run.complete,
+      generatedAt: run.generatedAt,
+    },
+    bbox: manifest.bbox,
+    outlineRings: outlineRings.length > 0 ? outlineRings : [fallbackBboxRing],
   };
 }
 
