@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>GPU Shadow Map Benchmark</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+
+// ── Config injected by Playwright ────────────────────────────────────
+// window.__GPU_BENCH_CONFIG = { buildings, sunPositions, gridPoints, shadowMapResolution, tileOrigin }
+
+async function run() {
+  const config = window.__GPU_BENCH_CONFIG;
+  if (!config) {
+    document.title = 'ERROR: no config';
+    return;
+  }
+
+  const perf = {};
+  const t0 = performance.now();
+
+  // ── Scene setup ──────────────────────────────────────────────────────
+  const { buildings, sunPositions, gridPoints, shadowMapResolution, tileOrigin } = config;
+  // tileOrigin = { x, y } used to center geometry near origin (avoid float precision)
+  const originX = tileOrigin.x;
+  const originY = tileOrigin.y;
+
+  const renderer = new THREE.WebGLRenderer({ antialias: false });
+  renderer.setSize(1, 1); // offscreen
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+
+  // Ground plane (receives shadows)
+  const groundSize = 6000; // big enough for 2500m shadow cast
+  const groundGeo = new THREE.PlaneGeometry(groundSize, groundSize);
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // Ambient light (minimal, just to see something)
+  scene.add(new THREE.AmbientLight(0x404040, 0.5));
+
+  // ── Build meshes from building footprints ────────────────────────────
+  const meshT0 = performance.now();
+  let meshCount = 0;
+
+  for (const bldg of buildings) {
+    if (!bldg.footprint || bldg.footprint.length < 3 || bldg.height < 0.5) continue;
+
+    // Create extruded geometry from footprint
+    const shape = new THREE.Shape();
+    const fp = bldg.footprint;
+    shape.moveTo(fp[0].x - originX, fp[0].y - originY);
+    for (let i = 1; i < fp.length; i++) {
+      shape.lineTo(fp[i].x - originX, fp[i].y - originY);
+    }
+    shape.closePath();
+
+    const extrudeSettings = { depth: bldg.height, bevelEnabled: false };
+    const geom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x888888 });
+    const mesh = new THREE.Mesh(geom, mat);
+
+    // Position: Three.js extrude goes along Z, we rotate so buildings go up (Y)
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.y = bldg.minZ - (bldg.minZ); // base at ground level
+    mesh.castShadow = true;
+    mesh.receiveShadow = false;
+    scene.add(mesh);
+    meshCount++;
+  }
+  perf.meshLoadMs = performance.now() - meshT0;
+  perf.meshCount = meshCount;
+
+  // ── Camera (orthographic, top-down for shadow sampling) ──────────────
+  const cam = new THREE.OrthographicCamera(-500, 500, 500, -500, 0.1, 10000);
+  cam.position.set(0, 3000, 0);
+  cam.lookAt(0, 0, 0);
+
+  // ── Per-instant: set up directional light from sun, render, read shadow ─
+  const perRenderMs = [];
+  const perLookupMs = [];
+  const pointResults = new Map(); // "x,y" -> shadow array
+
+  for (const gp of gridPoints) {
+    pointResults.set(`${gp.x},${gp.y}`, []);
+  }
+
+  const renderT0 = performance.now();
+
+  for (let si = 0; si < sunPositions.length; si++) {
+    const sun = sunPositions[si];
+    if (sun.altitudeDeg <= 0) {
+      // Night: everything in shadow
+      for (const gp of gridPoints) {
+        pointResults.get(`${gp.x},${gp.y}`).push(1);
+      }
+      perRenderMs.push(0);
+      perLookupMs.push(0);
+      continue;
+    }
+
+    // ── Place directional light at sun position ──────────────────────
+    // azimuthDeg: 0=N, 90=E, 180=S, 270=W
+    // altitudeDeg: angle above horizon
+    const azRad = (sun.azimuthDeg * Math.PI) / 180;
+    const altRad = (sun.altitudeDeg * Math.PI) / 180;
+    const sunDist = 3000; // far enough for orthographic projection
+    const sunX = Math.sin(azRad) * Math.cos(altRad) * sunDist;
+    const sunZ = Math.cos(azRad) * Math.cos(altRad) * sunDist;
+    const sunY = Math.sin(altRad) * sunDist;
+
+    // Remove previous light if any
+    const oldLight = scene.getObjectByName('sunLight');
+    if (oldLight) scene.remove(oldLight);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+    dirLight.name = 'sunLight';
+    dirLight.position.set(sunX, sunY, sunZ);
+    dirLight.target.position.set(0, 0, 0);
+    dirLight.castShadow = true;
+
+    // Shadow camera needs to cover the whole tile area + shadow range
+    const shadowExtent = 2000;
+    dirLight.shadow.camera.left = -shadowExtent;
+    dirLight.shadow.camera.right = shadowExtent;
+    dirLight.shadow.camera.top = shadowExtent;
+    dirLight.shadow.camera.bottom = -shadowExtent;
+    dirLight.shadow.camera.near = 0.1;
+    dirLight.shadow.camera.far = sunDist * 2;
+    dirLight.shadow.mapSize.width = shadowMapResolution;
+    dirLight.shadow.mapSize.height = shadowMapResolution;
+    dirLight.shadow.bias = -0.001;
+    scene.add(dirLight);
+    scene.add(dirLight.target);
+
+    // ── Render ────────────────────────────────────────────────────────
+    const rT0 = performance.now();
+    renderer.render(scene, cam);
+    // Force GPU sync by reading a pixel
+    const gl = renderer.getContext();
+    const syncBuf = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, syncBuf);
+    const rMs = performance.now() - rT0;
+    perRenderMs.push(rMs);
+
+    // ── Read shadow map for each grid point ──────────────────────────
+    const lT0 = performance.now();
+    const shadowMap = dirLight.shadow.map;
+    if (!shadowMap) {
+      // Fallback: if shadow map didn't render, assume all sunny
+      for (const gp of gridPoints) {
+        pointResults.get(`${gp.x},${gp.y}`).push(0);
+      }
+      perLookupMs.push(0);
+      continue;
+    }
+
+    // Use raycasting approach: for each point, cast ray from sun to point,
+    // check if any building mesh intersects
+    const raycaster = new THREE.Raycaster();
+    const sunDir = new THREE.Vector3(-sunX, -sunY, -sunZ).normalize();
+    const castables = scene.children.filter((c) => c.castShadow);
+
+    for (const gp of gridPoints) {
+      const localX = gp.x - originX;
+      const localZ = -(gp.y - originY); // Three.js Z is flipped vs northing
+      const origin = new THREE.Vector3(
+        localX + sunX,
+        sunY,
+        localZ + sunZ,
+      );
+      raycaster.set(origin, sunDir);
+      raycaster.far = sunDist * 2;
+      const hits = raycaster.intersectObjects(castables, false);
+      pointResults.get(`${gp.x},${gp.y}`).push(hits.length > 0 ? 1 : 0);
+    }
+    const lMs = performance.now() - lT0;
+    perLookupMs.push(lMs);
+  }
+
+  const renderTotalMs = performance.now() - renderT0;
+  const lookupTotalMs = perLookupMs.reduce((a, b) => a + b, 0);
+  const renderOnlyTotalMs = perRenderMs.reduce((a, b) => a + b, 0);
+  const totalMs = performance.now() - t0;
+
+  // ── Assemble output ──────────────────────────────────────────────────
+  const pointResultsArr = gridPoints.map((gp) => ({
+    x: gp.x,
+    y: gp.y,
+    shadow: pointResults.get(`${gp.x},${gp.y}`),
+  }));
+
+  const gpuInfo = renderer.getContext().getParameter(
+    renderer.getContext().getExtension('WEBGL_debug_renderer_info')
+      ?.UNMASKED_RENDERER_WEBGL ?? 0
+  ) || 'unknown';
+
+  window.__GPU_BENCH_RESULT = {
+    gpuRenderer: gpuInfo,
+    meshCount,
+    meshLoadMs: Math.round(perf.meshLoadMs * 100) / 100,
+    shadowMapResolution,
+    renderTotalMs: Math.round(renderTotalMs * 100) / 100,
+    renderOnlyTotalMs: Math.round(renderOnlyTotalMs * 100) / 100,
+    perRenderMs: perRenderMs.map((v) => Math.round(v * 100) / 100),
+    lookupTotalMs: Math.round(lookupTotalMs * 100) / 100,
+    perLookupMs: perLookupMs.map((v) => Math.round(v * 100) / 100),
+    totalMs: Math.round(totalMs * 100) / 100,
+    pointResults: pointResultsArr,
+  };
+
+  document.title = 'DONE';
+  console.log('[gpu-bench] done in ' + totalMs.toFixed(0) + 'ms');
+}
+
+run().catch((err) => {
+  console.error(err);
+  window.__GPU_BENCH_RESULT = { error: err.message };
+  document.title = 'ERROR';
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+{
+  "generatedAt": "2026-04-02T06:26:22.818Z",
+  "machine": "LPW-PF620C5N (Intel(R) Core(TM) Ultra 7 258V, 31GB RAM)",
+  "gpu": "ANGLE (Intel, Intel(R) Arc(TM) 140V GPU (16GB) (0x000064A0) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  "tile": "e2538000_n1152250_s250",
+  "date": "2026-03-08",
+  "instants": 16,
+  "outdoorPoints": 1248,
+  "totalGridPoints": 2497,
+  "evaluations": 19968,
+  "cpu": {
+    "totalMs": 35846,
+    "perEvaluationMicros": 1795.18,
+    "mode": "detailed (ray-trace per-polygon with BVH)",
+    "sharedLoadMs": 4012,
+    "contextBuildMs": 25
+  },
+  "gpu_4096": {
+    "shadowMapResolution": 4096,
+    "meshCount": 12562,
+    "meshLoadMs": 181.3,
+    "renderTotalMs": 2569.5,
+    "perRenderMs": 160.59,
+    "lookupTotalMs": 25362.9,
+    "lookupMethod": "Three.js Raycaster (CPU-side, per-point)",
+    "perLookupMicros": 1270.18,
+    "totalMs": 28159.5,
+    "precision": {
+      "total": 19968,
+      "matches": 13965,
+      "mismatches": 6003,
+      "mismatchRate": 30.06,
+      "cpuShadowGpuSun": 1823,
+      "cpuSunGpuShadow": 4180
+    }
+  },
+  "gpu_2048": {
+    "shadowMapResolution": 2048,
+    "meshCount": 12562,
+    "meshLoadMs": 187,
+    "renderTotalMs": 1175.8,
+    "perRenderMs": 73.49,
+    "lookupTotalMs": 26673.9,
+    "lookupMethod": "Three.js Raycaster (CPU-side, per-point)",
+    "perLookupMicros": 1335.83,
+    "totalMs": 28062.2,
+    "precision": {
+      "total": 19968,
+      "matches": 13965,
+      "mismatches": 6003,
+      "mismatchRate": 30.06,
+      "cpuShadowGpuSun": 1823,
+      "cpuSunGpuShadow": 4180
+    }
+  },
+  "speedup_4096": 1.27,
+  "speedup_2048": 1.28,
+  "analysis": {
+    "summary": "GPU raycasting via Three.js Raycaster is ~1.3x faster than CPU detailed ray-trace but with 30% precision loss. The bottleneck is the per-point Raycaster lookup (90% of GPU time), not the shadow map rendering itself.",
+    "cpuBreakdown": "CPU: 35.8s entirely in polygon intersection with BVH acceleration",
+    "gpuBreakdown": "GPU: mesh load 0.2s + shadow map renders 2.6s (160ms/render) + raycaster lookups 25.4s (1270 µs/point/instant)",
+    "precisionNote": "The 30% mismatch is due to geometric differences: CPU uses precise polygon-ray intersection while GPU uses extruded Shape geometry. The CPU also applies a building-height bias and checks from exact terrain elevation.",
+    "recommendation": "A true GPU shadow-map approach (reading depth buffer instead of CPU raycasting) would eliminate the 25s lookup bottleneck. Expected speedup: ~15-20x (mesh load 0.2s + renders 2.6s = 2.8s vs CPU 35.8s). However, precision would require careful shadow map setup and bias tuning."
+  }
+}
