@@ -27,7 +27,7 @@ import {
 import { DEFAULT_SHADOW_CALIBRATION } from "@/lib/sun/shadow-calibration";
 import { loadBuildingsObstacleIndex } from "@/lib/sun/buildings-shadow";
 import { CpuBuildingShadowBackend } from "@/lib/sun/cpu-building-shadow-backend";
-import { GpuBuildingShadowBackend } from "@/lib/sun/gpu-building-shadow-backend";
+import { GpuBuildingShadowBackend, type GpuBackendMeshInfo } from "@/lib/sun/gpu-building-shadow-backend";
 import type { BuildingShadowBackend, BuildingShadowQuery } from "@/lib/sun/building-shadow-backend";
 
 // ── Config ───────────────────────────────────────────────────────────────
@@ -258,13 +258,17 @@ async function main() {
     index.spatialGrid,
   );
 
-  console.log(`[benchmark] Creating GPU backend (${resolution}px)...`);
+  console.log(`[benchmark] Creating GPU backend with DXF meshes (${resolution}px)...`);
   const gpuConstructT0 = performance.now();
-  const gpuBackend = new GpuBuildingShadowBackend(gpuObstacles, resolution);
+  const gpuBackend = await GpuBuildingShadowBackend.createWithDxfMeshes(gpuObstacles, resolution);
   const gpuConstructMs = performance.now() - gpuConstructT0;
   console.log(
     `[benchmark] GPU backend: ${gpuBackend.glRenderer}, ` +
-      `${gpuBackend.triangleCount} triangles, constructed in ${gpuConstructMs.toFixed(0)}ms`,
+      `${gpuBackend.triangleCount} triangles (DXF: ${gpuBackend.meshInfo.dxfTriangleCount}, ` +
+      `fallback: ${gpuBackend.meshInfo.fallbackTriangleCount}), ` +
+      `${gpuBackend.meshInfo.dxfObstacleCount} DXF + ` +
+      `${gpuBackend.meshInfo.fallbackObstacleCount} extruded obstacles, ` +
+      `constructed in ${gpuConstructMs.toFixed(0)}ms`,
   );
 
   // ── Run CPU benchmark ──────────────────────────────────────────────
@@ -274,6 +278,28 @@ async function main() {
     `[benchmark] CPU: ${cpuResult.totalMs.toFixed(0)}ms total, ` +
       `${cpuResult.perEvaluateMicros.toFixed(1)} µs/eval`,
   );
+
+  // ── Also collect CPU blocker info for mismatch diagnostics ─────────
+  const cpuBlockerIds: (string | null)[][] = queries.map(() => []);
+  const cpuBlockerDistances: (number | null)[][] = queries.map(() => []);
+  for (let si = 0; si < sunInstants.length; si++) {
+    const sun = sunInstants[si];
+    cpuBackend.prepareSunPosition(sun.azimuthDeg, sun.altitudeDeg);
+    for (let pi = 0; pi < queries.length; pi++) {
+      if (sun.altitudeDeg <= 0) {
+        cpuBlockerIds[pi].push(null);
+        cpuBlockerDistances[pi].push(null);
+        continue;
+      }
+      const result = cpuBackend.evaluate({
+        ...queries[pi],
+        solarAzimuthDeg: sun.azimuthDeg,
+        solarAltitudeDeg: sun.altitudeDeg,
+      });
+      cpuBlockerIds[pi].push(result.blockerId);
+      cpuBlockerDistances[pi].push(result.blockerDistanceMeters);
+    }
+  }
 
   // ── Run GPU benchmark ──────────────────────────────────────────────
   console.log(`[benchmark] Running GPU benchmark...`);
@@ -293,9 +319,56 @@ async function main() {
       `CPU→sun/GPU→shadow: ${precision.cpuSunGpuShadow}`,
   );
 
+  // ── Mismatch diagnostics (first 20) ────────────────────────────────
+  const mismatchSamples: Array<{
+    pointX: number;
+    pointY: number;
+    pointElevation: number;
+    instant: number;
+    azimuthDeg: number;
+    altitudeDeg: number;
+    cpuBlocked: boolean;
+    gpuBlocked: boolean;
+    cpuBlockerId: string | null;
+    cpuBlockerDistanceMeters: number | null;
+  }> = [];
+
+  for (let pi = 0; pi < queries.length && mismatchSamples.length < 20; pi++) {
+    for (let si = 0; si < sunInstants.length && mismatchSamples.length < 20; si++) {
+      const c = cpuResult.shadowFlags[pi][si];
+      const g = gpuResult.shadowFlags[pi][si];
+      if (c !== g) {
+        mismatchSamples.push({
+          pointX: queries[pi].pointX,
+          pointY: queries[pi].pointY,
+          pointElevation: queries[pi].pointElevation,
+          instant: si,
+          azimuthDeg: sunInstants[si].azimuthDeg,
+          altitudeDeg: sunInstants[si].altitudeDeg,
+          cpuBlocked: c === 1,
+          gpuBlocked: g === 1,
+          cpuBlockerId: cpuBlockerIds[pi][si],
+          cpuBlockerDistanceMeters: cpuBlockerDistances[pi][si],
+        });
+      }
+    }
+  }
+
+  if (mismatchSamples.length > 0) {
+    console.log(`\n[benchmark] First ${mismatchSamples.length} mismatches:`);
+    for (const m of mismatchSamples) {
+      console.log(
+        `  (${m.pointX.toFixed(1)}, ${m.pointY.toFixed(1)}, z=${m.pointElevation.toFixed(1)}) ` +
+          `t=${m.instant} az=${m.azimuthDeg}° alt=${m.altitudeDeg}° — ` +
+          `CPU:${m.cpuBlocked ? "shadow" : "sun"} GPU:${m.gpuBlocked ? "shadow" : "sun"} ` +
+          `blocker=${m.cpuBlockerId ?? "none"} dist=${m.cpuBlockerDistanceMeters?.toFixed(0) ?? "?"}m`,
+      );
+    }
+  }
+
   // ── Speedup ────────────────────────────────────────────────────────
   const speedup = Math.round((cpuResult.totalMs / Math.max(gpuResult.totalMs, 0.01)) * 100) / 100;
-  console.log(`[benchmark] Speedup: ${speedup}x`);
+  console.log(`\n[benchmark] Speedup: ${speedup}x`);
 
   // ── Report ─────────────────────────────────────────────────────────
   const activeInstants = sunInstants.filter((s) => s.altitudeDeg > 0).length;
@@ -317,6 +390,7 @@ async function main() {
     activeInstants,
     outdoorPoints: queries.length,
     evaluations: totalEvals,
+    meshSource: gpuBackend.meshInfo.meshSource,
     cpu: {
       totalMs: cpuResult.totalMs,
       prepareTotalMs: cpuResult.prepareTotalMs,
@@ -330,6 +404,10 @@ async function main() {
       totalMs: gpuResult.totalMs,
       meshLoadMs: Math.round(gpuConstructMs * 100) / 100,
       triangleCount: gpuBackend.triangleCount,
+      dxfObstacleCount: gpuBackend.meshInfo.dxfObstacleCount,
+      fallbackObstacleCount: gpuBackend.meshInfo.fallbackObstacleCount,
+      dxfTriangleCount: gpuBackend.meshInfo.dxfTriangleCount,
+      fallbackTriangleCount: gpuBackend.meshInfo.fallbackTriangleCount,
       prepareTotalMs: gpuResult.prepareTotalMs,
       perPrepareSunMs: gpuResult.perPrepareMs,
       evaluateTotalMs: gpuResult.evaluateTotalMs,
@@ -338,11 +416,12 @@ async function main() {
     },
     speedup,
     precision,
+    mismatchSamples,
   };
 
   // ── Save ───────────────────────────────────────────────────────────
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
-  const outPath = path.join(OUTPUT_DIR, "gpu-shadow-backend-v2-benchmark.json");
+  const outPath = path.join(OUTPUT_DIR, "gpu-shadow-backend-v3-mesh-benchmark.json");
   await fs.writeFile(outPath, JSON.stringify(report, null, 2));
   console.log(`[benchmark] Report saved to ${outPath}`);
 
@@ -352,17 +431,18 @@ async function main() {
 
   // Print report summary
   console.log("\n" + "=".repeat(60));
-  console.log("BENCHMARK RESULTS");
+  console.log("BENCHMARK RESULTS (v3 — DXF mesh)");
   console.log("=".repeat(60));
   console.log(`Machine: ${report.machine}`);
   console.log(`GL renderer: ${report.glRenderer}`);
   console.log(`Tile: ${report.tile}, ${report.outdoorPoints} outdoor points × ${report.activeInstants} instants = ${report.evaluations} evals`);
+  console.log(`Mesh: ${report.gpu.dxfObstacleCount} DXF + ${report.gpu.fallbackObstacleCount} extruded = ${report.gpu.triangleCount} triangles`);
   console.log();
   console.log(`CPU (${report.cpu.mode}):`);
   console.log(`  Total: ${report.cpu.totalMs.toFixed(0)}ms`);
   console.log(`  Per evaluate: ${report.cpu.perEvaluateMicros.toFixed(1)} µs`);
   console.log();
-  console.log(`GPU (shadow map ${report.gpu.shadowMapResolution}px, ${report.gpu.triangleCount} triangles):`);
+  console.log(`GPU (shadow map ${report.gpu.shadowMapResolution}px):`);
   console.log(`  Mesh construction: ${report.gpu.meshLoadMs.toFixed(0)}ms`);
   console.log(`  Total: ${report.gpu.totalMs.toFixed(0)}ms`);
   console.log(`    prepareSunPosition: ${report.gpu.prepareTotalMs.toFixed(0)}ms (${report.gpu.perPrepareSunMs.toFixed(1)}ms/render)`);

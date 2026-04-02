@@ -1,9 +1,12 @@
 /**
  * GPU shadow-map backend for building shadow evaluation.
  *
- * Uses headless-gl to create an offscreen WebGL context, triangulates building
- * footprints via earcut, extrudes them to 3D meshes, and renders depth-only
+ * Uses headless-gl to create an offscreen WebGL context and renders depth-only
  * shadow maps from the sun's point of view.
+ *
+ * Mesh source: real 3D polyface triangles from SwissBUILDINGS3D DXF files
+ * (loaded via gpu-mesh-loader), with footprint extrusion as fallback for
+ * buildings without DXF meshes.
  *
  * `prepareSunPosition()` renders one shadow map.
  * `evaluate()` projects each query point into light-clip space and compares
@@ -21,6 +24,7 @@ import type {
   BuildingShadowResult,
 } from "@/lib/sun/building-shadow-backend";
 import { loadBuildingsObstacleIndex } from "@/lib/sun/buildings-shadow";
+import { loadGpuMeshes, type GpuMeshLoadResult } from "@/lib/sun/gpu-mesh-loader";
 
 type ObstacleArray = NonNullable<
   Awaited<ReturnType<typeof loadBuildingsObstacleIndex>>
@@ -140,12 +144,65 @@ function unpackDepth(r: number, g: number, b: number, a: number): number {
   return r / 255 + g / 65025 + b / 16581375 + a / 4228250625;
 }
 
+// ── Footprint extrusion helper ───────────────────────────────────────────
+
+function extrudeFootprint(
+  obs: BuildingObstacle,
+  originX: number,
+  originY: number,
+  out: number[],
+): number {
+  const fp = obs.footprint!;
+  const n = fp.length;
+  const baseZ = obs.minZ;
+  const topZ = obs.maxZ;
+  let triCount = 0;
+
+  // Roof (top face) via earcut
+  const flatCoords: number[] = [];
+  for (const p of fp) flatCoords.push(p.x - originX, p.y - originY);
+  const indices = earcut(flatCoords);
+  for (const idx of indices) {
+    out.push(fp[idx].x - originX, topZ, fp[idx].y - originY);
+  }
+  triCount += indices.length / 3;
+
+  // Bottom face (reversed winding)
+  for (let i = indices.length - 1; i >= 0; i--) {
+    const idx = indices[i];
+    out.push(fp[idx].x - originX, baseZ, fp[idx].y - originY);
+  }
+  triCount += indices.length / 3;
+
+  // Walls
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ax = fp[i].x - originX, ay = fp[i].y - originY;
+    const bx = fp[j].x - originX, by = fp[j].y - originY;
+    out.push(ax, baseZ, ay, bx, baseZ, by, bx, topZ, by);
+    out.push(ax, baseZ, ay, bx, topZ, by, ax, topZ, ay);
+    triCount += 2;
+  }
+
+  return triCount;
+}
+
 // ── GPU Backend ──────────────────────────────────────────────────────────
+
+export interface GpuBackendMeshInfo {
+  meshSource: "dxf-polyface" | "footprint-extrusion";
+  dxfObstacleCount: number;
+  fallbackObstacleCount: number;
+  dxfTriangleCount: number;
+  fallbackTriangleCount: number;
+  meshLoadMs: number;
+}
 
 export class GpuBuildingShadowBackend implements BuildingShadowBackend {
   readonly name: string;
   readonly resolution: number;
   readonly triangleCount: number;
+  readonly meshInfo: GpuBackendMeshInfo;
 
   /** GL renderer string */
   readonly glRenderer: string;
@@ -179,35 +236,27 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
 
   private static readonly SHADOW_BIAS = 0.003;
 
-  constructor(obstacles: BuildingObstacle[], resolution = 4096) {
+  /**
+   * Create a GPU backend from pre-built vertices.
+   * Use the static factory methods for convenient construction.
+   */
+  constructor(
+    vertices: Float32Array,
+    sceneBbox: { minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number },
+    originX: number,
+    originY: number,
+    resolution: number,
+    meshInfo: GpuBackendMeshInfo,
+  ) {
     this.resolution = resolution;
+    this.originX = originX;
+    this.originY = originY;
+    this.meshInfo = meshInfo;
 
-    // ── Compute scene bounding box ─────────────────────────────────────
-    let minX = Infinity, minY = Infinity, minZ = Infinity;
-    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-    for (const obs of obstacles) {
-      if (!obs.footprint || obs.footprint.length < 3 || obs.height < 0.5) continue;
-      if (obs.minX < minX) minX = obs.minX;
-      if (obs.minY < minY) minY = obs.minY;
-      if (obs.minZ < minZ) minZ = obs.minZ;
-      if (obs.maxX > maxX) maxX = obs.maxX;
-      if (obs.maxY > maxY) maxY = obs.maxY;
-      if (obs.maxZ > maxZ) maxZ = obs.maxZ;
-    }
+    this.sceneBboxMin = [sceneBbox.minX - originX, sceneBbox.minZ, sceneBbox.minY - originY];
+    this.sceneBboxMax = [sceneBbox.maxX - originX, sceneBbox.maxZ, sceneBbox.maxY - originY];
 
-    this.originX = (minX + maxX) / 2;
-    this.originY = (minY + maxY) / 2;
-
-    this.sceneBboxMin = [minX - this.originX, minZ, minY - this.originY];
-    this.sceneBboxMax = [maxX - this.originX, maxZ, maxY - this.originY];
-
-    // ── Triangulate buildings ──────────────────────────────────────────
-    const allVertices: number[] = [];
-    for (const obs of obstacles) {
-      if (!obs.footprint || obs.footprint.length < 3 || obs.height < 0.5) continue;
-      this.triangulateBuilding(obs, allVertices);
-    }
-    this.vertexCount = allVertices.length / 3;
+    this.vertexCount = vertices.length / 3;
     this.triangleCount = this.vertexCount / 3;
 
     // ── Create GL context ─────────────────────────────────────────────
@@ -247,7 +296,7 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
     // ── Upload vertex buffer ──────────────────────────────────────────
     const vbo = gl.createBuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(allVertices), gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
     this.vbo = vbo;
 
     // ── Framebuffer with color texture + depth renderbuffer ───────────
@@ -283,46 +332,94 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
     this.depthBuffer = new Uint8Array(resolution * resolution * 4);
   }
 
-  private triangulateBuilding(obs: BuildingObstacle, out: number[]): void {
-    const fp = obs.footprint!;
-    const n = fp.length;
-    const ox = this.originX;
-    const oy = this.originY;
-    const baseZ = obs.minZ;
-    const topZ = obs.maxZ;
-
-    // ── Roof (top face) ──────────────────────────────────────────────
-    const flatCoords: number[] = [];
-    for (const p of fp) {
-      flatCoords.push(p.x - ox, p.y - oy);
+  /**
+   * Create a GPU backend with real DXF 3D mesh triangles.
+   * Falls back to footprint extrusion for buildings without DXF data.
+   */
+  static async createWithDxfMeshes(
+    obstacles: BuildingObstacle[],
+    resolution = 4096,
+  ): Promise<GpuBuildingShadowBackend> {
+    // Compute origin from obstacle bounding box
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (const obs of obstacles) {
+      if (obs.minX < minX) minX = obs.minX;
+      if (obs.minY < minY) minY = obs.minY;
+      if (obs.minZ < minZ) minZ = obs.minZ;
+      if (obs.maxX > maxX) maxX = obs.maxX;
+      if (obs.maxY > maxY) maxY = obs.maxY;
+      if (obs.maxZ > maxZ) maxZ = obs.maxZ;
     }
-    const indices = earcut(flatCoords);
-    for (const idx of indices) {
-      out.push(fp[idx].x - ox, topZ, fp[idx].y - oy);
+    const originX = (minX + maxX) / 2;
+    const originY = (minY + maxY) / 2;
+
+    const meshResult = await loadGpuMeshes(obstacles, originX, originY);
+
+    const meshInfo: GpuBackendMeshInfo = {
+      meshSource: "dxf-polyface",
+      dxfObstacleCount: meshResult.dxfObstacleCount,
+      fallbackObstacleCount: meshResult.fallbackObstacleCount,
+      dxfTriangleCount: meshResult.dxfTriangleCount,
+      fallbackTriangleCount: meshResult.fallbackTriangleCount,
+      meshLoadMs: meshResult.totalMs,
+    };
+
+    return new GpuBuildingShadowBackend(
+      meshResult.vertices,
+      { minX, minY, minZ, maxX, maxY, maxZ },
+      originX, originY,
+      resolution,
+      meshInfo,
+    );
+  }
+
+  /**
+   * Create a GPU backend with footprint extrusion only (fast, no DXF parsing).
+   */
+  static createWithFootprints(
+    obstacles: BuildingObstacle[],
+    resolution = 4096,
+  ): GpuBuildingShadowBackend {
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (const obs of obstacles) {
+      if (!obs.footprint || obs.footprint.length < 3 || obs.height < 0.5) continue;
+      if (obs.minX < minX) minX = obs.minX;
+      if (obs.minY < minY) minY = obs.minY;
+      if (obs.minZ < minZ) minZ = obs.minZ;
+      if (obs.maxX > maxX) maxX = obs.maxX;
+      if (obs.maxY > maxY) maxY = obs.maxY;
+      if (obs.maxZ > maxZ) maxZ = obs.maxZ;
+    }
+    const originX = (minX + maxX) / 2;
+    const originY = (minY + maxY) / 2;
+
+    const allVertices: number[] = [];
+    let triCount = 0;
+    for (const obs of obstacles) {
+      if (!obs.footprint || obs.footprint.length < 3 || obs.height < 0.5) continue;
+      triCount += extrudeFootprint(obs, originX, originY, allVertices);
     }
 
-    // ── Bottom face ──────────────────────────────────────────────────
-    for (let i = indices.length - 1; i >= 0; i--) {
-      const idx = indices[i];
-      out.push(fp[idx].x - ox, baseZ, fp[idx].y - oy);
-    }
+    const meshInfo: GpuBackendMeshInfo = {
+      meshSource: "footprint-extrusion",
+      dxfObstacleCount: 0,
+      fallbackObstacleCount: obstacles.filter(
+        (o) => o.footprint && o.footprint.length >= 3 && o.height >= 0.5,
+      ).length,
+      dxfTriangleCount: 0,
+      fallbackTriangleCount: triCount,
+      meshLoadMs: 0,
+    };
 
-    // ── Walls (two triangles per edge) ───────────────────────────────
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      const ax = fp[i].x - ox, ay = fp[i].y - oy;
-      const bx = fp[j].x - ox, by = fp[j].y - oy;
-
-      // Triangle 1
-      out.push(ax, baseZ, ay);
-      out.push(bx, baseZ, by);
-      out.push(bx, topZ, by);
-
-      // Triangle 2
-      out.push(ax, baseZ, ay);
-      out.push(bx, topZ, by);
-      out.push(ax, topZ, ay);
-    }
+    return new GpuBuildingShadowBackend(
+      new Float32Array(allVertices),
+      { minX, minY, minZ, maxX, maxY, maxZ },
+      originX, originY,
+      resolution,
+      meshInfo,
+    );
   }
 
   prepareSunPosition(azimuthDeg: number, altitudeDeg: number): void {
