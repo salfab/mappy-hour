@@ -45,6 +45,8 @@ export interface SharedPointEvaluationSources {
   vegetationSurfaceTiles: Awaited<
     ReturnType<typeof loadVegetationSurfaceTilesForBounds>
   >;
+  /** GPU shadow backend, created when MAPPY_BUILDINGS_SHADOW_MODE=gpu-raster */
+  gpuShadowBackend?: import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null;
 }
 
 export interface BuildPointEvaluationContextOptions {
@@ -94,11 +96,11 @@ export interface PointEvaluationContext {
   };
 }
 
-type BuildingsShadowMode = "detailed" | "two-level" | "prism";
+type BuildingsShadowMode = "detailed" | "two-level" | "prism" | "gpu-raster";
 
 function parseBuildingsShadowMode(): BuildingsShadowMode {
   const raw = (process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "").trim().toLowerCase();
-  if (raw === "detailed" || raw === "two-level" || raw === "prism") {
+  if (raw === "detailed" || raw === "two-level" || raw === "prism" || raw === "gpu-raster") {
     return raw;
   }
   if (process.env.MAPPY_BUILDINGS_TWO_LEVEL_REFINEMENT === "0") {
@@ -149,11 +151,65 @@ export async function buildSharedPointEvaluationSources(
       })
     : null;
 
+  // ── GPU raster backend (optional) ──────────────────────────────────
+  let gpuShadowBackend: SharedPointEvaluationSources["gpuShadowBackend"] = undefined;
+  if (BUILDINGS_SHADOW_MODE === "gpu-raster" && buildingsIndex) {
+    try {
+      // Dynamic import: avoids hard dependency on native `gl` module
+      const { GpuBuildingShadowBackend } = await import(
+        "@/lib/sun/gpu-building-shadow-backend"
+      );
+
+      // Filter buildings within 2500m of tile center (or all if no bounds)
+      const obstacles = buildingsIndex.obstacles;
+      const gpuObstacles = options.lv95Bounds
+        ? (() => {
+            const cx = (options.lv95Bounds!.minX + options.lv95Bounds!.maxX) / 2;
+            const cy = (options.lv95Bounds!.minY + options.lv95Bounds!.maxY) / 2;
+            return obstacles.filter(
+              (o) => Math.hypot(o.centerX - cx, o.centerY - cy) <= 2500,
+            );
+          })()
+        : obstacles;
+
+      const backend = await GpuBuildingShadowBackend.createWithDxfMeshes(
+        gpuObstacles,
+        4096,
+      );
+
+      // Focus the frustum on tile bounds for better resolution
+      if (options.lv95Bounds) {
+        const maxH = gpuObstacles.reduce((m, o) => Math.max(m, o.height), 0);
+        backend.setFrustumFocus(
+          {
+            minX: options.lv95Bounds.minX,
+            minY: options.lv95Bounds.minY,
+            maxX: options.lv95Bounds.maxX,
+            maxY: options.lv95Bounds.maxY,
+          },
+          maxH,
+        );
+      }
+
+      gpuShadowBackend = backend;
+      console.log(
+        `[evaluation-context] GPU raster backend ready: ${backend.name}, ${backend.triangleCount} triangles`,
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[evaluation-context] GPU raster unavailable: ${msg}. Falling back to CPU.`,
+      );
+      gpuShadowBackend = null; // mark as attempted but failed
+    }
+  }
+
   return {
     horizonMask,
     buildingsIndex,
     terrainTiles,
     vegetationSurfaceTiles,
+    gpuShadowBackend,
   };
 }
 
@@ -207,9 +263,40 @@ export async function buildPointEvaluationContext(
       ))
     : null;
 
+  // ── GPU raster path ───────────────────────────────────────────────
+  const gpuBackend = sharedSources.gpuShadowBackend;
+  const useGpuRaster =
+    BUILDINGS_SHADOW_MODE === "gpu-raster" &&
+    gpuBackend != null && // not null and not undefined
+    gpuBackend !== null; // explicitly created (undefined = not attempted, null = failed)
+
   const buildingShadowEvaluator =
     buildingsIndex && pointElevationMeters !== null && !containment.insideBuilding
       ? (() => {
+          // ── GPU raster evaluator ─────────────────────────────────
+          if (useGpuRaster) {
+            return (sample: { azimuthDeg: number; altitudeDeg: number }) => {
+              // prepareSunPosition is idempotent for the same angles
+              // (tracked inside the backend via lastPreparedAz/Alt)
+              gpuBackend.prepareSunPosition(sample.azimuthDeg, sample.altitudeDeg);
+              const result = gpuBackend.evaluate({
+                pointX: pointLv95.easting,
+                pointY: pointLv95.northing,
+                pointElevation: pointElevationMeters,
+                solarAzimuthDeg: sample.azimuthDeg,
+                solarAltitudeDeg: sample.altitudeDeg,
+              });
+              return {
+                blocked: result.blocked,
+                blockerId: result.blockerId,
+                blockerDistanceMeters: result.blockerDistanceMeters,
+                blockerAltitudeAngleDeg: result.blockerAltitudeAngleDeg,
+                checkedObstaclesCount: 0,
+              };
+            };
+          }
+
+          // ── CPU evaluator (existing logic) ───────────────────────
           const detailedVerifier =
             BUILDINGS_SHADOW_MODE === "prism"
               ? null
@@ -323,11 +410,15 @@ export async function buildPointEvaluationContext(
     terrainHorizonMethod: horizonMask?.method ?? "none",
     buildingsShadowMethod: buildingsIndex
       ? `${buildingsIndex.method}${
-          BUILDINGS_SHADOW_MODE === "two-level"
-            ? "|two-level-near-threshold-v1"
-            : BUILDINGS_SHADOW_MODE === "detailed"
-              ? "|detailed-direct-v1"
-              : ""
+          useGpuRaster
+            ? "|gpu-raster-v1"
+            : BUILDINGS_SHADOW_MODE === "gpu-raster" && !useGpuRaster
+              ? "|gpu-raster-fallback-cpu|detailed-direct-v1"
+              : BUILDINGS_SHADOW_MODE === "two-level"
+                ? "|two-level-near-threshold-v1"
+                : BUILDINGS_SHADOW_MODE === "detailed"
+                  ? "|detailed-direct-v1"
+                  : ""
         }`
       : "none",
     vegetationShadowMethod:

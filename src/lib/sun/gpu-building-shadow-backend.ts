@@ -443,7 +443,21 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
   private frustumFocus: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
   private frustumMaxBuildingHeight = 100;
 
+  private lastPreparedAz = NaN;
+  private lastPreparedAlt = NaN;
+
   prepareSunPosition(azimuthDeg: number, altitudeDeg: number): void {
+    // Skip re-render if sun position hasn't changed meaningfully.
+    // Round to 0.1° — within a 250m tile the sun position varies by ~0.005°
+    // between points, which is negligible for shadow map rendering.
+    const roundedAz = Math.round(azimuthDeg * 10);
+    const roundedAlt = Math.round(altitudeDeg * 10);
+    if (roundedAz === this.lastPreparedAz && roundedAlt === this.lastPreparedAlt) {
+      return;
+    }
+    this.lastPreparedAz = roundedAz;
+    this.lastPreparedAlt = roundedAlt;
+
     const t0 = performance.now();
     const gl = this.gl;
 
