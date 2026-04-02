@@ -49,7 +49,9 @@
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
+    "earcut": "^3.0.2",
     "geotiff": "^3.0.4",
+    "gl": "^8.1.6",
     "leaflet": "^1.9.4",
     "next": "16.1.6",
     "polygon-clipping": "^0.15.7",
@@ -62,6 +64,8 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/adm-zip": "^0.5.7",
+    "@types/earcut": "^3.0.0",
+    "@types/gl": "^6.0.5",
     "@types/leaflet": "^1.9.21",
     "@types/node": "^20",
     "@types/react": "^19",
