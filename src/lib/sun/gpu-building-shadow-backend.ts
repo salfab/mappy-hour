@@ -422,50 +422,110 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
     );
   }
 
+  /**
+   * Set a focus area for frustum fitting. When set, the ortho projection
+   * is tightly fitted around this area (extended by shadow reach) instead
+   * of the full scene bbox, yielding much higher depth + pixel precision.
+   *
+   * @param bounds LV95 bounds of the area where shadows will be queried.
+   *   Typically the tile bounds, optionally padded.
+   * @param maxBuildingHeight tallest building in the scene (meters).
+   *   Used to compute shadow reach at low sun angles.
+   */
+  setFrustumFocus(
+    bounds: { minX: number; minY: number; maxX: number; maxY: number },
+    maxBuildingHeight: number,
+  ): void {
+    this.frustumFocus = { ...bounds };
+    this.frustumMaxBuildingHeight = maxBuildingHeight;
+  }
+
+  private frustumFocus: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
+  private frustumMaxBuildingHeight = 100;
+
   prepareSunPosition(azimuthDeg: number, altitudeDeg: number): void {
     const t0 = performance.now();
     const gl = this.gl;
 
-    // ── Build light view+projection with tight frustum ──────────────
     const azRad = (azimuthDeg * Math.PI) / 180;
     const altRad = (altitudeDeg * Math.PI) / 180;
 
-    // Sun direction vector (toward scene from sun)
+    // Sun direction in GL coords (x = easting, y = up, z = northing)
     const sunDirX = Math.sin(azRad) * Math.cos(altRad);
     const sunDirY = Math.sin(altRad);
     const sunDirZ = Math.cos(azRad) * Math.cos(altRad);
 
-    // Scene center in GL coords
-    const cx = (this.sceneBboxMin[0] + this.sceneBboxMax[0]) / 2;
-    const cy = (this.sceneBboxMin[1] + this.sceneBboxMax[1]) / 2;
-    const cz = (this.sceneBboxMin[2] + this.sceneBboxMax[2]) / 2;
+    // ── Compute frustum focus box ────────────────────────────────────
+    // If a focus area is set, we build the frustum around the focus
+    // extended by the maximum shadow reach at this sun angle.
+    // Otherwise, fall back to the full scene bbox.
+    let fMinX: number, fMaxX: number, fMinZ: number, fMaxZ: number;
+    let fMinY: number, fMaxY: number; // elevation
 
-    // Build a view matrix looking from a far-away sun position toward
-    // the scene center.  We place the eye far enough that all geometry
-    // is in front of the camera.
+    if (this.frustumFocus) {
+      // Shadow extension: how far a building shadow can reach at this altitude.
+      // Extend the tile box ONLY toward the sun (that's where blockers are)
+      // plus a small lateral padding for buildings straddling the boundary.
+      const minAltForExtension = Math.max(altitudeDeg, 2);
+      const shadowReach = this.frustumMaxBuildingHeight / Math.tan(minAltForExtension * Math.PI / 180);
+      const ext = Math.min(shadowReach, 2500);
+      const foc = this.frustumFocus;
+
+      // Sun direction in horizontal plane (easting, northing)
+      const hSunX = Math.sin(azRad); // easting component
+      const hSunZ = Math.cos(azRad); // northing component
+
+      // Start with tile bounds (in centered coords)
+      fMinX = foc.minX - this.originX;
+      fMaxX = foc.maxX - this.originX;
+      fMinZ = foc.minY - this.originY;
+      fMaxZ = foc.maxY - this.originY;
+
+      // Extend toward the sun direction by shadow reach
+      // (buildings in the sun direction cast shadows into the tile)
+      if (hSunX > 0) fMaxX += ext * hSunX; else fMinX += ext * hSunX;
+      if (hSunZ > 0) fMaxZ += ext * hSunZ; else fMinZ += ext * hSunZ;
+
+      // Also add a lateral padding (50m) for buildings near the boundary
+      const lateralPad = 50;
+      fMinX -= lateralPad;
+      fMaxX += lateralPad;
+      fMinZ -= lateralPad;
+      fMaxZ += lateralPad;
+
+      // Clamp to scene bounds
+      fMinX = Math.max(fMinX, this.sceneBboxMin[0]);
+      fMaxX = Math.min(fMaxX, this.sceneBboxMax[0]);
+      fMinZ = Math.max(fMinZ, this.sceneBboxMin[2]);
+      fMaxZ = Math.min(fMaxZ, this.sceneBboxMax[2]);
+      fMinY = this.sceneBboxMin[1];
+      fMaxY = this.sceneBboxMax[1];
+    } else {
+      fMinX = this.sceneBboxMin[0]; fMaxX = this.sceneBboxMax[0];
+      fMinY = this.sceneBboxMin[1]; fMaxY = this.sceneBboxMax[1];
+      fMinZ = this.sceneBboxMin[2]; fMaxZ = this.sceneBboxMax[2];
+    }
+
+    // Center of the focus area
+    const cx = (fMinX + fMaxX) / 2;
+    const cy = (fMinY + fMaxY) / 2;
+    const cz = (fMinZ + fMaxZ) / 2;
+
     let upX = 0, upY = 1, upZ = 0;
     if (Math.abs(altitudeDeg) > 85) {
       upX = 0; upY = 0; upZ = -1;
     }
 
-    // Use a generous eye distance to start, then we tighten near/far
-    const roughRadius = Math.hypot(
-      this.sceneBboxMax[0] - this.sceneBboxMin[0],
-      this.sceneBboxMax[1] - this.sceneBboxMin[1],
-      this.sceneBboxMax[2] - this.sceneBboxMin[2],
-    ) / 2;
-    const eyeDist = roughRadius * 3;
+    // Eye distance: far enough that the whole focus box is in front
+    const focusRadius = Math.hypot(fMaxX - fMinX, fMaxY - fMinY, fMaxZ - fMinZ) / 2;
+    const eyeDist = focusRadius * 3;
     const eyeX = cx + sunDirX * eyeDist;
     const eyeY = cy + sunDirY * eyeDist;
     const eyeZ = cz + sunDirZ * eyeDist;
 
     const view = mat4LookAt(eyeX, eyeY, eyeZ, cx, cy, cz, upX, upY, upZ);
 
-    // ── Compute tight AABB in light space ────────────────────────────
-    // Project the 8 corners of the scene bounding box into light-view
-    // space and find the tight AABB.
-    const bMin = this.sceneBboxMin;
-    const bMax = this.sceneBboxMax;
+    // ── Tight AABB in light space from the focus box corners ─────────
     let lsMinX = Infinity, lsMaxX = -Infinity;
     let lsMinY = Infinity, lsMaxY = -Infinity;
     let lsMinZ = Infinity, lsMaxZ = -Infinity;
@@ -473,9 +533,9 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
     for (let ix = 0; ix < 2; ix++) {
       for (let iy = 0; iy < 2; iy++) {
         for (let iz = 0; iz < 2; iz++) {
-          const wx = ix === 0 ? bMin[0] : bMax[0];
-          const wy = iy === 0 ? bMin[1] : bMax[1];
-          const wz = iz === 0 ? bMin[2] : bMax[2];
+          const wx = ix === 0 ? fMinX : fMaxX;
+          const wy = iy === 0 ? fMinY : fMaxY;
+          const wz = iz === 0 ? fMinZ : fMaxZ;
           const lv = mat4TransformVec4(view, wx, wy, wz, 1);
           const lx = lv[0] / lv[3];
           const ly = lv[1] / lv[3];
@@ -490,11 +550,7 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
       }
     }
 
-    // Ortho projection that tightly wraps the scene in light space.
-    // near/far map to the z-range; left/right/bottom/top map to x/y range.
-    // In our lookAt convention, z is negative (pointing into the scene).
-    // near = -lsMaxZ (closest to eye), far = -lsMinZ (farthest from eye).
-    const near = -lsMaxZ - 1; // small padding
+    const near = -lsMaxZ - 1;
     const far = -lsMinZ + 1;
     const proj = mat4Ortho(lsMinX, lsMaxX, lsMinY, lsMaxY, near, far);
     this.lightMVP = mat4Multiply(proj, view);
@@ -564,18 +620,29 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
 
     // Point depth in [0,1] range
     const pointDepth = ndcZ * 0.5 + 0.5;
+    const threshold = pointDepth - GpuBuildingShadowBackend.SHADOW_BIAS;
 
-    // Read stored depth from the RGBA-encoded depth buffer
-    const offset = (py * this.resolution + px) * 4;
-    const storedDepth = unpackDepth(
-      this.depthBuffer[offset],
-      this.depthBuffer[offset + 1],
-      this.depthBuffer[offset + 2],
-      this.depthBuffer[offset + 3],
-    );
+    // Sample a 2×2 quad and check if ANY texel contains a closer occluder.
+    // This catches shadow edges that fall between pixel centers.
+    const res = this.resolution;
+    const buf = this.depthBuffer;
 
-    // If stored depth < point depth - bias, something is closer to the sun → blocked
-    const blocked = storedDepth < pointDepth - GpuBuildingShadowBackend.SHADOW_BIAS;
+    // Determine the 2×2 neighborhood: pick the quad containing the
+    // sub-pixel position (toward the fractional part of u,v).
+    const px0 = px;
+    const py0 = py;
+    const px1 = u - px >= 0.5 ? Math.min(px + 1, res - 1) : Math.max(px - 1, 0);
+    const py1 = v - py >= 0.5 ? Math.min(py + 1, res - 1) : Math.max(py - 1, 0);
+
+    let blocked = false;
+    for (const sy of [py0, py1]) {
+      for (const sx of [px0, px1]) {
+        const off = (sy * res + sx) * 4;
+        const sd = unpackDepth(buf[off], buf[off + 1], buf[off + 2], buf[off + 3]);
+        if (sd < threshold) { blocked = true; break; }
+      }
+      if (blocked) break;
+    }
 
     return {
       blocked,

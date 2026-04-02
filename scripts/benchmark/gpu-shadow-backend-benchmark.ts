@@ -271,6 +271,16 @@ async function main() {
       `constructed in ${gpuConstructMs.toFixed(0)}ms`,
   );
 
+  // Set frustum focus to the tile area — this tightens the ortho projection
+  // so the shadow map concentrates resolution on the tile + shadow reach zone
+  // instead of the full 5km scene.
+  const maxBuildingHeight = gpuObstacles.reduce((m, o) => Math.max(m, o.height), 0);
+  gpuBackend.setFrustumFocus(
+    { minX: tile.minEasting, minY: tile.minNorthing, maxX: tile.maxEasting, maxY: tile.maxNorthing },
+    maxBuildingHeight,
+  );
+  console.log(`[benchmark] Frustum focus set to tile ${tile.tileId}, maxH=${maxBuildingHeight.toFixed(1)}m`);
+
   // ── Run CPU benchmark ──────────────────────────────────────────────
   console.log(`[benchmark] Running CPU benchmark...`);
   const cpuResult = benchmarkBackend(cpuBackend, sunInstants, queries);
@@ -421,7 +431,7 @@ async function main() {
 
   // ── Save ───────────────────────────────────────────────────────────
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
-  const outPath = path.join(OUTPUT_DIR, "gpu-shadow-backend-v4-fix-benchmark.json");
+  const outPath = path.join(OUTPUT_DIR, "gpu-shadow-backend-v5-wider-frustum-benchmark.json");
   await fs.writeFile(outPath, JSON.stringify(report, null, 2));
   console.log(`[benchmark] Report saved to ${outPath}`);
 
@@ -431,7 +441,7 @@ async function main() {
 
   // Print report summary
   console.log("\n" + "=".repeat(60));
-  console.log("BENCHMARK RESULTS (v4 — tight frustum + reduced bias)");
+  console.log("BENCHMARK RESULTS (v5 — tile-focused frustum + shadow extension)");
   console.log("=".repeat(60));
   console.log(`Machine: ${report.machine}`);
   console.log(`GL renderer: ${report.glRenderer}`);
