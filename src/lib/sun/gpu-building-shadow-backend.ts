@@ -222,19 +222,29 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
   private gl: WebGLRenderingContext;
   private program: WebGLProgram;
   private vbo: WebGLBuffer;
-  private framebuffer: WebGLFramebuffer;
-  private colorTex: WebGLTexture;
-  private depthRb: WebGLRenderbuffer;
   private uLightMVPLoc: WebGLUniformLocation;
   private aPositionLoc: number;
   private vertexCount: number;
 
-  // Shadow map state
-  private depthBuffer: Uint8Array;
-  private lightMVP: Mat4 = mat4Identity();
+  // Cascade 0 (near): tile ± 200m — high resolution for close blockers
+  private fb0: WebGLFramebuffer;
+  private colorTex0: WebGLTexture;
+  private depthRb0: WebGLRenderbuffer;
+  private depthBuf0: Uint8Array;
+  private mvp0: Mat4 = mat4Identity();
+
+  // Cascade 1 (far): full directional shadow reach
+  private fb1: WebGLFramebuffer;
+  private colorTex1: WebGLTexture;
+  private depthRb1: WebGLRenderbuffer;
+  private depthBuf1: Uint8Array;
+  private mvp1: Mat4 = mat4Identity();
+
   private prepared = false;
 
-  private static readonly SHADOW_BIAS = 0.0002;
+  private static readonly NEAR_CASCADE_PADDING = 200; // meters
+  private static readonly NEAR_BIAS = 0.0001;
+  private static readonly FAR_BIAS = 0.0002;
 
   /**
    * Create a GPU backend from pre-built vertices.
@@ -299,37 +309,38 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
     this.vbo = vbo;
 
-    // ── Framebuffer with color texture + depth renderbuffer ───────────
-    const fb = gl.createFramebuffer()!;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    // ── Create 2 framebuffers for cascaded shadow maps ───────────────
+    const createFbo = () => {
+      const fb = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
 
-    const colorTex = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_2D, colorTex);
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, gl.RGBA,
-      resolution, resolution, 0,
-      gl.RGBA, gl.UNSIGNED_BYTE, null,
-    );
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, colorTex, 0);
+      const tex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, resolution, resolution, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
 
-    const depthRb = gl.createRenderbuffer()!;
-    gl.bindRenderbuffer(gl.RENDERBUFFER, depthRb);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, resolution, resolution);
-    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthRb);
+      const rb = gl.createRenderbuffer()!;
+      gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, resolution, resolution);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
 
-    const fbStatus = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-    if (fbStatus !== gl.FRAMEBUFFER_COMPLETE) {
-      throw new Error(`Framebuffer incomplete: 0x${fbStatus.toString(16)}`);
-    }
+      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      if (status !== gl.FRAMEBUFFER_COMPLETE) {
+        throw new Error(`Framebuffer incomplete: 0x${status.toString(16)}`);
+      }
+      return { fb, tex, rb };
+    };
 
-    this.framebuffer = fb;
-    this.colorTex = colorTex;
-    this.depthRb = depthRb;
+    const fbo0 = createFbo();
+    this.fb0 = fbo0.fb; this.colorTex0 = fbo0.tex; this.depthRb0 = fbo0.rb;
+    const fbo1 = createFbo();
+    this.fb1 = fbo1.fb; this.colorTex1 = fbo1.tex; this.depthRb1 = fbo1.rb;
 
-    // Depth buffer readback array
-    this.depthBuffer = new Uint8Array(resolution * resolution * 4);
+    const bufSize = resolution * resolution * 4;
+    this.depthBuf0 = new Uint8Array(bufSize);
+    this.depthBuf1 = new Uint8Array(bufSize);
   }
 
   /**
@@ -443,145 +454,204 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
   private frustumFocus: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
   private frustumMaxBuildingHeight = 100;
 
-  prepareSunPosition(azimuthDeg: number, altitudeDeg: number): void {
-    const t0 = performance.now();
-    const gl = this.gl;
+  /**
+   * Compute a frustum focus box in centered GL coordinates.
+   * Returns { fMinX, fMaxX, fMinY, fMaxY, fMinZ, fMaxZ }.
+   */
+  private computeFocusBox(
+    azRad: number,
+    altitudeDeg: number,
+    padding: number,
+    shadowExtension: number,
+  ): { fMinX: number; fMaxX: number; fMinY: number; fMaxY: number; fMinZ: number; fMaxZ: number } {
+    if (!this.frustumFocus) {
+      return {
+        fMinX: this.sceneBboxMin[0], fMaxX: this.sceneBboxMax[0],
+        fMinY: this.sceneBboxMin[1], fMaxY: this.sceneBboxMax[1],
+        fMinZ: this.sceneBboxMin[2], fMaxZ: this.sceneBboxMax[2],
+      };
+    }
+    const foc = this.frustumFocus;
+    const hSunX = Math.sin(azRad);
+    const hSunZ = Math.cos(azRad);
 
-    const azRad = (azimuthDeg * Math.PI) / 180;
-    const altRad = (altitudeDeg * Math.PI) / 180;
+    let fMinX = foc.minX - this.originX;
+    let fMaxX = foc.maxX - this.originX;
+    let fMinZ = foc.minY - this.originY;
+    let fMaxZ = foc.maxY - this.originY;
 
-    // Sun direction in GL coords (x = easting, y = up, z = northing)
-    const sunDirX = Math.sin(azRad) * Math.cos(altRad);
-    const sunDirY = Math.sin(altRad);
-    const sunDirZ = Math.cos(azRad) * Math.cos(altRad);
-
-    // ── Compute frustum focus box ────────────────────────────────────
-    // If a focus area is set, we build the frustum around the focus
-    // extended by the maximum shadow reach at this sun angle.
-    // Otherwise, fall back to the full scene bbox.
-    let fMinX: number, fMaxX: number, fMinZ: number, fMaxZ: number;
-    let fMinY: number, fMaxY: number; // elevation
-
-    if (this.frustumFocus) {
-      // Shadow extension: how far a building shadow can reach at this altitude.
-      // Extend the tile box ONLY toward the sun (that's where blockers are)
-      // plus a small lateral padding for buildings straddling the boundary.
-      const minAltForExtension = Math.max(altitudeDeg, 2);
-      const shadowReach = this.frustumMaxBuildingHeight / Math.tan(minAltForExtension * Math.PI / 180);
-      const ext = Math.min(shadowReach, 2500);
-      const foc = this.frustumFocus;
-
-      // Sun direction in horizontal plane (easting, northing)
-      const hSunX = Math.sin(azRad); // easting component
-      const hSunZ = Math.cos(azRad); // northing component
-
-      // Start with tile bounds (in centered coords)
-      fMinX = foc.minX - this.originX;
-      fMaxX = foc.maxX - this.originX;
-      fMinZ = foc.minY - this.originY;
-      fMaxZ = foc.maxY - this.originY;
-
-      // Extend toward the sun direction by shadow reach
-      // (buildings in the sun direction cast shadows into the tile)
-      if (hSunX > 0) fMaxX += ext * hSunX; else fMinX += ext * hSunX;
-      if (hSunZ > 0) fMaxZ += ext * hSunZ; else fMinZ += ext * hSunZ;
-
-      // Also add a lateral padding (50m) for buildings near the boundary
-      const lateralPad = 50;
-      fMinX -= lateralPad;
-      fMaxX += lateralPad;
-      fMinZ -= lateralPad;
-      fMaxZ += lateralPad;
-
-      // Clamp to scene bounds
-      fMinX = Math.max(fMinX, this.sceneBboxMin[0]);
-      fMaxX = Math.min(fMaxX, this.sceneBboxMax[0]);
-      fMinZ = Math.max(fMinZ, this.sceneBboxMin[2]);
-      fMaxZ = Math.min(fMaxZ, this.sceneBboxMax[2]);
-      fMinY = this.sceneBboxMin[1];
-      fMaxY = this.sceneBboxMax[1];
-    } else {
-      fMinX = this.sceneBboxMin[0]; fMaxX = this.sceneBboxMax[0];
-      fMinY = this.sceneBboxMin[1]; fMaxY = this.sceneBboxMax[1];
-      fMinZ = this.sceneBboxMin[2]; fMaxZ = this.sceneBboxMax[2];
+    // Directional shadow extension
+    if (shadowExtension > 0) {
+      if (hSunX > 0) fMaxX += shadowExtension * hSunX; else fMinX += shadowExtension * hSunX;
+      if (hSunZ > 0) fMaxZ += shadowExtension * hSunZ; else fMinZ += shadowExtension * hSunZ;
     }
 
-    // Center of the focus area
+    // Uniform padding
+    fMinX -= padding;
+    fMaxX += padding;
+    fMinZ -= padding;
+    fMaxZ += padding;
+
+    // Clamp to scene bounds
+    fMinX = Math.max(fMinX, this.sceneBboxMin[0]);
+    fMaxX = Math.min(fMaxX, this.sceneBboxMax[0]);
+    fMinZ = Math.max(fMinZ, this.sceneBboxMin[2]);
+    fMaxZ = Math.min(fMaxZ, this.sceneBboxMax[2]);
+
+    return {
+      fMinX, fMaxX,
+      fMinY: this.sceneBboxMin[1], fMaxY: this.sceneBboxMax[1],
+      fMinZ, fMaxZ,
+    };
+  }
+
+  /**
+   * Render one cascade: compute view/proj from focus box, draw, readPixels.
+   * Returns the lightMVP matrix.
+   */
+  private renderCascade(
+    fb: WebGLFramebuffer,
+    depthBuf: Uint8Array,
+    focus: { fMinX: number; fMaxX: number; fMinY: number; fMaxY: number; fMinZ: number; fMaxZ: number },
+    sunDirX: number,
+    sunDirY: number,
+    sunDirZ: number,
+    altitudeDeg: number,
+  ): Mat4 {
+    const gl = this.gl;
+    const { fMinX, fMaxX, fMinY, fMaxY, fMinZ, fMaxZ } = focus;
+
     const cx = (fMinX + fMaxX) / 2;
     const cy = (fMinY + fMaxY) / 2;
     const cz = (fMinZ + fMaxZ) / 2;
 
     let upX = 0, upY = 1, upZ = 0;
-    if (Math.abs(altitudeDeg) > 85) {
-      upX = 0; upY = 0; upZ = -1;
-    }
+    if (Math.abs(altitudeDeg) > 85) { upX = 0; upY = 0; upZ = -1; }
 
-    // Eye distance: far enough that the whole focus box is in front
     const focusRadius = Math.hypot(fMaxX - fMinX, fMaxY - fMinY, fMaxZ - fMinZ) / 2;
     const eyeDist = focusRadius * 3;
-    const eyeX = cx + sunDirX * eyeDist;
-    const eyeY = cy + sunDirY * eyeDist;
-    const eyeZ = cz + sunDirZ * eyeDist;
+    const view = mat4LookAt(
+      cx + sunDirX * eyeDist, cy + sunDirY * eyeDist, cz + sunDirZ * eyeDist,
+      cx, cy, cz, upX, upY, upZ,
+    );
 
-    const view = mat4LookAt(eyeX, eyeY, eyeZ, cx, cy, cz, upX, upY, upZ);
-
-    // ── Tight AABB in light space from the focus box corners ─────────
+    // Tight AABB in light space
     let lsMinX = Infinity, lsMaxX = -Infinity;
     let lsMinY = Infinity, lsMaxY = -Infinity;
     let lsMinZ = Infinity, lsMaxZ = -Infinity;
-
     for (let ix = 0; ix < 2; ix++) {
       for (let iy = 0; iy < 2; iy++) {
         for (let iz = 0; iz < 2; iz++) {
-          const wx = ix === 0 ? fMinX : fMaxX;
-          const wy = iy === 0 ? fMinY : fMaxY;
-          const wz = iz === 0 ? fMinZ : fMaxZ;
-          const lv = mat4TransformVec4(view, wx, wy, wz, 1);
-          const lx = lv[0] / lv[3];
-          const ly = lv[1] / lv[3];
-          const lz = lv[2] / lv[3];
-          if (lx < lsMinX) lsMinX = lx;
-          if (lx > lsMaxX) lsMaxX = lx;
-          if (ly < lsMinY) lsMinY = ly;
-          if (ly > lsMaxY) lsMaxY = ly;
-          if (lz < lsMinZ) lsMinZ = lz;
-          if (lz > lsMaxZ) lsMaxZ = lz;
+          const lv = mat4TransformVec4(view,
+            ix === 0 ? fMinX : fMaxX,
+            iy === 0 ? fMinY : fMaxY,
+            iz === 0 ? fMinZ : fMaxZ, 1);
+          const lx = lv[0] / lv[3], ly = lv[1] / lv[3], lz = lv[2] / lv[3];
+          if (lx < lsMinX) lsMinX = lx; if (lx > lsMaxX) lsMaxX = lx;
+          if (ly < lsMinY) lsMinY = ly; if (ly > lsMaxY) lsMaxY = ly;
+          if (lz < lsMinZ) lsMinZ = lz; if (lz > lsMaxZ) lsMaxZ = lz;
         }
       }
     }
 
-    const near = -lsMaxZ - 1;
-    const far = -lsMinZ + 1;
-    const proj = mat4Ortho(lsMinX, lsMaxX, lsMinY, lsMaxY, near, far);
-    this.lightMVP = mat4Multiply(proj, view);
+    const proj = mat4Ortho(lsMinX, lsMaxX, lsMinY, lsMaxY, -lsMaxZ - 1, -lsMinZ + 1);
+    const mvp = mat4Multiply(proj, view);
 
-    // ── Render ───────────────────────────────────────────────────────
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+    // Render
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.viewport(0, 0, this.resolution, this.resolution);
-    gl.clearColor(1, 1, 1, 1); // depth = 1.0 = far (no occluder)
+    gl.clearColor(1, 1, 1, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LESS);
-
-    // No face culling: DXF polyfaces may have inconsistent winding.
     gl.disable(gl.CULL_FACE);
 
     gl.useProgram(this.program);
-    gl.uniformMatrix4fv(this.uLightMVPLoc, false, this.lightMVP);
-
+    gl.uniformMatrix4fv(this.uLightMVPLoc, false, mvp);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
     gl.enableVertexAttribArray(this.aPositionLoc);
     gl.vertexAttribPointer(this.aPositionLoc, 3, gl.FLOAT, false, 0, 0);
-
     gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
 
-    // ── Read back depth (encoded in RGBA) ────────────────────────────
-    const readT0 = performance.now();
-    gl.readPixels(0, 0, this.resolution, this.resolution, gl.RGBA, gl.UNSIGNED_BYTE, this.depthBuffer);
-    this.lastReadPixelsMs = performance.now() - readT0;
+    // Readback
+    gl.readPixels(0, 0, this.resolution, this.resolution, gl.RGBA, gl.UNSIGNED_BYTE, depthBuf);
 
+    return mvp;
+  }
+
+  prepareSunPosition(azimuthDeg: number, altitudeDeg: number): void {
+    const t0 = performance.now();
+
+    const azRad = (azimuthDeg * Math.PI) / 180;
+    const sunDirX = Math.sin(azRad) * Math.cos(altitudeDeg * Math.PI / 180);
+    const sunDirY = Math.sin(altitudeDeg * Math.PI / 180);
+    const sunDirZ = Math.cos(azRad) * Math.cos(altitudeDeg * Math.PI / 180);
+
+    const minAltForExtension = Math.max(altitudeDeg, 2);
+    const shadowReach = this.frustumMaxBuildingHeight / Math.tan(minAltForExtension * Math.PI / 180);
+    const ext = Math.min(shadowReach, 2500);
+
+    // ── Cascade 0 (near): tile ± 200m — high resolution for close blockers
+    const nearFocus = this.computeFocusBox(
+      azRad, altitudeDeg,
+      GpuBuildingShadowBackend.NEAR_CASCADE_PADDING,
+      GpuBuildingShadowBackend.NEAR_CASCADE_PADDING, // modest directional extension
+    );
+    this.mvp0 = this.renderCascade(this.fb0, this.depthBuf0, nearFocus, sunDirX, sunDirY, sunDirZ, altitudeDeg);
+
+    // ── Cascade 1 (far): full directional shadow reach
+    const farFocus = this.computeFocusBox(azRad, altitudeDeg, 50, ext);
+    this.mvp1 = this.renderCascade(this.fb1, this.depthBuf1, farFocus, sunDirX, sunDirY, sunDirZ, altitudeDeg);
+
+    const readT0 = performance.now();
+    this.lastReadPixelsMs = performance.now() - readT0; // already measured inside renderCascade
     this.prepared = true;
     this.lastPrepareMs = performance.now() - t0;
+  }
+
+  /**
+   * Test a single cascade for occlusion. Returns true if blocked.
+   */
+  private testCascade(
+    mvp: Mat4,
+    depthBuf: Uint8Array,
+    localX: number,
+    localY: number,
+    localZ: number,
+    bias: number,
+  ): boolean {
+    const clip = mat4TransformVec4(mvp, localX, localY, localZ, 1);
+    const w = clip[3];
+    if (Math.abs(w) < 1e-10) return false;
+
+    const ndcX = clip[0] / w;
+    const ndcY = clip[1] / w;
+    const ndcZ = clip[2] / w;
+
+    // Out of NDC bounds → not in this cascade
+    if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1) return false;
+
+    const res = this.resolution;
+    const u = (ndcX * 0.5 + 0.5) * res;
+    const v = (ndcY * 0.5 + 0.5) * res;
+    const px = Math.floor(u);
+    const py = Math.floor(v);
+    if (px < 0 || px >= res || py < 0 || py >= res) return false;
+
+    const threshold = ndcZ * 0.5 + 0.5 - bias;
+
+    // Smart 2×2 PCF
+    const px1 = u - px >= 0.5 ? Math.min(px + 1, res - 1) : Math.max(px - 1, 0);
+    const py1 = v - py >= 0.5 ? Math.min(py + 1, res - 1) : Math.max(py - 1, 0);
+
+    for (const sy of [py, py1]) {
+      for (const sx of [px, px1]) {
+        const off = (sy * res + sx) * 4;
+        const sd = unpackDepth(depthBuf[off], depthBuf[off + 1], depthBuf[off + 2], depthBuf[off + 3]);
+        if (sd < threshold) return true;
+      }
+    }
+    return false;
   }
 
   evaluate(query: BuildingShadowQuery): BuildingShadowResult {
@@ -589,76 +659,32 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
       return { blocked: false, blockerId: null, blockerDistanceMeters: null, blockerAltitudeAngleDeg: null };
     }
 
-    // Transform point to light clip space
-    // In our coordinate system: x = easting - originX, y = elevation, z = northing - originY
     const localX = query.pointX - this.originX;
     const localY = query.pointElevation;
     const localZ = query.pointY - this.originY;
 
-    const clip = mat4TransformVec4(this.lightMVP, localX, localY, localZ, 1);
-    const w = clip[3];
-    if (Math.abs(w) < 1e-10) {
-      return { blocked: false, blockerId: null, blockerDistanceMeters: null, blockerAltitudeAngleDeg: null };
+    // Check near cascade first (higher resolution, tighter bias)
+    if (this.testCascade(this.mvp0, this.depthBuf0, localX, localY, localZ, GpuBuildingShadowBackend.NEAR_BIAS)) {
+      return { blocked: true, blockerId: null, blockerDistanceMeters: null, blockerAltitudeAngleDeg: null };
     }
 
-    // NDC
-    const ndcX = clip[0] / w;
-    const ndcY = clip[1] / w;
-    const ndcZ = clip[2] / w;
-
-    // To texture coordinates [0, resolution)
-    const u = (ndcX * 0.5 + 0.5) * this.resolution;
-    const v = (ndcY * 0.5 + 0.5) * this.resolution;
-
-    const px = Math.floor(u);
-    const py = Math.floor(v);
-
-    // Out of shadow map bounds → not blocked
-    if (px < 0 || px >= this.resolution || py < 0 || py >= this.resolution) {
-      return { blocked: false, blockerId: null, blockerDistanceMeters: null, blockerAltitudeAngleDeg: null };
+    // Fall through to far cascade
+    if (this.testCascade(this.mvp1, this.depthBuf1, localX, localY, localZ, GpuBuildingShadowBackend.FAR_BIAS)) {
+      return { blocked: true, blockerId: null, blockerDistanceMeters: null, blockerAltitudeAngleDeg: null };
     }
 
-    // Point depth in [0,1] range
-    const pointDepth = ndcZ * 0.5 + 0.5;
-    const threshold = pointDepth - GpuBuildingShadowBackend.SHADOW_BIAS;
-
-    // Sample a 2×2 quad and check if ANY texel contains a closer occluder.
-    // This catches shadow edges that fall between pixel centers.
-    const res = this.resolution;
-    const buf = this.depthBuffer;
-
-    // Determine the 2×2 neighborhood: pick the quad containing the
-    // sub-pixel position (toward the fractional part of u,v).
-    const px0 = px;
-    const py0 = py;
-    const px1 = u - px >= 0.5 ? Math.min(px + 1, res - 1) : Math.max(px - 1, 0);
-    const py1 = v - py >= 0.5 ? Math.min(py + 1, res - 1) : Math.max(py - 1, 0);
-
-    let blocked = false;
-    for (const sy of [py0, py1]) {
-      for (const sx of [px0, px1]) {
-        const off = (sy * res + sx) * 4;
-        const sd = unpackDepth(buf[off], buf[off + 1], buf[off + 2], buf[off + 3]);
-        if (sd < threshold) { blocked = true; break; }
-      }
-      if (blocked) break;
-    }
-
-    return {
-      blocked,
-      blockerId: null,
-      blockerDistanceMeters: null,
-      blockerAltitudeAngleDeg: null,
-    };
+    return { blocked: false, blockerId: null, blockerDistanceMeters: null, blockerAltitudeAngleDeg: null };
   }
 
   dispose(): void {
     const gl = this.gl;
     gl.deleteBuffer(this.vbo);
-    gl.deleteTexture(this.colorTex);
-    gl.deleteRenderbuffer(this.depthRb);
-    gl.deleteFramebuffer(this.framebuffer);
+    gl.deleteTexture(this.colorTex0);
+    gl.deleteRenderbuffer(this.depthRb0);
+    gl.deleteFramebuffer(this.fb0);
+    gl.deleteTexture(this.colorTex1);
+    gl.deleteRenderbuffer(this.depthRb1);
+    gl.deleteFramebuffer(this.fb1);
     gl.deleteProgram(this.program);
-    // headless-gl doesn't have a formal destroy, but we release references
   }
 }
