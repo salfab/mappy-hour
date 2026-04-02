@@ -234,7 +234,7 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
   private lightMVP: Mat4 = mat4Identity();
   private prepared = false;
 
-  private static readonly SHADOW_BIAS = 0.003;
+  private static readonly SHADOW_BIAS = 0.0002;
 
   /**
    * Create a GPU backend from pre-built vertices.
@@ -426,43 +426,77 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
     const t0 = performance.now();
     const gl = this.gl;
 
-    // ── Build light view+projection matrices ─────────────────────────
+    // ── Build light view+projection with tight frustum ──────────────
     const azRad = (azimuthDeg * Math.PI) / 180;
     const altRad = (altitudeDeg * Math.PI) / 180;
 
-    // Sun direction vector (from sun toward scene)
+    // Sun direction vector (toward scene from sun)
     const sunDirX = Math.sin(azRad) * Math.cos(altRad);
     const sunDirY = Math.sin(altRad);
     const sunDirZ = Math.cos(azRad) * Math.cos(altRad);
 
-    // Scene center and extent
+    // Scene center in GL coords
     const cx = (this.sceneBboxMin[0] + this.sceneBboxMax[0]) / 2;
     const cy = (this.sceneBboxMin[1] + this.sceneBboxMax[1]) / 2;
     const cz = (this.sceneBboxMin[2] + this.sceneBboxMax[2]) / 2;
 
-    const extentX = (this.sceneBboxMax[0] - this.sceneBboxMin[0]) / 2;
-    const extentY = (this.sceneBboxMax[1] - this.sceneBboxMin[1]) / 2;
-    const extentZ = (this.sceneBboxMax[2] - this.sceneBboxMin[2]) / 2;
-    const sceneRadius = Math.hypot(extentX, extentY, extentZ);
-
-    // Eye position: scene center + sun direction * distance
-    const eyeDist = sceneRadius * 2;
-    const eyeX = cx + sunDirX * eyeDist;
-    const eyeY = cy + sunDirY * eyeDist;
-    const eyeZ = cz + sunDirZ * eyeDist;
-
-    // Up vector: use world-up (0,1,0), unless sun is nearly vertical
+    // Build a view matrix looking from a far-away sun position toward
+    // the scene center.  We place the eye far enough that all geometry
+    // is in front of the camera.
     let upX = 0, upY = 1, upZ = 0;
     if (Math.abs(altitudeDeg) > 85) {
       upX = 0; upY = 0; upZ = -1;
     }
 
+    // Use a generous eye distance to start, then we tighten near/far
+    const roughRadius = Math.hypot(
+      this.sceneBboxMax[0] - this.sceneBboxMin[0],
+      this.sceneBboxMax[1] - this.sceneBboxMin[1],
+      this.sceneBboxMax[2] - this.sceneBboxMin[2],
+    ) / 2;
+    const eyeDist = roughRadius * 3;
+    const eyeX = cx + sunDirX * eyeDist;
+    const eyeY = cy + sunDirY * eyeDist;
+    const eyeZ = cz + sunDirZ * eyeDist;
+
     const view = mat4LookAt(eyeX, eyeY, eyeZ, cx, cy, cz, upX, upY, upZ);
-    const proj = mat4Ortho(
-      -sceneRadius, sceneRadius,
-      -sceneRadius, sceneRadius,
-      0.1, eyeDist * 2 + sceneRadius,
-    );
+
+    // ── Compute tight AABB in light space ────────────────────────────
+    // Project the 8 corners of the scene bounding box into light-view
+    // space and find the tight AABB.
+    const bMin = this.sceneBboxMin;
+    const bMax = this.sceneBboxMax;
+    let lsMinX = Infinity, lsMaxX = -Infinity;
+    let lsMinY = Infinity, lsMaxY = -Infinity;
+    let lsMinZ = Infinity, lsMaxZ = -Infinity;
+
+    for (let ix = 0; ix < 2; ix++) {
+      for (let iy = 0; iy < 2; iy++) {
+        for (let iz = 0; iz < 2; iz++) {
+          const wx = ix === 0 ? bMin[0] : bMax[0];
+          const wy = iy === 0 ? bMin[1] : bMax[1];
+          const wz = iz === 0 ? bMin[2] : bMax[2];
+          const lv = mat4TransformVec4(view, wx, wy, wz, 1);
+          const lx = lv[0] / lv[3];
+          const ly = lv[1] / lv[3];
+          const lz = lv[2] / lv[3];
+          if (lx < lsMinX) lsMinX = lx;
+          if (lx > lsMaxX) lsMaxX = lx;
+          if (ly < lsMinY) lsMinY = ly;
+          if (ly > lsMaxY) lsMaxY = ly;
+          if (lz < lsMinZ) lsMinZ = lz;
+          if (lz > lsMaxZ) lsMaxZ = lz;
+        }
+      }
+    }
+
+    // Ortho projection that tightly wraps the scene in light space.
+    // near/far map to the z-range; left/right/bottom/top map to x/y range.
+    // In our lookAt convention, z is negative (pointing into the scene).
+    // near = -lsMaxZ (closest to eye), far = -lsMinZ (farthest from eye).
+    const near = -lsMaxZ - 1; // small padding
+    const far = -lsMinZ + 1;
+    const proj = mat4Ortho(lsMinX, lsMaxX, lsMinY, lsMaxY, near, far);
     this.lightMVP = mat4Multiply(proj, view);
 
     // ── Render ───────────────────────────────────────────────────────
@@ -472,6 +506,9 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LESS);
+
+    // No face culling: DXF polyfaces may have inconsistent winding.
+    gl.disable(gl.CULL_FACE);
 
     gl.useProgram(this.program);
     gl.uniformMatrix4fv(this.uLightMVPLoc, false, this.lightMVP);
@@ -537,7 +574,7 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
       this.depthBuffer[offset + 3],
     );
 
-    // If stored depth < point depth - bias, something is closer to the sun → point is blocked
+    // If stored depth < point depth - bias, something is closer to the sun → blocked
     const blocked = storedDepth < pointDepth - GpuBuildingShadowBackend.SHADOW_BIAS;
 
     return {

@@ -421,7 +421,7 @@ async function main() {
 
   // ── Save ───────────────────────────────────────────────────────────
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
-  const outPath = path.join(OUTPUT_DIR, "gpu-shadow-backend-v3-mesh-benchmark.json");
+  const outPath = path.join(OUTPUT_DIR, "gpu-shadow-backend-v4-fix-benchmark.json");
   await fs.writeFile(outPath, JSON.stringify(report, null, 2));
   console.log(`[benchmark] Report saved to ${outPath}`);
 
@@ -431,7 +431,7 @@ async function main() {
 
   // Print report summary
   console.log("\n" + "=".repeat(60));
-  console.log("BENCHMARK RESULTS (v3 — DXF mesh)");
+  console.log("BENCHMARK RESULTS (v4 — tight frustum + reduced bias)");
   console.log("=".repeat(60));
   console.log(`Machine: ${report.machine}`);
   console.log(`GL renderer: ${report.glRenderer}`);
