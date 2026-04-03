@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { MAX_OUTDOOR_POINTS, DEFAULT_MAX_OUTDOOR_POINTS } from "@/lib/config/grid-limits";
 import { buildGridFromBbox } from "@/lib/geo/grid";
 import {
   aggregateDailyAreaFromArtifacts,
@@ -19,7 +20,7 @@ import {
 import { zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
 export const runtime = "nodejs";
-const MAX_RAW_GRID_POINTS = 20_000;
+const MAX_RAW_GRID_POINTS = 20_000_000;
 
 const requestSchema = z
   .object({
@@ -30,7 +31,7 @@ const requestSchema = z
     localTime: z.string().regex(/^\d{2}:\d{2}$/).default("12:00"),
     sampleEveryMinutes: z.number().int().min(1).max(60).default(15),
     gridStepMeters: z.number().int().min(1).max(2000).default(250),
-    maxPoints: z.number().int().min(1).max(12000).default(3000),
+    maxPoints: z.number().int().min(1).max(MAX_OUTDOOR_POINTS).default(DEFAULT_MAX_OUTDOOR_POINTS),
     ignoreVegetation: z.boolean().default(false),
     buildingHeightBiasMeters: z.number().min(-20).max(20).optional(),
   })

@@ -3207,7 +3207,7 @@ export function SunlightMapClient() {
         timezone: "Europe/Zurich",
         localTime,
         gridStepMeters: String(gridStepMeters),
-        maxPoints: "6000",
+        maxPoints: "2000000",
         buildingHeightBiasMeters: String(buildingHeightBiasMeters),
       });
 
@@ -3405,7 +3405,7 @@ export function SunlightMapClient() {
       endLocalTime: dailyEndLocalTime,
       sampleEveryMinutes: String(sampleEveryMinutes),
       gridStepMeters: String(gridStepMeters),
-      maxPoints: "6000",
+      maxPoints: "2000000",
       buildingHeightBiasMeters: String(buildingHeightBiasMeters),
     });
 

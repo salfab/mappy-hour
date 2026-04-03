@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { MAX_OUTDOOR_POINTS, DEFAULT_MAX_OUTDOOR_POINTS } from "@/lib/config/grid-limits";
 import { buildGridFromBbox } from "@/lib/geo/grid";
 import {
   buildTimelineFromArtifacts,
@@ -30,7 +31,7 @@ const querySchema = z
     endLocalTime: z.string().regex(/^\d{2}:\d{2}$/).default("23:59"),
     sampleEveryMinutes: z.coerce.number().int().min(1).max(60).default(15),
     gridStepMeters: z.coerce.number().int().min(1).max(2000).default(250),
-    maxPoints: z.coerce.number().int().min(1).max(12000).default(6000),
+    maxPoints: z.coerce.number().int().min(1).max(MAX_OUTDOOR_POINTS).default(DEFAULT_MAX_OUTDOOR_POINTS),
     buildingHeightBiasMeters: z.coerce.number().min(-20).max(20).default(0),
   })
   .refine(
