@@ -114,6 +114,50 @@ const BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES = 2;
 const BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS = 3;
 const BUILDINGS_DETAILED_MAX_REFINEMENT_STEPS = 32;
 
+// ── GPU backend singleton cache ──────────────────────────────────────
+// The GPU backend loads all DXF meshes (~15s). We cache it at module
+// level so it's created once and reused across all tiles/requests.
+let gpuBackendCache: import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null | undefined;
+let gpuBackendLoading: Promise<import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null> | null = null;
+
+async function getOrCreateGpuBackend(
+  obstacles: Array<{ centerX: number; centerY: number; height: number; [key: string]: unknown }>,
+): Promise<import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null> {
+  // Already created or failed
+  if (gpuBackendCache !== undefined) return gpuBackendCache;
+
+  // Another call is already creating it — wait for that
+  if (gpuBackendLoading) return gpuBackendLoading;
+
+  gpuBackendLoading = (async () => {
+    try {
+      const { GpuBuildingShadowBackend } = await import(
+        "@/lib/sun/gpu-building-shadow-backend"
+      );
+      const backend = await GpuBuildingShadowBackend.createWithDxfMeshes(
+        obstacles as Parameters<typeof GpuBuildingShadowBackend.createWithDxfMeshes>[0],
+        4096,
+      );
+      console.log(
+        `[evaluation-context] GPU raster backend ready: ${backend.name}, ${backend.triangleCount} triangles (cached for reuse)`,
+      );
+      gpuBackendCache = backend;
+      return backend;
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[evaluation-context] GPU raster unavailable: ${msg}. Falling back to CPU.`,
+      );
+      gpuBackendCache = null;
+      return null;
+    } finally {
+      gpuBackendLoading = null;
+    }
+  })();
+
+  return gpuBackendLoading;
+}
+
 export async function buildSharedPointEvaluationSources(
   options: BuildSharedPointEvaluationSourcesOptions = {},
 ): Promise<SharedPointEvaluationSources> {
@@ -151,36 +195,17 @@ export async function buildSharedPointEvaluationSources(
       })
     : null;
 
-  // ── GPU raster backend (optional) ──────────────────────────────────
+  // ── GPU raster backend (optional, cached at module level) ──────────
   let gpuShadowBackend: SharedPointEvaluationSources["gpuShadowBackend"] = undefined;
   if (BUILDINGS_SHADOW_MODE === "gpu-raster" && buildingsIndex) {
-    try {
-      // Dynamic import: avoids hard dependency on native `gl` module
-      const { GpuBuildingShadowBackend } = await import(
-        "@/lib/sun/gpu-building-shadow-backend"
-      );
-
-      // Filter buildings within 2500m of tile center (or all if no bounds)
-      const obstacles = buildingsIndex.obstacles;
-      const gpuObstacles = options.lv95Bounds
-        ? (() => {
-            const cx = (options.lv95Bounds!.minX + options.lv95Bounds!.maxX) / 2;
-            const cy = (options.lv95Bounds!.minY + options.lv95Bounds!.maxY) / 2;
-            return obstacles.filter(
-              (o) => Math.hypot(o.centerX - cx, o.centerY - cy) <= 2500,
-            );
-          })()
-        : obstacles;
-
-      const backend = await GpuBuildingShadowBackend.createWithDxfMeshes(
-        gpuObstacles,
-        4096,
-      );
-
-      // Focus the frustum on tile bounds for better resolution
-      if (options.lv95Bounds) {
-        const maxH = gpuObstacles.reduce((m, o) => Math.max(m, o.height), 0);
-        backend.setFrustumFocus(
+    const backend = await getOrCreateGpuBackend(buildingsIndex.obstacles);
+    if (backend) {
+      // Update frustum focus for this specific tile (narrows the shadow map
+      // to the tile area for higher resolution). setFrustumFocus is specific
+      // to GpuBuildingShadowBackend — safe to cast since we just created it.
+      if (options.lv95Bounds && "setFrustumFocus" in backend) {
+        const maxH = buildingsIndex.obstacles.reduce((m, o) => Math.max(m, o.height), 0);
+        (backend as { setFrustumFocus: (bounds: { minX: number; minY: number; maxX: number; maxY: number }, maxH: number) => void }).setFrustumFocus(
           {
             minX: options.lv95Bounds.minX,
             minY: options.lv95Bounds.minY,
@@ -190,17 +215,9 @@ export async function buildSharedPointEvaluationSources(
           maxH,
         );
       }
-
       gpuShadowBackend = backend;
-      console.log(
-        `[evaluation-context] GPU raster backend ready: ${backend.name}, ${backend.triangleCount} triangles`,
-      );
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.warn(
-        `[evaluation-context] GPU raster unavailable: ${msg}. Falling back to CPU.`,
-      );
-      gpuShadowBackend = null; // mark as attempted but failed
+    } else {
+      gpuShadowBackend = null; // GPU unavailable, fallback to CPU
     }
   }
 
