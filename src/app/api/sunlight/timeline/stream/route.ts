@@ -16,7 +16,7 @@ import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
 export const runtime = "nodejs";
 
-const MAX_RAW_GRID_POINTS = 20_000;
+const MAX_RAW_GRID_POINTS = 20_000_000;
 
 const querySchema = z
   .object({
@@ -214,6 +214,19 @@ export async function GET(request: Request) {
             endLocalTime: query.endLocalTime,
             shadowCalibration,
             persistMissingTiles: true,
+            onTileComputeProgress: (event) => {
+              sendEvent("progress", {
+                phase: event.phase,
+                tileIndex: event.tileIndex,
+                totalTiles: event.totalTiles,
+                tileId: event.tileId,
+                stage: event.stage,
+                done: event.stageCompleted,
+                total: event.stageTotal,
+                percent: event.percent,
+                etaSeconds: null,
+              });
+            },
           });
 
           if (cacheResolved) {

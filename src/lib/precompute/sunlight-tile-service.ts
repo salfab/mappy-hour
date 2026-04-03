@@ -833,6 +833,7 @@ async function getOrCreateTileArtifact(params: {
   tile: RegionTileSpec;
   shadowCalibration: ShadowCalibration;
   persistMissingTiles: boolean;
+  onProgress?: (progress: SunlightTileComputeProgress) => void;
 }) {
   const existing = await loadTileCached({
     region: params.region,
@@ -874,6 +875,8 @@ async function getOrCreateTileArtifact(params: {
       endLocalTime: params.endLocalTime,
       tile: params.tile,
       shadowCalibration: params.shadowCalibration,
+      cooperativeYieldEveryPoints: 200,
+      onProgress: params.onProgress,
     });
     if (params.persistMissingTiles) {
       await writePrecomputedSunlightTile(computed);
@@ -913,6 +916,17 @@ async function getOrCreateTileArtifact(params: {
   };
 }
 
+export interface TileComputeProgressEvent {
+  phase: "tile-computation";
+  tileIndex: number;
+  totalTiles: number;
+  tileId: string;
+  stage: "prepare-points" | "evaluate-frames";
+  stageCompleted: number;
+  stageTotal: number;
+  percent: number;
+}
+
 export async function resolveSunlightTilesForBbox(params: {
   bbox: RegionBbox;
   date: string;
@@ -923,6 +937,7 @@ export async function resolveSunlightTilesForBbox(params: {
   endLocalTime: string;
   shadowCalibration: ShadowCalibration;
   persistMissingTiles?: boolean;
+  onTileComputeProgress?: (event: TileComputeProgressEvent) => void;
 }): Promise<ResolvedSunlightTiles | null> {
   const region = resolveRegionForBbox(params.bbox);
   if (!region) {
@@ -956,7 +971,26 @@ export async function resolveSunlightTilesForBbox(params: {
   let tilesFromL2 = 0;
   let tilesComputed = 0;
 
-  for (const tile of requiredTiles) {
+  for (let tileIdx = 0; tileIdx < requiredTiles.length; tileIdx++) {
+    const tile = requiredTiles[tileIdx];
+    const onProgress = params.onTileComputeProgress
+      ? (progress: SunlightTileComputeProgress) => {
+          const tileBase = tileIdx / requiredTiles.length;
+          const tileWeight = 1 / requiredTiles.length;
+          const stagePercent =
+            progress.total > 0 ? progress.completed / progress.total : 0;
+          params.onTileComputeProgress!({
+            phase: "tile-computation",
+            tileIndex: tileIdx + 1,
+            totalTiles: requiredTiles.length,
+            tileId: tile.tileId,
+            stage: progress.stage,
+            stageCompleted: progress.completed,
+            stageTotal: progress.total,
+            percent: Math.round((tileBase + tileWeight * stagePercent) * 1000) / 10,
+          });
+        }
+      : undefined;
     const resolved = await getOrCreateTileArtifact({
       region,
       modelVersionHash: modelVersion.modelVersionHash,
@@ -970,6 +1004,7 @@ export async function resolveSunlightTilesForBbox(params: {
       tile,
       shadowCalibration: params.shadowCalibration,
       persistMissingTiles: params.persistMissingTiles ?? true,
+      onProgress,
     });
     if (resolved.layer === "L1") {
       tilesFromL1 += 1;

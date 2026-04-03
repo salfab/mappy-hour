@@ -244,9 +244,9 @@ async function listZipFilesByBasename(): Promise<Map<string, string>> {
   const stack = [RAW_BUILDINGS_DIR];
   while (stack.length > 0) {
     const current = stack.pop()!;
-    let entries: Awaited<ReturnType<typeof fsPromises.readdir>>;
+    let entries: import("node:fs").Dirent[];
     try {
-      entries = await fsPromises.readdir(current, { withFileTypes: true });
+      entries = await fsPromises.readdir(current, { withFileTypes: true }) as import("node:fs").Dirent[];
     } catch {
       continue;
     }
