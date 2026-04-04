@@ -232,6 +232,9 @@ interface TimelineProgress {
   total: number;
   percent: number;
   etaSeconds: number | null;
+  elapsedMs?: number;
+  tileIndex?: number;
+  totalTiles?: number;
 }
 
 interface InstantStreamStartPayload {
@@ -3917,11 +3920,15 @@ export function SunlightMapClient() {
                 />
               </div>
               <p className="text-xs text-slate-300">
-                {dailyProgress.phase} - {dailyProgress.percent.toFixed(1)}% (
-                {dailyProgress.done}/{dailyProgress.total}), ETA:{" "}
-                {dailyProgress.etaSeconds === null
-                  ? "-"
-                  : `${dailyProgress.etaSeconds}s`}
+                {dailyProgress.phase}
+                {dailyProgress.tileIndex && dailyProgress.totalTiles
+                  ? ` (tuile ${dailyProgress.tileIndex}/${dailyProgress.totalTiles})`
+                  : ""}
+                {" "}&mdash; {dailyProgress.percent.toFixed(1)}%
+                {" "}&mdash; ETA: {dailyProgress.etaSeconds === null ? "-" : `${dailyProgress.etaSeconds}s`}
+                {dailyProgress.elapsedMs != null
+                  ? ` \u2014 ${Math.round(dailyProgress.elapsedMs / 1000)}s \u00e9coul\u00e9`
+                  : ""}
               </p>
             </div>
           ) : null}
@@ -3937,11 +3944,15 @@ export function SunlightMapClient() {
             />
           </div>
           <p className="text-xs text-slate-300">
-            {instantProgress.phase} - {instantProgress.percent.toFixed(1)}% (
-            {instantProgress.done}/{instantProgress.total}), ETA:{" "}
-            {instantProgress.etaSeconds === null
-              ? "-"
-              : `${instantProgress.etaSeconds}s`}
+            {instantProgress.phase}
+            {instantProgress.tileIndex && instantProgress.totalTiles
+              ? ` (tuile ${instantProgress.tileIndex}/${instantProgress.totalTiles})`
+              : ""}
+            {" "}&mdash; {instantProgress.percent.toFixed(1)}%
+            {" "}&mdash; ETA: {instantProgress.etaSeconds === null ? "-" : `${instantProgress.etaSeconds}s`}
+            {instantProgress.elapsedMs != null
+              ? ` \u2014 ${Math.round(instantProgress.elapsedMs / 1000)}s \u00e9coul\u00e9`
+              : ""}
           </p>
         </div>
       ) : null}

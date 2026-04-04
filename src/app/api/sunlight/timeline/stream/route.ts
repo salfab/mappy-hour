@@ -216,6 +216,14 @@ export async function GET(request: Request) {
             shadowCalibration,
             persistMissingTiles: true,
             onTileComputeProgress: (event) => {
+              const etaSeconds =
+                event.elapsedMs > 1000 && event.percent > 0.5
+                  ? Math.round(
+                      (event.elapsedMs / event.percent) *
+                        (100 - event.percent) /
+                        1000,
+                    )
+                  : null;
               sendEvent("progress", {
                 phase: event.phase,
                 tileIndex: event.tileIndex,
@@ -225,7 +233,8 @@ export async function GET(request: Request) {
                 done: event.stageCompleted,
                 total: event.stageTotal,
                 percent: event.percent,
-                etaSeconds: null,
+                etaSeconds,
+                elapsedMs: Math.round(event.elapsedMs),
               });
             },
           });

@@ -74,6 +74,7 @@ interface SunlightTileComputeProgress {
   pointCountOutdoor: number;
   frameCountTotal: number;
   frameIndex: number | null;
+  elapsedMs: number;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -524,6 +525,7 @@ export async function computeSunlightTileArtifact(params: {
   signal?: AbortSignal;
 }): Promise<PrecomputedSunlightTileArtifact> {
   const started = performance.now();
+  const phaseMs = { adaptiveHorizon: 0, sharedSources: 0, pointContexts: 0, evaluations: 0 };
   throwIfAborted(params.signal);
   const rawTilePoints = buildTilePoints(params.tile, params.gridStepMeters);
   const warnings: string[] = [];
@@ -535,6 +537,7 @@ export async function computeSunlightTileArtifact(params: {
   let terrainHorizonOverride:
     | Awaited<ReturnType<typeof resolveAdaptiveTerrainHorizonForTile>>["horizonMask"]
     | undefined;
+  const horizonT0 = performance.now();
   try {
     const adaptiveHorizon = await resolveAdaptiveTerrainHorizonForTile({
       region: params.region,
@@ -559,8 +562,11 @@ export async function computeSunlightTileArtifact(params: {
     );
   }
 
+  phaseMs.adaptiveHorizon = performance.now() - horizonT0;
+
   const points: PrecomputedSunlightTileArtifact["points"] = [];
   const preparedOutdoorPoints: PreparedOutdoorPoint[] = [];
+  const sourcesT0 = performance.now();
   const sharedSources = await buildSharedPointEvaluationSources({
     terrainHorizonOverride: terrainHorizonOverride ?? undefined,
     lv95Bounds: {
@@ -590,7 +596,9 @@ export async function computeSunlightTileArtifact(params: {
   const buildingMethodSuffix = tileBuildingAllowlist
     ? `|${BUILDING_TILE_ALLOWLIST_VERSION}`
     : "";
+  phaseMs.sharedSources = performance.now() - sourcesT0;
 
+  const pointsT0 = performance.now();
   for (let rawPointIndex = 0; rawPointIndex < rawTilePoints.length; rawPointIndex += 1) {
     throwIfAborted(params.signal);
     const point = rawTilePoints[rawPointIndex];
@@ -651,11 +659,13 @@ export async function computeSunlightTileArtifact(params: {
         pointCountOutdoor: preparedOutdoorPoints.length,
         frameCountTotal: 0,
         frameIndex: null,
+        elapsedMs: performance.now() - started,
       });
       await yieldToEventLoop();
       throwIfAborted(params.signal);
     }
   }
+  phaseMs.pointContexts = performance.now() - pointsT0;
 
   params.onProgress?.({
     stage: "prepare-points",
@@ -665,8 +675,10 @@ export async function computeSunlightTileArtifact(params: {
     pointCountOutdoor: preparedOutdoorPoints.length,
     frameCountTotal: 0,
     frameIndex: null,
+    elapsedMs: performance.now() - started,
   });
 
+  const evalsT0 = performance.now();
   const frames: PrecomputedSunlightTileArtifact["frames"] = [];
   const totalFrameEvaluations = preparedOutdoorPoints.length * samples.length;
   let completedFrameEvaluations = 0;
@@ -750,6 +762,7 @@ export async function computeSunlightTileArtifact(params: {
           pointCountOutdoor: preparedOutdoorPoints.length,
           frameCountTotal: samples.length,
           frameIndex: sampleIndex + 1,
+          elapsedMs: performance.now() - started,
         });
         await yieldToEventLoop();
         throwIfAborted(params.signal);
@@ -784,8 +797,21 @@ export async function computeSunlightTileArtifact(params: {
       pointCountOutdoor: preparedOutdoorPoints.length,
       frameCountTotal: samples.length,
       frameIndex: sampleIndex + 1,
+      elapsedMs: performance.now() - started,
     });
   }
+
+  phaseMs.evaluations = performance.now() - evalsT0;
+  const totalMs = performance.now() - started;
+  const evals = preparedOutdoorPoints.length * frames.length;
+  console.log(
+    `[tile ${params.tile.tileId}] ${(totalMs / 1000).toFixed(1)}s total` +
+      ` \u2014 horizon ${(phaseMs.adaptiveHorizon / 1000).toFixed(1)}s` +
+      `, sources ${(phaseMs.sharedSources / 1000).toFixed(1)}s` +
+      `, points ${(phaseMs.pointContexts / 1000).toFixed(1)}s` +
+      `, eval ${(phaseMs.evaluations / 1000).toFixed(1)}s` +
+      ` (${evals} evals, ${evals > 0 ? Math.round((phaseMs.evaluations * 1000) / evals) : 0} \u00b5s/eval)`,
+  );
 
   return {
     artifactFormatVersion: 2,
@@ -815,7 +841,7 @@ export async function computeSunlightTileArtifact(params: {
       pointsWithElevation,
       pointsWithoutElevation: preparedOutdoorPoints.length - pointsWithElevation,
       totalEvaluations: preparedOutdoorPoints.length * frames.length,
-      elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
+      elapsedMs: Math.round(totalMs * 1000) / 1000,
     },
   };
 }
@@ -925,6 +951,7 @@ export interface TileComputeProgressEvent {
   stageCompleted: number;
   stageTotal: number;
   percent: number;
+  elapsedMs: number;
 }
 
 export async function resolveSunlightTilesForBbox(params: {
@@ -970,6 +997,7 @@ export async function resolveSunlightTilesForBbox(params: {
   let tilesFromL1 = 0;
   let tilesFromL2 = 0;
   let tilesComputed = 0;
+  const resolveStartedAt = performance.now();
 
   for (let tileIdx = 0; tileIdx < requiredTiles.length; tileIdx++) {
     const tile = requiredTiles[tileIdx];
@@ -988,6 +1016,7 @@ export async function resolveSunlightTilesForBbox(params: {
             stageCompleted: progress.completed,
             stageTotal: progress.total,
             percent: Math.round((tileBase + tileWeight * stagePercent) * 1000) / 10,
+            elapsedMs: performance.now() - resolveStartedAt,
           });
         }
       : undefined;
