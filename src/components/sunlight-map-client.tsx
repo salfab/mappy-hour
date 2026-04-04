@@ -1234,11 +1234,24 @@ function buildSunAndShadowContours(response: AreaApiResponse): {
 
 const CANVAS_OVERLAY_THRESHOLD = 10_000;
 
-function buildSunShadowCanvas(
-  response: AreaApiResponse,
-): { dataUrl: string; bounds: [[number, number], [number, number]] } | null {
-  const parsedPoints = parsePointsForContours(response);
-  if (parsedPoints.length === 0) return null;
+// RGBA colors for canvas pixels
+const SUNNY_RGBA = [250, 204, 21, 102] as const; // yellow-400 @ 40%
+const SHADOW_RGBA = [100, 116, 139, 89] as const; // slate-500 @ 35%
+
+interface SunShadowGrid {
+  /** Pixel coordinates for each tile's outdoor points (tile index → array of {x, y, outdoorIndex}) */
+  tilePixelMaps: Array<{ x: number; y: number }[]>;
+  width: number;
+  height: number;
+  bounds: [[number, number], [number, number]];
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+}
+
+function prepareSunShadowGrid(
+  timeline: DailyTimelineState,
+): SunShadowGrid | null {
+  if (timeline.tiles.length === 0) return null;
 
   let minRow = Infinity;
   let maxRow = -Infinity;
@@ -1249,20 +1262,47 @@ function buildSunShadowCanvas(
   let minLon = Infinity;
   let maxLon = -Infinity;
 
-  for (const p of parsedPoints) {
-    if (p.row < minRow) minRow = p.row;
-    if (p.row > maxRow) maxRow = p.row;
-    if (p.col < minCol) minCol = p.col;
-    if (p.col > maxCol) maxCol = p.col;
-    if (p.lat < minLat) minLat = p.lat;
-    if (p.lat > maxLat) maxLat = p.lat;
-    if (p.lon < minLon) minLon = p.lon;
-    if (p.lon > maxLon) maxLon = p.lon;
+  // First pass: find grid extents across all tiles
+  const allParsed: Array<Array<{ row: number; col: number; lat: number; lon: number }>> = [];
+  for (const tile of timeline.tiles) {
+    const parsed: Array<{ row: number; col: number; lat: number; lon: number }> = [];
+    for (const p of tile.points) {
+      const id = parseGridPointId(p.id);
+      if (!id) continue;
+      parsed.push({ row: id.row, col: id.col, lat: p.lat, lon: p.lon });
+      if (id.row < minRow) minRow = id.row;
+      if (id.row > maxRow) maxRow = id.row;
+      if (id.col < minCol) minCol = id.col;
+      if (id.col > maxCol) maxCol = id.col;
+      if (p.lat < minLat) minLat = p.lat;
+      if (p.lat > maxLat) maxLat = p.lat;
+      if (p.lon < minLon) minLon = p.lon;
+      if (p.lon > maxLon) maxLon = p.lon;
+    }
+    allParsed.push(parsed);
   }
 
   const width = maxCol - minCol + 1;
   const height = maxRow - minRow + 1;
   if (width <= 0 || height <= 0 || width > 10000 || height > 10000) return null;
+
+  // Build pixel maps: for each tile, map point index → canvas pixel
+  const tilePixelMaps: Array<{ x: number; y: number }[]> = [];
+  for (const parsed of allParsed) {
+    tilePixelMaps.push(
+      parsed.map((p) => ({
+        x: p.col - minCol,
+        y: maxRow - p.row,
+      })),
+    );
+  }
+
+  const meanLat = (minLat + maxLat) / 2;
+  const latHalfStep = timeline.gridStepMeters / METERS_PER_DEGREE_LAT / 2;
+  const lonHalfStep =
+    timeline.gridStepMeters /
+    (METERS_PER_DEGREE_LAT * Math.max(Math.cos((meanLat * Math.PI) / 180), 0.01)) /
+    2;
 
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -1270,35 +1310,56 @@ function buildSunShadowCanvas(
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
 
-  // Transparent background
-  ctx.clearRect(0, 0, width, height);
+  return {
+    tilePixelMaps,
+    width,
+    height,
+    bounds: [
+      [minLat - latHalfStep, minLon - lonHalfStep],
+      [maxLat + latHalfStep, maxLon + lonHalfStep],
+    ],
+    canvas,
+    ctx,
+  };
+}
 
-  // Sunny = yellow, Shadow = dark gray
-  for (const p of parsedPoints) {
-    const x = p.col - minCol;
-    const y = maxRow - p.row; // flip Y: higher row = lower latitude = lower on screen
-    if (p.isSunny) {
-      ctx.fillStyle = "rgba(250, 204, 21, 0.4)"; // yellow-400 @ 40%
-    } else {
-      ctx.fillStyle = "rgba(100, 116, 139, 0.35)"; // slate-500 @ 35%
+function paintSunShadowFrame(
+  grid: SunShadowGrid,
+  timeline: DailyTimelineState,
+  frameIndex: number,
+  decodedMaskCache: Map<string, Uint8Array>,
+  ignoreVegetation: boolean,
+): void {
+  const { width, height, ctx, tilePixelMaps } = grid;
+  const imageData = ctx.createImageData(width, height);
+  const data = imageData.data;
+
+  const safeIndex = Math.max(0, Math.min(frameIndex, (timeline.tiles[0]?.frames.length ?? 1) - 1));
+
+  for (let tileIdx = 0; tileIdx < timeline.tiles.length; tileIdx++) {
+    const tile = timeline.tiles[tileIdx];
+    const frame = tile.frames[safeIndex];
+    if (!frame) continue;
+    const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
+    let mask = decodedMaskCache.get(cacheKey);
+    if (!mask) {
+      mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+      decodedMaskCache.set(cacheKey, mask);
     }
-    ctx.fillRect(x, y, 1, 1);
+    const pixelMap = tilePixelMaps[tileIdx];
+    for (let i = 0; i < pixelMap.length; i++) {
+      const isSunny = ((mask[i >> 3] >> (i & 7)) & 1) === 1;
+      const { x, y } = pixelMap[i];
+      const offset = (y * width + x) * 4;
+      const rgba = isSunny ? SUNNY_RGBA : SHADOW_RGBA;
+      data[offset] = rgba[0];
+      data[offset + 1] = rgba[1];
+      data[offset + 2] = rgba[2];
+      data[offset + 3] = rgba[3];
+    }
   }
 
-  // Compute geo bounds (half-step padding around the grid extremes)
-  const meanLat = (minLat + maxLat) / 2;
-  const latHalfStep = response.gridStepMeters / METERS_PER_DEGREE_LAT / 2;
-  const lonHalfStep =
-    response.gridStepMeters /
-    (METERS_PER_DEGREE_LAT * Math.max(Math.cos((meanLat * Math.PI) / 180), 0.01)) /
-    2;
-
-  const bounds: [[number, number], [number, number]] = [
-    [minLat - latHalfStep, minLon - lonHalfStep],
-    [maxLat + latHalfStep, maxLon + lonHalfStep],
-  ];
-
-  return { dataUrl: canvas.toDataURL("image/png"), bounds };
+  ctx.putImageData(imageData, 0, 0);
 }
 
 function buildInstantBlockedContours(
@@ -1743,6 +1804,8 @@ export function SunlightMapClient() {
   const pendingTilesRef = useRef<TimelineTile[]>([]);
   const pendingStatsRef = useRef<{ gridPointCount: number; indoorPointsExcluded: number }>({ gridPointCount: 0, indoorPointsExcluded: 0 });
   const lastTileFlushRef = useRef<number>(0);
+  const sunShadowGridRef = useRef<SunShadowGrid | null>(null);
+  const sunShadowOverlayRef = useRef<L.ImageOverlay | null>(null);
   const ignoreVegetationShadowRef = useRef(false);
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
@@ -1851,6 +1914,11 @@ export function SunlightMapClient() {
 
   const visualAreaResponse = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
+      // For large grids, skip building the full AreaApiResponse —
+      // the canvas overlay useEffect handles rendering directly.
+      if (dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD) {
+        return null;
+      }
       return toInstantAreaResponseFromTimeline(
         dailyTimeline,
         dailyFrameIndex,
@@ -1960,12 +2028,13 @@ export function SunlightMapClient() {
         return `${base}, calcul timeline en cours...`;
       }
 
+      const elapsed = formatDuration(Math.round(stats.elapsedMs / 1000));
       if (!dailyExposureHotspot) {
-        return `${base}, ${stats.elapsedMs} ms, evaluations: ${stats.totalEvaluations}`;
+        return `${base}, ${elapsed}, evaluations: ${stats.totalEvaluations}`;
       }
 
       const exposurePercent = Math.round(dailyExposureHotspot.exposureRatio * 100);
-      return `${base}, ${stats.elapsedMs} ms, evaluations: ${stats.totalEvaluations}, hotspot: ${exposurePercent}% (${dailyExposureHotspot.lat.toFixed(5)}, ${dailyExposureHotspot.lon.toFixed(5)})`;
+      return `${base}, ${elapsed}, evaluations: ${stats.totalEvaluations}, hotspot: ${exposurePercent}% (${dailyExposureHotspot.lat.toFixed(5)}, ${dailyExposureHotspot.lon.toFixed(5)})`;
     }
 
     if (!lastResult) {
@@ -2773,15 +2842,8 @@ export function SunlightMapClient() {
       const useCanvasOverlay =
         response && response.pointCount >= CANVAS_OVERLAY_THRESHOLD;
 
-      if (useCanvasOverlay && (visibility.sunny || visibility.shadow)) {
-        const canvasResult = buildSunShadowCanvas(response);
-        if (canvasResult) {
-          L.imageOverlay(canvasResult.dataUrl, canvasResult.bounds, {
-            opacity: 1,
-            interactive: false,
-          }).addTo(sunnyLayer);
-        }
-      }
+      // Canvas overlay for large grids is managed by a separate useEffect
+      // (sunShadowGridRef + sunShadowOverlayRef) for fast slider updates.
 
       // For smaller grids, use vector polygon contours
       const { sunnyContours, shadowContours } = !useCanvasOverlay && response
@@ -3021,6 +3083,57 @@ export function SunlightMapClient() {
     sunlitPlaces,
     visualAreaResponse,
   ]);
+
+  // Canvas overlay for large grids — fast slider updates
+  useEffect(() => {
+    if (!isMapReady || !dailyTimeline || mode !== "daily") {
+      return;
+    }
+    const L = leafletModuleRef.current;
+    if (!L) return;
+
+    const useCanvas = dailyTimeline.tiles.length > 0 && dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD;
+    if (!useCanvas) {
+      // Clean up canvas overlay if it exists
+      if (sunShadowOverlayRef.current) {
+        sunShadowOverlayRef.current.remove();
+        sunShadowOverlayRef.current = null;
+      }
+      sunShadowGridRef.current = null;
+      return;
+    }
+
+    // Prepare grid if tiles changed
+    if (!sunShadowGridRef.current || sunShadowGridRef.current.tilePixelMaps.length !== dailyTimeline.tiles.length) {
+      sunShadowGridRef.current = prepareSunShadowGrid(dailyTimeline);
+    }
+
+    const grid = sunShadowGridRef.current;
+    if (!grid) return;
+
+    // Paint the current frame
+    paintSunShadowFrame(
+      grid,
+      dailyTimeline,
+      dailyFrameIndex,
+      decodedTimelineMaskCacheRef.current,
+      ignoreVegetationShadow,
+    );
+
+    // Create or update overlay — toDataURL on a small canvas (~500x500) is fast
+    const map = mapRef.current;
+    if (!map) return;
+    const dataUrl = grid.canvas.toDataURL();
+    if (!sunShadowOverlayRef.current) {
+      sunShadowOverlayRef.current = L.imageOverlay(
+        dataUrl,
+        grid.bounds,
+        { opacity: 1, interactive: false },
+      ).addTo(map);
+    } else {
+      sunShadowOverlayRef.current.setUrl(dataUrl);
+    }
+  }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode]);
 
   useEffect(() => {
     if (!isMapReady) {
@@ -3682,6 +3795,7 @@ export function SunlightMapClient() {
         total: data.stats.totalEvaluations,
         percent: 100,
         etaSeconds: 0,
+        elapsedMs: data.stats.elapsedMs,
       });
       timelineStream.close();
       if (timelineStreamRef.current === timelineStream) {
