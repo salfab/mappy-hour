@@ -193,11 +193,17 @@ export async function GET(request: Request) {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         const encoder = new TextEncoder();
+        let controllerClosed = false;
 
         const sendEvent = (event: string, payload: unknown) => {
-          controller.enqueue(
-            encoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`),
-          );
+          if (controllerClosed || streamAborted) return;
+          try {
+            controller.enqueue(
+              encoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`),
+            );
+          } catch {
+            controllerClosed = true;
+          }
         };
 
         const run = async () => {
@@ -225,6 +231,7 @@ export async function GET(request: Request) {
             endLocalTime: query.endLocalTime,
             shadowCalibration,
             persistMissingTiles: true,
+            stripDiagnostics: true,
             onTileComputeProgress: (event) => {
               const etaSeconds =
                 event.elapsedMs > 3000 && event.percent > 0.01
@@ -613,7 +620,13 @@ export async function GET(request: Request) {
             });
           })
           .finally(() => {
-            controller.close();
+            if (!controllerClosed) {
+              try {
+                controller.close();
+              } catch {
+                controllerClosed = true;
+              }
+            }
           });
       },
     });

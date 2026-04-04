@@ -98,6 +98,7 @@ export interface InstantSunlightInput {
   buildingShadowEvaluator?: PointSunlightInput["buildingShadowEvaluator"];
   vegetationShadowEvaluator?: PointSunlightInput["vegetationShadowEvaluator"];
   evaluateAllBlockers?: boolean;
+  solarPositionOverride?: { altitudeDeg: number; azimuthDeg: number };
   profiler?: InstantSunlightProfiler;
 }
 
@@ -219,10 +220,16 @@ export function evaluateInstantSunlight(
   input: InstantSunlightInput,
 ): SunSample {
   if (!input.profiler) {
-    const position = SunCalc.getPosition(input.utcDate, input.lat, input.lon);
-
-    const altitudeDeg = position.altitude * RAD_TO_DEG;
-    const azimuthDeg = normalizeAzimuthDegrees(position.azimuth * RAD_TO_DEG);
+    let altitudeDeg: number;
+    let azimuthDeg: number;
+    if (input.solarPositionOverride) {
+      altitudeDeg = input.solarPositionOverride.altitudeDeg;
+      azimuthDeg = input.solarPositionOverride.azimuthDeg;
+    } else {
+      const position = SunCalc.getPosition(input.utcDate, input.lat, input.lon);
+      altitudeDeg = position.altitude * RAD_TO_DEG;
+      azimuthDeg = normalizeAzimuthDegrees(position.azimuth * RAD_TO_DEG);
+    }
     const aboveAstronomicalHorizon = altitudeDeg > 0;
     const horizonAngleDeg = input.horizonMask
       ? getHorizonAngleForAzimuth(input.horizonMask, azimuthDeg)

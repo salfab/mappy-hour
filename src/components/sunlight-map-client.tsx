@@ -3448,24 +3448,35 @@ export function SunlightMapClient() {
       };
 
       decodedTimelineMaskCacheRef.current.clear();
-      setDailyTimeline({
-        date: data.date,
-        timezone: data.timezone,
-        startLocalTime: data.startLocalTime,
-        endLocalTime: data.endLocalTime,
-        sampleEveryMinutes: data.sampleEveryMinutes,
-        gridStepMeters: data.gridStepMeters,
-        pointCount: data.pointCount,
-        gridPointCount: data.gridPointCount,
-        indoorPointsExcluded: data.indoorPointsExcluded,
-        frameCount: data.frameCount,
-        points: data.points,
-        frames: [],
-        model: data.model ?? null,
-        warnings: data.warnings,
-        stats: null,
+      setDailyTimeline((previous) => {
+        // On reconnect, preserve frames already received if the
+        // parameters match (same date, grid, point count).
+        const canMerge =
+          previous &&
+          previous.date === data.date &&
+          previous.gridStepMeters === data.gridStepMeters &&
+          previous.pointCount === data.pointCount &&
+          previous.frames.length > 0;
+
+        return {
+          date: data.date,
+          timezone: data.timezone,
+          startLocalTime: data.startLocalTime,
+          endLocalTime: data.endLocalTime,
+          sampleEveryMinutes: data.sampleEveryMinutes,
+          gridStepMeters: data.gridStepMeters,
+          pointCount: data.pointCount,
+          gridPointCount: data.gridPointCount,
+          indoorPointsExcluded: data.indoorPointsExcluded,
+          frameCount: data.frameCount,
+          points: data.points,
+          frames: canMerge ? previous.frames : [],
+          model: data.model ?? null,
+          warnings: data.warnings,
+          stats: null,
+        };
       });
-      setDailyFrameIndex(0);
+      setDailyFrameIndex((prev) => prev || 0);
     });
 
     timelineStream.addEventListener("progress", (event) => {
@@ -3483,6 +3494,11 @@ export function SunlightMapClient() {
       const data = JSON.parse((event as MessageEvent).data) as TimelineFrame;
       setDailyTimeline((previous) => {
         if (!previous) {
+          return previous;
+        }
+
+        // Skip duplicate frames (already received before reconnect)
+        if (previous.frames.some((f) => f.index === data.index)) {
           return previous;
         }
 
@@ -3546,28 +3562,44 @@ export function SunlightMapClient() {
       if (streamFailed || streamFinished) {
         return;
       }
-      streamFailed = true;
-      const errorPayload = (() => {
-        try {
-          return JSON.parse((event as MessageEvent).data) as {
-            error?: string;
-            details?: string;
-          };
-        } catch {
-          return null;
+
+      // Server-sent "error" events have .data with JSON payload.
+      // Native EventSource errors (network drop) have no .data.
+      const messageEvent = event as MessageEvent;
+      const isServerError =
+        typeof messageEvent.data === "string" && messageEvent.data.length > 0;
+
+      if (isServerError) {
+        streamFailed = true;
+        const errorPayload = (() => {
+          try {
+            return JSON.parse(messageEvent.data) as {
+              error?: string;
+              details?: string;
+            };
+          } catch {
+            return null;
+          }
+        })();
+        setError(
+          errorPayload?.details ??
+            errorPayload?.error ??
+            "Timeline streaming failed.",
+        );
+        timelineStream.close();
+        if (timelineStreamRef.current === timelineStream) {
+          timelineStreamRef.current = null;
         }
-      })();
-      setError(
-        errorPayload?.details ??
-          errorPayload?.error ??
-          "Timeline streaming failed.",
-      );
-      timelineStream.close();
-      if (timelineStreamRef.current === timelineStream) {
-        timelineStreamRef.current = null;
+        streamFinished = true;
+        finalizeIfDone();
+        return;
       }
-      streamFinished = true;
-      finalizeIfDone();
+
+      // Network error — let EventSource reconnect automatically.
+      // The server will serve already-computed tiles from cache.
+      setDailyProgress((prev) =>
+        prev ? { ...prev, phase: "reconnecting" } : prev,
+      );
     });
   }, [
     buildingHeightBiasMeters,
@@ -3925,24 +3957,26 @@ export function SunlightMapClient() {
               <div className="h-2 w-full overflow-hidden rounded bg-slate-700/70">
                 <div
                   className={`h-full rounded bg-yellow-300 transition-[width] duration-150${
-                    dailyProgress.phase === "loading-scene" ? " animate-pulse w-full opacity-40" : ""
+                    dailyProgress.phase === "loading-scene" || dailyProgress.phase === "reconnecting" ? " animate-pulse w-full opacity-40" : ""
                   }`}
-                  style={dailyProgress.phase !== "loading-scene" ? { width: `${Math.min(100, Math.max(0, dailyProgress.percent))}%` } : undefined}
+                  style={dailyProgress.phase !== "loading-scene" && dailyProgress.phase !== "reconnecting" ? { width: `${Math.min(100, Math.max(0, dailyProgress.percent))}%` } : undefined}
                 />
               </div>
               <p className="text-xs text-slate-300">
                 {dailyProgress.phase === "loading-scene"
                   ? "Chargement de la sc\u00e8ne\u2026"
-                  : dailyProgress.phase === "tile-computation"
-                    ? `Calcul des tuiles${
-                        dailyProgress.tileIndex && dailyProgress.totalTiles
-                          ? ` (${dailyProgress.tileIndex}/${dailyProgress.totalTiles})`
-                          : ""
-                      }`
-                    : dailyProgress.phase === "cache-playback"
-                      ? "Lecture du cache"
-                      : dailyProgress.phase}
-                {dailyProgress.phase !== "loading-scene" && (
+                  : dailyProgress.phase === "reconnecting"
+                    ? "Reconnexion\u2026"
+                    : dailyProgress.phase === "tile-computation"
+                      ? `Calcul des tuiles${
+                          dailyProgress.tileIndex && dailyProgress.totalTiles
+                            ? ` (${dailyProgress.tileIndex}/${dailyProgress.totalTiles})`
+                            : ""
+                        }`
+                      : dailyProgress.phase === "cache-playback"
+                        ? "Lecture du cache"
+                        : dailyProgress.phase}
+                {dailyProgress.phase !== "loading-scene" && dailyProgress.phase !== "reconnecting" && (
                   <>
                     {" "}&mdash; {dailyProgress.percent.toFixed(1)}%
                     {" "}&mdash; ETA: {dailyProgress.etaSeconds === null ? "-" : formatDuration(dailyProgress.etaSeconds)}

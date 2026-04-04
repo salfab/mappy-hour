@@ -682,10 +682,22 @@ export async function computeSunlightTileArtifact(params: {
   const frames: PrecomputedSunlightTileArtifact["frames"] = [];
   const totalFrameEvaluations = preparedOutdoorPoints.length * samples.length;
   let completedFrameEvaluations = 0;
+  const tileCenterWgs84 = lv95ToWgs84(
+    (params.tile.minEasting + params.tile.maxEasting) / 2,
+    (params.tile.minNorthing + params.tile.maxNorthing) / 2,
+  );
   for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
     throwIfAborted(params.signal);
     const sampleDate = samples[sampleIndex];
     const frameLocalDateTime = formatDateTimeLocal(sampleDate, params.timezone);
+    const frameSunPosition = SunCalc.getPosition(sampleDate, tileCenterWgs84.lat, tileCenterWgs84.lon);
+    const frameSolarPosition = {
+      altitudeDeg: frameSunPosition.altitude * RAD_TO_DEG,
+      azimuthDeg: ((frameSunPosition.azimuth * RAD_TO_DEG) + 180) % 360,
+    };
+    if (frameSolarPosition.azimuthDeg < 0) {
+      frameSolarPosition.azimuthDeg += 360;
+    }
     const sunnyMask = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
     const sunnyMaskNoVegetation = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
     const terrainMask = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
@@ -693,8 +705,6 @@ export async function computeSunlightTileArtifact(params: {
     const vegetationMask = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
     const horizonAngleDegByPoint: Array<number | null> = [];
     const buildingBlockerIdByPoint: Array<string | null> = [];
-    const buildingBlockerDistanceMetersByPoint: Array<number | null> = [];
-    const vegetationBlockerDistanceMetersByPoint: Array<number | null> = [];
     let sunnyCount = 0;
     let sunnyCountNoVegetation = 0;
     const localTime = frameLocalDateTime.slice(11, 16);
@@ -711,21 +721,12 @@ export async function computeSunlightTileArtifact(params: {
         horizonMask: point.horizonMask,
         buildingShadowEvaluator: point.buildingShadowEvaluator,
         vegetationShadowEvaluator: point.vegetationShadowEvaluator,
+        solarPositionOverride: frameSolarPosition,
       });
       horizonAngleDegByPoint.push(
         sample.horizonAngleDeg === null ? null : Math.round(sample.horizonAngleDeg * 1000) / 1000,
       );
       buildingBlockerIdByPoint.push(sample.buildingBlockerId);
-      buildingBlockerDistanceMetersByPoint.push(
-        sample.buildingBlockerDistanceMeters === null
-          ? null
-          : Math.round(sample.buildingBlockerDistanceMeters * 1000) / 1000,
-      );
-      vegetationBlockerDistanceMetersByPoint.push(
-        sample.vegetationBlockerDistanceMeters === null
-          ? null
-          : Math.round(sample.vegetationBlockerDistanceMeters * 1000) / 1000,
-      );
 
       const isSunnyNoVegetation =
         sample.aboveAstronomicalHorizon &&
@@ -784,8 +785,8 @@ export async function computeSunlightTileArtifact(params: {
       diagnostics: {
         horizonAngleDegByPoint,
         buildingBlockerIdByPoint,
-        buildingBlockerDistanceMetersByPoint,
-        vegetationBlockerDistanceMetersByPoint,
+        buildingBlockerDistanceMetersByPoint: [],
+        vegetationBlockerDistanceMetersByPoint: [],
       },
     });
 
@@ -810,7 +811,8 @@ export async function computeSunlightTileArtifact(params: {
       `, sources ${(phaseMs.sharedSources / 1000).toFixed(1)}s` +
       `, points ${(phaseMs.pointContexts / 1000).toFixed(1)}s` +
       `, eval ${(phaseMs.evaluations / 1000).toFixed(1)}s` +
-      ` (${evals} evals, ${evals > 0 ? Math.round((phaseMs.evaluations * 1000) / evals) : 0} \u00b5s/eval)`,
+      ` (${evals} evals, ${evals > 0 ? Math.round((phaseMs.evaluations * 1000) / evals) : 0} \u00b5s/eval)` +
+      ` — ${rawTilePoints.length} grid pts, ${preparedOutdoorPoints.length} outdoor, ${indoorPointsExcluded} indoor`,
   );
 
   return {
@@ -964,6 +966,7 @@ export async function resolveSunlightTilesForBbox(params: {
   endLocalTime: string;
   shadowCalibration: ShadowCalibration;
   persistMissingTiles?: boolean;
+  stripDiagnostics?: boolean;
   onTileComputeProgress?: (event: TileComputeProgressEvent) => void;
 }): Promise<ResolvedSunlightTiles | null> {
   const region = resolveRegionForBbox(params.bbox);
@@ -998,6 +1001,7 @@ export async function resolveSunlightTilesForBbox(params: {
   let tilesFromL2 = 0;
   let tilesComputed = 0;
   const resolveStartedAt = performance.now();
+  let maxPercent = 0;
 
   for (let tileIdx = 0; tileIdx < requiredTiles.length; tileIdx++) {
     const tile = requiredTiles[tileIdx];
@@ -1007,6 +1011,8 @@ export async function resolveSunlightTilesForBbox(params: {
           const tileWeight = 1 / requiredTiles.length;
           const stagePercent =
             progress.total > 0 ? progress.completed / progress.total : 0;
+          const rawPercent = Math.round((tileBase + tileWeight * stagePercent) * 1000) / 10;
+          maxPercent = Math.max(maxPercent, rawPercent);
           params.onTileComputeProgress!({
             phase: "tile-computation",
             tileIndex: tileIdx + 1,
@@ -1015,7 +1021,7 @@ export async function resolveSunlightTilesForBbox(params: {
             stage: progress.stage,
             stageCompleted: progress.completed,
             stageTotal: progress.total,
-            percent: Math.round((tileBase + tileWeight * stagePercent) * 1000) / 10,
+            percent: maxPercent,
             elapsedMs: performance.now() - resolveStartedAt,
           });
         }
@@ -1045,7 +1051,23 @@ export async function resolveSunlightTilesForBbox(params: {
     if (!resolved.artifact) {
       continue;
     }
-    artifacts.push(resolved.artifact);
+    if (params.stripDiagnostics) {
+      const emptyDiagnostics = {
+        horizonAngleDegByPoint: [] as Array<number | null>,
+        buildingBlockerIdByPoint: [] as Array<string | null>,
+        buildingBlockerDistanceMetersByPoint: [] as Array<number | null>,
+        vegetationBlockerDistanceMetersByPoint: [] as Array<number | null>,
+      };
+      artifacts.push({
+        ...resolved.artifact,
+        frames: resolved.artifact.frames.map((frame) => ({
+          ...frame,
+          diagnostics: emptyDiagnostics,
+        })),
+      });
+    } else {
+      artifacts.push(resolved.artifact);
+    }
   }
 
   const hit = tilesComputed === 0 && requiredTiles.length > 0;
