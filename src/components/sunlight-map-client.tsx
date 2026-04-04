@@ -1235,8 +1235,8 @@ function buildSunAndShadowContours(response: AreaApiResponse): {
 const CANVAS_OVERLAY_THRESHOLD = 10_000;
 
 // RGBA colors for canvas pixels
-const SUNNY_RGBA = [250, 204, 21, 102] as const; // yellow-400 @ 40%
-const SHADOW_RGBA = [100, 116, 139, 89] as const; // slate-500 @ 35%
+const SUNNY_RGBA = [250, 204, 21, 180] as const; // yellow-400 @ 70%
+const SHADOW_RGBA = [100, 116, 139, 160] as const; // slate-500 @ 63%
 
 interface SunShadowGrid {
   /** Pixel coordinates for each tile's outdoor points (tile index → array of {x, y, outdoorIndex}) */
@@ -1253,6 +1253,7 @@ function prepareSunShadowGrid(
 ): SunShadowGrid | null {
   if (timeline.tiles.length === 0) return null;
 
+  // Collect all point lat/lon + row/col, computing overall extents.
   let minRow = Infinity;
   let maxRow = -Infinity;
   let minCol = Infinity;
@@ -1262,14 +1263,13 @@ function prepareSunShadowGrid(
   let minLon = Infinity;
   let maxLon = -Infinity;
 
-  // First pass: find grid extents across all tiles
-  const allParsed: Array<Array<{ row: number; col: number; lat: number; lon: number }>> = [];
+  const allParsed: Array<Array<{ row: number; col: number }>> = [];
   for (const tile of timeline.tiles) {
-    const parsed: Array<{ row: number; col: number; lat: number; lon: number }> = [];
+    const parsed: Array<{ row: number; col: number }> = [];
     for (const p of tile.points) {
       const id = parseGridPointId(p.id);
       if (!id) continue;
-      parsed.push({ row: id.row, col: id.col, lat: p.lat, lon: p.lon });
+      parsed.push({ row: id.row, col: id.col });
       if (id.row < minRow) minRow = id.row;
       if (id.row > maxRow) maxRow = id.row;
       if (id.col < minCol) minCol = id.col;
@@ -1282,27 +1282,43 @@ function prepareSunShadowGrid(
     allParsed.push(parsed);
   }
 
-  const width = maxCol - minCol + 1;
-  const height = maxRow - minRow + 1;
-  if (width <= 0 || height <= 0 || width > 10000 || height > 10000) return null;
+  const colRange = maxCol - minCol;
+  const rowRange = maxRow - minRow;
+  if (colRange <= 0 || rowRange <= 0) return null;
+
+  // The canvas pixel grid must map col→x and row→y, but the aspect ratio
+  // must match the Leaflet bounds in degrees (not in meters) to avoid
+  // Mercator distortion squishing the image.
+  // Solution: canvas width = colRange, canvas height = colRange * (latRange/lonRange)
+  // and we map row → y by interpolating within the lat range.
+  const latRange = maxLat - minLat;
+  const lonRange = maxLon - minLon;
+  if (latRange <= 0 || lonRange <= 0) return null;
+
+  const width = colRange + 1;
+  // Height proportional to the lat/lon aspect ratio at this latitude
+  const meanLat = (minLat + maxLat) / 2;
+  const metersPerDegLon = METERS_PER_DEGREE_LAT * Math.cos((meanLat * Math.PI) / 180);
+  const aspectCorrection = METERS_PER_DEGREE_LAT / metersPerDegLon;
+  const height = Math.round((rowRange + 1) * aspectCorrection);
+  if (width > 10000 || height > 10000) return null;
 
   // Build pixel maps: for each tile, map point index → canvas pixel
+  // x maps col linearly, y maps row with aspect correction
   const tilePixelMaps: Array<{ x: number; y: number }[]> = [];
   for (const parsed of allParsed) {
     tilePixelMaps.push(
       parsed.map((p) => ({
         x: p.col - minCol,
-        y: maxRow - p.row,
+        y: Math.round((maxRow - p.row) * aspectCorrection),
       })),
     );
   }
 
-  const meanLat = (minLat + maxLat) / 2;
-  const latHalfStep = timeline.gridStepMeters / METERS_PER_DEGREE_LAT / 2;
-  const lonHalfStep =
-    timeline.gridStepMeters /
-    (METERS_PER_DEGREE_LAT * Math.max(Math.cos((meanLat * Math.PI) / 180), 0.01)) /
-    2;
+  const latPerRow = latRange / Math.max(rowRange, 1);
+  const lonPerCol = lonRange / Math.max(colRange, 1);
+  const latHalfStep = latPerRow / 2;
+  const lonHalfStep = lonPerCol / 2;
 
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -1317,7 +1333,7 @@ function prepareSunShadowGrid(
     bounds: [
       [minLat - latHalfStep, minLon - lonHalfStep],
       [maxLat + latHalfStep, maxLon + lonHalfStep],
-    ],
+    ] as [[number, number], [number, number]],
     canvas,
     ctx,
   };
@@ -3087,19 +3103,24 @@ export function SunlightMapClient() {
   // Canvas overlay for large grids — fast slider updates
   useEffect(() => {
     if (!isMapReady || !dailyTimeline || mode !== "daily") {
+      if (sunShadowOverlayRef.current) {
+        sunShadowOverlayRef.current.remove();
+        sunShadowOverlayRef.current = null;
+      }
+      sunShadowGridRef.current = null;
       return;
     }
     const L = leafletModuleRef.current;
     if (!L) return;
 
     const useCanvas = dailyTimeline.tiles.length > 0 && dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD;
-    if (!useCanvas) {
-      // Clean up canvas overlay if it exists
+    const overlayVisible = useCanvas && (showSunny || showShadow);
+    if (!overlayVisible) {
       if (sunShadowOverlayRef.current) {
         sunShadowOverlayRef.current.remove();
         sunShadowOverlayRef.current = null;
       }
-      sunShadowGridRef.current = null;
+      if (!useCanvas) sunShadowGridRef.current = null;
       return;
     }
 
@@ -3133,7 +3154,7 @@ export function SunlightMapClient() {
     } else {
       sunShadowOverlayRef.current.setUrl(dataUrl);
     }
-  }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode]);
+  }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showShadow, showSunny]);
 
   useEffect(() => {
     if (!isMapReady) {
