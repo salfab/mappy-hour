@@ -1,0 +1,39 @@
+{
+  "generatedAt": "2026-04-02T07:47:23.508Z",
+  "machine": "LPW-PF620C5N (Intel(R) Core(TM) Ultra 7 258V, 31GB RAM)",
+  "glRenderer": "ANGLE",
+  "tile": "e2538000_n1152250_s250",
+  "date": "2026-03-08",
+  "instants": 16,
+  "activeInstants": 16,
+  "outdoorPoints": 1248,
+  "evaluations": 19968,
+  "cpu": {
+    "totalMs": 22555.58,
+    "prepareTotalMs": 0.08,
+    "evaluateTotalMs": 22555.31,
+    "perPrepareSunMs": 0.01,
+    "perEvaluateMicros": 1129.57,
+    "mode": "detailed"
+  },
+  "gpu": {
+    "shadowMapResolution": 4096,
+    "totalMs": 418.17,
+    "meshLoadMs": 287.2,
+    "triangleCount": 247508,
+    "prepareTotalMs": 414.55,
+    "perPrepareSunMs": 25.91,
+    "evaluateTotalMs": 3.55,
+    "perEvaluateMicros": 0.18,
+    "depthBufferReadMs": 22.70839999999953
+  },
+  "speedup": 53.94,
+  "precision": {
+    "total": 19968,
+    "matches": 15273,
+    "mismatches": 4695,
+    "mismatchRate": 23.51,
+    "cpuShadowGpuSun": 4642,
+    "cpuSunGpuShadow": 53
+  }
+}

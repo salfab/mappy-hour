@@ -12,7 +12,7 @@ import { zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
 export const runtime = "nodejs";
 
-const MAX_RAW_GRID_POINTS = 20_000;
+const MAX_RAW_GRID_POINTS = 20_000_000;
 
 const querySchema = z
   .object({
