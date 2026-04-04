@@ -4,7 +4,7 @@ import path from "node:path";
 import { fromFile } from "geotiff";
 
 import type { HorizonMask } from "@/lib/sun/horizon-mask";
-import { RAW_HORIZON_DEM_DIR } from "@/lib/storage/data-paths";
+import { RAW_HORIZON_DEM_DIR, PROCESSED_ROOT } from "@/lib/storage/data-paths";
 
 const EARTH_RADIUS_METERS = 6_371_000;
 const RAD_PER_DEG = Math.PI / 180;
@@ -226,6 +226,27 @@ function sampleElevationMeters(
   return null;
 }
 
+// ── Disk persistence for horizon masks ───────────────────────────────────
+const HORIZON_MASK_CACHE_DIR = path.join(PROCESSED_ROOT, "horizon-masks");
+
+function diskCachePath(cacheKey: string): string {
+  return path.join(HORIZON_MASK_CACHE_DIR, `${cacheKey.replace(/\|/g, "_")}.json`);
+}
+
+async function loadMaskFromDisk(cacheKey: string): Promise<HorizonMask | null> {
+  try {
+    const raw = await fs.readFile(diskCachePath(cacheKey), "utf-8");
+    return JSON.parse(raw) as HorizonMask;
+  } catch {
+    return null;
+  }
+}
+
+async function saveMaskToDisk(cacheKey: string, mask: HorizonMask): Promise<void> {
+  await fs.mkdir(HORIZON_MASK_CACHE_DIR, { recursive: true });
+  await fs.writeFile(diskCachePath(cacheKey), JSON.stringify(mask));
+}
+
 export async function buildDynamicHorizonMask(
   options: DynamicHorizonOptions,
 ): Promise<HorizonMask | null> {
@@ -240,9 +261,18 @@ export async function buildDynamicHorizonMask(
     stepMeters,
     refractionCoefficient,
   );
+
+  // L1: in-memory cache
   const cached = maskCache.get(cacheKey);
   if (cached) {
     return cached;
+  }
+
+  // L2: disk cache (persisted from previous runs)
+  const diskCached = await loadMaskFromDisk(cacheKey);
+  if (diskCached) {
+    setMaskCache(cacheKey, diskCached);
+    return diskCached;
   }
 
   const tiles = await loadDemTiles();
@@ -328,5 +358,6 @@ export async function buildDynamicHorizonMask(
     notes: `runtime dynamic horizon (step=${stepMeters}m, k=${refractionCoefficient})`,
   };
   setMaskCache(cacheKey, mask);
+  saveMaskToDisk(cacheKey, mask).catch(() => {});
   return mask;
 }
