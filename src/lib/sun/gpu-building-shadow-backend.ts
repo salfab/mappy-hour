@@ -448,10 +448,11 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
 
   prepareSunPosition(azimuthDeg: number, altitudeDeg: number): void {
     // Skip re-render if sun position hasn't changed meaningfully.
-    // Round to 0.1° — within a 250m tile the sun position varies by ~0.005°
-    // between points, which is negligible for shadow map rendering.
-    const roundedAz = Math.round(azimuthDeg * 10);
-    const roundedAlt = Math.round(altitudeDeg * 10);
+    // Round to 1° — within a 250m tile the sun position varies by ~0.005°
+    // between points and SunCalc computes slightly different values per
+    // lat/lon, but 1° tolerance is safe (shadow map covers km-scale scene).
+    const roundedAz = Math.round(azimuthDeg);
+    const roundedAlt = Math.round(altitudeDeg);
     if (roundedAz === this.lastPreparedAz && roundedAlt === this.lastPreparedAlt) {
       return;
     }

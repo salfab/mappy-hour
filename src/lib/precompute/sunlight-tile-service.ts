@@ -901,7 +901,7 @@ async function getOrCreateTileArtifact(params: {
       endLocalTime: params.endLocalTime,
       tile: params.tile,
       shadowCalibration: params.shadowCalibration,
-      cooperativeYieldEveryPoints: 200,
+      cooperativeYieldEveryPoints: 5000,
       onProgress: params.onProgress,
     });
     if (params.persistMissingTiles) {
