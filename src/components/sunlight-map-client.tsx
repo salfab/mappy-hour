@@ -226,6 +226,15 @@ interface DailyExposureCell {
   totalFrames: number;
 }
 
+function formatDuration(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, "0")}m${String(s).padStart(2, "0")}s`;
+  if (m > 0) return `${m}m${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
+}
+
 interface TimelineProgress {
   phase: string;
   done: number;
@@ -3936,9 +3945,9 @@ export function SunlightMapClient() {
                 {dailyProgress.phase !== "loading-scene" && (
                   <>
                     {" "}&mdash; {dailyProgress.percent.toFixed(1)}%
-                    {" "}&mdash; ETA: {dailyProgress.etaSeconds === null ? "-" : `${dailyProgress.etaSeconds}s`}
+                    {" "}&mdash; ETA: {dailyProgress.etaSeconds === null ? "-" : formatDuration(dailyProgress.etaSeconds)}
                     {dailyProgress.elapsedMs != null
-                      ? ` \u2014 ${Math.round(dailyProgress.elapsedMs / 1000)}s \u00e9coul\u00e9`
+                      ? ` \u2014 ${formatDuration(Math.round(dailyProgress.elapsedMs / 1000))} \u00e9coul\u00e9`
                       : ""}
                   </>
                 )}
@@ -3962,9 +3971,9 @@ export function SunlightMapClient() {
               ? ` (tuile ${instantProgress.tileIndex}/${instantProgress.totalTiles})`
               : ""}
             {" "}&mdash; {instantProgress.percent.toFixed(1)}%
-            {" "}&mdash; ETA: {instantProgress.etaSeconds === null ? "-" : `${instantProgress.etaSeconds}s`}
+            {" "}&mdash; ETA: {instantProgress.etaSeconds === null ? "-" : formatDuration(instantProgress.etaSeconds)}
             {instantProgress.elapsedMs != null
-              ? ` \u2014 ${Math.round(instantProgress.elapsedMs / 1000)}s \u00e9coul\u00e9`
+              ? ` \u2014 ${formatDuration(Math.round(instantProgress.elapsedMs / 1000))} \u00e9coul\u00e9`
               : ""}
           </p>
         </div>
