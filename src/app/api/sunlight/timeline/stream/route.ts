@@ -226,7 +226,7 @@ export async function GET(request: Request) {
             persistMissingTiles: true,
             onTileComputeProgress: (event) => {
               const etaSeconds =
-                event.elapsedMs > 1000 && event.percent > 0.5
+                event.elapsedMs > 3000 && event.percent > 0.01
                   ? Math.round(
                       (event.elapsedMs / event.percent) *
                         (100 - event.percent) /
