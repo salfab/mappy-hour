@@ -15,7 +15,7 @@ import path from "node:path";
 import AdmZip from "adm-zip";
 import earcut from "earcut";
 
-import { RAW_BUILDINGS_DIR } from "@/lib/storage/data-paths";
+import { PROCESSED_BUILDINGS_DIR, RAW_BUILDINGS_DIR } from "@/lib/storage/data-paths";
 import { loadBuildingsObstacleIndex } from "@/lib/sun/buildings-shadow";
 
 type ObstacleArray = NonNullable<
@@ -307,12 +307,103 @@ function extrudeFootprint(
 
 // ── Main loader ──────────────────────────────────────────────────────────
 
+// ── Binary cache ─────────────────────────────────────────────────────────
+// After the first DXF load (~38s), we serialize the Float32Array to a binary
+// file. On subsequent loads, we read the binary directly (<1s).
+
+const GPU_MESH_CACHE_DIR = PROCESSED_BUILDINGS_DIR;
+
+function buildCacheKey(originX: number, originY: number, obstacleCount: number): string {
+  return `gpu-mesh-${Math.round(originX)}-${Math.round(originY)}-${obstacleCount}`;
+}
+
+interface GpuMeshCacheHeader {
+  originX: number;
+  originY: number;
+  obstacleCount: number;
+  triangleCount: number;
+  dxfTriangleCount: number;
+  fallbackTriangleCount: number;
+  dxfObstacleCount: number;
+  fallbackObstacleCount: number;
+  vertexCount: number;
+}
+
+async function loadFromBinaryCache(
+  cacheKey: string,
+): Promise<GpuMeshLoadResult | null> {
+  const headerPath = path.join(GPU_MESH_CACHE_DIR, `${cacheKey}.json`);
+  const binPath = path.join(GPU_MESH_CACHE_DIR, `${cacheKey}.bin`);
+  try {
+    const [headerRaw, binBuf] = await Promise.all([
+      fsPromises.readFile(headerPath, "utf-8"),
+      fsPromises.readFile(binPath),
+    ]);
+    const header: GpuMeshCacheHeader = JSON.parse(headerRaw);
+    const vertices = new Float32Array(binBuf.buffer, binBuf.byteOffset, binBuf.byteLength / 4);
+    if (vertices.length !== header.vertexCount * 3) return null;
+    return {
+      vertices,
+      triangleCount: header.triangleCount,
+      dxfTriangleCount: header.dxfTriangleCount,
+      fallbackTriangleCount: header.fallbackTriangleCount,
+      dxfObstacleCount: header.dxfObstacleCount,
+      fallbackObstacleCount: header.fallbackObstacleCount,
+      zipScanMs: 0,
+      parseMs: 0,
+      totalMs: 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function saveToBinaryCache(
+  cacheKey: string,
+  result: GpuMeshLoadResult,
+  originX: number,
+  originY: number,
+  obstacleCount: number,
+): Promise<void> {
+  const headerPath = path.join(GPU_MESH_CACHE_DIR, `${cacheKey}.json`);
+  const binPath = path.join(GPU_MESH_CACHE_DIR, `${cacheKey}.bin`);
+  const header: GpuMeshCacheHeader = {
+    originX,
+    originY,
+    obstacleCount,
+    triangleCount: result.triangleCount,
+    dxfTriangleCount: result.dxfTriangleCount,
+    fallbackTriangleCount: result.fallbackTriangleCount,
+    dxfObstacleCount: result.dxfObstacleCount,
+    fallbackObstacleCount: result.fallbackObstacleCount,
+    vertexCount: result.vertices.length / 3,
+  };
+  await fsPromises.mkdir(GPU_MESH_CACHE_DIR, { recursive: true });
+  await Promise.all([
+    fsPromises.writeFile(headerPath, JSON.stringify(header, null, 2)),
+    fsPromises.writeFile(binPath, Buffer.from(result.vertices.buffer, result.vertices.byteOffset, result.vertices.byteLength)),
+  ]);
+}
+
+// ── Main loader ──────────────────────────────────────────────────────────
+
 export async function loadGpuMeshes(
   obstacles: BuildingObstacle[],
   originX: number,
   originY: number,
 ): Promise<GpuMeshLoadResult> {
   const t0 = performance.now();
+
+  // ── Try binary cache first ─────────────────────────────────────────
+  const cacheKey = buildCacheKey(originX, originY, obstacles.length);
+  const cached = await loadFromBinaryCache(cacheKey);
+  if (cached) {
+    cached.totalMs = Math.round((performance.now() - t0) * 100) / 100;
+    console.log(
+      `[gpu-mesh-loader] Binary cache hit (${cacheKey}): ${cached.triangleCount} triangles in ${cached.totalMs}ms`,
+    );
+    return cached;
+  }
 
   // ── Scan zip files ─────────────────────────────────────────────────
   const scanT0 = performance.now();
@@ -378,7 +469,7 @@ export async function loadGpuMeshes(
 
   const parseMs = performance.now() - parseT0;
 
-  return {
+  const result: GpuMeshLoadResult = {
     vertices: new Float32Array(allVertices),
     triangleCount: dxfTriangleCount + fallbackTriangleCount,
     dxfTriangleCount,
@@ -389,6 +480,14 @@ export async function loadGpuMeshes(
     parseMs: Math.round(parseMs * 100) / 100,
     totalMs: Math.round((performance.now() - t0) * 100) / 100,
   };
+
+  // ── Save binary cache for next time ────────────────────────────────
+  saveToBinaryCache(cacheKey, result, originX, originY, obstacles.length).then(
+    () => console.log(`[gpu-mesh-loader] Binary cache saved (${cacheKey}): ${result.triangleCount} triangles`),
+    (err) => console.warn(`[gpu-mesh-loader] Failed to save cache: ${err}`),
+  );
+
+  return result;
 }
 
 /** Emit a DXF vertex as GL coordinates: x = easting - ox, y = elevation (z), z = northing - oy */

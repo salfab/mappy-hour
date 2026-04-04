@@ -3915,20 +3915,33 @@ export function SunlightMapClient() {
             <div className="grid gap-1">
               <div className="h-2 w-full overflow-hidden rounded bg-slate-700/70">
                 <div
-                  className="h-full rounded bg-yellow-300 transition-[width] duration-150"
-                  style={{ width: `${Math.min(100, Math.max(0, dailyProgress.percent))}%` }}
+                  className={`h-full rounded bg-yellow-300 transition-[width] duration-150${
+                    dailyProgress.phase === "loading-scene" ? " animate-pulse w-full opacity-40" : ""
+                  }`}
+                  style={dailyProgress.phase !== "loading-scene" ? { width: `${Math.min(100, Math.max(0, dailyProgress.percent))}%` } : undefined}
                 />
               </div>
               <p className="text-xs text-slate-300">
-                {dailyProgress.phase}
-                {dailyProgress.tileIndex && dailyProgress.totalTiles
-                  ? ` (tuile ${dailyProgress.tileIndex}/${dailyProgress.totalTiles})`
-                  : ""}
-                {" "}&mdash; {dailyProgress.percent.toFixed(1)}%
-                {" "}&mdash; ETA: {dailyProgress.etaSeconds === null ? "-" : `${dailyProgress.etaSeconds}s`}
-                {dailyProgress.elapsedMs != null
-                  ? ` \u2014 ${Math.round(dailyProgress.elapsedMs / 1000)}s \u00e9coul\u00e9`
-                  : ""}
+                {dailyProgress.phase === "loading-scene"
+                  ? "Chargement de la sc\u00e8ne\u2026"
+                  : dailyProgress.phase === "tile-computation"
+                    ? `Calcul des tuiles${
+                        dailyProgress.tileIndex && dailyProgress.totalTiles
+                          ? ` (${dailyProgress.tileIndex}/${dailyProgress.totalTiles})`
+                          : ""
+                      }`
+                    : dailyProgress.phase === "cache-playback"
+                      ? "Lecture du cache"
+                      : dailyProgress.phase}
+                {dailyProgress.phase !== "loading-scene" && (
+                  <>
+                    {" "}&mdash; {dailyProgress.percent.toFixed(1)}%
+                    {" "}&mdash; ETA: {dailyProgress.etaSeconds === null ? "-" : `${dailyProgress.etaSeconds}s`}
+                    {dailyProgress.elapsedMs != null
+                      ? ` \u2014 ${Math.round(dailyProgress.elapsedMs / 1000)}s \u00e9coul\u00e9`
+                      : ""}
+                  </>
+                )}
               </p>
             </div>
           ) : null}

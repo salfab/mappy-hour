@@ -200,6 +200,15 @@ export async function GET(request: Request) {
         };
 
         const run = async () => {
+          sendEvent("progress", {
+            phase: "loading-scene",
+            done: 0,
+            total: 1,
+            percent: 0,
+            etaSeconds: null,
+          });
+          await yieldToEventLoop();
+
           const cacheResolved = await resolveSunlightTilesForBbox({
             bbox: {
               minLon: query.minLon,
