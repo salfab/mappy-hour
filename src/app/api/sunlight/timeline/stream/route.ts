@@ -4,13 +4,14 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { MAX_OUTDOOR_POINTS, DEFAULT_MAX_OUTDOOR_POINTS } from "@/lib/config/grid-limits";
+import { wgs84ToLv95 } from "@/lib/geo/projection";
 import { buildGridFromBbox } from "@/lib/geo/grid";
 import {
   buildTimelineFromArtifacts,
   resolveSunlightTilesForBbox,
 } from "@/lib/precompute/sunlight-tile-service";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
-import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
+import { buildPointEvaluationContext, buildSharedPointEvaluationSources } from "@/lib/sun/evaluation-context";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { evaluateInstantSunlight } from "@/lib/sun/solar";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
@@ -342,6 +343,16 @@ export async function GET(request: Request) {
             | Awaited<ReturnType<typeof buildDynamicHorizonMask>>
             | undefined;
 
+          // Pre-load shared sources ONCE for all points in the grid.
+          // Without this, each buildPointEvaluationContext call would
+          // independently reload terrain, vegetation, and GPU backend.
+          const sw = wgs84ToLv95(query.minLon, query.minLat);
+          const ne = wgs84ToLv95(query.maxLon, query.maxLat);
+          const lv95Bounds = { minX: sw.easting, minY: sw.northing, maxX: ne.easting, maxY: ne.northing };
+          const sharedSources = await buildSharedPointEvaluationSources({
+            lv95Bounds,
+          });
+
           sendEvent("progress", {
             phase: "preparing",
             done: 0,
@@ -391,6 +402,7 @@ export async function GET(request: Request) {
               skipTerrainSamplingWhenIndoor: true,
               terrainHorizonOverride: terrainHorizonOverride ?? undefined,
               shadowCalibration,
+              sharedSources,
             });
             terrainMethod = context.terrainHorizonMethod;
             buildingsMethod = context.buildingsShadowMethod;
