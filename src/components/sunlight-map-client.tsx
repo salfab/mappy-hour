@@ -1232,6 +1232,75 @@ function buildSunAndShadowContours(response: AreaApiResponse): {
   };
 }
 
+const CANVAS_OVERLAY_THRESHOLD = 10_000;
+
+function buildSunShadowCanvas(
+  response: AreaApiResponse,
+): { dataUrl: string; bounds: [[number, number], [number, number]] } | null {
+  const parsedPoints = parsePointsForContours(response);
+  if (parsedPoints.length === 0) return null;
+
+  let minRow = Infinity;
+  let maxRow = -Infinity;
+  let minCol = Infinity;
+  let maxCol = -Infinity;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+
+  for (const p of parsedPoints) {
+    if (p.row < minRow) minRow = p.row;
+    if (p.row > maxRow) maxRow = p.row;
+    if (p.col < minCol) minCol = p.col;
+    if (p.col > maxCol) maxCol = p.col;
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lon < minLon) minLon = p.lon;
+    if (p.lon > maxLon) maxLon = p.lon;
+  }
+
+  const width = maxCol - minCol + 1;
+  const height = maxRow - minRow + 1;
+  if (width <= 0 || height <= 0 || width > 10000 || height > 10000) return null;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  // Transparent background
+  ctx.clearRect(0, 0, width, height);
+
+  // Sunny = yellow, Shadow = dark gray
+  for (const p of parsedPoints) {
+    const x = p.col - minCol;
+    const y = maxRow - p.row; // flip Y: higher row = lower latitude = lower on screen
+    if (p.isSunny) {
+      ctx.fillStyle = "rgba(250, 204, 21, 0.4)"; // yellow-400 @ 40%
+    } else {
+      ctx.fillStyle = "rgba(100, 116, 139, 0.35)"; // slate-500 @ 35%
+    }
+    ctx.fillRect(x, y, 1, 1);
+  }
+
+  // Compute geo bounds (half-step padding around the grid extremes)
+  const meanLat = (minLat + maxLat) / 2;
+  const latHalfStep = response.gridStepMeters / METERS_PER_DEGREE_LAT / 2;
+  const lonHalfStep =
+    response.gridStepMeters /
+    (METERS_PER_DEGREE_LAT * Math.max(Math.cos((meanLat * Math.PI) / 180), 0.01)) /
+    2;
+
+  const bounds: [[number, number], [number, number]] = [
+    [minLat - latHalfStep, minLon - lonHalfStep],
+    [maxLat + latHalfStep, maxLon + lonHalfStep],
+  ];
+
+  return { dataUrl: canvas.toDataURL("image/png"), bounds };
+}
+
 function buildInstantBlockedContours(
   response: AreaApiResponse | null,
   predicate: (point: AreaInstantPoint) => boolean,
@@ -2701,7 +2770,21 @@ export function SunlightMapClient() {
       heatmapLayer.clearLayers();
       placesLayer.clearLayers();
 
-      const { sunnyContours, shadowContours } = response
+      const useCanvasOverlay =
+        response && response.pointCount >= CANVAS_OVERLAY_THRESHOLD;
+
+      if (useCanvasOverlay && (visibility.sunny || visibility.shadow)) {
+        const canvasResult = buildSunShadowCanvas(response);
+        if (canvasResult) {
+          L.imageOverlay(canvasResult.dataUrl, canvasResult.bounds, {
+            opacity: 1,
+            interactive: false,
+          }).addTo(sunnyLayer);
+        }
+      }
+
+      // For smaller grids, use vector polygon contours
+      const { sunnyContours, shadowContours } = !useCanvasOverlay && response
         ? buildSunAndShadowContours(response)
         : { sunnyContours: [], shadowContours: [] };
       const buildingsContours = buildBuildingsContours(buildings);
@@ -2709,12 +2792,14 @@ export function SunlightMapClient() {
       const shadowOutdoorContours = subtractPolygons(shadowContours, buildingsContours);
       const vegetationContours = visibility.ignoreVegetationShadow
         ? []
-        : buildInstantBlockedContours(
-            response,
-            (point) => point.vegetationBlocked === true,
-          );
+        : useCanvasOverlay
+          ? []
+          : buildInstantBlockedContours(
+              response,
+              (point) => point.vegetationBlocked === true,
+            );
 
-      if (visibility.sunny) {
+      if (visibility.sunny && !useCanvasOverlay) {
         for (const polygon of sunnyOutdoorContours) {
           const latLngRings = polygon.map((ring) =>
             ring.map(([lon, lat]) => [lat, lon] as [number, number]),
@@ -2729,7 +2814,7 @@ export function SunlightMapClient() {
         }
       }
 
-      if (visibility.shadow) {
+      if (visibility.shadow && !useCanvasOverlay) {
         for (const polygon of shadowOutdoorContours) {
           const latLngRings = polygon.map((ring) =>
             ring.map(([lon, lat]) => [lat, lon] as [number, number]),
