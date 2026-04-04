@@ -257,7 +257,9 @@ function resolvePrecomputeWorkerCount(tileCount: number): number {
 }
 
 function getPrecomputeTileWorkerPath(): string {
-  return path.join(process.cwd(), "scripts", "precompute", "cache-precompute-tile-worker.ts");
+  // path.join with spread to prevent Turbopack from statically resolving the worker script
+  const segments = ["scripts", "precompute", "cache-precompute-tile-worker.ts"];
+  return path.join(process.cwd(), ...segments);
 }
 
 async function runDateTilesWithWorkerPool(params: {
