@@ -444,6 +444,46 @@ async function loadTileCached(params: {
   };
 }
 
+const emptyDiagnostics: PrecomputedSunlightTileArtifact["frames"][number]["diagnostics"] = {
+  horizonAngleDegByPoint: [],
+  buildingBlockerIdByPoint: [],
+  buildingBlockerDistanceMetersByPoint: [],
+  vegetationBlockerDistanceMetersByPoint: [],
+};
+
+function stripArtifactDiagnostics(
+  artifact: PrecomputedSunlightTileArtifact,
+): PrecomputedSunlightTileArtifact {
+  return {
+    ...artifact,
+    frames: artifact.frames.map((frame) => ({
+      ...frame,
+      diagnostics: emptyDiagnostics,
+    })),
+  };
+}
+
+async function loadTileDiskOnly(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  date: string;
+  gridStepMeters: number;
+  sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
+  tileId: string;
+  stripDiagnostics?: boolean;
+}) {
+  const loaded = await loadPrecomputedSunlightTile(params);
+  const artifact = loaded && params.stripDiagnostics
+    ? stripArtifactDiagnostics(loaded)
+    : loaded;
+  return {
+    artifact,
+    layer: loaded ? ("L2" as const) : ("MISS" as const),
+  };
+}
+
 async function upsertManifest(params: {
   region: PrecomputedRegionName;
   modelVersionHash: string;
@@ -861,9 +901,10 @@ async function getOrCreateTileArtifact(params: {
   tile: RegionTileSpec;
   shadowCalibration: ShadowCalibration;
   persistMissingTiles: boolean;
+  skipMemoryCache?: boolean;
   onProgress?: (progress: SunlightTileComputeProgress) => void;
 }) {
-  const existing = await loadTileCached({
+  const loadParams = {
     region: params.region,
     modelVersionHash: params.modelVersionHash,
     date: params.date,
@@ -872,7 +913,10 @@ async function getOrCreateTileArtifact(params: {
     startLocalTime: params.startLocalTime,
     endLocalTime: params.endLocalTime,
     tileId: params.tile.tileId,
-  });
+  };
+  const existing = params.skipMemoryCache
+    ? await loadTileDiskOnly({ ...loadParams, stripDiagnostics: true })
+    : await loadTileCached(loadParams);
   if (existing.artifact) {
     return existing;
   }
@@ -925,21 +969,23 @@ async function getOrCreateTileArtifact(params: {
     return computed;
   });
 
-  tileMemoryCache.set(
-    JSON.stringify({
-      region: params.region,
-      modelVersionHash: params.modelVersionHash,
-      date: params.date,
-      gridStepMeters: params.gridStepMeters,
-      sampleEveryMinutes: params.sampleEveryMinutes,
-      startLocalTime: params.startLocalTime,
-      endLocalTime: params.endLocalTime,
-      tileId: params.tile.tileId,
-    }),
-    artifact,
-  );
+  if (!params.skipMemoryCache) {
+    tileMemoryCache.set(
+      JSON.stringify({
+        region: params.region,
+        modelVersionHash: params.modelVersionHash,
+        date: params.date,
+        gridStepMeters: params.gridStepMeters,
+        sampleEveryMinutes: params.sampleEveryMinutes,
+        startLocalTime: params.startLocalTime,
+        endLocalTime: params.endLocalTime,
+        tileId: params.tile.tileId,
+      }),
+      artifact,
+    );
+  }
   return {
-    artifact,
+    artifact: params.skipMemoryCache ? stripArtifactDiagnostics(artifact) : artifact,
     layer: "MISS" as const,
   };
 }
@@ -1039,6 +1085,7 @@ export async function resolveSunlightTilesForBbox(params: {
       tile,
       shadowCalibration: params.shadowCalibration,
       persistMissingTiles: params.persistMissingTiles ?? true,
+      skipMemoryCache: params.stripDiagnostics,
       onProgress,
     });
     if (resolved.layer === "L1") {
@@ -1051,23 +1098,7 @@ export async function resolveSunlightTilesForBbox(params: {
     if (!resolved.artifact) {
       continue;
     }
-    if (params.stripDiagnostics) {
-      const emptyDiagnostics = {
-        horizonAngleDegByPoint: [] as Array<number | null>,
-        buildingBlockerIdByPoint: [] as Array<string | null>,
-        buildingBlockerDistanceMetersByPoint: [] as Array<number | null>,
-        vegetationBlockerDistanceMetersByPoint: [] as Array<number | null>,
-      };
-      artifacts.push({
-        ...resolved.artifact,
-        frames: resolved.artifact.frames.map((frame) => ({
-          ...frame,
-          diagnostics: emptyDiagnostics,
-        })),
-      });
-    } else {
-      artifacts.push(resolved.artifact);
-    }
+    artifacts.push(resolved.artifact);
   }
 
   const hit = tilesComputed === 0 && requiredTiles.length > 0;
