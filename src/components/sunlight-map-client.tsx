@@ -1286,39 +1286,41 @@ function prepareSunShadowGrid(
   const rowRange = maxRow - minRow;
   if (colRange <= 0 || rowRange <= 0) return null;
 
-  // The canvas pixel grid must map col→x and row→y, but the aspect ratio
-  // must match the Leaflet bounds in degrees (not in meters) to avoid
-  // Mercator distortion squishing the image.
-  // Solution: canvas width = colRange, canvas height = colRange * (latRange/lonRange)
-  // and we map row → y by interpolating within the lat range.
-  const latRange = maxLat - minLat;
-  const lonRange = maxLon - minLon;
-  if (latRange <= 0 || lonRange <= 0) return null;
-
+  // Canvas is 1 pixel per LV95 meter (square pixels).
+  // Leaflet stretches the image to fill the lat/lon bounds, handling
+  // Mercator distortion automatically.
   const width = colRange + 1;
-  // Height proportional to the lat/lon aspect ratio at this latitude
-  const meanLat = (minLat + maxLat) / 2;
-  const metersPerDegLon = METERS_PER_DEGREE_LAT * Math.cos((meanLat * Math.PI) / 180);
-  const aspectCorrection = METERS_PER_DEGREE_LAT / metersPerDegLon;
-  const height = Math.round((rowRange + 1) * aspectCorrection);
+  const height = rowRange + 1;
   if (width > 10000 || height > 10000) return null;
 
   // Build pixel maps: for each tile, map point index → canvas pixel
-  // x maps col linearly, y maps row with aspect correction
   const tilePixelMaps: Array<{ x: number; y: number }[]> = [];
   for (const parsed of allParsed) {
     tilePixelMaps.push(
       parsed.map((p) => ({
         x: p.col - minCol,
-        y: Math.round((maxRow - p.row) * aspectCorrection),
+        y: maxRow - p.row,
       })),
     );
   }
 
-  const latPerRow = latRange / Math.max(rowRange, 1);
-  const lonPerCol = lonRange / Math.max(colRange, 1);
-  const latHalfStep = latPerRow / 2;
-  const lonHalfStep = lonPerCol / 2;
+  // Compute bounds from a reference point + row/col offsets.
+  // Each row = 1m northing, each col = 1m easting.
+  // Pick any point as reference and extrapolate to the grid corners.
+  const refTile = timeline.tiles[0];
+  const refPoint = refTile.points[0];
+  const refId = parseGridPointId(refPoint.id);
+  if (!refId) return null;
+  const latPerMeter = 1 / METERS_PER_DEGREE_LAT;
+  const meanLat = (minLat + maxLat) / 2;
+  const lonPerMeter = 1 / (METERS_PER_DEGREE_LAT * Math.cos((meanLat * Math.PI) / 180));
+  // Extrapolate lat/lon for the grid corners from the reference point
+  const southLat = refPoint.lat + (minRow - refId.row) * latPerMeter;
+  const northLat = refPoint.lat + (maxRow - refId.row) * latPerMeter;
+  const westLon = refPoint.lon + (minCol - refId.col) * lonPerMeter;
+  const eastLon = refPoint.lon + (maxCol - refId.col) * lonPerMeter;
+  const latHalfStep = latPerMeter / 2;
+  const lonHalfStep = lonPerMeter / 2;
 
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -1331,8 +1333,8 @@ function prepareSunShadowGrid(
     width,
     height,
     bounds: [
-      [minLat - latHalfStep, minLon - lonHalfStep],
-      [maxLat + latHalfStep, maxLon + lonHalfStep],
+      [southLat - latHalfStep, westLon - lonHalfStep],
+      [northLat + latHalfStep, eastLon + lonHalfStep],
     ] as [[number, number], [number, number]],
     canvas,
     ctx,
@@ -3124,8 +3126,12 @@ export function SunlightMapClient() {
       return;
     }
 
-    // Prepare grid if tiles changed
+    // Prepare grid if tiles changed — recreate overlay since bounds change
     if (!sunShadowGridRef.current || sunShadowGridRef.current.tilePixelMaps.length !== dailyTimeline.tiles.length) {
+      if (sunShadowOverlayRef.current) {
+        sunShadowOverlayRef.current.remove();
+        sunShadowOverlayRef.current = null;
+      }
       sunShadowGridRef.current = prepareSunShadowGrid(dailyTimeline);
     }
 
