@@ -1671,6 +1671,9 @@ export function SunlightMapClient() {
   const timelineStreamRef = useRef<EventSource | null>(null);
   const timelineCancelledRef = useRef(false);
   const decodedTimelineMaskCacheRef = useRef<Map<string, Uint8Array>>(new Map());
+  const pendingTilesRef = useRef<TimelineTile[]>([]);
+  const pendingStatsRef = useRef<{ gridPointCount: number; indoorPointsExcluded: number }>({ gridPointCount: 0, indoorPointsExcluded: 0 });
+  const lastTileFlushRef = useRef<number>(0);
   const ignoreVegetationShadowRef = useRef(false);
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
@@ -3465,6 +3468,9 @@ export function SunlightMapClient() {
       };
 
       decodedTimelineMaskCacheRef.current.clear();
+      pendingTilesRef.current = [];
+      pendingStatsRef.current = { gridPointCount: 0, indoorPointsExcluded: 0 };
+      lastTileFlushRef.current = performance.now();
       setDailyTimeline((previous) => {
         // On reconnect, preserve tiles already received if parameters match.
         const canMerge =
@@ -3495,6 +3501,33 @@ export function SunlightMapClient() {
       setDailyFrameIndex((prev) => prev || 0);
     });
 
+    const flushPendingTiles = () => {
+      const pending = pendingTilesRef.current;
+      if (pending.length === 0) return;
+      const pendingStats = pendingStatsRef.current;
+      const tilesToFlush = pending.splice(0);
+      const statsToFlush = { ...pendingStats };
+      pendingStatsRef.current = { gridPointCount: 0, indoorPointsExcluded: 0 };
+      decodedTimelineMaskCacheRef.current.clear();
+      setDailyTimeline((previous) => {
+        if (!previous) return previous;
+        const existingIds = new Set(previous.tiles.map((t) => t.tileId));
+        const newTiles = tilesToFlush.filter((t) => !existingIds.has(t.tileId));
+        if (newTiles.length === 0) return previous;
+        const mergedTiles = [...previous.tiles, ...newTiles];
+        const allPoints = mergedTiles.flatMap((t) => t.points);
+        return {
+          ...previous,
+          tiles: mergedTiles,
+          points: allPoints,
+          pointCount: allPoints.length,
+          gridPointCount: previous.gridPointCount + statsToFlush.gridPointCount,
+          indoorPointsExcluded: previous.indoorPointsExcluded + statsToFlush.indoorPointsExcluded,
+        };
+      });
+      lastTileFlushRef.current = performance.now();
+    };
+
     timelineStream.addEventListener("tile", (event) => {
       if (timelineCancelledRef.current) {
         return;
@@ -3509,31 +3542,19 @@ export function SunlightMapClient() {
         points: TimelinePoint[];
         frames: TimelineFrame[];
       };
-      decodedTimelineMaskCacheRef.current.clear();
-      setDailyTimeline((previous) => {
-        if (!previous) {
-          return previous;
-        }
-        // Skip duplicate tiles (already received before reconnect)
-        if (previous.tiles.some((t) => t.tileId === data.tileId)) {
-          return previous;
-        }
-        const newTile: TimelineTile = {
-          tileId: data.tileId,
-          points: data.points,
-          frames: data.frames,
-        };
-        const newTiles = [...previous.tiles, newTile];
-        const allPoints = newTiles.flatMap((t) => t.points);
-        return {
-          ...previous,
-          tiles: newTiles,
-          points: allPoints,
-          pointCount: allPoints.length,
-          gridPointCount: previous.gridPointCount + data.gridPointCount,
-          indoorPointsExcluded: previous.indoorPointsExcluded + data.indoorPointsExcluded,
-        };
+      pendingTilesRef.current.push({
+        tileId: data.tileId,
+        points: data.points,
+        frames: data.frames,
       });
+      pendingStatsRef.current.gridPointCount += data.gridPointCount;
+      pendingStatsRef.current.indoorPointsExcluded += data.indoorPointsExcluded;
+
+      // Flush to React state every 3 seconds or every 5 tiles
+      const msSinceFlush = performance.now() - lastTileFlushRef.current;
+      if (msSinceFlush > 3000 || pendingTilesRef.current.length >= 5) {
+        flushPendingTiles();
+      }
     });
 
     timelineStream.addEventListener("progress", (event) => {
@@ -3553,6 +3574,8 @@ export function SunlightMapClient() {
         setIsLoading(false);
         return;
       }
+      // Flush any remaining pending tiles before finalizing
+      flushPendingTiles();
       const data = JSON.parse((event as MessageEvent).data) as {
         stats: NonNullable<DailyTimelineState["stats"]>;
         warnings: string[];
