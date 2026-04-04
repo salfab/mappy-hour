@@ -278,7 +278,9 @@ export async function GET(request: Request) {
               pointCount: timeline.pointCount,
               indoorPointsExcluded: timeline.indoorPointsExcluded,
               frameCount: timeline.frames.length,
-              points: timeline.points,
+              // Skip individual point coordinates for large grids to save memory
+              points: timeline.pointCount <= 10_000 ? timeline.points : [],
+              pointsOmitted: timeline.pointCount > 10_000,
               model: timeline.model,
               cache: cacheResolved.cache,
               warnings: timeline.warnings,
@@ -471,11 +473,11 @@ export async function GET(request: Request) {
             pointCount: points.length,
             indoorPointsExcluded,
             frameCount: samples.length,
-            points: points.map((point) => ({
-              id: point.id,
-              lat: point.lat,
-              lon: point.lon,
-            })),
+            // Skip individual point coordinates for large grids to save memory
+            points: points.length <= 10_000
+              ? points.map((point) => ({ id: point.id, lat: point.lat, lon: point.lon }))
+              : [],
+            pointsOmitted: points.length > 10_000,
             model: {
               terrainHorizonMethod: terrainMethod,
               buildingsShadowMethod: buildingsMethod,
