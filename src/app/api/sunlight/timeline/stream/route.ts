@@ -7,9 +7,14 @@ import { MAX_OUTDOOR_POINTS, DEFAULT_MAX_OUTDOOR_POINTS } from "@/lib/config/gri
 import { wgs84ToLv95 } from "@/lib/geo/projection";
 import { buildGridFromBbox } from "@/lib/geo/grid";
 import {
-  buildTimelineFromArtifacts,
-  resolveSunlightTilesForBbox,
+  streamTilesForBbox,
 } from "@/lib/precompute/sunlight-tile-service";
+import {
+  decodeBase64Bytes,
+  isMaskBitSet,
+  pointInBbox,
+  setMaskBit,
+} from "@/lib/precompute/sunlight-cache";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext, buildSharedPointEvaluationSources } from "@/lib/sun/evaluation-context";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
@@ -216,13 +221,14 @@ export async function GET(request: Request) {
           });
           await yieldToEventLoop();
 
-          const cacheResolved = await resolveSunlightTilesForBbox({
-            bbox: {
-              minLon: query.minLon,
-              minLat: query.minLat,
-              maxLon: query.maxLon,
-              maxLat: query.maxLat,
-            },
+          const bbox = {
+            minLon: query.minLon,
+            minLat: query.minLat,
+            maxLon: query.maxLon,
+            maxLat: query.maxLat,
+          };
+          const tileStream = streamTilesForBbox({
+            bbox,
             date: query.date,
             timezone: query.timezone,
             sampleEveryMinutes: query.sampleEveryMinutes,
@@ -230,8 +236,6 @@ export async function GET(request: Request) {
             startLocalTime: query.startLocalTime,
             endLocalTime: query.endLocalTime,
             shadowCalibration,
-            persistMissingTiles: true,
-            stripDiagnostics: true,
             onTileComputeProgress: (event) => {
               const etaSeconds =
                 event.elapsedMs > 3000 && event.percent > 0.01
@@ -256,85 +260,145 @@ export async function GET(request: Request) {
             },
           });
 
-          if (cacheResolved) {
-            const timeline = buildTimelineFromArtifacts({
-              artifacts: cacheResolved.artifacts,
-              bbox: {
-                minLon: query.minLon,
-                minLat: query.minLat,
-                maxLon: query.maxLon,
-                maxLat: query.maxLat,
-              },
-              timezone: query.timezone,
-            });
-            if (timeline.pointCount > query.maxPoints) {
+          let sentStart = false;
+          let totalPointCount = 0;
+          let totalGridPointCount = 0;
+          let totalIndoorExcluded = 0;
+          let totalPointsWithElevation = 0;
+          let tileStreamTotalEvaluations = 0;
+          let tilesFromCache = 0;
+          let tilesComputed = 0;
+          let frameCount = 0;
+          const allWarnings = new Set<string>();
+
+          let result = await tileStream.next();
+          while (!result.done) {
+            if (streamAborted) return;
+            const { tileId, tileIndex, totalTiles, artifact, layer } = result.value;
+
+            if (!sentStart) {
+              sendEvent("start", {
+                date: query.date,
+                timezone: query.timezone,
+                startLocalTime: query.startLocalTime,
+                endLocalTime: query.endLocalTime,
+                sampleEveryMinutes: query.sampleEveryMinutes,
+                gridStepMeters: query.gridStepMeters,
+                totalTiles,
+                frameCount: artifact.frames.length,
+                model: artifact.model,
+              });
+              await yieldToEventLoop();
+              sentStart = true;
+              frameCount = artifact.frames.length;
+            }
+
+            if (layer === "L1" || layer === "L2") {
+              tilesFromCache += 1;
+            } else {
+              tilesComputed += 1;
+            }
+
+            // Filter outdoor points within bbox
+            const outdoorPoints: Array<{ id: string; lat: number; lon: number; outdoorIndex: number; pointElevationMeters: number | null }> = [];
+            let tileGridCount = 0;
+            let tileIndoorExcluded = 0;
+            for (const p of artifact.points) {
+              if (!pointInBbox(p.lon, p.lat, bbox)) continue;
+              tileGridCount += 1;
+              if (p.insideBuilding || p.outdoorIndex === null) {
+                tileIndoorExcluded += 1;
+                continue;
+              }
+              outdoorPoints.push({ id: p.id, lat: p.lat, lon: p.lon, outdoorIndex: p.outdoorIndex, pointElevationMeters: p.pointElevationMeters });
+            }
+
+            totalPointCount += outdoorPoints.length;
+            totalGridPointCount += tileGridCount;
+            totalIndoorExcluded += tileIndoorExcluded;
+            totalPointsWithElevation += outdoorPoints.filter(p => p.pointElevationMeters !== null).length;
+            tileStreamTotalEvaluations += outdoorPoints.length * artifact.frames.length;
+            for (const w of artifact.warnings) allWarnings.add(w);
+
+            if (totalPointCount > query.maxPoints) {
               sendEvent("error", {
                 error: "Outdoor grid exceeds maxPoints limit.",
-                details: `Computed more than ${query.maxPoints} outdoor points (raw: ${timeline.gridPointCount}, indoor excluded: ${timeline.indoorPointsExcluded}).`,
+                details: `Computed more than ${query.maxPoints} outdoor points after tile ${tileId}.`,
               });
               return;
             }
 
-            sendEvent("progress", {
-              phase: "cache-read",
-              done: cacheResolved.cache.tilesRequested,
-              total: cacheResolved.cache.tilesRequested,
-              percent: 100,
-              etaSeconds: 0,
+            // Re-index frame masks to filtered outdoor points
+            const tileFrames = artifact.frames.map((frame) => {
+              const srcMask = decodeBase64Bytes(frame.sunMaskBase64);
+              const dstMask = new Uint8Array(Math.ceil(outdoorPoints.length / 8));
+              let sunnyCount = 0;
+              for (let i = 0; i < outdoorPoints.length; i++) {
+                if (isMaskBitSet(srcMask, outdoorPoints[i].outdoorIndex)) {
+                  setMaskBit(dstMask, i);
+                  sunnyCount += 1;
+                }
+              }
+              const srcMaskNoVeg = decodeBase64Bytes(frame.sunMaskNoVegetationBase64);
+              const dstMaskNoVeg = new Uint8Array(Math.ceil(outdoorPoints.length / 8));
+              let sunnyCountNoVeg = 0;
+              for (let i = 0; i < outdoorPoints.length; i++) {
+                if (isMaskBitSet(srcMaskNoVeg, outdoorPoints[i].outdoorIndex)) {
+                  setMaskBit(dstMaskNoVeg, i);
+                  sunnyCountNoVeg += 1;
+                }
+              }
+              return {
+                index: frame.index,
+                localTime: frame.localTime,
+                sunnyCount,
+                sunnyCountNoVegetation: sunnyCountNoVeg,
+                sunMaskBase64: Buffer.from(dstMask).toString("base64"),
+                sunMaskNoVegetationBase64: Buffer.from(dstMaskNoVeg).toString("base64"),
+              };
+            });
+
+            sendEvent("tile", {
+              tileId,
+              tileIndex,
+              totalTiles,
+              pointCount: outdoorPoints.length,
+              gridPointCount: tileGridCount,
+              indoorPointsExcluded: tileIndoorExcluded,
+              points: outdoorPoints.map(p => ({ id: p.id, lat: p.lat, lon: p.lon })),
+              frames: tileFrames,
             });
             await yieldToEventLoop();
 
-            sendEvent("start", {
-              date: query.date,
-              timezone: query.timezone,
-              startLocalTime: query.startLocalTime,
-              endLocalTime: query.endLocalTime,
-              sampleEveryMinutes: query.sampleEveryMinutes,
-              gridStepMeters: query.gridStepMeters,
-              gridPointCount: timeline.gridPointCount,
-              pointCount: timeline.pointCount,
-              indoorPointsExcluded: timeline.indoorPointsExcluded,
-              frameCount: timeline.frames.length,
-              // Skip individual point coordinates for large grids to save memory
-              points: timeline.pointCount <= 10_000 ? timeline.points : [],
-              pointsOmitted: timeline.pointCount > 10_000,
-              model: timeline.model,
-              cache: cacheResolved.cache,
-              warnings: timeline.warnings,
-            });
-            await yieldToEventLoop();
+            result = await tileStream.next();
+          }
 
-            for (let frameIndex = 0; frameIndex < timeline.frames.length; frameIndex += 1) {
-              sendEvent("frame", timeline.frames[frameIndex]);
-              sendEvent("progress", {
-                phase: "cache-playback",
-                done: frameIndex + 1,
-                total: timeline.frames.length,
-                percent:
-                  timeline.frames.length === 0
-                    ? 100
-                    : Math.round((((frameIndex + 1) / timeline.frames.length) * 1000)) /
-                      10,
-                etaSeconds: 0,
-              });
-              await yieldToEventLoop();
-            }
-
-            sendEvent("done", {
-              stats: {
-                elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
-                evaluationElapsedMs: 0,
-                pointsWithElevation: timeline.pointsWithElevation,
-                pointsWithoutElevation: timeline.pointsWithoutElevation,
-                indoorPointsExcluded: timeline.indoorPointsExcluded,
-                frameCount: timeline.frames.length,
-                totalEvaluations: timeline.pointCount * timeline.frames.length,
-              },
-              cache: cacheResolved.cache,
-              warnings: timeline.warnings,
+          // Generator returned init metadata (or null if region not found)
+          if (!sentStart) {
+            // No tiles at all — region not found or no intersecting tiles
+            sendEvent("error", {
+              error: "No tiles found for the requested area.",
             });
             return;
           }
+
+          sendEvent("done", {
+            stats: {
+              elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
+              evaluationElapsedMs: 0,
+              pointsWithElevation: totalPointsWithElevation,
+              pointsWithoutElevation: totalPointCount - totalPointsWithElevation,
+              indoorPointsExcluded: totalIndoorExcluded,
+              frameCount,
+              totalEvaluations: tileStreamTotalEvaluations,
+              totalPointCount,
+              totalGridPointCount,
+              tilesComputed,
+              tilesFromCache,
+            },
+            warnings: Array.from(allWarnings),
+          });
+          return;
 
           const points: PreparedPoint[] = [];
           const warnings: string[] = [];
@@ -376,15 +440,16 @@ export async function GET(request: Request) {
             });
             if (dynamicMask) {
               terrainHorizonOverride = dynamicMask;
-              terrainMethod = dynamicMask.method;
+              terrainMethod = dynamicMask!.method;
             } else {
               warnings.push(
                 "Dynamic terrain horizon unavailable for this area center. Falling back to preprocessed horizon mask when available.",
               );
             }
-          } catch (error) {
+          } catch (_err) {
+            const errMsg = _err instanceof Error ? (_err as Error).message : "unknown error";
             warnings.push(
-              `Dynamic terrain horizon build failed (${error instanceof Error ? error.message : "unknown error"}). Falling back to preprocessed horizon mask when available.`,
+              `Dynamic terrain horizon build failed (${errMsg}). Falling back to preprocessed horizon mask when available.`,
             );
           }
           const terrainHorizonDebug = extractTerrainHorizonDebug(
@@ -454,18 +519,19 @@ export async function GET(request: Request) {
                 preparationDoneSteps,
                 preparationTotalSteps,
               );
-              const etaMs =
+              const etaSeconds =
                 preparationDoneSteps > 0
-                  ? (elapsedMs / preparationDoneSteps) *
-                    Math.max(preparationTotalSteps - preparationDoneSteps, 0)
+                  ? Math.max(0, Math.round(
+                      ((elapsedMs / preparationDoneSteps) *
+                        Math.max(preparationTotalSteps - preparationDoneSteps, 0)) / 1000,
+                    ))
                   : null;
               sendEvent("progress", {
                 phase: "preparing",
                 done: preparationDoneSteps,
                 total: preparationTotalSteps,
                 percent: Math.round(donePercent * 10) / 10,
-                etaSeconds:
-                  etaMs === null ? null : Math.max(0, Math.round(etaMs / 1000)),
+                etaSeconds,
               });
               await yieldToEventLoop();
             }
@@ -577,10 +643,12 @@ export async function GET(request: Request) {
 
             const elapsedMs = performance.now() - evalStartedAt;
             const donePercent = percent(evaluationsDone, totalEvaluations);
-            const etaMs =
+            const evalEtaSeconds =
               evaluationsDone > 0
-                ? (elapsedMs / evaluationsDone) *
-                    Math.max(totalEvaluations - evaluationsDone, 0)
+                ? Math.max(0, Math.round(
+                    ((elapsedMs / evaluationsDone) *
+                      Math.max(totalEvaluations - evaluationsDone, 0)) / 1000,
+                  ))
                 : null;
 
             sendEvent("progress", {
@@ -588,8 +656,7 @@ export async function GET(request: Request) {
               done: evaluationsDone,
               total: totalEvaluations,
               percent: Math.round(donePercent * 10) / 10,
-              etaSeconds:
-                etaMs === null ? null : Math.max(0, Math.round(etaMs / 1000)),
+              etaSeconds: evalEtaSeconds,
             });
             await yieldToEventLoop();
           }

@@ -1002,6 +1002,130 @@ export interface TileComputeProgressEvent {
   elapsedMs: number;
 }
 
+export interface StreamTileResult {
+  tileId: string;
+  tileIndex: number;
+  totalTiles: number;
+  artifact: PrecomputedSunlightTileArtifact;
+  layer: "L1" | "L2" | "MISS";
+}
+
+export interface StreamTilesInit {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  totalTiles: number;
+  tileSizeMeters: number;
+  sampleCount: number;
+}
+
+export async function* streamTilesForBbox(params: {
+  bbox: RegionBbox;
+  date: string;
+  timezone: string;
+  sampleEveryMinutes: number;
+  gridStepMeters: number;
+  startLocalTime: string;
+  endLocalTime: string;
+  shadowCalibration: ShadowCalibration;
+  onTileComputeProgress?: (event: TileComputeProgressEvent) => void;
+}): AsyncGenerator<StreamTileResult, StreamTilesInit | null> {
+  const region = resolveRegionForBbox(params.bbox);
+  if (!region) {
+    return null;
+  }
+
+  const modelVersion = await getSunlightModelVersion(region, params.shadowCalibration);
+  const manifest = await loadManifestCached({
+    region,
+    modelVersionHash: modelVersion.modelVersionHash,
+    date: params.date,
+    gridStepMeters: params.gridStepMeters,
+    sampleEveryMinutes: params.sampleEveryMinutes,
+    startLocalTime: params.startLocalTime,
+    endLocalTime: params.endLocalTime,
+  });
+  const tileSizeMeters = manifest?.tileSizeMeters ?? DEFAULT_CACHE_TILE_SIZE_METERS;
+  const allTiles = buildRegionTiles(region, tileSizeMeters);
+  const tileById = new Map(allTiles.map((tile) => [tile.tileId, tile]));
+  const requiredTileIds = getIntersectingTileIds({
+    region,
+    tileSizeMeters,
+    bbox: params.bbox,
+  });
+  const requiredTiles = requiredTileIds
+    .map((tileId) => tileById.get(tileId) ?? null)
+    .filter((tile): tile is RegionTileSpec => tile !== null);
+
+  const samples = createUtcSamples(
+    params.date,
+    params.timezone,
+    params.sampleEveryMinutes,
+    params.startLocalTime,
+    params.endLocalTime,
+  );
+
+  const resolveStartedAt = performance.now();
+  let maxPercent = 0;
+
+  for (let tileIdx = 0; tileIdx < requiredTiles.length; tileIdx++) {
+    const tile = requiredTiles[tileIdx];
+    const onProgress = params.onTileComputeProgress
+      ? (progress: SunlightTileComputeProgress) => {
+          const tileBase = tileIdx / requiredTiles.length;
+          const tileWeight = 1 / requiredTiles.length;
+          const stagePercent =
+            progress.total > 0 ? progress.completed / progress.total : 0;
+          const rawPercent = Math.round((tileBase + tileWeight * stagePercent) * 1000) / 10;
+          maxPercent = Math.max(maxPercent, rawPercent);
+          params.onTileComputeProgress!({
+            phase: "tile-computation",
+            tileIndex: tileIdx + 1,
+            totalTiles: requiredTiles.length,
+            tileId: tile.tileId,
+            stage: progress.stage,
+            stageCompleted: progress.completed,
+            stageTotal: progress.total,
+            percent: maxPercent,
+            elapsedMs: performance.now() - resolveStartedAt,
+          });
+        }
+      : undefined;
+    const resolved = await getOrCreateTileArtifact({
+      region,
+      modelVersionHash: modelVersion.modelVersionHash,
+      algorithmVersion: modelVersion.algorithmVersion,
+      date: params.date,
+      timezone: params.timezone,
+      sampleEveryMinutes: params.sampleEveryMinutes,
+      gridStepMeters: params.gridStepMeters,
+      startLocalTime: params.startLocalTime,
+      endLocalTime: params.endLocalTime,
+      tile,
+      shadowCalibration: params.shadowCalibration,
+      persistMissingTiles: true,
+      skipMemoryCache: true,
+      onProgress,
+    });
+    if (resolved.artifact) {
+      yield {
+        tileId: tile.tileId,
+        tileIndex: tileIdx,
+        totalTiles: requiredTiles.length,
+        artifact: resolved.artifact,
+        layer: resolved.layer,
+      };
+    }
+  }
+
+  return {
+    region,
+    modelVersionHash: modelVersion.modelVersionHash,
+    totalTiles: requiredTiles.length,
+    tileSizeMeters,
+    sampleCount: samples.length,
+  };
+}
+
 export async function resolveSunlightTilesForBbox(params: {
   bbox: RegionBbox;
   date: string;

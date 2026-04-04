@@ -179,6 +179,12 @@ interface TimelineFrame {
   sunMaskNoVegetationBase64?: string;
 }
 
+interface TimelineTile {
+  tileId: string;
+  points: TimelinePoint[];
+  frames: TimelineFrame[];
+}
+
 interface DailyTimelineState {
   date: string;
   timezone: string;
@@ -190,6 +196,7 @@ interface DailyTimelineState {
   gridPointCount: number;
   indoorPointsExcluded: number;
   frameCount: number;
+  tiles: TimelineTile[];
   points: TimelinePoint[];
   frames: TimelineFrame[];
   model: {
@@ -1389,34 +1396,38 @@ function toInstantAreaResponseFromTimeline(
   decodedMaskCache: Map<string, Uint8Array>,
   ignoreVegetation: boolean,
 ): AreaApiResponse | null {
-  if (timeline.frames.length === 0 || timeline.points.length === 0) {
+  if (timeline.tiles.length === 0) {
     return null;
   }
 
-  const safeIndex = Math.max(0, Math.min(frameIndex, timeline.frames.length - 1));
-  const frame = timeline.frames[safeIndex];
-  const cacheKey = timelineMaskCacheKey(frame.index, ignoreVegetation);
-  let mask = decodedMaskCache.get(cacheKey);
-  if (!mask) {
-    mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-    decodedMaskCache.set(cacheKey, mask);
-  }
+  const safeIndex = Math.max(0, Math.min(frameIndex, (timeline.tiles[0]?.frames.length ?? 1) - 1));
 
-  const points: AreaInstantPoint[] = timeline.points.map((point, index) => {
-    const isSunny = ((mask[index >> 3] >> (index & 7)) & 1) === 1;
-    return {
-      id: point.id,
-      lat: point.lat,
-      lon: point.lon,
-      isSunny,
-      terrainBlocked: false,
-      buildingsBlocked: false,
-      vegetationBlocked: false,
-      altitudeDeg: 0,
-      azimuthDeg: 0,
-      pointElevationMeters: null,
-    };
-  });
+  const points: AreaInstantPoint[] = [];
+  for (const tile of timeline.tiles) {
+    const frame = tile.frames[safeIndex];
+    if (!frame) continue;
+    const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
+    let mask = decodedMaskCache.get(cacheKey);
+    if (!mask) {
+      mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+      decodedMaskCache.set(cacheKey, mask);
+    }
+    for (let i = 0; i < tile.points.length; i++) {
+      const isSunny = ((mask[i >> 3] >> (i & 7)) & 1) === 1;
+      points.push({
+        id: tile.points[i].id,
+        lat: tile.points[i].lat,
+        lon: tile.points[i].lon,
+        isSunny,
+        terrainBlocked: false,
+        buildingsBlocked: false,
+        vegetationBlocked: false,
+        altitudeDeg: 0,
+        azimuthDeg: 0,
+        pointElevationMeters: null,
+      });
+    }
+  }
 
   const stats = timeline.stats;
   return {
@@ -1440,37 +1451,45 @@ function buildDailyExposurePoints(
   decodedMaskCache: Map<string, Uint8Array>,
   ignoreVegetation: boolean,
 ): DailyExposurePoint[] {
-  if (timeline.points.length === 0 || timeline.frames.length === 0) {
+  if (timeline.tiles.length === 0) {
     return [];
   }
 
-  const sunnyFrames = new Uint16Array(timeline.points.length);
-  for (const frame of timeline.frames) {
-    const cacheKey = timelineMaskCacheKey(frame.index, ignoreVegetation);
-    let mask = decodedMaskCache.get(cacheKey);
-    if (!mask) {
-      mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-      decodedMaskCache.set(cacheKey, mask);
-    }
-    for (let pointIndex = 0; pointIndex < timeline.points.length; pointIndex += 1) {
-      if (((mask[pointIndex >> 3] >> (pointIndex & 7)) & 1) === 1) {
-        sunnyFrames[pointIndex] += 1;
+  const totalFrames = timeline.tiles[0]?.frames.length ?? 0;
+  if (totalFrames === 0) {
+    return [];
+  }
+
+  const result: DailyExposurePoint[] = [];
+  for (const tile of timeline.tiles) {
+    const sunnyFrames = new Uint16Array(tile.points.length);
+    for (const frame of tile.frames) {
+      const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
+      let mask = decodedMaskCache.get(cacheKey);
+      if (!mask) {
+        mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+        decodedMaskCache.set(cacheKey, mask);
       }
+      for (let i = 0; i < tile.points.length; i++) {
+        if (((mask[i >> 3] >> (i & 7)) & 1) === 1) {
+          sunnyFrames[i] += 1;
+        }
+      }
+    }
+    for (let i = 0; i < tile.points.length; i++) {
+      const pointSunnyFrames = sunnyFrames[i] ?? 0;
+      result.push({
+        id: tile.points[i].id,
+        lat: tile.points[i].lat,
+        lon: tile.points[i].lon,
+        sunnyFrames: pointSunnyFrames,
+        totalFrames,
+        exposureRatio: totalFrames === 0 ? 0 : pointSunnyFrames / totalFrames,
+      });
     }
   }
 
-  return timeline.points.map((point, index) => {
-    const totalFrames = timeline.frames.length;
-    const pointSunnyFrames = sunnyFrames[index] ?? 0;
-    return {
-      id: point.id,
-      lat: point.lat,
-      lon: point.lon,
-      sunnyFrames: pointSunnyFrames,
-      totalFrames,
-      exposureRatio: totalFrames === 0 ? 0 : pointSunnyFrames / totalFrames,
-    };
-  });
+  return result;
 }
 
 function buildDailyExposureCells(
@@ -1786,7 +1805,7 @@ export function SunlightMapClient() {
       mode !== "daily" ||
       !dailyTimeline ||
       !dailyTimeline.stats ||
-      dailyTimeline.frames.length === 0
+      dailyTimeline.tiles.length === 0
     ) {
       return null;
     }
@@ -1828,15 +1847,17 @@ export function SunlightMapClient() {
   }, [buildingWarnings, dailyTimeline, lastResult, mode, placesWarnings]);
 
   const activeFrameTime = useMemo(() => {
-    if (!dailyTimeline || dailyTimeline.frames.length === 0) {
+    if (!dailyTimeline || dailyTimeline.tiles.length === 0) {
       return null;
     }
 
+    const firstTileFrames = dailyTimeline.tiles[0]?.frames ?? [];
+    if (firstTileFrames.length === 0) return null;
     const safeIndex = Math.max(
       0,
-      Math.min(dailyFrameIndex, dailyTimeline.frames.length - 1),
+      Math.min(dailyFrameIndex, firstTileFrames.length - 1),
     );
-    return dailyTimeline.frames[safeIndex]?.localTime ?? null;
+    return firstTileFrames[safeIndex]?.localTime ?? null;
   }, [dailyFrameIndex, dailyTimeline]);
 
   const canShowHeatmap = useMemo(
@@ -1862,7 +1883,7 @@ export function SunlightMapClient() {
   const helperText = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
       const stats = dailyTimeline.stats;
-      const base = `${dailyTimeline.pointCount} points, frames: ${dailyTimeline.frames.length}/${dailyTimeline.frameCount}, plage: ${dailyTimeline.startLocalTime}-${dailyTimeline.endLocalTime}, indoor exclus: ${dailyTimeline.indoorPointsExcluded}, terrasses soleil: ${sunlitPlaces.length}, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m`;
+      const base = `${dailyTimeline.pointCount} points, tiles: ${dailyTimeline.tiles.length}, frames: ${dailyTimeline.frameCount}, plage: ${dailyTimeline.startLocalTime}-${dailyTimeline.endLocalTime}, indoor exclus: ${dailyTimeline.indoorPointsExcluded}, terrasses soleil: ${sunlitPlaces.length}, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m`;
       if (!stats) {
         return `${base}, calcul timeline en cours...`;
       }
@@ -3438,25 +3459,19 @@ export function SunlightMapClient() {
         endLocalTime: string;
         sampleEveryMinutes: number;
         gridStepMeters: number;
-        pointCount: number;
-        gridPointCount: number;
-        indoorPointsExcluded: number;
+        totalTiles: number;
         frameCount: number;
-        points: TimelinePoint[];
         model?: NonNullable<AreaApiResponse["model"]>;
-        warnings: string[];
       };
 
       decodedTimelineMaskCacheRef.current.clear();
       setDailyTimeline((previous) => {
-        // On reconnect, preserve frames already received if the
-        // parameters match (same date, grid, point count).
+        // On reconnect, preserve tiles already received if parameters match.
         const canMerge =
           previous &&
           previous.date === data.date &&
           previous.gridStepMeters === data.gridStepMeters &&
-          previous.pointCount === data.pointCount &&
-          previous.frames.length > 0;
+          previous.tiles.length > 0;
 
         return {
           date: data.date,
@@ -3465,18 +3480,60 @@ export function SunlightMapClient() {
           endLocalTime: data.endLocalTime,
           sampleEveryMinutes: data.sampleEveryMinutes,
           gridStepMeters: data.gridStepMeters,
-          pointCount: data.pointCount,
-          gridPointCount: data.gridPointCount,
-          indoorPointsExcluded: data.indoorPointsExcluded,
+          pointCount: canMerge ? previous.pointCount : 0,
+          gridPointCount: canMerge ? previous.gridPointCount : 0,
+          indoorPointsExcluded: canMerge ? previous.indoorPointsExcluded : 0,
           frameCount: data.frameCount,
-          points: data.points,
-          frames: canMerge ? previous.frames : [],
+          tiles: canMerge ? previous.tiles : [],
+          points: canMerge ? previous.points : [],
+          frames: [],
           model: data.model ?? null,
-          warnings: data.warnings,
+          warnings: [],
           stats: null,
         };
       });
       setDailyFrameIndex((prev) => prev || 0);
+    });
+
+    timelineStream.addEventListener("tile", (event) => {
+      if (timelineCancelledRef.current) {
+        return;
+      }
+      const data = JSON.parse((event as MessageEvent).data) as {
+        tileId: string;
+        tileIndex: number;
+        totalTiles: number;
+        pointCount: number;
+        gridPointCount: number;
+        indoorPointsExcluded: number;
+        points: TimelinePoint[];
+        frames: TimelineFrame[];
+      };
+      decodedTimelineMaskCacheRef.current.clear();
+      setDailyTimeline((previous) => {
+        if (!previous) {
+          return previous;
+        }
+        // Skip duplicate tiles (already received before reconnect)
+        if (previous.tiles.some((t) => t.tileId === data.tileId)) {
+          return previous;
+        }
+        const newTile: TimelineTile = {
+          tileId: data.tileId,
+          points: data.points,
+          frames: data.frames,
+        };
+        const newTiles = [...previous.tiles, newTile];
+        const allPoints = newTiles.flatMap((t) => t.points);
+        return {
+          ...previous,
+          tiles: newTiles,
+          points: allPoints,
+          pointCount: allPoints.length,
+          gridPointCount: previous.gridPointCount + data.gridPointCount,
+          indoorPointsExcluded: previous.indoorPointsExcluded + data.indoorPointsExcluded,
+        };
+      });
     });
 
     timelineStream.addEventListener("progress", (event) => {
@@ -3485,30 +3542,6 @@ export function SunlightMapClient() {
       }
       const data = JSON.parse((event as MessageEvent).data) as TimelineProgress;
       setDailyProgress(data);
-    });
-
-    timelineStream.addEventListener("frame", (event) => {
-      if (timelineCancelledRef.current) {
-        return;
-      }
-      const data = JSON.parse((event as MessageEvent).data) as TimelineFrame;
-      setDailyTimeline((previous) => {
-        if (!previous) {
-          return previous;
-        }
-
-        // Skip duplicate frames (already received before reconnect)
-        if (previous.frames.some((f) => f.index === data.index)) {
-          return previous;
-        }
-
-        const nextFrames = [...previous.frames, data];
-        return {
-          ...previous,
-          frames: nextFrames,
-        };
-      });
-      setDailyFrameIndex(data.index);
     });
 
     timelineStream.addEventListener("done", (event) => {
@@ -3928,18 +3961,18 @@ export function SunlightMapClient() {
           <input
             type="range"
             min={0}
-            max={Math.max(0, (dailyTimeline?.frames.length ?? 1) - 1)}
+            max={Math.max(0, (dailyTimeline?.frameCount ?? 1) - 1)}
             step={1}
             value={Math.min(
               dailyFrameIndex,
-              Math.max(0, (dailyTimeline?.frames.length ?? 1) - 1),
+              Math.max(0, (dailyTimeline?.frameCount ?? 1) - 1),
             )}
             onChange={(event) => setDailyFrameIndex(Number(event.target.value))}
-            disabled={!dailyTimeline || dailyTimeline.frames.length === 0}
+            disabled={!dailyTimeline || dailyTimeline.tiles.length === 0}
           />
           <p className="text-xs text-slate-300">
-            Frames reçues: {dailyTimeline?.frames.length ?? 0}/
-            {dailyTimeline?.frameCount ?? 0}
+            Tuiles reçues: {dailyTimeline?.tiles.length ?? 0},
+            {" "}{dailyTimeline?.pointCount ?? 0} points
           </p>
           {canShowHeatmap ? (
             <p className="text-xs text-rose-200">
