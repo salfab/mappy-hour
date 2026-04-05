@@ -2719,6 +2719,18 @@ export function SunlightMapClient() {
         active: initialBaseMapStyle,
       };
 
+      L.control.layers(
+        { "Carte": streetLayer, "Satellite": satelliteLayer },
+        {},
+        { position: "topright", collapsed: true },
+      ).addTo(map);
+
+      map.on("baselayerchange", (event: L.LayersControlEvent) => {
+        const newStyle = event.name === "Satellite" ? "satellite" : "map";
+        baseMapStyleRef.current = newStyle;
+        setBaseMapStyle(newStyle as BaseMapStyle);
+      });
+
       sunnyLayerRef.current = L.layerGroup().addTo(map);
       shadowLayerRef.current = L.layerGroup().addTo(map);
       vegetationLayerRef.current = L.layerGroup().addTo(map);

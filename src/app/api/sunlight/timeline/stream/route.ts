@@ -40,6 +40,7 @@ const querySchema = z
     maxPoints: z.coerce.number().int().min(1).max(MAX_OUTDOOR_POINTS).default(DEFAULT_MAX_OUTDOOR_POINTS),
     buildingHeightBiasMeters: z.coerce.number().min(-20).max(20).default(0),
     cacheOnly: z.coerce.boolean().default(false),
+    maxComputeTiles: z.coerce.number().int().min(0).max(500).default(50),
   })
   .refine(
     (value) =>
@@ -326,10 +327,11 @@ export async function GET(request: Request) {
             tileStreamTotalEvaluations += outdoorPoints.length * artifact.frames.length;
             for (const w of artifact.warnings) allWarnings.add(w);
 
-            if (!query.cacheOnly && totalPointCount > query.maxPoints) {
+            // In non-cache mode, limit the number of tiles that need computation
+            if (!query.cacheOnly && layer === "MISS" && tilesComputed > query.maxComputeTiles) {
               sendEvent("error", {
-                error: "Outdoor grid exceeds maxPoints limit.",
-                details: `Computed more than ${query.maxPoints} outdoor points after tile ${tileId}.`,
+                error: "Too many tiles to compute.",
+                details: `Already computed ${tilesComputed} tiles (limit: ${query.maxComputeTiles}). Use cache-only mode or reduce the area.`,
               });
               return;
             }
