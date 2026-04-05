@@ -219,7 +219,7 @@ export async function GET(request: Request) {
 
         const run = async () => {
           sendEvent("progress", {
-            phase: "loading-scene",
+            phase: query.cacheOnly ? "loading-cache" : "loading-scene",
             done: 0,
             total: 1,
             percent: 0,
