@@ -326,7 +326,7 @@ export async function GET(request: Request) {
             tileStreamTotalEvaluations += outdoorPoints.length * artifact.frames.length;
             for (const w of artifact.warnings) allWarnings.add(w);
 
-            if (totalPointCount > query.maxPoints) {
+            if (!query.cacheOnly && totalPointCount > query.maxPoints) {
               sendEvent("error", {
                 error: "Outdoor grid exceeds maxPoints limit.",
                 details: `Computed more than ${query.maxPoints} outdoor points after tile ${tileId}.`,
