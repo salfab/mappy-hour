@@ -192,10 +192,6 @@ interface TimelineTile {
   tileId: string;
   grid?: TileGrid;
   outdoorMaskBase64?: string;
-  maskBytesPerFrame?: number;
-  sunMaskBlobBase64?: string;
-  noVegMaskBlobBase64?: string;
-  frameMeta?: Array<{ index: number; localTime: string; sunnyCount: number; sunnyCountNoVegetation: number }>;
   points: TimelinePoint[];
   frames: TimelineFrame[];
   tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
@@ -1381,31 +1377,18 @@ function paintSunShadowFrame(
       decodedMaskCache.set(cacheKey, mask);
     }
 
-    if (tile.grid && tile.sunMaskBlobBase64 && tile.maskBytesPerFrame) {
-      // Grid-indexed blob format: all frame masks concatenated in one blob.
-      // Decode blob once, then slice by frame index.
-      const blobCacheKey = `${tile.tileId}:blob:${ignoreVegetation ? "nv" : "f"}`;
-      let blob = decodedMaskCache.get(blobCacheKey);
-      if (!blob) {
-        blob = decodeBase64ToBytes(ignoreVegetation ? (tile.noVegMaskBlobBase64 ?? tile.sunMaskBlobBase64) : tile.sunMaskBlobBase64);
-        decodedMaskCache.set(blobCacheKey, blob);
-      }
-      const bpf = tile.maskBytesPerFrame;
-      const frameOffset = safeIndex * bpf;
+    if (tile.grid) {
+      // Grid-indexed format: each bit = 1 grid cell, ordered iy asc then ix asc.
+      // Map grid cells to canvas pixels using the tile's grid bounds.
       const tileW = tile.grid.width;
       const outdoorMask = tile.outdoorMaskBase64
-        ? (() => {
-            const ck = `${tile.tileId}:outdoor`;
-            let m = decodedMaskCache.get(ck);
-            if (!m) { m = decodeBase64ToBytes(tile.outdoorMaskBase64!); decodedMaskCache.set(ck, m); }
-            return m;
-          })()
+        ? decodeBase64ToBytes(tile.outdoorMaskBase64)
         : null;
       const cellCount = tileW * tile.grid.height;
       for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
+        // Only paint outdoor cells
         if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) continue;
-        const byteIdx = frameOffset + (cellIdx >> 3);
-        const isSunny = ((blob[byteIdx] >> (cellIdx & 7)) & 1) === 1;
+        const isSunny = ((mask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
         const tileRow: number = tile.grid.minIy + Math.floor(cellIdx / tileW);
         const tileCol: number = tile.grid.minIx + (cellIdx % tileW);
         const x: number = tileCol - globalMinCol;
@@ -1843,31 +1826,21 @@ function paintHeatmapCanvas(
   for (let tileIdx = 0; tileIdx < timeline.tiles.length; tileIdx++) {
     const tile = timeline.tiles[tileIdx];
 
-    if (tile.grid && tile.sunMaskBlobBase64 && tile.maskBytesPerFrame) {
+    if (tile.grid) {
       const tileW = tile.grid.width;
       const cellCount = tileW * tile.grid.height;
-      const bpf = tile.maskBytesPerFrame;
-      const blobCacheKey = `${tile.tileId}:blob:${ignoreVegetation ? "nv" : "f"}`;
-      let blob = decodedMaskCache.get(blobCacheKey);
-      if (!blob) {
-        blob = decodeBase64ToBytes(ignoreVegetation ? (tile.noVegMaskBlobBase64 ?? tile.sunMaskBlobBase64) : tile.sunMaskBlobBase64);
-        decodedMaskCache.set(blobCacheKey, blob);
-      }
       const outdoorMask = tile.outdoorMaskBase64
-        ? (() => {
-            const ck = `${tile.tileId}:outdoor`;
-            let m = decodedMaskCache.get(ck);
-            if (!m) { m = decodeBase64ToBytes(tile.outdoorMaskBase64!); decodedMaskCache.set(ck, m); }
-            return m;
-          })()
-        : null;
-      const frameCount = tile.frameMeta?.length ?? 0;
+        ? decodeBase64ToBytes(tile.outdoorMaskBase64) : null;
       const sunnyFrames = new Uint16Array(cellCount);
-      for (let fi = 0; fi < frameCount; fi++) {
-        const frameOffset = fi * bpf;
+      for (const frame of tile.frames) {
+        const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
+        let mask = decodedMaskCache.get(cacheKey);
+        if (!mask) {
+          mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+          decodedMaskCache.set(cacheKey, mask);
+        }
         for (let i = 0; i < cellCount; i++) {
-          const byteIdx = frameOffset + (i >> 3);
-          if (((blob[byteIdx] >> (i & 7)) & 1) === 1) sunnyFrames[i] += 1;
+          if (((mask[i >> 3] >> (i & 7)) & 1) === 1) sunnyFrames[i] += 1;
         }
       }
       for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
@@ -2182,8 +2155,7 @@ export function SunlightMapClient() {
       return null;
     }
 
-    const firstTile = dailyTimeline.tiles[0];
-    const firstTileFrames = firstTile?.frameMeta ?? firstTile?.frames ?? [];
+    const firstTileFrames = dailyTimeline.tiles[0]?.frames ?? [];
     if (firstTileFrames.length === 0) return null;
     const safeIndex = Math.max(
       0,
@@ -4021,23 +3993,15 @@ export function SunlightMapClient() {
         indoorPointsExcluded: number;
         grid?: TileGrid;
         outdoorMaskBase64?: string;
-        maskBytesPerFrame?: number;
-        sunMaskBlobBase64?: string;
-        noVegMaskBlobBase64?: string;
-        frameMeta?: Array<{ index: number; localTime: string; sunnyCount: number; sunnyCountNoVegetation: number }>;
         points?: Array<{ id: string; lat?: number; lon?: number }>;
-        frames?: TimelineFrame[];
+        frames: TimelineFrame[];
       };
       pendingTilesRef.current.push({
         tileId: data.tileId,
         grid: data.grid,
         outdoorMaskBase64: data.outdoorMaskBase64,
-        maskBytesPerFrame: data.maskBytesPerFrame,
-        sunMaskBlobBase64: data.sunMaskBlobBase64,
-        noVegMaskBlobBase64: data.noVegMaskBlobBase64,
-        frameMeta: data.frameMeta,
         points: (data.points ?? []) as TimelinePoint[],
-        frames: data.frames ?? [],
+        frames: data.frames,
       });
       pendingStatsRef.current.gridPointCount += data.gridPointCount;
       pendingStatsRef.current.indoorPointsExcluded += data.indoorPointsExcluded;
