@@ -1317,12 +1317,24 @@ function prepareSunShadowGrid(
     );
   }
 
-  // Use actual lat/lon from the corner points for precise bounds.
-  // minRowLat = lat of the southernmost row, maxRowLat = lat of the northernmost row.
-  // minColLon = lon of the westernmost col, maxColLon = lon of the easternmost col.
-  const latHalfStep = 1 / METERS_PER_DEGREE_LAT / 2;
-  const meanLat = (geoMinLat + geoMaxLat) / 2;
-  const lonHalfStep = 1 / (METERS_PER_DEGREE_LAT * Math.cos((meanLat * Math.PI) / 180)) / 2;
+  // tileBounds from the server are computed via lv95ToWgs84 on the pixel
+  // grid corners — they already include half-step padding. Use directly.
+  // Fallback: approximate padding for tiles without tileBounds.
+  const hasTileBounds = geoMinLat < Infinity;
+  let boundsS = geoMinLat;
+  let boundsN = geoMaxLat;
+  let boundsW = geoMinLon;
+  let boundsE = geoMaxLon;
+  if (!hasTileBounds || !timeline.tiles.some(t => t.tileBounds)) {
+    // No server-computed bounds — add approximate half-step padding
+    const latHalfStep = 1 / METERS_PER_DEGREE_LAT / 2;
+    const meanLat = (geoMinLat + geoMaxLat) / 2;
+    const lonHalfStep = 1 / (METERS_PER_DEGREE_LAT * Math.cos((meanLat * Math.PI) / 180)) / 2;
+    boundsS -= latHalfStep;
+    boundsN += latHalfStep;
+    boundsW -= lonHalfStep;
+    boundsE += lonHalfStep;
+  }
 
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -1335,8 +1347,8 @@ function prepareSunShadowGrid(
     width,
     height,
     bounds: [
-      [geoMinLat - latHalfStep, geoMinLon - lonHalfStep],
-      [geoMaxLat + latHalfStep, geoMaxLon + lonHalfStep],
+      [boundsS, boundsW],
+      [boundsN, boundsE],
     ] as [[number, number], [number, number]],
     canvas,
     ctx,

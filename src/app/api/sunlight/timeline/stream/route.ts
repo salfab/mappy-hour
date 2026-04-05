@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { MAX_OUTDOOR_POINTS, DEFAULT_MAX_OUTDOOR_POINTS } from "@/lib/config/grid-limits";
-import { wgs84ToLv95 } from "@/lib/geo/projection";
+import { lv95ToWgs84, wgs84ToLv95 } from "@/lib/geo/projection";
 import { buildGridFromBbox } from "@/lib/geo/grid";
 import {
   streamTilesForBbox,
@@ -371,16 +371,35 @@ export async function GET(request: Request) {
             // row/col from the ID for canvas pixel mapping, and uses tile
             // bounds for geo-referencing.
             const compactPoints = outdoorPoints.length > 1000;
+            // Compute tileBounds by converting the grid col/row extremes
+            // from LV95 to WGS84. The canvas pixel (0,0) = (minCol, maxRow)
+            // and pixel (w-1, h-1) = (maxCol, minRow). The bounds must
+            // match these corners exactly for proper alignment.
             let tileBounds: { minLat: number; maxLat: number; minLon: number; maxLon: number } | undefined;
             if (compactPoints && outdoorPoints.length > 0) {
-              let bMinLat = Infinity, bMaxLat = -Infinity, bMinLon = Infinity, bMaxLon = -Infinity;
+              let oMinCol = Infinity, oMaxCol = -Infinity, oMinRow = Infinity, oMaxRow = -Infinity;
               for (const p of outdoorPoints) {
-                if (p.lat < bMinLat) bMinLat = p.lat;
-                if (p.lat > bMaxLat) bMaxLat = p.lat;
-                if (p.lon < bMinLon) bMinLon = p.lon;
-                if (p.lon > bMaxLon) bMaxLon = p.lon;
+                const m = /^ix(-?\d+)-iy(-?\d+)$/.exec(p.id);
+                if (!m) continue;
+                const col = +m[1], row = +m[2];
+                if (col < oMinCol) oMinCol = col;
+                if (col > oMaxCol) oMaxCol = col;
+                if (row < oMinRow) oMinRow = row;
+                if (row > oMaxRow) oMaxRow = row;
               }
-              tileBounds = { minLat: bMinLat, maxLat: bMaxLat, minLon: bMinLon, maxLon: bMaxLon };
+              if (oMinCol < Infinity) {
+                const gs = query.gridStepMeters;
+                // Grid point center at col C = C*gs + gs/2.
+                // Pixel western edge = C*gs, eastern edge = (C+1)*gs.
+                const sw = lv95ToWgs84(oMinCol * gs, oMinRow * gs);
+                const ne = lv95ToWgs84((oMaxCol + 1) * gs, (oMaxRow + 1) * gs);
+                tileBounds = {
+                  minLat: sw.lat,
+                  maxLat: ne.lat,
+                  minLon: sw.lon,
+                  maxLon: ne.lon,
+                };
+              }
             }
             sendEvent("tile", {
               tileId,
