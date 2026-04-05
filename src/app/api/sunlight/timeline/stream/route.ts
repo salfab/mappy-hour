@@ -403,6 +403,11 @@ export async function GET(request: Request) {
               };
             });
 
+            // Precise per-tile bounds via lv95ToWgs84 (250m → negligible linearization error)
+            const gs = query.gridStepMeters;
+            const tileSW = lv95ToWgs84(tileMinIx * gs, tileMinIy * gs);
+            const tileNE = lv95ToWgs84((tileMaxIx + 1) * gs, (tileMaxIy + 1) * gs);
+
             sendEvent("tile", {
               tileId,
               tileIndex,
@@ -411,6 +416,7 @@ export async function GET(request: Request) {
               gridPointCount: tileGridCount,
               indoorPointsExcluded: tileIndoorExcluded,
               grid: { minIx: tileMinIx, maxIx: tileMaxIx, minIy: tileMinIy, maxIy: tileMaxIy, width: tileW, height: tileH },
+              tileBounds: { minLat: tileSW.lat, maxLat: tileNE.lat, minLon: tileSW.lon, maxLon: tileNE.lon },
               outdoorMaskBase64: Buffer.from(outdoorMask).toString("base64"),
               frames: tileFrames,
             });

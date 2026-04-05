@@ -1261,6 +1261,16 @@ interface SunShadowGrid {
   ctx: CanvasRenderingContext2D;
 }
 
+interface PerTileOverlay {
+  tileId: string;
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  overlay: L.ImageOverlay;
+  width: number;
+  height: number;
+  bounds: [[number, number], [number, number]];
+}
+
 function prepareSunShadowGrid(
   timeline: DailyTimelineState,
 ): SunShadowGrid | null {
@@ -1417,6 +1427,80 @@ function paintSunShadowFrame(
     }
   }
 
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function paintTileCanvas(
+  tile: TimelineTile,
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  frameIndex: number,
+  decodedMaskCache: Map<string, Uint8Array>,
+  ignoreVegetation: boolean,
+  mode: "sunShadow" | "heatmap",
+): void {
+  if (!tile.grid) return;
+  const imageData = ctx.createImageData(width, height);
+  const data = imageData.data;
+  const tileW = tile.grid.width;
+  const cellCount = tileW * tile.grid.height;
+
+  const outdoorCacheKey = `${tile.tileId}:outdoor`;
+  let outdoorMask = decodedMaskCache.get(outdoorCacheKey);
+  if (!outdoorMask && tile.outdoorMaskBase64) {
+    outdoorMask = decodeBase64ToBytes(tile.outdoorMaskBase64);
+    decodedMaskCache.set(outdoorCacheKey, outdoorMask);
+  }
+
+  if (mode === "sunShadow") {
+    const safeIdx = Math.max(0, Math.min(frameIndex, tile.frames.length - 1));
+    const frame = tile.frames[safeIdx];
+    if (!frame) { ctx.putImageData(imageData, 0, 0); return; }
+    const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
+    let mask = decodedMaskCache.get(cacheKey);
+    if (!mask) {
+      mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+      decodedMaskCache.set(cacheKey, mask);
+    }
+    for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
+      if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) continue;
+      const isSunny = ((mask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
+      const iy = Math.floor(cellIdx / tileW);
+      const ix = cellIdx % tileW;
+      const x = ix;
+      const y = height - 1 - iy; // flip Y: north = top
+      const offset = (y * width + x) * 4;
+      const rgba = isSunny ? SUNNY_RGBA : SHADOW_RGBA;
+      data[offset] = rgba[0]; data[offset + 1] = rgba[1]; data[offset + 2] = rgba[2]; data[offset + 3] = rgba[3];
+    }
+  } else {
+    // Heatmap: count sunny frames per cell
+    const totalFrames = tile.frames.length;
+    if (totalFrames === 0) { ctx.putImageData(imageData, 0, 0); return; }
+    const sunnyFrames = new Uint16Array(cellCount);
+    for (const frame of tile.frames) {
+      const ck = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
+      let mask = decodedMaskCache.get(ck);
+      if (!mask) {
+        mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+        decodedMaskCache.set(ck, mask);
+      }
+      for (let i = 0; i < cellCount; i++) {
+        if (((mask[i >> 3] >> (i & 7)) & 1) === 1) sunnyFrames[i] += 1;
+      }
+    }
+    for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
+      if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) continue;
+      const iy = Math.floor(cellIdx / tileW);
+      const ix = cellIdx % tileW;
+      const x = ix;
+      const y = height - 1 - iy;
+      const offset = (y * width + x) * 4;
+      const rgba = exposureRatioToRGBA(sunnyFrames[cellIdx] / totalFrames);
+      data[offset] = rgba[0]; data[offset + 1] = rgba[1]; data[offset + 2] = rgba[2]; data[offset + 3] = rgba[3];
+    }
+  }
   ctx.putImageData(imageData, 0, 0);
 }
 
@@ -1963,6 +2047,8 @@ export function SunlightMapClient() {
   const sunShadowOverlayRef = useRef<L.ImageOverlay | null>(null);
   const heatmapCanvasRef = useRef<SunShadowGrid | null>(null);
   const heatmapOverlayRef = useRef<L.ImageOverlay | null>(null);
+  const perTileOverlaysRef = useRef<Map<string, PerTileOverlay>>(new Map());
+  const perTileHeatmapOverlaysRef = useRef<Map<string, PerTileOverlay>>(new Map());
   const ignoreVegetationShadowRef = useRef(false);
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
@@ -3274,58 +3360,68 @@ export function SunlightMapClient() {
     if (!L) return;
 
     const useCanvas = dailyTimeline.tiles.length > 0 && dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD;
+    const hasGridTiles = dailyTimeline.tiles.some(t => t.grid);
     const overlayVisible = useCanvas && (showSunny || showShadow);
-    if (!overlayVisible) {
+
+    if (!overlayVisible || !hasGridTiles) {
+      // Clean up per-tile overlays
+      for (const ov of perTileOverlaysRef.current.values()) ov.overlay.remove();
+      perTileOverlaysRef.current.clear();
       if (sunShadowOverlayRef.current) {
         sunShadowOverlayRef.current.remove();
         sunShadowOverlayRef.current = null;
       }
-      if (!useCanvas) sunShadowGridRef.current = null;
+      sunShadowGridRef.current = null;
       return;
     }
 
-    // Prepare grid if tiles changed — recreate overlay since bounds change
-    const gridStale = !sunShadowGridRef.current
-      || sunShadowGridRef.current.tilePixelMaps.length !== dailyTimeline.tiles.length
-      || (dailyTimeline.overlayBounds && sunShadowGridRef.current.bounds[0][0] !== dailyTimeline.overlayBounds.minLat);
-    if (gridStale) {
-      if (sunShadowOverlayRef.current) {
-        sunShadowOverlayRef.current.remove();
-        sunShadowOverlayRef.current = null;
-      }
-      sunShadowGridRef.current = prepareSunShadowGrid(dailyTimeline);
-    }
-
-    const grid = sunShadowGridRef.current;
-    if (!grid) return;
-
-    // Paint the current frame
-    paintSunShadowFrame(
-      grid,
-      dailyTimeline,
-      dailyFrameIndex,
-      decodedTimelineMaskCacheRef.current,
-      ignoreVegetationShadow,
-    );
-
-    // Create or update overlay — toDataURL on a small canvas (~500x500) is fast
     const map = mapRef.current;
     if (!map) return;
-    const dataUrl = grid.canvas.toDataURL();
-    if (!sunShadowOverlayRef.current) {
-      sunShadowOverlayRef.current = L.imageOverlay(
-        dataUrl,
-        grid.bounds,
-        { opacity: 1, interactive: false },
-      ).addTo(map);
-      // Force nearest-neighbor scaling to avoid interpolation artifacts
-      // (semi-transparent lines between pixels when the canvas is stretched)
-      const imgEl = (sunShadowOverlayRef.current as unknown as { _image?: HTMLElement })._image;
-      if (imgEl) {
-        imgEl.style.imageRendering = "pixelated";
+
+    // Per-tile overlays: one small canvas + overlay per tile (250×250px)
+    // Each overlay has precise bounds via lv95ToWgs84 on 2 corners (250m = negligible error)
+    const existingOverlays = perTileOverlaysRef.current;
+    const activeTileIds = new Set(dailyTimeline.tiles.map(t => t.tileId));
+
+    // Remove overlays for tiles no longer present
+    for (const [id, ov] of existingOverlays) {
+      if (!activeTileIds.has(id)) {
+        ov.overlay.remove();
+        existingOverlays.delete(id);
       }
-    } else {
-      sunShadowOverlayRef.current.setUrl(dataUrl);
+    }
+
+    for (const tile of dailyTimeline.tiles) {
+      if (!tile.grid || tile.frames.length === 0) continue;
+
+      let ov = existingOverlays.get(tile.tileId);
+      if (!ov) {
+        // Create canvas + overlay for this tile
+        const w = tile.grid.width;
+        const h = tile.grid.height;
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+
+        // Use server-computed tileBounds (via lv95ToWgs84, precise for 250m tiles)
+        if (!tile.tileBounds) continue;
+        const bounds: [[number, number], [number, number]] = [
+          [tile.tileBounds.minLat, tile.tileBounds.minLon],
+          [tile.tileBounds.maxLat, tile.tileBounds.maxLon],
+        ];
+        const overlay = L.imageOverlay(canvas.toDataURL(), bounds, { opacity: 1, interactive: false }).addTo(map);
+        const imgEl = (overlay as unknown as { _image?: HTMLElement })._image;
+        if (imgEl) imgEl.style.imageRendering = "pixelated";
+
+        ov = { tileId: tile.tileId, canvas, ctx, overlay, width: w, height: h, bounds };
+        existingOverlays.set(tile.tileId, ov);
+      }
+
+      // Paint the current frame on this tile's canvas
+      paintTileCanvas(tile, ov.ctx, ov.width, ov.height, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow, "sunShadow");
+      ov.overlay.setUrl(ov.canvas.toDataURL());
     }
   }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showShadow, showSunny]);
 
@@ -3993,6 +4089,7 @@ export function SunlightMapClient() {
         indoorPointsExcluded: number;
         grid?: TileGrid;
         outdoorMaskBase64?: string;
+        tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
         points?: Array<{ id: string; lat?: number; lon?: number }>;
         frames: TimelineFrame[];
       };
@@ -4000,6 +4097,7 @@ export function SunlightMapClient() {
         tileId: data.tileId,
         grid: data.grid,
         outdoorMaskBase64: data.outdoorMaskBase64,
+        tileBounds: data.tileBounds,
         points: (data.points ?? []) as TimelinePoint[],
         frames: data.frames,
       });
