@@ -150,7 +150,9 @@ export function bboxContains(container: RegionBbox, inner: RegionBbox): boolean 
 /**
  * Scan the cache directory to find an existing modelVersionHash for this region,
  * without needing to load the GPU backend or compute the hash.
- * Returns the first hash that has a manifest for the given parameters, or null.
+ * Checks for a tiles directory matching the grid/sample/time parameters for the
+ * requested date. Falls back to any date with a matching directory structure
+ * (the hash is stable across dates).
  */
 export async function findCachedModelVersionHash(params: {
   region: PrecomputedRegionName;
@@ -161,29 +163,37 @@ export async function findCachedModelVersionHash(params: {
   endLocalTime: string;
 }): Promise<string | null> {
   const regionDir = path.join(CACHE_SUNLIGHT_DIR, params.region);
-  let entries: string[];
+  let hashEntries: string[];
   try {
-    entries = await fs.readdir(regionDir);
+    hashEntries = await fs.readdir(regionDir);
   } catch {
     return null;
   }
   const timeKey = `t${params.startLocalTime.replace(":", "")}-${params.endLocalTime.replace(":", "")}`;
-  for (const hash of entries) {
-    const manifestPath = path.join(
-      regionDir, hash,
-      `g${params.gridStepMeters}`,
-      `m${params.sampleEveryMinutes}`,
-      params.date,
-      timeKey,
-      "manifest.json",
-    );
+  const gridSamplePath = path.join(`g${params.gridStepMeters}`, `m${params.sampleEveryMinutes}`);
+
+  // First try: exact date tiles directory
+  for (const hash of hashEntries) {
+    const tilesDir = path.join(regionDir, hash, gridSamplePath, params.date, timeKey, "tiles");
     try {
-      await fs.access(manifestPath);
+      await fs.access(tilesDir);
       return hash;
     } catch {
-      // no manifest for this hash, try next
+      // try next hash
     }
   }
+
+  // Fallback: any date with matching grid/sample structure (hash is stable across dates)
+  for (const hash of hashEntries) {
+    const gridDir = path.join(regionDir, hash, gridSamplePath);
+    try {
+      const dates = await fs.readdir(gridDir);
+      if (dates.length > 0) return hash;
+    } catch {
+      // try next hash
+    }
+  }
+
   return null;
 }
 
