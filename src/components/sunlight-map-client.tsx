@@ -3972,7 +3972,7 @@ export function SunlightMapClient() {
           ...previous,
           tiles: mergedTiles,
           points: allPoints,
-          pointCount: allPoints.length,
+          pointCount: previous.pointCount + statsToFlush.gridPointCount - statsToFlush.indoorPointsExcluded,
           gridPointCount: previous.gridPointCount + statsToFlush.gridPointCount,
           indoorPointsExcluded: previous.indoorPointsExcluded + statsToFlush.indoorPointsExcluded,
         };
@@ -4056,7 +4056,7 @@ export function SunlightMapClient() {
           ...previous,
           tiles: mergedTiles,
           points: allPoints,
-          pointCount: allPoints.length,
+          pointCount: previous.pointCount + pendingStatsToFlush.gridPointCount - pendingStatsToFlush.indoorPointsExcluded,
           gridPointCount: previous.gridPointCount + pendingStatsToFlush.gridPointCount,
           indoorPointsExcluded: previous.indoorPointsExcluded + pendingStatsToFlush.indoorPointsExcluded,
           stats: data.stats,
