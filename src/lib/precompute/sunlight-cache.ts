@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import { gzip as gzipCallback, gunzip as gunzipCallback } from "node:zlib";
 import path from "node:path";
@@ -144,6 +145,46 @@ export function bboxContains(container: RegionBbox, inner: RegionBbox): boolean 
     container.maxLon >= inner.maxLon &&
     container.maxLat >= inner.maxLat
   );
+}
+
+/**
+ * Scan the cache directory to find an existing modelVersionHash for this region,
+ * without needing to load the GPU backend or compute the hash.
+ * Returns the first hash that has a manifest for the given parameters, or null.
+ */
+export async function findCachedModelVersionHash(params: {
+  region: PrecomputedRegionName;
+  date: string;
+  gridStepMeters: number;
+  sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
+}): Promise<string | null> {
+  const regionDir = path.join(CACHE_SUNLIGHT_DIR, params.region);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(regionDir);
+  } catch {
+    return null;
+  }
+  const timeKey = `t${params.startLocalTime.replace(":", "")}-${params.endLocalTime.replace(":", "")}`;
+  for (const hash of entries) {
+    const manifestPath = path.join(
+      regionDir, hash,
+      `g${params.gridStepMeters}`,
+      `m${params.sampleEveryMinutes}`,
+      params.date,
+      timeKey,
+      "manifest.json",
+    );
+    try {
+      await fs.access(manifestPath);
+      return hash;
+    } catch {
+      // no manifest for this hash, try next
+    }
+  }
+  return null;
 }
 
 function createCacheRunKey(params: {

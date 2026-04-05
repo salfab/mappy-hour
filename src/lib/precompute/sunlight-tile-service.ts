@@ -21,6 +21,7 @@ import {
   buildRegionTiles,
   buildTilePoints,
   decodeBase64Bytes,
+  findCachedModelVersionHash,
   getIntersectingTileIds,
   getPrecomputedRegionBbox,
   isMaskBitSet,
@@ -1035,10 +1036,30 @@ export async function* streamTilesForBbox(params: {
     return null;
   }
 
-  const modelVersion = await getSunlightModelVersion(region, params.shadowCalibration);
+  // In cache-only mode, resolve modelVersionHash from existing cache
+  // to avoid loading GPU/shared sources (which is slow and memory-heavy).
+  let modelVersionHash: string;
+  let algorithmVersion = "";
+  if (params.cacheOnly) {
+    const cached = await findCachedModelVersionHash({
+      region,
+      date: params.date,
+      gridStepMeters: params.gridStepMeters,
+      sampleEveryMinutes: params.sampleEveryMinutes,
+      startLocalTime: params.startLocalTime,
+      endLocalTime: params.endLocalTime,
+    });
+    if (!cached) return null;
+    modelVersionHash = cached;
+  } else {
+    const modelVersion = await getSunlightModelVersion(region, params.shadowCalibration);
+    modelVersionHash = modelVersion.modelVersionHash;
+    algorithmVersion = modelVersion.algorithmVersion;
+  }
+
   const manifest = await loadManifestCached({
     region,
-    modelVersionHash: modelVersion.modelVersionHash,
+    modelVersionHash,
     date: params.date,
     gridStepMeters: params.gridStepMeters,
     sampleEveryMinutes: params.sampleEveryMinutes,
@@ -1074,7 +1095,7 @@ export async function* streamTilesForBbox(params: {
     if (params.cacheOnly) {
       const loaded = await loadTileDiskOnly({
         region,
-        modelVersionHash: modelVersion.modelVersionHash,
+        modelVersionHash,
         date: params.date,
         gridStepMeters: params.gridStepMeters,
         sampleEveryMinutes: params.sampleEveryMinutes,
@@ -1118,8 +1139,8 @@ export async function* streamTilesForBbox(params: {
       : undefined;
     const resolved = await getOrCreateTileArtifact({
       region,
-      modelVersionHash: modelVersion.modelVersionHash,
-      algorithmVersion: modelVersion.algorithmVersion,
+      modelVersionHash,
+      algorithmVersion,
       date: params.date,
       timezone: params.timezone,
       sampleEveryMinutes: params.sampleEveryMinutes,
@@ -1145,7 +1166,7 @@ export async function* streamTilesForBbox(params: {
 
   return {
     region,
-    modelVersionHash: modelVersion.modelVersionHash,
+    modelVersionHash,
     totalTiles: requiredTiles.length,
     tileSizeMeters,
     sampleCount: samples.length,
