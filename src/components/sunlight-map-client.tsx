@@ -1751,6 +1751,64 @@ function exposureRatioToColor(exposureRatio: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
+function exposureRatioToRGBA(ratio: number): [number, number, number, number] {
+  const clamped = Math.max(0, Math.min(1, ratio));
+  const cold = { r: 37, g: 99, b: 235 }; // blue
+  const hot = { r: 239, g: 68, b: 68 }; // red
+  return [
+    Math.round(cold.r + (hot.r - cold.r) * clamped),
+    Math.round(cold.g + (hot.g - cold.g) * clamped),
+    Math.round(cold.b + (hot.b - cold.b) * clamped),
+    180, // ~70% opacity
+  ];
+}
+
+function paintHeatmapCanvas(
+  grid: SunShadowGrid,
+  timeline: DailyTimelineState,
+  decodedMaskCache: Map<string, Uint8Array>,
+  ignoreVegetation: boolean,
+): void {
+  const { width, height, ctx, tilePixelMaps } = grid;
+  const imageData = ctx.createImageData(width, height);
+  const data = imageData.data;
+  const totalFrames = timeline.tiles[0]?.frames.length ?? 0;
+  if (totalFrames === 0) return;
+
+  for (let tileIdx = 0; tileIdx < timeline.tiles.length; tileIdx++) {
+    const tile = timeline.tiles[tileIdx];
+    const pixelMap = tilePixelMaps[tileIdx];
+    // Count sunny frames per point
+    const sunnyFrames = new Uint16Array(tile.points.length);
+    for (const frame of tile.frames) {
+      const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
+      let mask = decodedMaskCache.get(cacheKey);
+      if (!mask) {
+        mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+        decodedMaskCache.set(cacheKey, mask);
+      }
+      for (let i = 0; i < tile.points.length; i++) {
+        if (((mask[i >> 3] >> (i & 7)) & 1) === 1) {
+          sunnyFrames[i] += 1;
+        }
+      }
+    }
+    // Paint exposure ratio per point
+    for (let i = 0; i < pixelMap.length; i++) {
+      const ratio = sunnyFrames[i] / totalFrames;
+      const { x, y } = pixelMap[i];
+      const offset = (y * width + x) * 4;
+      const rgba = exposureRatioToRGBA(ratio);
+      data[offset] = rgba[0];
+      data[offset + 1] = rgba[1];
+      data[offset + 2] = rgba[2];
+      data[offset + 3] = rgba[3];
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+}
+
 function venueTypeBadgeLabel(venueType: FoodVenueType): string {
   switch (venueType) {
     case "restaurant":
@@ -1824,6 +1882,8 @@ export function SunlightMapClient() {
   const lastTileFlushRef = useRef<number>(0);
   const sunShadowGridRef = useRef<SunShadowGrid | null>(null);
   const sunShadowOverlayRef = useRef<L.ImageOverlay | null>(null);
+  const heatmapCanvasRef = useRef<SunShadowGrid | null>(null);
+  const heatmapOverlayRef = useRef<L.ImageOverlay | null>(null);
   const ignoreVegetationShadowRef = useRef(false);
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
@@ -1966,6 +2026,12 @@ export function SunlightMapClient() {
       !dailyTimeline.stats ||
       dailyTimeline.tiles.length === 0
     ) {
+      return null;
+    }
+
+    // For large grids, skip building exposure points array — the canvas
+    // heatmap useEffect computes exposure directly on the pixel grid.
+    if (dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD) {
       return null;
     }
 
@@ -2952,7 +3018,7 @@ export function SunlightMapClient() {
         }
       }
 
-      if (visibility.heatmap && dailyExposureCellsInput && dailyExposureCellsInput.length > 0) {
+      if (visibility.heatmap && !useCanvasOverlay && dailyExposureCellsInput && dailyExposureCellsInput.length > 0) {
         for (const cell of dailyExposureCellsInput) {
           const latLngRing = cell.ring.map(([lon, lat]) => [lat, lon] as [number, number]);
           const color = exposureRatioToColor(cell.exposureRatio);
@@ -3180,6 +3246,65 @@ export function SunlightMapClient() {
       sunShadowOverlayRef.current.setUrl(dataUrl);
     }
   }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showShadow, showSunny]);
+
+  // Canvas heatmap for large grids
+  useEffect(() => {
+    if (!isMapReady || !dailyTimeline || mode !== "daily") {
+      if (heatmapOverlayRef.current) {
+        heatmapOverlayRef.current.remove();
+        heatmapOverlayRef.current = null;
+      }
+      heatmapCanvasRef.current = null;
+      return;
+    }
+    const L = leafletModuleRef.current;
+    if (!L) return;
+
+    const useCanvas = dailyTimeline.tiles.length > 0 && dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD && dailyTimeline.stats;
+    if (!useCanvas || !showHeatmap) {
+      if (heatmapOverlayRef.current) {
+        heatmapOverlayRef.current.remove();
+        heatmapOverlayRef.current = null;
+      }
+      return;
+    }
+
+    // Reuse the sun/shadow grid or build a new one
+    if (!heatmapCanvasRef.current || heatmapCanvasRef.current.tilePixelMaps.length !== dailyTimeline.tiles.length) {
+      if (heatmapOverlayRef.current) {
+        heatmapOverlayRef.current.remove();
+        heatmapOverlayRef.current = null;
+      }
+      heatmapCanvasRef.current = prepareSunShadowGrid(dailyTimeline);
+    }
+
+    const grid = heatmapCanvasRef.current;
+    if (!grid) return;
+
+    paintHeatmapCanvas(
+      grid,
+      dailyTimeline,
+      decodedTimelineMaskCacheRef.current,
+      ignoreVegetationShadow,
+    );
+
+    const map = mapRef.current;
+    if (!map) return;
+    const dataUrl = grid.canvas.toDataURL();
+    if (!heatmapOverlayRef.current) {
+      heatmapOverlayRef.current = L.imageOverlay(
+        dataUrl,
+        grid.bounds,
+        { opacity: 1, interactive: false },
+      ).addTo(map);
+      const imgEl = (heatmapOverlayRef.current as unknown as { _image?: HTMLElement })._image;
+      if (imgEl) {
+        imgEl.style.imageRendering = "pixelated";
+      }
+    } else {
+      heatmapOverlayRef.current.setUrl(dataUrl);
+    }
+  }, [dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showHeatmap]);
 
   useEffect(() => {
     if (!isMapReady) {
