@@ -1040,6 +1040,8 @@ export async function* streamTilesForBbox(params: {
   // to avoid loading GPU/shared sources (which is slow and memory-heavy).
   let modelVersionHash: string;
   let algorithmVersion = "";
+  let effectiveStartLocalTime = params.startLocalTime;
+  let effectiveEndLocalTime = params.endLocalTime;
   if (params.cacheOnly) {
     const cached = await findCachedModelVersionHash({
       region,
@@ -1050,7 +1052,9 @@ export async function* streamTilesForBbox(params: {
       endLocalTime: params.endLocalTime,
     });
     if (!cached) return null;
-    modelVersionHash = cached;
+    modelVersionHash = cached.modelVersionHash;
+    effectiveStartLocalTime = cached.startLocalTime;
+    effectiveEndLocalTime = cached.endLocalTime;
   } else {
     const modelVersion = await getSunlightModelVersion(region, params.shadowCalibration);
     modelVersionHash = modelVersion.modelVersionHash;
@@ -1063,8 +1067,8 @@ export async function* streamTilesForBbox(params: {
     date: params.date,
     gridStepMeters: params.gridStepMeters,
     sampleEveryMinutes: params.sampleEveryMinutes,
-    startLocalTime: params.startLocalTime,
-    endLocalTime: params.endLocalTime,
+    startLocalTime: effectiveStartLocalTime,
+    endLocalTime: effectiveEndLocalTime,
   });
   const tileSizeMeters = manifest?.tileSizeMeters ?? DEFAULT_CACHE_TILE_SIZE_METERS;
   const allTiles = buildRegionTiles(region, tileSizeMeters);
@@ -1082,8 +1086,8 @@ export async function* streamTilesForBbox(params: {
     params.date,
     params.timezone,
     params.sampleEveryMinutes,
-    params.startLocalTime,
-    params.endLocalTime,
+    effectiveStartLocalTime,
+    effectiveEndLocalTime,
   );
 
   const resolveStartedAt = performance.now();
@@ -1099,8 +1103,8 @@ export async function* streamTilesForBbox(params: {
         date: params.date,
         gridStepMeters: params.gridStepMeters,
         sampleEveryMinutes: params.sampleEveryMinutes,
-        startLocalTime: params.startLocalTime,
-        endLocalTime: params.endLocalTime,
+        startLocalTime: effectiveStartLocalTime,
+        endLocalTime: effectiveEndLocalTime,
         tileId: tile.tileId,
         stripDiagnostics: true,
       });

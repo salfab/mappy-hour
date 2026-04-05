@@ -148,11 +148,9 @@ export function bboxContains(container: RegionBbox, inner: RegionBbox): boolean 
 }
 
 /**
- * Scan the cache directory to find an existing modelVersionHash for this region,
- * without needing to load the GPU backend or compute the hash.
- * Checks for a tiles directory matching the grid/sample/time parameters for the
- * requested date. Falls back to any date with a matching directory structure
- * (the hash is stable across dates).
+ * Scan the cache directory to find an existing modelVersionHash and time window
+ * for this region, without needing to load the GPU backend or compute the hash.
+ * Returns the hash + the actual startLocalTime/endLocalTime found in cache.
  */
 export async function findCachedModelVersionHash(params: {
   region: PrecomputedRegionName;
@@ -161,7 +159,7 @@ export async function findCachedModelVersionHash(params: {
   sampleEveryMinutes: number;
   startLocalTime: string;
   endLocalTime: string;
-}): Promise<string | null> {
+}): Promise<{ modelVersionHash: string; startLocalTime: string; endLocalTime: string } | null> {
   const regionDir = path.join(CACHE_SUNLIGHT_DIR, params.region);
   let hashEntries: string[];
   try {
@@ -169,26 +167,59 @@ export async function findCachedModelVersionHash(params: {
   } catch {
     return null;
   }
-  const timeKey = `t${params.startLocalTime.replace(":", "")}-${params.endLocalTime.replace(":", "")}`;
+  const requestedTimeKey = `t${params.startLocalTime.replace(":", "")}-${params.endLocalTime.replace(":", "")}`;
   const gridSamplePath = path.join(`g${params.gridStepMeters}`, `m${params.sampleEveryMinutes}`);
 
-  // First try: exact date tiles directory
+  // First try: exact date + exact time window
   for (const hash of hashEntries) {
-    const tilesDir = path.join(regionDir, hash, gridSamplePath, params.date, timeKey, "tiles");
+    const tilesDir = path.join(regionDir, hash, gridSamplePath, params.date, requestedTimeKey, "tiles");
     try {
       await fs.access(tilesDir);
-      return hash;
+      return { modelVersionHash: hash, startLocalTime: params.startLocalTime, endLocalTime: params.endLocalTime };
     } catch {
-      // try next hash
+      // try next
     }
   }
 
-  // Fallback: any date with matching grid/sample structure (hash is stable across dates)
+  // Second try: exact date, any time window
+  for (const hash of hashEntries) {
+    const dateDir = path.join(regionDir, hash, gridSamplePath, params.date);
+    try {
+      const timeWindows = await fs.readdir(dateDir);
+      for (const tw of timeWindows) {
+        const match = /^t(\d{4})-(\d{4})$/.exec(tw);
+        if (!match) continue;
+        const tilesDir = path.join(dateDir, tw, "tiles");
+        try {
+          await fs.access(tilesDir);
+          const start = `${match[1].slice(0, 2)}:${match[1].slice(2)}`;
+          const end = `${match[2].slice(0, 2)}:${match[2].slice(2)}`;
+          return { modelVersionHash: hash, startLocalTime: start, endLocalTime: end };
+        } catch {
+          // no tiles dir
+        }
+      }
+    } catch {
+      // no date dir
+    }
+  }
+
+  // Fallback: any date, any time window (hash is stable across dates)
   for (const hash of hashEntries) {
     const gridDir = path.join(regionDir, hash, gridSamplePath);
     try {
       const dates = await fs.readdir(gridDir);
-      if (dates.length > 0) return hash;
+      for (const d of dates) {
+        const dateDir = path.join(gridDir, d);
+        const timeWindows = await fs.readdir(dateDir);
+        for (const tw of timeWindows) {
+          const match = /^t(\d{4})-(\d{4})$/.exec(tw);
+          if (!match) continue;
+          const start = `${match[1].slice(0, 2)}:${match[1].slice(2)}`;
+          const end = `${match[2].slice(0, 2)}:${match[2].slice(2)}`;
+          return { modelVersionHash: hash, startLocalTime: start, endLocalTime: end };
+        }
+      }
     } catch {
       // try next hash
     }
