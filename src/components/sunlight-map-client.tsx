@@ -1259,38 +1259,38 @@ function prepareSunShadowGrid(
   let maxRow = -Infinity;
   let minCol = Infinity;
   let maxCol = -Infinity;
-  // Track lat/lon of actual corner points (not min/max of all points)
-  let minRowLat = 0;
-  let maxRowLat = 0;
-  let minColLon = 0;
-  let maxColLon = 0;
+  // Track overall geo bounds from tileBounds (server-computed, precise)
+  // and from individual point lat/lon as fallback.
+  let geoMinLat = Infinity;
+  let geoMaxLat = -Infinity;
+  let geoMinLon = Infinity;
+  let geoMaxLon = -Infinity;
 
   const allParsed: Array<Array<{ row: number; col: number }>> = [];
   for (const tile of timeline.tiles) {
+    // Use tileBounds if available (precise, from server)
+    if (tile.tileBounds) {
+      if (tile.tileBounds.minLat < geoMinLat) geoMinLat = tile.tileBounds.minLat;
+      if (tile.tileBounds.maxLat > geoMaxLat) geoMaxLat = tile.tileBounds.maxLat;
+      if (tile.tileBounds.minLon < geoMinLon) geoMinLon = tile.tileBounds.minLon;
+      if (tile.tileBounds.maxLon > geoMaxLon) geoMaxLon = tile.tileBounds.maxLon;
+    }
     const parsed: Array<{ row: number; col: number }> = [];
     for (const p of tile.points) {
       const id = parseGridPointId(p.id);
       if (!id) continue;
       parsed.push({ row: id.row, col: id.col });
-      // Use point lat/lon if available, otherwise use tileBounds
-      if (p.lat !== undefined && p.lon !== undefined) {
-        if (id.row < minRow) { minRow = id.row; minRowLat = p.lat; }
-        if (id.row > maxRow) { maxRow = id.row; maxRowLat = p.lat; }
-        if (id.col < minCol) { minCol = id.col; minColLon = p.lon; }
-        if (id.col > maxCol) { maxCol = id.col; maxColLon = p.lon; }
-      } else {
-        if (id.row < minRow) minRow = id.row;
-        if (id.row > maxRow) maxRow = id.row;
-        if (id.col < minCol) minCol = id.col;
-        if (id.col > maxCol) maxCol = id.col;
+      if (id.row < minRow) minRow = id.row;
+      if (id.row > maxRow) maxRow = id.row;
+      if (id.col < minCol) minCol = id.col;
+      if (id.col > maxCol) maxCol = id.col;
+      // Fallback: use individual point lat/lon if no tileBounds
+      if (!tile.tileBounds && p.lat !== undefined && p.lon !== undefined) {
+        if (p.lat < geoMinLat) geoMinLat = p.lat;
+        if (p.lat > geoMaxLat) geoMaxLat = p.lat;
+        if (p.lon < geoMinLon) geoMinLon = p.lon;
+        if (p.lon > geoMaxLon) geoMaxLon = p.lon;
       }
-    }
-    // Use tileBounds for geo-referencing when points lack lat/lon
-    if (tile.tileBounds) {
-      if (minRowLat === 0 || tile.tileBounds.minLat < minRowLat) minRowLat = tile.tileBounds.minLat;
-      if (maxRowLat === 0 || tile.tileBounds.maxLat > maxRowLat) maxRowLat = tile.tileBounds.maxLat;
-      if (minColLon === 0 || tile.tileBounds.minLon < minColLon) minColLon = tile.tileBounds.minLon;
-      if (maxColLon === 0 || tile.tileBounds.maxLon > maxColLon) maxColLon = tile.tileBounds.maxLon;
     }
     allParsed.push(parsed);
   }
@@ -1321,7 +1321,7 @@ function prepareSunShadowGrid(
   // minRowLat = lat of the southernmost row, maxRowLat = lat of the northernmost row.
   // minColLon = lon of the westernmost col, maxColLon = lon of the easternmost col.
   const latHalfStep = 1 / METERS_PER_DEGREE_LAT / 2;
-  const meanLat = (minRowLat + maxRowLat) / 2;
+  const meanLat = (geoMinLat + geoMaxLat) / 2;
   const lonHalfStep = 1 / (METERS_PER_DEGREE_LAT * Math.cos((meanLat * Math.PI) / 180)) / 2;
 
   const canvas = document.createElement("canvas");
@@ -1335,8 +1335,8 @@ function prepareSunShadowGrid(
     width,
     height,
     bounds: [
-      [minRowLat - latHalfStep, minColLon - lonHalfStep],
-      [maxRowLat + latHalfStep, maxColLon + lonHalfStep],
+      [geoMinLat - latHalfStep, geoMinLon - lonHalfStep],
+      [geoMaxLat + latHalfStep, geoMaxLon + lonHalfStep],
     ] as [[number, number], [number, number]],
     canvas,
     ctx,
