@@ -366,6 +366,22 @@ export async function GET(request: Request) {
               };
             });
 
+            // Send only point IDs (not lat/lon) for large tiles to reduce
+            // payload size (~1.8 MB → ~400 KB per tile). The client extracts
+            // row/col from the ID for canvas pixel mapping, and uses tile
+            // bounds for geo-referencing.
+            const compactPoints = outdoorPoints.length > 1000;
+            let tileBounds: { minLat: number; maxLat: number; minLon: number; maxLon: number } | undefined;
+            if (compactPoints && outdoorPoints.length > 0) {
+              let bMinLat = Infinity, bMaxLat = -Infinity, bMinLon = Infinity, bMaxLon = -Infinity;
+              for (const p of outdoorPoints) {
+                if (p.lat < bMinLat) bMinLat = p.lat;
+                if (p.lat > bMaxLat) bMaxLat = p.lat;
+                if (p.lon < bMinLon) bMinLon = p.lon;
+                if (p.lon > bMaxLon) bMaxLon = p.lon;
+              }
+              tileBounds = { minLat: bMinLat, maxLat: bMaxLat, minLon: bMinLon, maxLon: bMaxLon };
+            }
             sendEvent("tile", {
               tileId,
               tileIndex,
@@ -373,7 +389,10 @@ export async function GET(request: Request) {
               pointCount: outdoorPoints.length,
               gridPointCount: tileGridCount,
               indoorPointsExcluded: tileIndoorExcluded,
-              points: outdoorPoints.map(p => ({ id: p.id, lat: p.lat, lon: p.lon })),
+              points: compactPoints
+                ? outdoorPoints.map(p => ({ id: p.id }))
+                : outdoorPoints.map(p => ({ id: p.id, lat: p.lat, lon: p.lon })),
+              tileBounds,
               frames: tileFrames,
             });
             await yieldToEventLoop();

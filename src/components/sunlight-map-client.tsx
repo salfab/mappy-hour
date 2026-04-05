@@ -183,6 +183,7 @@ interface TimelineTile {
   tileId: string;
   points: TimelinePoint[];
   frames: TimelineFrame[];
+  tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
 }
 
 interface DailyTimelineState {
@@ -1271,10 +1272,25 @@ function prepareSunShadowGrid(
       const id = parseGridPointId(p.id);
       if (!id) continue;
       parsed.push({ row: id.row, col: id.col });
-      if (id.row < minRow) { minRow = id.row; minRowLat = p.lat; }
-      if (id.row > maxRow) { maxRow = id.row; maxRowLat = p.lat; }
-      if (id.col < minCol) { minCol = id.col; minColLon = p.lon; }
-      if (id.col > maxCol) { maxCol = id.col; maxColLon = p.lon; }
+      // Use point lat/lon if available, otherwise use tileBounds
+      if (p.lat !== undefined && p.lon !== undefined) {
+        if (id.row < minRow) { minRow = id.row; minRowLat = p.lat; }
+        if (id.row > maxRow) { maxRow = id.row; maxRowLat = p.lat; }
+        if (id.col < minCol) { minCol = id.col; minColLon = p.lon; }
+        if (id.col > maxCol) { maxCol = id.col; maxColLon = p.lon; }
+      } else {
+        if (id.row < minRow) minRow = id.row;
+        if (id.row > maxRow) maxRow = id.row;
+        if (id.col < minCol) minCol = id.col;
+        if (id.col > maxCol) maxCol = id.col;
+      }
+    }
+    // Use tileBounds for geo-referencing when points lack lat/lon
+    if (tile.tileBounds) {
+      if (minRowLat === 0 || tile.tileBounds.minLat < minRowLat) minRowLat = tile.tileBounds.minLat;
+      if (maxRowLat === 0 || tile.tileBounds.maxLat > maxRowLat) maxRowLat = tile.tileBounds.maxLat;
+      if (minColLon === 0 || tile.tileBounds.minLon < minColLon) minColLon = tile.tileBounds.minLon;
+      if (maxColLon === 0 || tile.tileBounds.maxLon > maxColLon) maxColLon = tile.tileBounds.maxLon;
     }
     allParsed.push(parsed);
   }
@@ -3895,13 +3911,15 @@ export function SunlightMapClient() {
         pointCount: number;
         gridPointCount: number;
         indoorPointsExcluded: number;
-        points: TimelinePoint[];
+        points: Array<{ id: string; lat?: number; lon?: number }>;
+        tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
         frames: TimelineFrame[];
       };
       pendingTilesRef.current.push({
         tileId: data.tileId,
-        points: data.points,
+        points: data.points as TimelinePoint[],
         frames: data.frames,
+        tileBounds: data.tileBounds,
       });
       pendingStatsRef.current.gridPointCount += data.gridPointCount;
       pendingStatsRef.current.indoorPointsExcluded += data.indoorPointsExcluded;
