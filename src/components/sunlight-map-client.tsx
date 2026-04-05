@@ -200,6 +200,7 @@ interface DailyTimelineState {
   tiles: TimelineTile[];
   points: TimelinePoint[];
   frames: TimelineFrame[];
+  overlayBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
   model: {
     terrainHorizonMethod: string;
     buildingsShadowMethod: string;
@@ -1317,14 +1318,24 @@ function prepareSunShadowGrid(
     );
   }
 
-  // Use tileBounds (server-computed via lv95ToWgs84) when available.
-  // They include half-step padding and are computed from the pixel grid
-  // corners of each tile. Use them directly without extra padding.
-  // Fallback: approximate half-step padding from point lat/lon extremes.
-  const hasTileBounds = timeline.tiles.some(t => t.tileBounds);
-  const latHalfStep = hasTileBounds ? 0 : (1 / METERS_PER_DEGREE_LAT / 2);
-  const meanLat = (geoMinLat + geoMaxLat) / 2;
-  const lonHalfStep = hasTileBounds ? 0 : (1 / (METERS_PER_DEGREE_LAT * Math.cos((meanLat * Math.PI) / 180)) / 2);
+  // Use overlayBounds from the done event (server-computed via lv95ToWgs84
+  // on the global col/row pixel grid corners). This is the most precise.
+  // Fallback: approximate from point lat/lon extremes + half-step padding.
+  let boundsS: number, boundsN: number, boundsW: number, boundsE: number;
+  if (timeline.overlayBounds) {
+    boundsS = timeline.overlayBounds.minLat;
+    boundsN = timeline.overlayBounds.maxLat;
+    boundsW = timeline.overlayBounds.minLon;
+    boundsE = timeline.overlayBounds.maxLon;
+  } else {
+    const latHalfStep = 1 / METERS_PER_DEGREE_LAT / 2;
+    const meanLat = (geoMinLat + geoMaxLat) / 2;
+    const lonHalfStep = 1 / (METERS_PER_DEGREE_LAT * Math.cos((meanLat * Math.PI) / 180)) / 2;
+    boundsS = geoMinLat - latHalfStep;
+    boundsN = geoMaxLat + latHalfStep;
+    boundsW = geoMinLon - lonHalfStep;
+    boundsE = geoMaxLon + lonHalfStep;
+  }
 
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -1337,8 +1348,8 @@ function prepareSunShadowGrid(
     width,
     height,
     bounds: [
-      [geoMinLat - latHalfStep, geoMinLon - lonHalfStep],
-      [geoMaxLat + latHalfStep, geoMaxLon + lonHalfStep],
+      [boundsS, boundsW],
+      [boundsN, boundsE],
     ] as [[number, number], [number, number]],
     canvas,
     ctx,
@@ -3210,7 +3221,10 @@ export function SunlightMapClient() {
     }
 
     // Prepare grid if tiles changed — recreate overlay since bounds change
-    if (!sunShadowGridRef.current || sunShadowGridRef.current.tilePixelMaps.length !== dailyTimeline.tiles.length) {
+    const gridStale = !sunShadowGridRef.current
+      || sunShadowGridRef.current.tilePixelMaps.length !== dailyTimeline.tiles.length
+      || (dailyTimeline.overlayBounds && sunShadowGridRef.current.bounds[0][0] !== dailyTimeline.overlayBounds.minLat);
+    if (gridStale) {
       if (sunShadowOverlayRef.current) {
         sunShadowOverlayRef.current.remove();
         sunShadowOverlayRef.current = null;
@@ -3950,10 +3964,17 @@ export function SunlightMapClient() {
         setIsLoading(false);
         return;
       }
-      // Flush any remaining pending tiles before finalizing
-      flushPendingTiles();
+      // Flush pending tiles AND apply done stats in a single state update
+      // to avoid React batching issues where the flush and done updates
+      // could overwrite each other.
+      const pendingToFlush = pendingTilesRef.current.splice(0);
+      const pendingStatsToFlush = { ...pendingStatsRef.current };
+      pendingStatsRef.current = { gridPointCount: 0, indoorPointsExcluded: 0 };
+      decodedTimelineMaskCacheRef.current.clear();
+
       const data = JSON.parse((event as MessageEvent).data) as {
         stats: NonNullable<DailyTimelineState["stats"]>;
+        overlayBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
         warnings: string[];
       };
       setDailyTimeline((previous) => {
@@ -3961,9 +3982,21 @@ export function SunlightMapClient() {
           return previous;
         }
 
+        // Merge pending tiles
+        const existingIds = new Set(previous.tiles.map((t) => t.tileId));
+        const newTiles = pendingToFlush.filter((t) => !existingIds.has(t.tileId));
+        const mergedTiles = newTiles.length > 0 ? [...previous.tiles, ...newTiles] : previous.tiles;
+        const allPoints = newTiles.length > 0 ? mergedTiles.flatMap((t) => t.points) : previous.points;
+
         return {
           ...previous,
+          tiles: mergedTiles,
+          points: allPoints,
+          pointCount: allPoints.length,
+          gridPointCount: previous.gridPointCount + pendingStatsToFlush.gridPointCount,
+          indoorPointsExcluded: previous.indoorPointsExcluded + pendingStatsToFlush.indoorPointsExcluded,
           stats: data.stats,
+          overlayBounds: data.overlayBounds ?? previous.overlayBounds,
           warnings: Array.from(new Set([...previous.warnings, ...data.warnings])),
         };
       });

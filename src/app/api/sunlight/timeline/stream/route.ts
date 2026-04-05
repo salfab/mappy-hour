@@ -277,6 +277,9 @@ export async function GET(request: Request) {
           let tilesComputed = 0;
           let frameCount = 0;
           const allWarnings = new Set<string>();
+          // Track global col/row extremes for precise overlay bounds
+          let globalMinCol = Infinity, globalMaxCol = -Infinity;
+          let globalMinRow = Infinity, globalMaxRow = -Infinity;
 
           let result = await tileStream.next();
           while (!result.done) {
@@ -371,35 +374,15 @@ export async function GET(request: Request) {
             // row/col from the ID for canvas pixel mapping, and uses tile
             // bounds for geo-referencing.
             const compactPoints = outdoorPoints.length > 1000;
-            // Compute tileBounds by converting the grid col/row extremes
-            // from LV95 to WGS84. The canvas pixel (0,0) = (minCol, maxRow)
-            // and pixel (w-1, h-1) = (maxCol, minRow). The bounds must
-            // match these corners exactly for proper alignment.
-            let tileBounds: { minLat: number; maxLat: number; minLon: number; maxLon: number } | undefined;
-            if (compactPoints && outdoorPoints.length > 0) {
-              let oMinCol = Infinity, oMaxCol = -Infinity, oMinRow = Infinity, oMaxRow = -Infinity;
-              for (const p of outdoorPoints) {
-                const m = /^ix(-?\d+)-iy(-?\d+)$/.exec(p.id);
-                if (!m) continue;
-                const col = +m[1], row = +m[2];
-                if (col < oMinCol) oMinCol = col;
-                if (col > oMaxCol) oMaxCol = col;
-                if (row < oMinRow) oMinRow = row;
-                if (row > oMaxRow) oMaxRow = row;
-              }
-              if (oMinCol < Infinity) {
-                const gs = query.gridStepMeters;
-                // Grid point center at col C = C*gs + gs/2.
-                // Pixel western edge = C*gs, eastern edge = (C+1)*gs.
-                const sw = lv95ToWgs84(oMinCol * gs, oMinRow * gs);
-                const ne = lv95ToWgs84((oMaxCol + 1) * gs, (oMaxRow + 1) * gs);
-                tileBounds = {
-                  minLat: sw.lat,
-                  maxLat: ne.lat,
-                  minLon: sw.lon,
-                  maxLon: ne.lon,
-                };
-              }
+            // Track global col/row extremes across all tiles for overlay bounds
+            for (const p of outdoorPoints) {
+              const m = /^ix(-?\d+)-iy(-?\d+)$/.exec(p.id);
+              if (!m) continue;
+              const col = +m[1], row = +m[2];
+              if (col < globalMinCol) globalMinCol = col;
+              if (col > globalMaxCol) globalMaxCol = col;
+              if (row < globalMinRow) globalMinRow = row;
+              if (row > globalMaxRow) globalMaxRow = row;
             }
             sendEvent("tile", {
               tileId,
@@ -411,7 +394,6 @@ export async function GET(request: Request) {
               points: compactPoints
                 ? outdoorPoints.map(p => ({ id: p.id }))
                 : outdoorPoints.map(p => ({ id: p.id, lat: p.lat, lon: p.lon })),
-              tileBounds,
               frames: tileFrames,
             });
             await yieldToEventLoop();
@@ -428,6 +410,15 @@ export async function GET(request: Request) {
             return;
           }
 
+          // Compute precise overlay bounds from global col/row extremes
+          let overlayBounds: { minLat: number; maxLat: number; minLon: number; maxLon: number } | undefined;
+          if (globalMinCol < Infinity) {
+            const gs = query.gridStepMeters;
+            const sw = lv95ToWgs84(globalMinCol * gs, globalMinRow * gs);
+            const ne = lv95ToWgs84((globalMaxCol + 1) * gs, (globalMaxRow + 1) * gs);
+            overlayBounds = { minLat: sw.lat, maxLat: ne.lat, minLon: sw.lon, maxLon: ne.lon };
+          }
+
           sendEvent("done", {
             stats: {
               elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
@@ -442,6 +433,7 @@ export async function GET(request: Request) {
               tilesComputed,
               tilesFromCache,
             },
+            overlayBounds,
             warnings: Array.from(allWarnings),
           });
           return;
