@@ -1892,6 +1892,7 @@ export function SunlightMapClient() {
   const [showTerrain, setShowTerrain] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showPlaces, setShowPlaces] = useState(true);
+  const [cacheOnly, setCacheOnly] = useState(false);
   const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
   const [isMapReady, setIsMapReady] = useState(false);
   const [focusRunParamsFromUrl, setFocusRunParamsFromUrl] =
@@ -3668,6 +3669,7 @@ export function SunlightMapClient() {
       gridStepMeters: String(gridStepMeters),
       maxPoints: "2000000",
       buildingHeightBiasMeters: String(buildingHeightBiasMeters),
+      ...(cacheOnly ? { cacheOnly: "true" } : {}),
     });
 
     timelineCancelledRef.current = false;
@@ -3885,6 +3887,7 @@ export function SunlightMapClient() {
     });
   }, [
     buildingHeightBiasMeters,
+    cacheOnly,
     date,
     dailyEndLocalTime,
     dailyStartLocalTime,
@@ -4197,6 +4200,16 @@ export function SunlightMapClient() {
           />
           <span className="rounded bg-emerald-800 px-2 py-0.5 text-white">
             ignorer ombre végétation
+          </span>
+        </label>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={cacheOnly}
+            onChange={(event) => setCacheOnly(event.target.checked)}
+          />
+          <span className="rounded bg-violet-700 px-2 py-0.5 text-white">
+            cache uniquement
           </span>
         </label>
       </div>

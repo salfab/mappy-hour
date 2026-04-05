@@ -39,6 +39,7 @@ const querySchema = z
     gridStepMeters: z.coerce.number().int().min(1).max(2000).default(250),
     maxPoints: z.coerce.number().int().min(1).max(MAX_OUTDOOR_POINTS).default(DEFAULT_MAX_OUTDOOR_POINTS),
     buildingHeightBiasMeters: z.coerce.number().min(-20).max(20).default(0),
+    cacheOnly: z.coerce.boolean().default(false),
   })
   .refine(
     (value) =>
@@ -236,6 +237,7 @@ export async function GET(request: Request) {
             startLocalTime: query.startLocalTime,
             endLocalTime: query.endLocalTime,
             shadowCalibration,
+            cacheOnly: query.cacheOnly,
             onTileComputeProgress: (event) => {
               const etaSeconds =
                 event.elapsedMs > 3000 && event.percent > 0.01

@@ -1027,6 +1027,7 @@ export async function* streamTilesForBbox(params: {
   startLocalTime: string;
   endLocalTime: string;
   shadowCalibration: ShadowCalibration;
+  cacheOnly?: boolean;
   onTileComputeProgress?: (event: TileComputeProgressEvent) => void;
 }): AsyncGenerator<StreamTileResult, StreamTilesInit | null> {
   const region = resolveRegionForBbox(params.bbox);
@@ -1069,6 +1070,31 @@ export async function* streamTilesForBbox(params: {
 
   for (let tileIdx = 0; tileIdx < requiredTiles.length; tileIdx++) {
     const tile = requiredTiles[tileIdx];
+
+    if (params.cacheOnly) {
+      const loaded = await loadTileDiskOnly({
+        region,
+        modelVersionHash: modelVersion.modelVersionHash,
+        date: params.date,
+        gridStepMeters: params.gridStepMeters,
+        sampleEveryMinutes: params.sampleEveryMinutes,
+        startLocalTime: params.startLocalTime,
+        endLocalTime: params.endLocalTime,
+        tileId: tile.tileId,
+        stripDiagnostics: true,
+      });
+      if (loaded.artifact) {
+        yield {
+          tileId: tile.tileId,
+          tileIndex: tileIdx,
+          totalTiles: requiredTiles.length,
+          artifact: loaded.artifact,
+          layer: loaded.layer,
+        };
+      }
+      continue;
+    }
+
     const onProgress = params.onTileComputeProgress
       ? (progress: SunlightTileComputeProgress) => {
           const tileBase = tileIdx / requiredTiles.length;
