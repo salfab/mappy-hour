@@ -188,6 +188,8 @@ interface TileGrid {
   height: number;
 }
 
+interface LatLon { lat: number; lon: number; }
+
 interface TimelineTile {
   tileId: string;
   grid?: TileGrid;
@@ -195,6 +197,7 @@ interface TimelineTile {
   points: TimelinePoint[];
   frames: TimelineFrame[];
   tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
+  tileCorners?: { nw: LatLon; ne: LatLon; sw: LatLon; se: LatLon };
 }
 
 interface DailyTimelineState {
@@ -3365,7 +3368,11 @@ export function SunlightMapClient() {
 
     if (!overlayVisible || !hasGridTiles) {
       // Clean up per-tile overlays
-      for (const ov of perTileOverlaysRef.current.values()) ov.overlay.remove();
+      for (const ov of perTileOverlaysRef.current.values()) {
+        const customImg = (ov.overlay as unknown as { _customImg?: HTMLElement })._customImg;
+        if (customImg) customImg.remove();
+        ov.overlay.remove();
+      }
       perTileOverlaysRef.current.clear();
       if (sunShadowOverlayRef.current) {
         sunShadowOverlayRef.current.remove();
@@ -3386,6 +3393,8 @@ export function SunlightMapClient() {
     // Remove overlays for tiles no longer present
     for (const [id, ov] of existingOverlays) {
       if (!activeTileIds.has(id)) {
+        const customImg = (ov.overlay as unknown as { _customImg?: HTMLElement })._customImg;
+        if (customImg) customImg.remove();
         ov.overlay.remove();
         existingOverlays.delete(id);
       }
@@ -3405,15 +3414,57 @@ export function SunlightMapClient() {
         const ctx = canvas.getContext("2d");
         if (!ctx) continue;
 
-        // Use server-computed tileBounds (via lv95ToWgs84, precise for 250m tiles)
-        if (!tile.tileBounds) continue;
-        const bounds: [[number, number], [number, number]] = [
-          [tile.tileBounds.minLat, tile.tileBounds.minLon],
-          [tile.tileBounds.maxLat, tile.tileBounds.maxLon],
-        ];
-        const overlay = L.imageOverlay(canvas.toDataURL(), bounds, { opacity: 1, interactive: false }).addTo(map);
-        const imgEl = (overlay as unknown as { _image?: HTMLElement })._image;
-        if (imgEl) imgEl.style.imageRendering = "pixelated";
+        if (!tile.tileCorners && !tile.tileBounds) continue;
+
+        let overlay: L.ImageOverlay;
+        let bounds: [[number, number], [number, number]];
+
+        if (tile.tileCorners) {
+          // Use affine transform via CSS matrix for precise positioning.
+          // Canvas coords: (0,0)=NW, (w,0)=NE, (0,h)=SW
+          // Map coords: convert corners to layer points
+          const nwPt = map.latLngToLayerPoint([tile.tileCorners.nw.lat, tile.tileCorners.nw.lon]);
+          const nePt = map.latLngToLayerPoint([tile.tileCorners.ne.lat, tile.tileCorners.ne.lon]);
+          const swPt = map.latLngToLayerPoint([tile.tileCorners.sw.lat, tile.tileCorners.sw.lon]);
+
+          // CSS matrix(a,b,c,d,e,f): x'=a*x+c*y+e, y'=b*x+d*y+f
+          const a = (nePt.x - nwPt.x) / w;
+          const b = (nePt.y - nwPt.y) / w;
+          const c = (swPt.x - nwPt.x) / h;
+          const d = (swPt.y - nwPt.y) / h;
+
+          // Create a plain img element positioned via CSS transform
+          const img = document.createElement("img");
+          img.style.position = "absolute";
+          img.style.left = "0";
+          img.style.top = "0";
+          img.style.transformOrigin = "0 0";
+          img.style.transform = `matrix(${a},${b},${c},${d},${nwPt.x},${nwPt.y})`;
+          img.style.imageRendering = "pixelated";
+          img.style.pointerEvents = "none";
+          img.src = canvas.toDataURL();
+
+          const mapPane = map.getPane("overlayPane");
+          if (mapPane) mapPane.appendChild(img);
+
+          // Wrap in a dummy overlay for cleanup — store the img ref
+          bounds = tile.tileBounds
+            ? [[tile.tileBounds.minLat, tile.tileBounds.minLon], [tile.tileBounds.maxLat, tile.tileBounds.maxLon]]
+            : [[tile.tileCorners.sw.lat, tile.tileCorners.sw.lon], [tile.tileCorners.ne.lat, tile.tileCorners.ne.lon]];
+          // Use a minimal L.imageOverlay just for lifecycle management
+          overlay = L.imageOverlay(canvas.toDataURL(), bounds, { opacity: 0, interactive: false }).addTo(map);
+          // Hide the leaflet overlay and keep our custom img
+          const leafletImg = (overlay as unknown as { _image?: HTMLElement })._image;
+          if (leafletImg) leafletImg.style.display = "none";
+          // Store custom img ref for updates
+          (overlay as unknown as { _customImg: HTMLImageElement })._customImg = img;
+          (overlay as unknown as { _tileCorners: typeof tile.tileCorners })._tileCorners = tile.tileCorners;
+        } else {
+          bounds = [[tile.tileBounds!.minLat, tile.tileBounds!.minLon], [tile.tileBounds!.maxLat, tile.tileBounds!.maxLon]];
+          overlay = L.imageOverlay(canvas.toDataURL(), bounds, { opacity: 1, interactive: false }).addTo(map);
+          const imgEl = (overlay as unknown as { _image?: HTMLElement })._image;
+          if (imgEl) imgEl.style.imageRendering = "pixelated";
+        }
 
         ov = { tileId: tile.tileId, canvas, ctx, overlay, width: w, height: h, bounds };
         existingOverlays.set(tile.tileId, ov);
@@ -3421,7 +3472,25 @@ export function SunlightMapClient() {
 
       // Paint the current frame on this tile's canvas
       paintTileCanvas(tile, ov.ctx, ov.width, ov.height, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow, "sunShadow");
-      ov.overlay.setUrl(ov.canvas.toDataURL());
+      const dataUrl = ov.canvas.toDataURL();
+      const customImg = (ov.overlay as unknown as { _customImg?: HTMLImageElement })._customImg;
+      if (customImg) {
+        customImg.src = dataUrl;
+        // Update transform in case map was panned/zoomed
+        const corners = (ov.overlay as unknown as { _tileCorners?: { nw: LatLon; ne: LatLon; sw: LatLon } })._tileCorners;
+        if (corners) {
+          const nwPt = map.latLngToLayerPoint([corners.nw.lat, corners.nw.lon]);
+          const nePt = map.latLngToLayerPoint([corners.ne.lat, corners.ne.lon]);
+          const swPt = map.latLngToLayerPoint([corners.sw.lat, corners.sw.lon]);
+          const a = (nePt.x - nwPt.x) / ov.width;
+          const b = (nePt.y - nwPt.y) / ov.width;
+          const c = (swPt.x - nwPt.x) / ov.height;
+          const d = (swPt.y - nwPt.y) / ov.height;
+          customImg.style.transform = `matrix(${a},${b},${c},${d},${nwPt.x},${nwPt.y})`;
+        }
+      } else {
+        ov.overlay.setUrl(dataUrl);
+      }
     }
   }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showShadow, showSunny]);
 
@@ -4090,6 +4159,7 @@ export function SunlightMapClient() {
         grid?: TileGrid;
         outdoorMaskBase64?: string;
         tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
+        tileCorners?: { nw: LatLon; ne: LatLon; sw: LatLon; se: LatLon };
         points?: Array<{ id: string; lat?: number; lon?: number }>;
         frames: TimelineFrame[];
       };
@@ -4098,6 +4168,7 @@ export function SunlightMapClient() {
         grid: data.grid,
         outdoorMaskBase64: data.outdoorMaskBase64,
         tileBounds: data.tileBounds,
+        tileCorners: data.tileCorners,
         points: (data.points ?? []) as TimelinePoint[],
         frames: data.frames,
       });

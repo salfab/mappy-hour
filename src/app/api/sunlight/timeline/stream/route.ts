@@ -403,10 +403,13 @@ export async function GET(request: Request) {
               };
             });
 
-            // Precise per-tile bounds via lv95ToWgs84 (250m → negligible linearization error)
+            // Per-tile corners via lv95ToWgs84 for affine transform positioning.
+            // 3 corners define the affine mapping from canvas pixels to map coords.
             const gs = query.gridStepMeters;
             const tileSW = lv95ToWgs84(tileMinIx * gs, tileMinIy * gs);
             const tileNE = lv95ToWgs84((tileMaxIx + 1) * gs, (tileMaxIy + 1) * gs);
+            const tileNW = lv95ToWgs84(tileMinIx * gs, (tileMaxIy + 1) * gs);
+            const tileSE = lv95ToWgs84((tileMaxIx + 1) * gs, tileMinIy * gs);
 
             sendEvent("tile", {
               tileId,
@@ -417,6 +420,12 @@ export async function GET(request: Request) {
               indoorPointsExcluded: tileIndoorExcluded,
               grid: { minIx: tileMinIx, maxIx: tileMaxIx, minIy: tileMinIy, maxIy: tileMaxIy, width: tileW, height: tileH },
               tileBounds: { minLat: tileSW.lat, maxLat: tileNE.lat, minLon: tileSW.lon, maxLon: tileNE.lon },
+              tileCorners: {
+                nw: { lat: tileNW.lat, lon: tileNW.lon },
+                ne: { lat: tileNE.lat, lon: tileNE.lon },
+                sw: { lat: tileSW.lat, lon: tileSW.lon },
+                se: { lat: tileSE.lat, lon: tileSE.lon },
+              },
               outdoorMaskBase64: Buffer.from(outdoorMask).toString("base64"),
               frames: tileFrames,
             });
