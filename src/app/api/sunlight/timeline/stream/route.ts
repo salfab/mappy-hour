@@ -170,17 +170,21 @@ export async function GET(request: Request) {
     const shadowCalibration = normalizeShadowCalibration({
       buildingHeightBiasMeters: query.buildingHeightBiasMeters,
     });
-    const grid = buildGridFromBbox(
-      {
-        minLon: query.minLon,
-        minLat: query.minLat,
-        maxLon: query.maxLon,
-        maxLat: query.maxLat,
-      },
-      query.gridStepMeters,
-    );
+    // In cache-only mode, skip the expensive grid computation — we only
+    // read cached tiles from disk, so the grid is not needed.
+    const grid = query.cacheOnly
+      ? []
+      : buildGridFromBbox(
+          {
+            minLon: query.minLon,
+            minLat: query.minLat,
+            maxLon: query.maxLon,
+            maxLat: query.maxLat,
+          },
+          query.gridStepMeters,
+        );
 
-    if (grid.length > MAX_RAW_GRID_POINTS) {
+    if (!query.cacheOnly && grid.length > MAX_RAW_GRID_POINTS) {
       return NextResponse.json(
         {
           error: "Grid exceeds raw safety limit.",
