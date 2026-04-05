@@ -3843,7 +3843,6 @@ export function SunlightMapClient() {
     timelineStreamRef.current = timelineStream;
 
     timelineStream.addEventListener("start", (event) => {
-      console.log("[tile-debug] START event received");
       if (timelineCancelledRef.current) {
         return;
       }
@@ -3921,7 +3920,6 @@ export function SunlightMapClient() {
     };
 
     timelineStream.addEventListener("tile", (event) => {
-      console.log("[tile-debug] tile event received, pending:", pendingTilesRef.current.length, "cancelled:", timelineCancelledRef.current);
       if (timelineCancelledRef.current) {
         return;
       }
@@ -3947,7 +3945,6 @@ export function SunlightMapClient() {
 
       // Flush to React state every 3 seconds or every 5 tiles
       const msSinceFlush = performance.now() - lastTileFlushRef.current;
-      console.log("[tile-debug] after push, pending:", pendingTilesRef.current.length, "msSinceFlush:", Math.round(msSinceFlush), "willFlush:", msSinceFlush > 3000 || pendingTilesRef.current.length >= 5);
       if (msSinceFlush > 3000 || pendingTilesRef.current.length >= 5) {
         flushPendingTiles();
       }
@@ -3971,7 +3968,6 @@ export function SunlightMapClient() {
         return;
       }
       // Flush pending tiles AND apply done stats in a single state update
-      console.log("[tile-debug] DONE event, pending tiles to flush:", pendingTilesRef.current.length, "tileIds:", pendingTilesRef.current.map(t => t.tileId).join(","));
       const pendingToFlush = pendingTilesRef.current.splice(0);
       const pendingStatsToFlush = { ...pendingStatsRef.current };
       pendingStatsRef.current = { gridPointCount: 0, indoorPointsExcluded: 0 };
