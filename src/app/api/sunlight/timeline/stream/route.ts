@@ -371,37 +371,37 @@ export async function GET(request: Request) {
               cellToOutdoor[cellIdx] = p.outdoorIndex;
             }
 
-            // Build grid-indexed frame masks
-            const tileFrames = artifact.frames.map((frame) => {
+            // Build grid-indexed frame masks as concatenated binary blobs.
+            // Instead of 60 separate base64 strings (~96% of payload), we
+            // concatenate all frame masks into 2 blobs and base64-encode once.
+            const maskBytesPerFrame = Math.ceil(gridCellCount / 8);
+            const allSunnyMasks = new Uint8Array(artifact.frames.length * maskBytesPerFrame);
+            const allNoVegMasks = new Uint8Array(artifact.frames.length * maskBytesPerFrame);
+            const frameMeta: Array<{ index: number; localTime: string; sunnyCount: number; sunnyCountNoVegetation: number }> = [];
+
+            for (let fi = 0; fi < artifact.frames.length; fi++) {
+              const frame = artifact.frames[fi];
               const srcMask = decodeBase64Bytes(frame.sunMaskBase64);
-              const dstMask = new Uint8Array(Math.ceil(gridCellCount / 8));
+              const offset = fi * maskBytesPerFrame;
               let sunnyCount = 0;
               for (let i = 0; i < gridCellCount; i++) {
                 const oi = cellToOutdoor[i];
                 if (oi >= 0 && isMaskBitSet(srcMask, oi)) {
-                  setMaskBit(dstMask, i);
+                  setMaskBit(allSunnyMasks.subarray(offset, offset + maskBytesPerFrame), i);
                   sunnyCount += 1;
                 }
               }
               const srcNoVeg = decodeBase64Bytes(frame.sunMaskNoVegetationBase64);
-              const dstNoVeg = new Uint8Array(Math.ceil(gridCellCount / 8));
               let sunnyNoVeg = 0;
               for (let i = 0; i < gridCellCount; i++) {
                 const oi = cellToOutdoor[i];
                 if (oi >= 0 && isMaskBitSet(srcNoVeg, oi)) {
-                  setMaskBit(dstNoVeg, i);
+                  setMaskBit(allNoVegMasks.subarray(offset, offset + maskBytesPerFrame), i);
                   sunnyNoVeg += 1;
                 }
               }
-              return {
-                index: frame.index,
-                localTime: frame.localTime,
-                sunnyCount,
-                sunnyCountNoVegetation: sunnyNoVeg,
-                sunMaskBase64: Buffer.from(dstMask).toString("base64"),
-                sunMaskNoVegetationBase64: Buffer.from(dstNoVeg).toString("base64"),
-              };
-            });
+              frameMeta.push({ index: frame.index, localTime: frame.localTime, sunnyCount, sunnyCountNoVegetation: sunnyNoVeg });
+            }
 
             sendEvent("tile", {
               tileId,
@@ -412,7 +412,10 @@ export async function GET(request: Request) {
               indoorPointsExcluded: tileIndoorExcluded,
               grid: { minIx: tileMinIx, maxIx: tileMaxIx, minIy: tileMinIy, maxIy: tileMaxIy, width: tileW, height: tileH },
               outdoorMaskBase64: Buffer.from(outdoorMask).toString("base64"),
-              frames: tileFrames,
+              maskBytesPerFrame,
+              sunMaskBlobBase64: Buffer.from(allSunnyMasks).toString("base64"),
+              noVegMaskBlobBase64: Buffer.from(allNoVegMasks).toString("base64"),
+              frameMeta,
             });
             await yieldToEventLoop();
 
