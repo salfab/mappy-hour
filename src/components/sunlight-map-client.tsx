@@ -3158,6 +3158,12 @@ export function SunlightMapClient() {
         grid.bounds,
         { opacity: 1, interactive: false },
       ).addTo(map);
+      // Force nearest-neighbor scaling to avoid interpolation artifacts
+      // (semi-transparent lines between pixels when the canvas is stretched)
+      const imgEl = (sunShadowOverlayRef.current as unknown as { _image?: HTMLElement })._image;
+      if (imgEl) {
+        imgEl.style.imageRendering = "pixelated";
+      }
     } else {
       sunShadowOverlayRef.current.setUrl(dataUrl);
     }
