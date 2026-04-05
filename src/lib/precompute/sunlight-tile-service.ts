@@ -1040,6 +1040,7 @@ export async function* streamTilesForBbox(params: {
   // to avoid loading GPU/shared sources (which is slow and memory-heavy).
   let modelVersionHash: string;
   let algorithmVersion = "";
+  let cachedTimeWindows: Array<{ startLocalTime: string; endLocalTime: string }> = [];
   let effectiveStartLocalTime = params.startLocalTime;
   let effectiveEndLocalTime = params.endLocalTime;
   if (params.cacheOnly) {
@@ -1053,8 +1054,10 @@ export async function* streamTilesForBbox(params: {
     });
     if (!cached) return null;
     modelVersionHash = cached.modelVersionHash;
-    effectiveStartLocalTime = cached.startLocalTime;
-    effectiveEndLocalTime = cached.endLocalTime;
+    cachedTimeWindows = cached.timeWindows;
+    // Use the first time window as default for manifest loading
+    effectiveStartLocalTime = cached.timeWindows[0].startLocalTime;
+    effectiveEndLocalTime = cached.timeWindows[0].endLocalTime;
   } else {
     const modelVersion = await getSunlightModelVersion(region, params.shadowCalibration);
     modelVersionHash = modelVersion.modelVersionHash;
@@ -1097,25 +1100,29 @@ export async function* streamTilesForBbox(params: {
     const tile = requiredTiles[tileIdx];
 
     if (params.cacheOnly) {
-      const loaded = await loadTileDiskOnly({
-        region,
-        modelVersionHash,
-        date: params.date,
-        gridStepMeters: params.gridStepMeters,
-        sampleEveryMinutes: params.sampleEveryMinutes,
-        startLocalTime: effectiveStartLocalTime,
-        endLocalTime: effectiveEndLocalTime,
-        tileId: tile.tileId,
-        stripDiagnostics: true,
-      });
-      if (loaded.artifact) {
-        yield {
+      // Try all cached time windows until we find this tile
+      for (const tw of cachedTimeWindows) {
+        const loaded = await loadTileDiskOnly({
+          region,
+          modelVersionHash,
+          date: params.date,
+          gridStepMeters: params.gridStepMeters,
+          sampleEveryMinutes: params.sampleEveryMinutes,
+          startLocalTime: tw.startLocalTime,
+          endLocalTime: tw.endLocalTime,
           tileId: tile.tileId,
-          tileIndex: tileIdx,
-          totalTiles: requiredTiles.length,
-          artifact: loaded.artifact,
-          layer: loaded.layer,
-        };
+          stripDiagnostics: true,
+        });
+        if (loaded.artifact) {
+          yield {
+            tileId: tile.tileId,
+            tileIndex: tileIdx,
+            totalTiles: requiredTiles.length,
+            artifact: loaded.artifact,
+            layer: loaded.layer,
+          };
+          break;
+        }
       }
       continue;
     }
