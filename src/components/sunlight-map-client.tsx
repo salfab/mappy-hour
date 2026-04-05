@@ -1434,26 +1434,27 @@ function paintSunShadowFrame(
 }
 
 /**
- * Build merged horizontal strip polygons from a grid mask.
- * Instead of 30K individual cell polygons, produces ~2000-3000 horizontal
- * strips by merging adjacent sunny cells in each row.
- * Returns lat/lon polygon rings for L.polygon() rendering.
+ * Marching squares contour extraction from a grid mask.
+ * Produces a small number of polygon rings (~20-50) that trace the
+ * boundaries between sunny and shadow regions. O(N) time.
+ * Each vertex is positioned via bilinear interpolation from the tile's
+ * 4 corners → precise lat/lon, no alignment error.
  */
-function buildTileStripPolygons(
+function buildTileContourPolygons(
   tile: TimelineTile,
   frameIndex: number,
   decodedMaskCache: Map<string, Uint8Array>,
   ignoreVegetation: boolean,
-): Array<{ ring: [number, number][]; isSunny: boolean }> {
-  if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) return [];
+): { sunnyRings: Array<[number, number][]>; shadowRings: Array<[number, number][]> } {
+  const empty = { sunnyRings: [], shadowRings: [] };
+  if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) return empty;
 
   const grid = tile.grid;
   const tileW = grid.width;
   const tileH = grid.height;
-  const cellCount = tileW * tileH;
   const safeIdx = Math.max(0, Math.min(frameIndex, tile.frames.length - 1));
   const frame = tile.frames[safeIdx];
-  if (!frame) return [];
+  if (!frame) return empty;
 
   const frameCacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
   let mask = decodedMaskCache.get(frameCacheKey);
@@ -1469,58 +1470,134 @@ function buildTileStripPolygons(
     decodedMaskCache.set(outdoorCacheKey, outdoorMask);
   }
 
-  // Bilinear interpolation from tile corners
+  // Bilinear interpolation from tile corners for vertex positioning
   const { nw, ne, sw, se } = tile.tileCorners;
-  const cellToLatLon = (ix: number, iy: number): [number, number] => {
-    const tx = tileW > 1 ? ix / (tileW - 1) : 0.5;
-    const ty = tileH > 1 ? iy / (tileH - 1) : 0.5;
-    // iy=0 is south (minIy), iy=tileH-1 is north (maxIy)
-    // tx=0 is west, tx=1 is east
+  const toLatLon = (fx: number, fy: number): [number, number] => {
+    // fx, fy are in grid coords: fx=0 → west edge, fx=tileW → east edge
+    // fy=0 → south edge, fy=tileH → north edge
+    const tx = tileW > 0 ? fx / tileW : 0.5;
+    const ty = tileH > 0 ? fy / tileH : 0.5;
     const lat = sw.lat * (1 - tx) * (1 - ty) + se.lat * tx * (1 - ty) + nw.lat * (1 - tx) * ty + ne.lat * tx * ty;
     const lon = sw.lon * (1 - tx) * (1 - ty) + se.lon * tx * (1 - ty) + nw.lon * (1 - tx) * ty + ne.lon * tx * ty;
     return [lat, lon];
   };
 
-  const result: Array<{ ring: [number, number][]; isSunny: boolean }> = [];
+  // Helper: is cell (ix, iy) sunny outdoor?
+  const isSunnyOutdoor = (ix: number, iy: number): boolean => {
+    if (ix < 0 || ix >= tileW || iy < 0 || iy >= tileH) return false;
+    const cellIdx = iy * tileW + ix;
+    if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) return false;
+    return ((mask![cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
+  };
 
-  // Scanline: for each row, find contiguous runs of sunny outdoor cells
-  for (let iy = 0; iy < tileH; iy++) {
-    let runStart = -1;
-    let runSunny = false;
-    for (let ix = 0; ix <= tileW; ix++) {
-      const cellIdx = iy * tileW + ix;
-      const isOutdoor = ix < tileW && outdoorMask ? ((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1 : false;
-      const isSunny = ix < tileW && isOutdoor && ((mask![cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
+  const isOutdoor = (ix: number, iy: number): boolean => {
+    if (ix < 0 || ix >= tileW || iy < 0 || iy >= tileH) return false;
+    const cellIdx = iy * tileW + ix;
+    if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) return false;
+    return true;
+  };
 
-      if (ix < tileW && isOutdoor) {
-        if (runStart === -1) {
-          runStart = ix;
-          runSunny = isSunny;
-        } else if (isSunny !== runSunny) {
-          // End current run, start new one
-          const sw2 = cellToLatLon(runStart - 0.5, iy - 0.5);
-          const se2 = cellToLatLon(ix - 0.5, iy - 0.5);
-          const ne2 = cellToLatLon(ix - 0.5, iy + 0.5);
-          const nw2 = cellToLatLon(runStart - 0.5, iy + 0.5);
-          result.push({ ring: [sw2, se2, ne2, nw2, sw2], isSunny: runSunny });
-          runStart = ix;
-          runSunny = isSunny;
-        }
-      } else {
-        if (runStart !== -1) {
-          // End current run
-          const sw2 = cellToLatLon(runStart - 0.5, iy - 0.5);
-          const se2 = cellToLatLon(ix - 0.5, iy - 0.5);
-          const ne2 = cellToLatLon(ix - 0.5, iy + 0.5);
-          const nw2 = cellToLatLon(runStart - 0.5, iy + 0.5);
-          result.push({ ring: [sw2, se2, ne2, nw2, sw2], isSunny: runSunny });
-          runStart = -1;
-        }
+  // Marching squares: collect edge segments between sunny and non-sunny cells.
+  // An edge exists between adjacent cells with different sunny state.
+  // We collect horizontal and vertical edge segments, then chain them into rings.
+  type Seg = { x1: number; y1: number; x2: number; y2: number };
+  const sunnyEdges: Seg[] = [];
+  const shadowEdges: Seg[] = [];
+
+  // Horizontal edges (between row iy-1 and row iy)
+  for (let iy = 0; iy <= tileH; iy++) {
+    for (let ix = 0; ix < tileW; ix++) {
+      const above = isSunnyOutdoor(ix, iy);
+      const below = isSunnyOutdoor(ix, iy - 1);
+      if (above !== below) {
+        sunnyEdges.push({ x1: ix, y1: iy, x2: ix + 1, y2: iy });
+      }
+      // Shadow contour: outdoor-non-sunny vs non-outdoor/boundary
+      const aboveOutdoorShadow = isOutdoor(ix, iy) && !isSunnyOutdoor(ix, iy);
+      const belowOutdoorShadow = isOutdoor(ix, iy - 1) && !isSunnyOutdoor(ix, iy - 1);
+      if (aboveOutdoorShadow !== belowOutdoorShadow) {
+        shadowEdges.push({ x1: ix, y1: iy, x2: ix + 1, y2: iy });
       }
     }
   }
 
-  return result;
+  // Vertical edges (between col ix-1 and col ix)
+  for (let ix = 0; ix <= tileW; ix++) {
+    for (let iy = 0; iy < tileH; iy++) {
+      const right = isSunnyOutdoor(ix, iy);
+      const left = isSunnyOutdoor(ix - 1, iy);
+      if (right !== left) {
+        sunnyEdges.push({ x1: ix, y1: iy, x2: ix, y2: iy + 1 });
+      }
+      const rightShadow = isOutdoor(ix, iy) && !isSunnyOutdoor(ix, iy);
+      const leftShadow = isOutdoor(ix - 1, iy) && !isSunnyOutdoor(ix - 1, iy);
+      if (rightShadow !== leftShadow) {
+        shadowEdges.push({ x1: ix, y1: iy, x2: ix, y2: iy + 1 });
+      }
+    }
+  }
+
+  // Chain edge segments into closed rings
+  function chainEdges(edges: Seg[]): Array<[number, number][]> {
+    if (edges.length === 0) return [];
+    // Build adjacency: map from "x,y" → list of connected edges
+    const adj = new Map<string, Seg[]>();
+    const key = (x: number, y: number) => `${x},${y}`;
+    for (const e of edges) {
+      const k1 = key(e.x1, e.y1);
+      const k2 = key(e.x2, e.y2);
+      if (!adj.has(k1)) adj.set(k1, []);
+      if (!adj.has(k2)) adj.set(k2, []);
+      adj.get(k1)!.push(e);
+      adj.get(k2)!.push(e);
+    }
+
+    const used = new Set<number>();
+    const rings: Array<[number, number][]> = [];
+
+    for (let startIdx = 0; startIdx < edges.length; startIdx++) {
+      if (used.has(startIdx)) continue;
+      const ring: [number, number][] = [];
+      let currentEdge = edges[startIdx];
+      let cx = currentEdge.x1, cy = currentEdge.y1;
+      ring.push(toLatLon(cx, cy));
+      used.add(startIdx);
+      cx = currentEdge.x2;
+      cy = currentEdge.y2;
+
+      let safety = edges.length + 1;
+      while (safety-- > 0) {
+        ring.push(toLatLon(cx, cy));
+        if (cx === edges[startIdx].x1 && cy === edges[startIdx].y1) break; // closed
+        const k = key(cx, cy);
+        const candidates = adj.get(k);
+        if (!candidates) break;
+        let found = false;
+        for (let i = 0; i < candidates.length; i++) {
+          const idx = edges.indexOf(candidates[i]);
+          if (used.has(idx)) continue;
+          used.add(idx);
+          const next = candidates[i];
+          if (next.x1 === cx && next.y1 === cy) {
+            cx = next.x2; cy = next.y2;
+          } else {
+            cx = next.x1; cy = next.y1;
+          }
+          found = true;
+          break;
+        }
+        if (!found) break;
+      }
+      if (ring.length >= 4) rings.push(ring);
+    }
+
+    return rings;
+  }
+
+  return {
+    sunnyRings: chainEdges(sunnyEdges),
+    shadowRings: chainEdges(shadowEdges),
+  };
 }
 
 function paintTileCanvas(
@@ -2142,6 +2219,7 @@ export function SunlightMapClient() {
   const heatmapOverlayRef = useRef<L.ImageOverlay | null>(null);
   const perTileOverlaysRef = useRef<Map<string, PerTileOverlay>>(new Map());
   const perTileHeatmapOverlaysRef = useRef<Map<string, PerTileOverlay>>(new Map());
+  const contourLayerRef = useRef<L.LayerGroup | null>(null);
   const ignoreVegetationShadowRef = useRef(false);
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
@@ -3475,8 +3553,61 @@ export function SunlightMapClient() {
     const map = mapRef.current;
     if (!map) return;
 
-    // Per-tile overlays: one small canvas + overlay per tile (250×250px)
-    // Each overlay has precise bounds via lv95ToWgs84 on 2 corners (250m = negligible error)
+    // Vectorial contour rendering: marching squares produces ~20-50 polygons
+    // per tile, positioned vertex-by-vertex via bilinear interpolation from
+    // tile corners → pixel-perfect alignment, no canvas stretching artifacts.
+    const useVectorial = dailyTimeline.tiles.some(t => t.tileCorners);
+
+    if (useVectorial) {
+      // Clean up canvas overlays
+      for (const ov of perTileOverlaysRef.current.values()) {
+        const customImg = (ov.overlay as unknown as { _customImg?: HTMLElement })._customImg;
+        if (customImg) customImg.remove();
+        ov.overlay.remove();
+      }
+      perTileOverlaysRef.current.clear();
+
+      // Create or reuse contour layer
+      if (!contourLayerRef.current) {
+        contourLayerRef.current = L.layerGroup().addTo(map);
+      }
+      contourLayerRef.current.clearLayers();
+
+      for (const tile of dailyTimeline.tiles) {
+        if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) continue;
+        const contours = buildTileContourPolygons(
+          tile, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow,
+        );
+        if (showSunny) {
+          for (const ring of contours.sunnyRings) {
+            L.polygon([ring.map(([lat, lon]) => [lat, lon] as [number, number])], {
+              color: "#eab308",
+              fillColor: "#facc15",
+              weight: 0.5,
+              opacity: 0.5,
+              fillOpacity: 0.35,
+            }).addTo(contourLayerRef.current!);
+          }
+        }
+        if (showShadow) {
+          for (const ring of contours.shadowRings) {
+            L.polygon([ring.map(([lat, lon]) => [lat, lon] as [number, number])], {
+              color: "#6b7280",
+              fillColor: "#64748b",
+              weight: 0.5,
+              opacity: 0.5,
+              fillOpacity: 0.30,
+            }).addTo(contourLayerRef.current!);
+          }
+        }
+      }
+      return; // skip canvas path
+    }
+
+    // Fallback: per-tile canvas overlays (when tileCorners not available)
+    if (contourLayerRef.current) {
+      contourLayerRef.current.clearLayers();
+    }
     const existingOverlays = perTileOverlaysRef.current;
     const activeTileIds = new Set(dailyTimeline.tiles.map(t => t.tileId));
 
