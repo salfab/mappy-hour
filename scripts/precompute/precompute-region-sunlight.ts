@@ -1,5 +1,6 @@
 import { precomputeCacheRuns, type CachePrecomputeProgress } from "../../src/lib/admin/cache-admin";
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
+import { buildRegionTiles, getIntersectingTileIds } from "../../src/lib/precompute/sunlight-cache";
 
 interface ParsedArgs {
   region: PrecomputedRegionName;
@@ -12,6 +13,7 @@ interface ParsedArgs {
   endLocalTime: string;
   buildingHeightBiasMeters: number;
   skipExisting: boolean;
+  bbox: [number, number, number, number] | null;
 }
 
 const DEFAULT_ARGS: ParsedArgs = {
@@ -25,6 +27,7 @@ const DEFAULT_ARGS: ParsedArgs = {
   endLocalTime: "23:59",
   buildingHeightBiasMeters: 0,
   skipExisting: true,
+  bbox: null,
 };
 
 function parseBoolean(value: string): boolean | null {
@@ -103,6 +106,13 @@ function parseArgs(argv: string[]): ParsedArgs {
       }
       continue;
     }
+    if (arg.startsWith("--bbox=")) {
+      const parts = arg.slice("--bbox=".length).split(",").map(Number);
+      if (parts.length === 4 && parts.every(Number.isFinite)) {
+        result.bbox = parts as [number, number, number, number];
+      }
+      continue;
+    }
   }
   return result;
 }
@@ -141,8 +151,27 @@ async function main() {
     process.env.MAPPY_PRECOMPUTE_WORKERS?.trim() ||
     "(auto: min(4, max(2, cpu-1)))";
 
+  // Resolve bbox to tile IDs if specified
+  let tileIds: string[] | undefined;
+  if (args.bbox) {
+    const [minLon, minLat, maxLon, maxLat] = args.bbox;
+    const tileSizeMeters = 250;
+    const ids = getIntersectingTileIds({
+      region: args.region,
+      tileSizeMeters,
+      bbox: { minLon, minLat, maxLon, maxLat },
+    });
+    tileIds = ids;
+    console.log(
+      `[precompute] bbox=[${args.bbox.join(",")}] → ${ids.length} tiles`,
+    );
+  }
+
+  const allTiles = buildRegionTiles(args.region, 250);
+  const tileCount = tileIds ? tileIds.length : allTiles.length;
+
   console.log(
-    `[precompute] engine=cache-admin workers=${workers} region=${args.region} startDate=${args.startDate} days=${args.days} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} skipExisting=${args.skipExisting}`,
+    `[precompute] engine=cache-admin workers=${workers} region=${args.region} startDate=${args.startDate} days=${args.days} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} skipExisting=${args.skipExisting} tiles=${tileCount}`,
   );
 
   let lastProgress: CachePrecomputeProgress | null = null;
@@ -160,6 +189,7 @@ async function main() {
       endLocalTime: args.endLocalTime,
       skipExisting: args.skipExisting,
       buildingHeightBiasMeters: args.buildingHeightBiasMeters,
+      tileIds,
     },
     {
       onProgress: (progress) => {
