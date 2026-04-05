@@ -1253,15 +1253,16 @@ function prepareSunShadowGrid(
 ): SunShadowGrid | null {
   if (timeline.tiles.length === 0) return null;
 
-  // Collect all point lat/lon + row/col, computing overall extents.
+  // Collect all point row/col + track corner lat/lon for bounds.
   let minRow = Infinity;
   let maxRow = -Infinity;
   let minCol = Infinity;
   let maxCol = -Infinity;
-  let minLat = Infinity;
-  let maxLat = -Infinity;
-  let minLon = Infinity;
-  let maxLon = -Infinity;
+  // Track lat/lon of actual corner points (not min/max of all points)
+  let minRowLat = 0;
+  let maxRowLat = 0;
+  let minColLon = 0;
+  let maxColLon = 0;
 
   const allParsed: Array<Array<{ row: number; col: number }>> = [];
   for (const tile of timeline.tiles) {
@@ -1270,14 +1271,10 @@ function prepareSunShadowGrid(
       const id = parseGridPointId(p.id);
       if (!id) continue;
       parsed.push({ row: id.row, col: id.col });
-      if (id.row < minRow) minRow = id.row;
-      if (id.row > maxRow) maxRow = id.row;
-      if (id.col < minCol) minCol = id.col;
-      if (id.col > maxCol) maxCol = id.col;
-      if (p.lat < minLat) minLat = p.lat;
-      if (p.lat > maxLat) maxLat = p.lat;
-      if (p.lon < minLon) minLon = p.lon;
-      if (p.lon > maxLon) maxLon = p.lon;
+      if (id.row < minRow) { minRow = id.row; minRowLat = p.lat; }
+      if (id.row > maxRow) { maxRow = id.row; maxRowLat = p.lat; }
+      if (id.col < minCol) { minCol = id.col; minColLon = p.lon; }
+      if (id.col > maxCol) { maxCol = id.col; maxColLon = p.lon; }
     }
     allParsed.push(parsed);
   }
@@ -1304,23 +1301,12 @@ function prepareSunShadowGrid(
     );
   }
 
-  // Compute bounds from a reference point + row/col offsets.
-  // Each row = 1m northing, each col = 1m easting.
-  // Pick any point as reference and extrapolate to the grid corners.
-  const refTile = timeline.tiles[0];
-  const refPoint = refTile.points[0];
-  const refId = parseGridPointId(refPoint.id);
-  if (!refId) return null;
-  const latPerMeter = 1 / METERS_PER_DEGREE_LAT;
-  const meanLat = (minLat + maxLat) / 2;
-  const lonPerMeter = 1 / (METERS_PER_DEGREE_LAT * Math.cos((meanLat * Math.PI) / 180));
-  // Extrapolate lat/lon for the grid corners from the reference point
-  const southLat = refPoint.lat + (minRow - refId.row) * latPerMeter;
-  const northLat = refPoint.lat + (maxRow - refId.row) * latPerMeter;
-  const westLon = refPoint.lon + (minCol - refId.col) * lonPerMeter;
-  const eastLon = refPoint.lon + (maxCol - refId.col) * lonPerMeter;
-  const latHalfStep = latPerMeter / 2;
-  const lonHalfStep = lonPerMeter / 2;
+  // Use actual lat/lon from the corner points for precise bounds.
+  // minRowLat = lat of the southernmost row, maxRowLat = lat of the northernmost row.
+  // minColLon = lon of the westernmost col, maxColLon = lon of the easternmost col.
+  const latHalfStep = 1 / METERS_PER_DEGREE_LAT / 2;
+  const meanLat = (minRowLat + maxRowLat) / 2;
+  const lonHalfStep = 1 / (METERS_PER_DEGREE_LAT * Math.cos((meanLat * Math.PI) / 180)) / 2;
 
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -1333,8 +1319,8 @@ function prepareSunShadowGrid(
     width,
     height,
     bounds: [
-      [southLat - latHalfStep, westLon - lonHalfStep],
-      [northLat + latHalfStep, eastLon + lonHalfStep],
+      [minRowLat - latHalfStep, minColLon - lonHalfStep],
+      [maxRowLat + latHalfStep, maxColLon + lonHalfStep],
     ] as [[number, number], [number, number]],
     canvas,
     ctx,
