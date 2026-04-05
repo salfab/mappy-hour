@@ -1433,6 +1433,96 @@ function paintSunShadowFrame(
   ctx.putImageData(imageData, 0, 0);
 }
 
+/**
+ * Build merged horizontal strip polygons from a grid mask.
+ * Instead of 30K individual cell polygons, produces ~2000-3000 horizontal
+ * strips by merging adjacent sunny cells in each row.
+ * Returns lat/lon polygon rings for L.polygon() rendering.
+ */
+function buildTileStripPolygons(
+  tile: TimelineTile,
+  frameIndex: number,
+  decodedMaskCache: Map<string, Uint8Array>,
+  ignoreVegetation: boolean,
+): Array<{ ring: [number, number][]; isSunny: boolean }> {
+  if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) return [];
+
+  const grid = tile.grid;
+  const tileW = grid.width;
+  const tileH = grid.height;
+  const cellCount = tileW * tileH;
+  const safeIdx = Math.max(0, Math.min(frameIndex, tile.frames.length - 1));
+  const frame = tile.frames[safeIdx];
+  if (!frame) return [];
+
+  const frameCacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
+  let mask = decodedMaskCache.get(frameCacheKey);
+  if (!mask) {
+    mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+    decodedMaskCache.set(frameCacheKey, mask);
+  }
+
+  const outdoorCacheKey = `${tile.tileId}:outdoor`;
+  let outdoorMask = decodedMaskCache.get(outdoorCacheKey);
+  if (!outdoorMask && tile.outdoorMaskBase64) {
+    outdoorMask = decodeBase64ToBytes(tile.outdoorMaskBase64);
+    decodedMaskCache.set(outdoorCacheKey, outdoorMask);
+  }
+
+  // Bilinear interpolation from tile corners
+  const { nw, ne, sw, se } = tile.tileCorners;
+  const cellToLatLon = (ix: number, iy: number): [number, number] => {
+    const tx = tileW > 1 ? ix / (tileW - 1) : 0.5;
+    const ty = tileH > 1 ? iy / (tileH - 1) : 0.5;
+    // iy=0 is south (minIy), iy=tileH-1 is north (maxIy)
+    // tx=0 is west, tx=1 is east
+    const lat = sw.lat * (1 - tx) * (1 - ty) + se.lat * tx * (1 - ty) + nw.lat * (1 - tx) * ty + ne.lat * tx * ty;
+    const lon = sw.lon * (1 - tx) * (1 - ty) + se.lon * tx * (1 - ty) + nw.lon * (1 - tx) * ty + ne.lon * tx * ty;
+    return [lat, lon];
+  };
+
+  const result: Array<{ ring: [number, number][]; isSunny: boolean }> = [];
+
+  // Scanline: for each row, find contiguous runs of sunny outdoor cells
+  for (let iy = 0; iy < tileH; iy++) {
+    let runStart = -1;
+    let runSunny = false;
+    for (let ix = 0; ix <= tileW; ix++) {
+      const cellIdx = iy * tileW + ix;
+      const isOutdoor = ix < tileW && outdoorMask ? ((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1 : false;
+      const isSunny = ix < tileW && isOutdoor && ((mask![cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
+
+      if (ix < tileW && isOutdoor) {
+        if (runStart === -1) {
+          runStart = ix;
+          runSunny = isSunny;
+        } else if (isSunny !== runSunny) {
+          // End current run, start new one
+          const sw2 = cellToLatLon(runStart - 0.5, iy - 0.5);
+          const se2 = cellToLatLon(ix - 0.5, iy - 0.5);
+          const ne2 = cellToLatLon(ix - 0.5, iy + 0.5);
+          const nw2 = cellToLatLon(runStart - 0.5, iy + 0.5);
+          result.push({ ring: [sw2, se2, ne2, nw2, sw2], isSunny: runSunny });
+          runStart = ix;
+          runSunny = isSunny;
+        }
+      } else {
+        if (runStart !== -1) {
+          // End current run
+          const sw2 = cellToLatLon(runStart - 0.5, iy - 0.5);
+          const se2 = cellToLatLon(ix - 0.5, iy - 0.5);
+          const ne2 = cellToLatLon(ix - 0.5, iy + 0.5);
+          const nw2 = cellToLatLon(runStart - 0.5, iy + 0.5);
+          result.push({ ring: [sw2, se2, ne2, nw2, sw2], isSunny: runSunny });
+          runStart = -1;
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
 function paintTileCanvas(
   tile: TimelineTile,
   ctx: CanvasRenderingContext2D,
