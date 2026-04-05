@@ -179,8 +179,19 @@ interface TimelineFrame {
   sunMaskNoVegetationBase64?: string;
 }
 
+interface TileGrid {
+  minIx: number;
+  maxIx: number;
+  minIy: number;
+  maxIy: number;
+  width: number;
+  height: number;
+}
+
 interface TimelineTile {
   tileId: string;
+  grid?: TileGrid;
+  outdoorMaskBase64?: string;
   points: TimelinePoint[];
   frames: TimelineFrame[];
   tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
@@ -1255,90 +1266,62 @@ function prepareSunShadowGrid(
 ): SunShadowGrid | null {
   if (timeline.tiles.length === 0) return null;
 
-  // Collect all point row/col + track corner lat/lon for bounds.
+  // Use grid bounds from tiles (new format) or parse point IDs (legacy)
+  const hasGridFormat = timeline.tiles.some(t => t.grid);
+
   let minRow = Infinity;
   let maxRow = -Infinity;
   let minCol = Infinity;
   let maxCol = -Infinity;
-  // Track overall geo bounds from tileBounds (server-computed, precise)
-  // and from individual point lat/lon as fallback.
-  let geoMinLat = Infinity;
-  let geoMaxLat = -Infinity;
-  let geoMinLon = Infinity;
-  let geoMaxLon = -Infinity;
 
-  const allParsed: Array<Array<{ row: number; col: number }>> = [];
-  for (const tile of timeline.tiles) {
-    // Use tileBounds if available (precise, from server)
-    if (tile.tileBounds) {
-      if (tile.tileBounds.minLat < geoMinLat) geoMinLat = tile.tileBounds.minLat;
-      if (tile.tileBounds.maxLat > geoMaxLat) geoMaxLat = tile.tileBounds.maxLat;
-      if (tile.tileBounds.minLon < geoMinLon) geoMinLon = tile.tileBounds.minLon;
-      if (tile.tileBounds.maxLon > geoMaxLon) geoMaxLon = tile.tileBounds.maxLon;
+  // For grid format: tilePixelMaps are not needed (paintSunShadowFrame
+  // reads grid-indexed masks directly). We still need global col/row.
+  // For legacy format: build pixel maps from parsed point IDs.
+  const tilePixelMaps: Array<{ x: number; y: number }[]> = [];
+
+  if (hasGridFormat) {
+    for (const tile of timeline.tiles) {
+      if (!tile.grid) continue;
+      if (tile.grid.minIx < minCol) minCol = tile.grid.minIx;
+      if (tile.grid.maxIx > maxCol) maxCol = tile.grid.maxIx;
+      if (tile.grid.minIy < minRow) minRow = tile.grid.minIy;
+      if (tile.grid.maxIy > maxRow) maxRow = tile.grid.maxIy;
+      tilePixelMaps.push([]); // placeholder — grid format uses direct indexing
     }
-    const parsed: Array<{ row: number; col: number }> = [];
-    for (const p of tile.points) {
-      const id = parseGridPointId(p.id);
-      if (!id) continue;
-      parsed.push({ row: id.row, col: id.col });
-      if (id.row < minRow) minRow = id.row;
-      if (id.row > maxRow) maxRow = id.row;
-      if (id.col < minCol) minCol = id.col;
-      if (id.col > maxCol) maxCol = id.col;
-      // Fallback: use individual point lat/lon if no tileBounds
-      if (!tile.tileBounds && p.lat !== undefined && p.lon !== undefined) {
-        if (p.lat < geoMinLat) geoMinLat = p.lat;
-        if (p.lat > geoMaxLat) geoMaxLat = p.lat;
-        if (p.lon < geoMinLon) geoMinLon = p.lon;
-        if (p.lon > geoMaxLon) geoMaxLon = p.lon;
+  } else {
+    for (const tile of timeline.tiles) {
+      const parsed: Array<{ row: number; col: number }> = [];
+      for (const p of tile.points) {
+        const id = parseGridPointId(p.id);
+        if (!id) continue;
+        parsed.push({ row: id.row, col: id.col });
+        if (id.row < minRow) minRow = id.row;
+        if (id.row > maxRow) maxRow = id.row;
+        if (id.col < minCol) minCol = id.col;
+        if (id.col > maxCol) maxCol = id.col;
       }
+      tilePixelMaps.push(parsed.map((p) => ({ x: p.col - minCol, y: maxRow - p.row })));
     }
-    allParsed.push(parsed);
   }
 
   const colRange = maxCol - minCol;
   const rowRange = maxRow - minRow;
   if (colRange <= 0 || rowRange <= 0) return null;
 
-  // Canvas is 1 pixel per LV95 meter (square pixels).
-  // Leaflet stretches the image to fill the lat/lon bounds, handling
-  // Mercator distortion automatically.
   const width = colRange + 1;
   const height = rowRange + 1;
   if (width > 10000 || height > 10000) return null;
 
-  // Build pixel maps: for each tile, map point index → canvas pixel
-  const tilePixelMaps: Array<{ x: number; y: number }[]> = [];
-  for (const parsed of allParsed) {
-    tilePixelMaps.push(
-      parsed.map((p) => ({
-        x: p.col - minCol,
-        y: maxRow - p.row,
-      })),
-    );
-  }
-
-  // Use overlayBounds from the done event (server-computed via lv95ToWgs84
-  // on the global col/row pixel grid corners). This is the most precise.
-  // Fallback: approximate from point lat/lon extremes + half-step padding.
-  let boundsS: number, boundsN: number, boundsW: number, boundsE: number;
-  if (timeline.overlayBounds) {
-    boundsS = timeline.overlayBounds.minLat;
-    boundsN = timeline.overlayBounds.maxLat;
-    boundsW = timeline.overlayBounds.minLon;
-    boundsE = timeline.overlayBounds.maxLon;
-  } else if (geoMinLat < Infinity && geoMaxLat > -Infinity) {
-    const latHalfStep = 1 / METERS_PER_DEGREE_LAT / 2;
-    const meanLat = (geoMinLat + geoMaxLat) / 2;
-    const lonHalfStep = 1 / (METERS_PER_DEGREE_LAT * Math.cos((meanLat * Math.PI) / 180)) / 2;
-    boundsS = geoMinLat - latHalfStep;
-    boundsN = geoMaxLat + latHalfStep;
-    boundsW = geoMinLon - lonHalfStep;
-    boundsE = geoMaxLon + lonHalfStep;
-  } else {
-    // No geo bounds available yet — cannot create overlay
+  // Use overlayBounds from the done event (server-computed via lv95ToWgs84).
+  // Before done arrives, use approximate bounds from grid extent.
+  if (!timeline.overlayBounds) {
+    // No bounds yet — cannot create overlay (wait for done event)
     return null;
   }
+  const boundsS = timeline.overlayBounds.minLat;
+  const boundsN = timeline.overlayBounds.maxLat;
+  const boundsW = timeline.overlayBounds.minLon;
+  const boundsE = timeline.overlayBounds.maxLon;
 
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -1372,6 +1355,17 @@ function paintSunShadowFrame(
 
   const safeIndex = Math.max(0, Math.min(frameIndex, (timeline.tiles[0]?.frames.length ?? 1) - 1));
 
+  // Extract global minCol/maxRow from the grid dimensions
+  // The grid object stores tilePixelMaps but for grid-indexed tiles
+  // we need the global offsets. Compute from the first tile with grid data.
+  let globalMinCol = Infinity, globalMaxRow = -Infinity;
+  for (const tile of timeline.tiles) {
+    if (tile.grid) {
+      if (tile.grid.minIx < globalMinCol) globalMinCol = tile.grid.minIx;
+      if (tile.grid.maxIy > globalMaxRow) globalMaxRow = tile.grid.maxIy;
+    }
+  }
+
   for (let tileIdx = 0; tileIdx < timeline.tiles.length; tileIdx++) {
     const tile = timeline.tiles[tileIdx];
     const frame = tile.frames[safeIndex];
@@ -1382,16 +1376,44 @@ function paintSunShadowFrame(
       mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
       decodedMaskCache.set(cacheKey, mask);
     }
-    const pixelMap = tilePixelMaps[tileIdx];
-    for (let i = 0; i < pixelMap.length; i++) {
-      const isSunny = ((mask[i >> 3] >> (i & 7)) & 1) === 1;
-      const { x, y } = pixelMap[i];
-      const offset = (y * width + x) * 4;
-      const rgba = isSunny ? SUNNY_RGBA : SHADOW_RGBA;
-      data[offset] = rgba[0];
-      data[offset + 1] = rgba[1];
-      data[offset + 2] = rgba[2];
-      data[offset + 3] = rgba[3];
+
+    if (tile.grid) {
+      // Grid-indexed format: each bit = 1 grid cell, ordered iy asc then ix asc.
+      // Map grid cells to canvas pixels using the tile's grid bounds.
+      const tileW = tile.grid.width;
+      const outdoorMask = tile.outdoorMaskBase64
+        ? decodeBase64ToBytes(tile.outdoorMaskBase64)
+        : null;
+      const cellCount = tileW * tile.grid.height;
+      for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
+        // Only paint outdoor cells
+        if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) continue;
+        const isSunny = ((mask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
+        const tileRow: number = tile.grid.minIy + Math.floor(cellIdx / tileW);
+        const tileCol: number = tile.grid.minIx + (cellIdx % tileW);
+        const x: number = tileCol - globalMinCol;
+        const y: number = globalMaxRow - tileRow;
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+        const offset = (y * width + x) * 4;
+        const rgba = isSunny ? SUNNY_RGBA : SHADOW_RGBA;
+        data[offset] = rgba[0];
+        data[offset + 1] = rgba[1];
+        data[offset + 2] = rgba[2];
+        data[offset + 3] = rgba[3];
+      }
+    } else {
+      // Legacy format: use pixel maps
+      const pixelMap = tilePixelMaps[tileIdx];
+      for (let i = 0; i < pixelMap.length; i++) {
+        const isSunny = ((mask[i >> 3] >> (i & 7)) & 1) === 1;
+        const { x, y } = pixelMap[i];
+        const offset = (y * width + x) * 4;
+        const rgba = isSunny ? SUNNY_RGBA : SHADOW_RGBA;
+        data[offset] = rgba[0];
+        data[offset + 1] = rgba[1];
+        data[offset + 2] = rgba[2];
+        data[offset + 3] = rgba[3];
+      }
     }
   }
 
@@ -1793,34 +1815,73 @@ function paintHeatmapCanvas(
   const totalFrames = timeline.tiles[0]?.frames.length ?? 0;
   if (totalFrames === 0) return;
 
+  let globalMinCol = Infinity, globalMaxRow = -Infinity;
+  for (const tile of timeline.tiles) {
+    if (tile.grid) {
+      if (tile.grid.minIx < globalMinCol) globalMinCol = tile.grid.minIx;
+      if (tile.grid.maxIy > globalMaxRow) globalMaxRow = tile.grid.maxIy;
+    }
+  }
+
   for (let tileIdx = 0; tileIdx < timeline.tiles.length; tileIdx++) {
     const tile = timeline.tiles[tileIdx];
-    const pixelMap = tilePixelMaps[tileIdx];
-    // Count sunny frames per point
-    const sunnyFrames = new Uint16Array(tile.points.length);
-    for (const frame of tile.frames) {
-      const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
-      let mask = decodedMaskCache.get(cacheKey);
-      if (!mask) {
-        mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-        decodedMaskCache.set(cacheKey, mask);
-      }
-      for (let i = 0; i < tile.points.length; i++) {
-        if (((mask[i >> 3] >> (i & 7)) & 1) === 1) {
-          sunnyFrames[i] += 1;
+
+    if (tile.grid) {
+      const tileW = tile.grid.width;
+      const cellCount = tileW * tile.grid.height;
+      const outdoorMask = tile.outdoorMaskBase64
+        ? decodeBase64ToBytes(tile.outdoorMaskBase64) : null;
+      const sunnyFrames = new Uint16Array(cellCount);
+      for (const frame of tile.frames) {
+        const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
+        let mask = decodedMaskCache.get(cacheKey);
+        if (!mask) {
+          mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+          decodedMaskCache.set(cacheKey, mask);
+        }
+        for (let i = 0; i < cellCount; i++) {
+          if (((mask[i >> 3] >> (i & 7)) & 1) === 1) sunnyFrames[i] += 1;
         }
       }
-    }
-    // Paint exposure ratio per point
-    for (let i = 0; i < pixelMap.length; i++) {
-      const ratio = sunnyFrames[i] / totalFrames;
-      const { x, y } = pixelMap[i];
-      const offset = (y * width + x) * 4;
-      const rgba = exposureRatioToRGBA(ratio);
-      data[offset] = rgba[0];
-      data[offset + 1] = rgba[1];
-      data[offset + 2] = rgba[2];
-      data[offset + 3] = rgba[3];
+      for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
+        if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) continue;
+        const tileRow: number = tile.grid.minIy + Math.floor(cellIdx / tileW);
+        const tileCol: number = tile.grid.minIx + (cellIdx % tileW);
+        const x: number = tileCol - globalMinCol;
+        const y: number = globalMaxRow - tileRow;
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+        const ratio = sunnyFrames[cellIdx] / totalFrames;
+        const offset = (y * width + x) * 4;
+        const rgba = exposureRatioToRGBA(ratio);
+        data[offset] = rgba[0];
+        data[offset + 1] = rgba[1];
+        data[offset + 2] = rgba[2];
+        data[offset + 3] = rgba[3];
+      }
+    } else {
+      const pixelMap = tilePixelMaps[tileIdx];
+      const sunnyFrames = new Uint16Array(tile.points.length);
+      for (const frame of tile.frames) {
+        const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
+        let mask = decodedMaskCache.get(cacheKey);
+        if (!mask) {
+          mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+          decodedMaskCache.set(cacheKey, mask);
+        }
+        for (let i = 0; i < tile.points.length; i++) {
+          if (((mask[i >> 3] >> (i & 7)) & 1) === 1) sunnyFrames[i] += 1;
+        }
+      }
+      for (let i = 0; i < pixelMap.length; i++) {
+        const ratio = sunnyFrames[i] / totalFrames;
+        const { x, y } = pixelMap[i];
+        const offset = (y * width + x) * 4;
+        const rgba = exposureRatioToRGBA(ratio);
+        data[offset] = rgba[0];
+        data[offset + 1] = rgba[1];
+        data[offset + 2] = rgba[2];
+        data[offset + 3] = rgba[3];
+      }
     }
   }
 
@@ -3930,15 +3991,17 @@ export function SunlightMapClient() {
         pointCount: number;
         gridPointCount: number;
         indoorPointsExcluded: number;
-        points: Array<{ id: string; lat?: number; lon?: number }>;
-        tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
+        grid?: TileGrid;
+        outdoorMaskBase64?: string;
+        points?: Array<{ id: string; lat?: number; lon?: number }>;
         frames: TimelineFrame[];
       };
       pendingTilesRef.current.push({
         tileId: data.tileId,
-        points: data.points as TimelinePoint[],
+        grid: data.grid,
+        outdoorMaskBase64: data.outdoorMaskBase64,
+        points: (data.points ?? []) as TimelinePoint[],
         frames: data.frames,
-        tileBounds: data.tileBounds,
       });
       pendingStatsRef.current.gridPointCount += data.gridPointCount;
       pendingStatsRef.current.indoorPointsExcluded += data.indoorPointsExcluded;

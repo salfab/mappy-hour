@@ -309,28 +309,34 @@ export async function GET(request: Request) {
               tilesComputed += 1;
             }
 
-            // Filter outdoor points within bbox
-            const outdoorPoints: Array<{ id: string; lat: number; lon: number; outdoorIndex: number; pointElevationMeters: number | null }> = [];
+            // Build grid-indexed tile data. Instead of sending individual
+            // point IDs (~800KB), we send grid bounds + outdoor mask + grid-
+            // indexed frame masks (~260KB total, ~4x reduction).
             let tileGridCount = 0;
             let tileIndoorExcluded = 0;
+            let tileOutdoorCount = 0;
+            let tileMinIx = Infinity, tileMaxIx = -Infinity;
+            let tileMinIy = Infinity, tileMaxIy = -Infinity;
             for (const p of artifact.points) {
               if (!pointInBbox(p.lon, p.lat, bbox)) continue;
               tileGridCount += 1;
               if (p.insideBuilding || p.outdoorIndex === null) {
                 tileIndoorExcluded += 1;
-                continue;
+              } else {
+                tileOutdoorCount += 1;
               }
-              outdoorPoints.push({ id: p.id, lat: p.lat, lon: p.lon, outdoorIndex: p.outdoorIndex, pointElevationMeters: p.pointElevationMeters });
+              if (p.ix < tileMinIx) tileMinIx = p.ix;
+              if (p.ix > tileMaxIx) tileMaxIx = p.ix;
+              if (p.iy < tileMinIy) tileMinIy = p.iy;
+              if (p.iy > tileMaxIy) tileMaxIy = p.iy;
             }
 
-            totalPointCount += outdoorPoints.length;
+            totalPointCount += tileOutdoorCount;
             totalGridPointCount += tileGridCount;
             totalIndoorExcluded += tileIndoorExcluded;
-            totalPointsWithElevation += outdoorPoints.filter(p => p.pointElevationMeters !== null).length;
-            tileStreamTotalEvaluations += outdoorPoints.length * artifact.frames.length;
+            tileStreamTotalEvaluations += tileOutdoorCount * artifact.frames.length;
             for (const w of artifact.warnings) allWarnings.add(w);
 
-            // In non-cache mode, limit the number of tiles that need computation
             if (!query.cacheOnly && layer === "MISS" && tilesComputed > query.maxComputeTiles) {
               sendEvent("error", {
                 error: "Too many tiles to compute.",
@@ -339,61 +345,73 @@ export async function GET(request: Request) {
               return;
             }
 
-            // Re-index frame masks to filtered outdoor points
+            // Track global col/row extremes
+            if (tileMinIx < globalMinCol) globalMinCol = tileMinIx;
+            if (tileMaxIx > globalMaxCol) globalMaxCol = tileMaxIx;
+            if (tileMinIy < globalMinRow) globalMinRow = tileMinIy;
+            if (tileMaxIy > globalMaxRow) globalMaxRow = tileMaxIy;
+
+            if (tileMinIx > tileMaxIx || tileMinIy > tileMaxIy) {
+              // No points in bbox for this tile
+              result = await tileStream.next();
+              continue;
+            }
+
+            // Build grid cell → artifact outdoorIndex mapping
+            const tileW = tileMaxIx - tileMinIx + 1;
+            const tileH = tileMaxIy - tileMinIy + 1;
+            const gridCellCount = tileW * tileH;
+            const outdoorMask = new Uint8Array(Math.ceil(gridCellCount / 8));
+            const cellToOutdoor = new Int32Array(gridCellCount).fill(-1);
+            for (const p of artifact.points) {
+              if (!pointInBbox(p.lon, p.lat, bbox)) continue;
+              if (p.insideBuilding || p.outdoorIndex === null) continue;
+              const cellIdx = (p.iy - tileMinIy) * tileW + (p.ix - tileMinIx);
+              setMaskBit(outdoorMask, cellIdx);
+              cellToOutdoor[cellIdx] = p.outdoorIndex;
+            }
+
+            // Build grid-indexed frame masks
             const tileFrames = artifact.frames.map((frame) => {
               const srcMask = decodeBase64Bytes(frame.sunMaskBase64);
-              const dstMask = new Uint8Array(Math.ceil(outdoorPoints.length / 8));
+              const dstMask = new Uint8Array(Math.ceil(gridCellCount / 8));
               let sunnyCount = 0;
-              for (let i = 0; i < outdoorPoints.length; i++) {
-                if (isMaskBitSet(srcMask, outdoorPoints[i].outdoorIndex)) {
+              for (let i = 0; i < gridCellCount; i++) {
+                const oi = cellToOutdoor[i];
+                if (oi >= 0 && isMaskBitSet(srcMask, oi)) {
                   setMaskBit(dstMask, i);
                   sunnyCount += 1;
                 }
               }
-              const srcMaskNoVeg = decodeBase64Bytes(frame.sunMaskNoVegetationBase64);
-              const dstMaskNoVeg = new Uint8Array(Math.ceil(outdoorPoints.length / 8));
-              let sunnyCountNoVeg = 0;
-              for (let i = 0; i < outdoorPoints.length; i++) {
-                if (isMaskBitSet(srcMaskNoVeg, outdoorPoints[i].outdoorIndex)) {
-                  setMaskBit(dstMaskNoVeg, i);
-                  sunnyCountNoVeg += 1;
+              const srcNoVeg = decodeBase64Bytes(frame.sunMaskNoVegetationBase64);
+              const dstNoVeg = new Uint8Array(Math.ceil(gridCellCount / 8));
+              let sunnyNoVeg = 0;
+              for (let i = 0; i < gridCellCount; i++) {
+                const oi = cellToOutdoor[i];
+                if (oi >= 0 && isMaskBitSet(srcNoVeg, oi)) {
+                  setMaskBit(dstNoVeg, i);
+                  sunnyNoVeg += 1;
                 }
               }
               return {
                 index: frame.index,
                 localTime: frame.localTime,
                 sunnyCount,
-                sunnyCountNoVegetation: sunnyCountNoVeg,
+                sunnyCountNoVegetation: sunnyNoVeg,
                 sunMaskBase64: Buffer.from(dstMask).toString("base64"),
-                sunMaskNoVegetationBase64: Buffer.from(dstMaskNoVeg).toString("base64"),
+                sunMaskNoVegetationBase64: Buffer.from(dstNoVeg).toString("base64"),
               };
             });
 
-            // Send only point IDs (not lat/lon) for large tiles to reduce
-            // payload size (~1.8 MB → ~400 KB per tile). The client extracts
-            // row/col from the ID for canvas pixel mapping, and uses tile
-            // bounds for geo-referencing.
-            const compactPoints = outdoorPoints.length > 1000;
-            // Track global col/row extremes across all tiles for overlay bounds
-            for (const p of outdoorPoints) {
-              const m = /^ix(-?\d+)-iy(-?\d+)$/.exec(p.id);
-              if (!m) continue;
-              const col = +m[1], row = +m[2];
-              if (col < globalMinCol) globalMinCol = col;
-              if (col > globalMaxCol) globalMaxCol = col;
-              if (row < globalMinRow) globalMinRow = row;
-              if (row > globalMaxRow) globalMaxRow = row;
-            }
             sendEvent("tile", {
               tileId,
               tileIndex,
               totalTiles,
-              pointCount: outdoorPoints.length,
+              pointCount: tileOutdoorCount,
               gridPointCount: tileGridCount,
               indoorPointsExcluded: tileIndoorExcluded,
-              points: compactPoints
-                ? outdoorPoints.map(p => ({ id: p.id }))
-                : outdoorPoints.map(p => ({ id: p.id, lat: p.lat, lon: p.lon })),
+              grid: { minIx: tileMinIx, maxIx: tileMaxIx, minIy: tileMinIy, maxIy: tileMaxIy, width: tileW, height: tileH },
+              outdoorMaskBase64: Buffer.from(outdoorMask).toString("base64"),
               frames: tileFrames,
             });
             await yieldToEventLoop();
@@ -438,6 +456,9 @@ export async function GET(request: Request) {
           });
           return;
 
+          // ── Legacy fallback SSE path (direct evaluation, no tile cache) ──
+          // This code is unreachable in the current flow but kept for reference.
+          // eslint-disable-next-line no-unreachable
           const points: PreparedPoint[] = [];
           const warnings: string[] = [];
           let indoorPointsExcluded = 0;
@@ -452,9 +473,6 @@ export async function GET(request: Request) {
             | Awaited<ReturnType<typeof buildDynamicHorizonMask>>
             | undefined;
 
-          // Pre-load shared sources ONCE for all points in the grid.
-          // Without this, each buildPointEvaluationContext call would
-          // independently reload terrain, vegetation, and GPU backend.
           const sw = wgs84ToLv95(query.minLon, query.minLat);
           const ne = wgs84ToLv95(query.maxLon, query.maxLat);
           const lv95Bounds = { minX: sw.easting, minY: sw.northing, maxX: ne.easting, maxY: ne.northing };
@@ -605,7 +623,6 @@ export async function GET(request: Request) {
             pointCount: points.length,
             indoorPointsExcluded,
             frameCount: samples.length,
-            // Skip individual point coordinates for large grids to save memory
             points: points.length <= 10_000
               ? points.map((point) => ({ id: point.id, lat: point.lat, lon: point.lon }))
               : [],
