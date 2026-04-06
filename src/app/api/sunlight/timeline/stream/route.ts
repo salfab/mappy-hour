@@ -19,6 +19,7 @@ import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext, buildSharedPointEvaluationSources } from "@/lib/sun/evaluation-context";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { evaluateInstantSunlight } from "@/lib/sun/solar";
+import { encodeTileMasksBlob } from "@/lib/encoding/mask-codec-server";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
 export const runtime = "nodejs";
@@ -371,8 +372,10 @@ export async function GET(request: Request) {
               cellToOutdoor[cellIdx] = p.outdoorIndex;
             }
 
-            // Build grid-indexed frame masks
-            const tileFrames = artifact.frames.map((frame) => {
+            // Build grid-indexed frame masks and collect raw buffers for blob encoding
+            const frameMaskBuffers: Array<{ sun: Uint8Array; sunNoVeg: Uint8Array }> = [];
+            const tileFrameMeta: Array<{ index: number; localTime: string; sunnyCount: number; sunnyCountNoVegetation: number }> = [];
+            for (const frame of artifact.frames) {
               const srcMask = decodeBase64Bytes(frame.sunMaskBase64);
               const dstMask = new Uint8Array(Math.ceil(gridCellCount / 8));
               let sunnyCount = 0;
@@ -393,18 +396,19 @@ export async function GET(request: Request) {
                   sunnyNoVeg += 1;
                 }
               }
-              return {
+              frameMaskBuffers.push({ sun: dstMask, sunNoVeg: dstNoVeg });
+              tileFrameMeta.push({
                 index: frame.index,
                 localTime: frame.localTime,
                 sunnyCount,
                 sunnyCountNoVegetation: sunnyNoVeg,
-                sunMaskBase64: Buffer.from(dstMask).toString("base64"),
-                sunMaskNoVegetationBase64: Buffer.from(dstNoVeg).toString("base64"),
-              };
-            });
+              });
+            }
+
+            // Concatenate + gzip all masks into a single compressed blob
+            const masksBase64 = encodeTileMasksBlob(outdoorMask, frameMaskBuffers);
 
             // Per-tile corners via lv95ToWgs84 for affine transform positioning.
-            // 3 corners define the affine mapping from canvas pixels to map coords.
             const gs = query.gridStepMeters;
             const tileSW = lv95ToWgs84(tileMinIx * gs, tileMinIy * gs);
             const tileNE = lv95ToWgs84((tileMaxIx + 1) * gs, (tileMaxIy + 1) * gs);
@@ -426,8 +430,9 @@ export async function GET(request: Request) {
                 sw: { lat: tileSW.lat, lon: tileSW.lon },
                 se: { lat: tileSE.lat, lon: tileSE.lon },
               },
-              outdoorMaskBase64: Buffer.from(outdoorMask).toString("base64"),
-              frames: tileFrames,
+              masksEncoding: "gzip-concat-v1",
+              masksBase64,
+              frames: tileFrameMeta,
             });
             await yieldToEventLoop();
 

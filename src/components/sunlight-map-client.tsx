@@ -10,6 +10,7 @@ import type {
   TileLayer,
 } from "leaflet";
 import type { CacheRunDetailResponse } from "@/lib/admin/cache-run-detail";
+import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
 
 type AreaMode = "instant" | "daily";
 type BaseMapStyle = "map" | "satellite";
@@ -179,6 +180,12 @@ interface TimelineFrame {
   sunMaskNoVegetationBase64?: string;
 }
 
+/** Pre-decoded masks from gzip-concat-v1 blob — stored directly as Uint8Array */
+interface DecodedTileMasks {
+  outdoor: Uint8Array;
+  frames: Array<{ sun: Uint8Array; sunNoVeg: Uint8Array }>;
+}
+
 interface TileGrid {
   minIx: number;
   maxIx: number;
@@ -194,6 +201,7 @@ interface TimelineTile {
   tileId: string;
   grid?: TileGrid;
   outdoorMaskBase64?: string;
+  decodedMasks?: DecodedTileMasks;
   points: TimelinePoint[];
   frames: TimelineFrame[];
   tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
@@ -1381,22 +1389,14 @@ function paintSunShadowFrame(
 
   for (let tileIdx = 0; tileIdx < timeline.tiles.length; tileIdx++) {
     const tile = timeline.tiles[tileIdx];
-    const frame = tile.frames[safeIndex];
-    if (!frame) continue;
-    const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
-    let mask = decodedMaskCache.get(cacheKey);
-    if (!mask) {
-      mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-      decodedMaskCache.set(cacheKey, mask);
-    }
+    const mask = getTileMask(tile, safeIndex, ignoreVegetation, decodedMaskCache);
+    if (!mask) continue;
 
     if (tile.grid) {
       // Grid-indexed format: each bit = 1 grid cell, ordered iy asc then ix asc.
       // Map grid cells to canvas pixels using the tile's grid bounds.
       const tileW = tile.grid.width;
-      const outdoorMask = tile.outdoorMaskBase64
-        ? decodeBase64ToBytes(tile.outdoorMaskBase64)
-        : null;
+      const outdoorMask = getTileOutdoorMask(tile, decodedMaskCache);
       const cellCount = tileW * tile.grid.height;
       for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
         // Only paint outdoor cells
@@ -1455,23 +1455,10 @@ function buildTileContourPolygons(
   const grid = tile.grid;
   const tileW = grid.width;
   const tileH = grid.height;
-  const safeIdx = Math.max(0, Math.min(frameIndex, tile.frames.length - 1));
-  const frame = tile.frames[safeIdx];
-  if (!frame) return empty;
+  const mask = getTileMask(tile, frameIndex, ignoreVegetation, decodedMaskCache);
+  if (!mask) return empty;
 
-  const frameCacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
-  let mask = decodedMaskCache.get(frameCacheKey);
-  if (!mask) {
-    mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-    decodedMaskCache.set(frameCacheKey, mask);
-  }
-
-  const outdoorCacheKey = `${tile.tileId}:outdoor`;
-  let outdoorMask = decodedMaskCache.get(outdoorCacheKey);
-  if (!outdoorMask && tile.outdoorMaskBase64) {
-    outdoorMask = decodeBase64ToBytes(tile.outdoorMaskBase64);
-    decodedMaskCache.set(outdoorCacheKey, outdoorMask);
-  }
+  const outdoorMask = getTileOutdoorMask(tile, decodedMaskCache);
 
   // Bilinear interpolation from tile corners for vertex positioning
   const { nw, ne, sw, se } = tile.tileCorners;
@@ -1536,23 +1523,11 @@ function paintTileCanvas(
   const tileW = tile.grid.width;
   const cellCount = tileW * tile.grid.height;
 
-  const outdoorCacheKey = `${tile.tileId}:outdoor`;
-  let outdoorMask = decodedMaskCache.get(outdoorCacheKey);
-  if (!outdoorMask && tile.outdoorMaskBase64) {
-    outdoorMask = decodeBase64ToBytes(tile.outdoorMaskBase64);
-    decodedMaskCache.set(outdoorCacheKey, outdoorMask);
-  }
+  const outdoorMask = getTileOutdoorMask(tile, decodedMaskCache);
 
   if (mode === "sunShadow") {
-    const safeIdx = Math.max(0, Math.min(frameIndex, tile.frames.length - 1));
-    const frame = tile.frames[safeIdx];
-    if (!frame) { ctx.putImageData(imageData, 0, 0); return; }
-    const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
-    let mask = decodedMaskCache.get(cacheKey);
-    if (!mask) {
-      mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-      decodedMaskCache.set(cacheKey, mask);
-    }
+    const mask = getTileMask(tile, frameIndex, ignoreVegetation, decodedMaskCache);
+    if (!mask) { ctx.putImageData(imageData, 0, 0); return; }
     for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
       if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) continue;
       const isSunny = ((mask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
@@ -1569,13 +1544,9 @@ function paintTileCanvas(
     const totalFrames = tile.frames.length;
     if (totalFrames === 0) { ctx.putImageData(imageData, 0, 0); return; }
     const sunnyFrames = new Uint16Array(cellCount);
-    for (const frame of tile.frames) {
-      const ck = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
-      let mask = decodedMaskCache.get(ck);
-      if (!mask) {
-        mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-        decodedMaskCache.set(ck, mask);
-      }
+    for (let fi = 0; fi < tile.frames.length; fi++) {
+      const mask = getTileMask(tile, fi, ignoreVegetation, decodedMaskCache);
+      if (!mask) continue;
       for (let i = 0; i < cellCount; i++) {
         if (((mask[i >> 3] >> (i & 7)) & 1) === 1) sunnyFrames[i] += 1;
       }
@@ -1730,6 +1701,44 @@ function selectTimelineMaskBase64(
   return frame.sunMaskBase64;
 }
 
+/** Resolve a frame mask from pre-decoded blob or fall back to base64 decode + cache. */
+function getTileMask(
+  tile: TimelineTile,
+  frameIndex: number,
+  ignoreVegetation: boolean,
+  cache: Map<string, Uint8Array>,
+): Uint8Array | null {
+  const safeIdx = Math.max(0, Math.min(frameIndex, tile.frames.length - 1));
+  if (tile.decodedMasks) {
+    const dm = tile.decodedMasks.frames[safeIdx];
+    return dm ? (ignoreVegetation ? dm.sunNoVeg : dm.sun) : null;
+  }
+  const frame = tile.frames[safeIdx];
+  if (!frame) return null;
+  const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
+  let mask = cache.get(cacheKey);
+  if (!mask) {
+    mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+    cache.set(cacheKey, mask);
+  }
+  return mask;
+}
+
+/** Resolve the outdoor mask from pre-decoded blob or fall back to base64 decode + cache. */
+function getTileOutdoorMask(
+  tile: TimelineTile,
+  cache: Map<string, Uint8Array>,
+): Uint8Array | undefined {
+  if (tile.decodedMasks) return tile.decodedMasks.outdoor;
+  const cacheKey = `${tile.tileId}:outdoor`;
+  let mask = cache.get(cacheKey);
+  if (!mask && tile.outdoorMaskBase64) {
+    mask = decodeBase64ToBytes(tile.outdoorMaskBase64);
+    cache.set(cacheKey, mask);
+  }
+  return mask;
+}
+
 function isPointSunnyIgnoringVegetation(point: AreaInstantPoint): boolean {
   return point.altitudeDeg > 0 && !point.terrainBlocked && !point.buildingsBlocked;
 }
@@ -1766,14 +1775,8 @@ function toInstantAreaResponseFromTimeline(
 
   const points: AreaInstantPoint[] = [];
   for (const tile of timeline.tiles) {
-    const frame = tile.frames[safeIndex];
-    if (!frame) continue;
-    const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
-    let mask = decodedMaskCache.get(cacheKey);
-    if (!mask) {
-      mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-      decodedMaskCache.set(cacheKey, mask);
-    }
+    const mask = getTileMask(tile, safeIndex, ignoreVegetation, decodedMaskCache);
+    if (!mask) continue;
     for (let i = 0; i < tile.points.length; i++) {
       const isSunny = ((mask[i >> 3] >> (i & 7)) & 1) === 1;
       points.push({
@@ -1825,13 +1828,9 @@ function buildDailyExposurePoints(
   const result: DailyExposurePoint[] = [];
   for (const tile of timeline.tiles) {
     const sunnyFrames = new Uint16Array(tile.points.length);
-    for (const frame of tile.frames) {
-      const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
-      let mask = decodedMaskCache.get(cacheKey);
-      if (!mask) {
-        mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-        decodedMaskCache.set(cacheKey, mask);
-      }
+    for (let fi = 0; fi < tile.frames.length; fi++) {
+      const mask = getTileMask(tile, fi, ignoreVegetation, decodedMaskCache);
+      if (!mask) continue;
       for (let i = 0; i < tile.points.length; i++) {
         if (((mask[i >> 3] >> (i & 7)) & 1) === 1) {
           sunnyFrames[i] += 1;
@@ -2003,16 +2002,11 @@ function paintHeatmapCanvas(
     if (tile.grid) {
       const tileW = tile.grid.width;
       const cellCount = tileW * tile.grid.height;
-      const outdoorMask = tile.outdoorMaskBase64
-        ? decodeBase64ToBytes(tile.outdoorMaskBase64) : null;
+      const outdoorMask = getTileOutdoorMask(tile, decodedMaskCache);
       const sunnyFrames = new Uint16Array(cellCount);
-      for (const frame of tile.frames) {
-        const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
-        let mask = decodedMaskCache.get(cacheKey);
-        if (!mask) {
-          mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-          decodedMaskCache.set(cacheKey, mask);
-        }
+      for (let fi = 0; fi < tile.frames.length; fi++) {
+        const mask = getTileMask(tile, fi, ignoreVegetation, decodedMaskCache);
+        if (!mask) continue;
         for (let i = 0; i < cellCount; i++) {
           if (((mask[i >> 3] >> (i & 7)) & 1) === 1) sunnyFrames[i] += 1;
         }
@@ -2035,13 +2029,9 @@ function paintHeatmapCanvas(
     } else {
       const pixelMap = tilePixelMaps[tileIdx];
       const sunnyFrames = new Uint16Array(tile.points.length);
-      for (const frame of tile.frames) {
-        const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
-        let mask = decodedMaskCache.get(cacheKey);
-        if (!mask) {
-          mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-          decodedMaskCache.set(cacheKey, mask);
-        }
+      for (let fi = 0; fi < tile.frames.length; fi++) {
+        const mask = getTileMask(tile, fi, ignoreVegetation, decodedMaskCache);
+        if (!mask) continue;
         for (let i = 0; i < tile.points.length; i++) {
           if (((mask[i >> 3] >> (i & 7)) & 1) === 1) sunnyFrames[i] += 1;
         }
@@ -2127,7 +2117,7 @@ export function SunlightMapClient() {
   const baseMapStyleRef = useRef<BaseMapStyle>("map");
   const instantStreamRef = useRef<EventSource | null>(null);
   const instantCancelledRef = useRef(false);
-  const timelineStreamRef = useRef<EventSource | null>(null);
+  const timelineAbortRef = useRef<AbortController | null>(null);
   const timelineCancelledRef = useRef(false);
   const decodedTimelineMaskCacheRef = useRef<Map<string, Uint8Array>>(new Map());
   const pendingTilesRef = useRef<TimelineTile[]>([]);
@@ -3097,10 +3087,10 @@ export function SunlightMapClient() {
         instantStreamRef.current.close();
         instantStreamRef.current = null;
       }
-      if (timelineStreamRef.current) {
+      if (timelineAbortRef.current) {
         timelineCancelledRef.current = true;
-        timelineStreamRef.current.close();
-        timelineStreamRef.current = null;
+        timelineAbortRef.current.abort();
+        timelineAbortRef.current = null;
       }
       if (mapRef.current) {
         mapRef.current.remove();
@@ -3791,10 +3781,10 @@ export function SunlightMapClient() {
       return;
     }
 
-    if (timelineStreamRef.current) {
+    if (timelineAbortRef.current) {
       timelineCancelledRef.current = true;
-      timelineStreamRef.current.close();
-      timelineStreamRef.current = null;
+      timelineAbortRef.current.abort();
+      timelineAbortRef.current = null;
       setIsLoading(false);
     }
   }, [mode]);
@@ -3805,10 +3795,10 @@ export function SunlightMapClient() {
     }
 
     timelineCancelledRef.current = true;
-    if (timelineStreamRef.current) {
+    if (timelineAbortRef.current) {
       timelineCancelledRef.current = true;
-      timelineStreamRef.current.close();
-      timelineStreamRef.current = null;
+      timelineAbortRef.current.abort();
+      timelineAbortRef.current = null;
     }
     timelineCancelledRef.current = false;
     setIsLoading(false);
@@ -3945,10 +3935,10 @@ export function SunlightMapClient() {
           ];
         })();
 
-    if (timelineStreamRef.current) {
+    if (timelineAbortRef.current) {
       timelineCancelledRef.current = true;
-      timelineStreamRef.current.close();
-      timelineStreamRef.current = null;
+      timelineAbortRef.current.abort();
+      timelineAbortRef.current = null;
     }
     if (instantStreamRef.current) {
       instantCancelledRef.current = true;
@@ -4247,60 +4237,8 @@ export function SunlightMapClient() {
     });
 
     timelineCancelledRef.current = false;
-    const timelineStream = new EventSource(
-      `/api/sunlight/timeline/stream?${query.toString()}`,
-    );
-    timelineStreamRef.current = timelineStream;
-
-    timelineStream.addEventListener("start", (event) => {
-      if (timelineCancelledRef.current) {
-        return;
-      }
-      const data = JSON.parse((event as MessageEvent).data) as {
-        date: string;
-        timezone: string;
-        startLocalTime: string;
-        endLocalTime: string;
-        sampleEveryMinutes: number;
-        gridStepMeters: number;
-        totalTiles: number;
-        frameCount: number;
-        model?: NonNullable<AreaApiResponse["model"]>;
-      };
-
-      decodedTimelineMaskCacheRef.current.clear();
-      pendingTilesRef.current = [];
-      pendingStatsRef.current = { gridPointCount: 0, indoorPointsExcluded: 0 };
-      lastTileFlushRef.current = performance.now();
-      setDailyTimeline((previous) => {
-        // On reconnect, preserve tiles already received if parameters match.
-        const canMerge =
-          previous &&
-          previous.date === data.date &&
-          previous.gridStepMeters === data.gridStepMeters &&
-          previous.tiles.length > 0;
-
-        return {
-          date: data.date,
-          timezone: data.timezone,
-          startLocalTime: data.startLocalTime,
-          endLocalTime: data.endLocalTime,
-          sampleEveryMinutes: data.sampleEveryMinutes,
-          gridStepMeters: data.gridStepMeters,
-          pointCount: canMerge ? previous.pointCount : 0,
-          gridPointCount: canMerge ? previous.gridPointCount : 0,
-          indoorPointsExcluded: canMerge ? previous.indoorPointsExcluded : 0,
-          frameCount: data.frameCount,
-          tiles: canMerge ? previous.tiles : [],
-          points: canMerge ? previous.points : [],
-          frames: [],
-          model: data.model ?? null,
-          warnings: [],
-          stats: null,
-        };
-      });
-      setDailyFrameIndex((prev) => prev || 0);
-    });
+    const abortController = new AbortController();
+    timelineAbortRef.current = abortController;
 
     const flushPendingTiles = () => {
       const pending = pendingTilesRef.current;
@@ -4329,161 +4267,232 @@ export function SunlightMapClient() {
       lastTileFlushRef.current = performance.now();
     };
 
-    timelineStream.addEventListener("tile", (event) => {
-      if (timelineCancelledRef.current) {
-        return;
-      }
-      const data = JSON.parse((event as MessageEvent).data) as {
-        tileId: string;
-        tileIndex: number;
-        totalTiles: number;
-        pointCount: number;
-        gridPointCount: number;
-        indoorPointsExcluded: number;
-        grid?: TileGrid;
-        outdoorMaskBase64?: string;
-        tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
-        tileCorners?: { nw: LatLon; ne: LatLon; sw: LatLon; se: LatLon };
-        points?: Array<{ id: string; lat?: number; lon?: number }>;
-        frames: TimelineFrame[];
-      };
-      pendingTilesRef.current.push({
-        tileId: data.tileId,
-        grid: data.grid,
-        outdoorMaskBase64: data.outdoorMaskBase64,
-        tileBounds: data.tileBounds,
-        tileCorners: data.tileCorners,
-        points: (data.points ?? []) as TimelinePoint[],
-        frames: data.frames,
-      });
-      pendingStatsRef.current.gridPointCount += data.gridPointCount;
-      pendingStatsRef.current.indoorPointsExcluded += data.indoorPointsExcluded;
+    // Dispatch a parsed SSE event to the appropriate handler
+    // Track pending blob decompressions — resolved in parallel, applied before done
+    const pendingBlobDecodes: Array<Promise<void>> = [];
+    let doneData: { stats: NonNullable<DailyTimelineState["stats"]>; overlayBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number }; warnings: string[] } | null = null;
 
-      // Flush to React state every 3 seconds or every 5 tiles
-      const msSinceFlush = performance.now() - lastTileFlushRef.current;
-      if (msSinceFlush > 3000 || pendingTilesRef.current.length >= 5) {
-        flushPendingTiles();
-      }
-    });
+    const handleSseEvent = (eventType: string, jsonData: string) => {
+      if (timelineCancelledRef.current) return;
 
-    timelineStream.addEventListener("progress", (event) => {
-      if (timelineCancelledRef.current) {
-        return;
-      }
-      const data = JSON.parse((event as MessageEvent).data) as TimelineProgress;
-      setDailyProgress(data);
-    });
-
-    timelineStream.addEventListener("done", (event) => {
-      if (timelineCancelledRef.current) {
-        timelineStream.close();
-        if (timelineStreamRef.current === timelineStream) {
-          timelineStreamRef.current = null;
-        }
-        setIsLoading(false);
-        return;
-      }
-      // Flush pending tiles AND apply done stats in a single state update
-      const pendingToFlush = pendingTilesRef.current.splice(0);
-      const pendingStatsToFlush = { ...pendingStatsRef.current };
-      pendingStatsRef.current = { gridPointCount: 0, indoorPointsExcluded: 0 };
-      decodedTimelineMaskCacheRef.current.clear();
-
-      const data = JSON.parse((event as MessageEvent).data) as {
-        stats: NonNullable<DailyTimelineState["stats"]>;
-        overlayBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
-        warnings: string[];
-      };
-      setDailyTimeline((previous) => {
-        if (!previous) {
-          return previous;
-        }
-
-        // Merge pending tiles
-        const existingIds = new Set(previous.tiles.map((t) => t.tileId));
-        const newTiles = pendingToFlush.filter((t) => !existingIds.has(t.tileId));
-        const mergedTiles = newTiles.length > 0 ? [...previous.tiles, ...newTiles] : previous.tiles;
-        const allPoints = newTiles.length > 0 ? mergedTiles.flatMap((t) => t.points) : previous.points;
-
-        return {
-          ...previous,
-          tiles: mergedTiles,
-          points: allPoints,
-          pointCount: previous.pointCount + pendingStatsToFlush.gridPointCount - pendingStatsToFlush.indoorPointsExcluded,
-          gridPointCount: previous.gridPointCount + pendingStatsToFlush.gridPointCount,
-          indoorPointsExcluded: previous.indoorPointsExcluded + pendingStatsToFlush.indoorPointsExcluded,
-          stats: data.stats,
-          overlayBounds: data.overlayBounds ?? previous.overlayBounds,
-          warnings: Array.from(new Set([...previous.warnings, ...data.warnings])),
+      if (eventType === "start") {
+        const data = JSON.parse(jsonData) as {
+          date: string;
+          timezone: string;
+          startLocalTime: string;
+          endLocalTime: string;
+          sampleEveryMinutes: number;
+          gridStepMeters: number;
+          totalTiles: number;
+          frameCount: number;
+          model?: NonNullable<AreaApiResponse["model"]>;
         };
-      });
-      setDailyProgress({
-        phase: "done",
-        done: data.stats.totalEvaluations,
-        total: data.stats.totalEvaluations,
-        percent: 100,
-        etaSeconds: 0,
-        elapsedMs: data.stats.elapsedMs,
-      });
-      timelineStream.close();
-      if (timelineStreamRef.current === timelineStream) {
-        timelineStreamRef.current = null;
-      }
-      streamFinished = true;
-      finalizeIfDone();
-    });
+        decodedTimelineMaskCacheRef.current.clear();
+        pendingTilesRef.current = [];
+        pendingStatsRef.current = { gridPointCount: 0, indoorPointsExcluded: 0 };
+        lastTileFlushRef.current = performance.now();
+        setDailyTimeline((previous) => {
+          const canMerge =
+            previous &&
+            previous.date === data.date &&
+            previous.gridStepMeters === data.gridStepMeters &&
+            previous.tiles.length > 0;
+          return {
+            date: data.date,
+            timezone: data.timezone,
+            startLocalTime: data.startLocalTime,
+            endLocalTime: data.endLocalTime,
+            sampleEveryMinutes: data.sampleEveryMinutes,
+            gridStepMeters: data.gridStepMeters,
+            pointCount: canMerge ? previous.pointCount : 0,
+            gridPointCount: canMerge ? previous.gridPointCount : 0,
+            indoorPointsExcluded: canMerge ? previous.indoorPointsExcluded : 0,
+            frameCount: data.frameCount,
+            tiles: canMerge ? previous.tiles : [],
+            points: canMerge ? previous.points : [],
+            frames: [],
+            model: data.model ?? null,
+            warnings: [],
+            stats: null,
+          };
+        });
+        setDailyFrameIndex((prev) => prev || 0);
+      } else if (eventType === "tile") {
+        const data = JSON.parse(jsonData) as {
+          tileId: string;
+          tileIndex: number;
+          totalTiles: number;
+          pointCount: number;
+          gridPointCount: number;
+          indoorPointsExcluded: number;
+          grid?: TileGrid;
+          masksEncoding?: string;
+          masksBase64?: string;
+          outdoorMaskBase64?: string;
+          tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
+          tileCorners?: { nw: LatLon; ne: LatLon; sw: LatLon; se: LatLon };
+          points?: Array<{ id: string; lat?: number; lon?: number }>;
+          frames: TimelineFrame[];
+        };
 
-    timelineStream.addEventListener("error", (event) => {
-      if (timelineCancelledRef.current) {
-        timelineStream.close();
-        if (timelineStreamRef.current === timelineStream) {
-          timelineStreamRef.current = null;
+        // Push tile immediately; decompress blob in parallel
+        const tileEntry: TimelineTile = {
+          tileId: data.tileId,
+          grid: data.grid,
+          outdoorMaskBase64: data.outdoorMaskBase64,
+          tileBounds: data.tileBounds,
+          tileCorners: data.tileCorners,
+          points: (data.points ?? []) as TimelinePoint[],
+          frames: data.frames,
+        };
+        if (data.masksEncoding === "gzip-concat-v1" && data.masksBase64 && data.grid) {
+          const blob = data.masksBase64;
+          const maskBytes = Math.ceil(data.grid.width * data.grid.height / 8);
+          const frameCount = data.frames.length;
+          pendingBlobDecodes.push(
+            decodeTileMasksBlob(blob, maskBytes, frameCount).then((decoded) => {
+              tileEntry.decodedMasks = decoded;
+            }),
+          );
         }
-        setIsLoading(false);
-        return;
-      }
-      if (streamFailed || streamFinished) {
-        return;
-      }
-
-      // Server-sent "error" events have .data with JSON payload.
-      // Native EventSource errors (network drop) have no .data.
-      const messageEvent = event as MessageEvent;
-      const isServerError =
-        typeof messageEvent.data === "string" && messageEvent.data.length > 0;
-
-      if (isServerError) {
+        pendingTilesRef.current.push(tileEntry);
+        pendingStatsRef.current.gridPointCount += data.gridPointCount;
+        pendingStatsRef.current.indoorPointsExcluded += data.indoorPointsExcluded;
+        const msSinceFlush = performance.now() - lastTileFlushRef.current;
+        if (msSinceFlush > 3000 || pendingTilesRef.current.length >= 5) {
+          flushPendingTiles();
+        }
+      } else if (eventType === "progress") {
+        const data = JSON.parse(jsonData) as TimelineProgress;
+        setDailyProgress(data);
+      } else if (eventType === "done") {
+        // Store done data — actual finalization happens in runFetchStream
+        // after all blob decompressions complete.
+        doneData = JSON.parse(jsonData) as {
+          stats: NonNullable<DailyTimelineState["stats"]>;
+          overlayBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
+          warnings: string[];
+        };
+      } else if (eventType === "error") {
         streamFailed = true;
         const errorPayload = (() => {
           try {
-            return JSON.parse(messageEvent.data) as {
-              error?: string;
-              details?: string;
-            };
+            return JSON.parse(jsonData) as { error?: string; details?: string };
           } catch {
             return null;
           }
         })();
         setError(
-          errorPayload?.details ??
-            errorPayload?.error ??
-            "Timeline streaming failed.",
+          errorPayload?.details ?? errorPayload?.error ?? "Timeline streaming failed.",
         );
-        timelineStream.close();
-        if (timelineStreamRef.current === timelineStream) {
-          timelineStreamRef.current = null;
-        }
+        timelineAbortRef.current = null;
         streamFinished = true;
         finalizeIfDone();
-        return;
       }
+    };
 
-      // Network error — let EventSource reconnect automatically.
-      // The server will serve already-computed tiles from cache.
-      setDailyProgress((prev) =>
-        prev ? { ...prev, phase: "reconnecting" } : prev,
-      );
-    });
+    // fetch + ReadableStream: gzip-decompressed natively by the browser,
+    // then we parse SSE events manually — much faster than EventSource for large payloads.
+    const runFetchStream = async () => {
+      try {
+        const response = await fetch(
+          `/api/sunlight/timeline/stream?${query.toString()}`,
+          { signal: abortController.signal },
+        );
+        if (!response.ok || !response.body) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let currentEvent = "";
+
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // Parse SSE events: "event: <type>\ndata: <json>\n\n"
+          let boundary = buffer.indexOf("\n\n");
+          while (boundary !== -1) {
+            const block = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            let eventType = "message";
+            let dataLine = "";
+            for (const line of block.split("\n")) {
+              if (line.startsWith("event: ")) {
+                eventType = line.slice(7);
+              } else if (line.startsWith("data: ")) {
+                dataLine = line.slice(6);
+              }
+            }
+            if (dataLine) {
+              handleSseEvent(eventType, dataLine);
+            }
+            boundary = buffer.indexOf("\n\n");
+          }
+        }
+        // Wait for all blob decompressions to complete
+        if (pendingBlobDecodes.length > 0) {
+          await Promise.all(pendingBlobDecodes);
+        }
+
+        // Now finalize with decoded masks available
+        if (doneData && !streamFinished && !streamFailed) {
+          const pendingToFlush = pendingTilesRef.current.splice(0);
+          const pendingStatsToFlush = { ...pendingStatsRef.current };
+          pendingStatsRef.current = { gridPointCount: 0, indoorPointsExcluded: 0 };
+          decodedTimelineMaskCacheRef.current.clear();
+          const data = doneData;
+          setDailyTimeline((previous) => {
+            if (!previous) return previous;
+            const existingIds = new Set(previous.tiles.map((t) => t.tileId));
+            const newTiles = pendingToFlush.filter((t) => !existingIds.has(t.tileId));
+            const mergedTiles = newTiles.length > 0 ? [...previous.tiles, ...newTiles] : previous.tiles;
+            const allPoints = newTiles.length > 0 ? mergedTiles.flatMap((t) => t.points) : previous.points;
+            return {
+              ...previous,
+              tiles: mergedTiles,
+              points: allPoints,
+              pointCount: previous.pointCount + pendingStatsToFlush.gridPointCount - pendingStatsToFlush.indoorPointsExcluded,
+              gridPointCount: previous.gridPointCount + pendingStatsToFlush.gridPointCount,
+              indoorPointsExcluded: previous.indoorPointsExcluded + pendingStatsToFlush.indoorPointsExcluded,
+              stats: data.stats,
+              overlayBounds: data.overlayBounds ?? previous.overlayBounds,
+              warnings: Array.from(new Set([...previous.warnings, ...data.warnings])),
+            };
+          });
+          setDailyProgress({
+            phase: "done",
+            done: data.stats.totalEvaluations,
+            total: data.stats.totalEvaluations,
+            percent: 100,
+            etaSeconds: 0,
+            elapsedMs: data.stats.elapsedMs,
+          });
+          timelineAbortRef.current = null;
+          streamFinished = true;
+          finalizeIfDone();
+        } else if (!streamFinished && !streamFailed) {
+          streamFinished = true;
+          finalizeIfDone();
+        }
+      } catch (err) {
+        if (abortController.signal.aborted) return;
+        if (!streamFailed && !streamFinished) {
+          streamFailed = true;
+          setError(err instanceof Error ? err.message : "Timeline streaming failed.");
+          streamFinished = true;
+          finalizeIfDone();
+        }
+      } finally {
+        if (timelineAbortRef.current === abortController) {
+          timelineAbortRef.current = null;
+        }
+      }
+    };
+
+    void runFetchStream();
   }, [
     buildingHeightBiasMeters,
     cacheOnly,

@@ -36,6 +36,8 @@ export interface BuildSharedPointEvaluationSourcesOptions {
   terrainHorizonOverride?: HorizonMask;
   lv95Bounds?: Lv95Bounds;
   vegetationSearchDistanceMeters?: number;
+  /** Region name for WebGPU IPC worker */
+  region?: string;
 }
 
 export interface SharedPointEvaluationSources {
@@ -47,6 +49,8 @@ export interface SharedPointEvaluationSources {
   >;
   /** GPU shadow backend, created when MAPPY_BUILDINGS_SHADOW_MODE=gpu-raster */
   gpuShadowBackend?: import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null;
+  /** WebGPU compute backend for batch evaluation (precompute only) */
+  webgpuComputeBackend?: import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null;
 }
 
 export interface BuildPointEvaluationContextOptions {
@@ -96,11 +100,11 @@ export interface PointEvaluationContext {
   };
 }
 
-type BuildingsShadowMode = "detailed" | "two-level" | "prism" | "gpu-raster";
+type BuildingsShadowMode = "detailed" | "two-level" | "prism" | "gpu-raster" | "webgpu-compute";
 
 function parseBuildingsShadowMode(): BuildingsShadowMode {
   const raw = (process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "").trim().toLowerCase();
-  if (raw === "detailed" || raw === "two-level" || raw === "prism" || raw === "gpu-raster") {
+  if (raw === "detailed" || raw === "two-level" || raw === "prism" || raw === "gpu-raster" || raw === "webgpu-compute") {
     return raw;
   }
   if (process.env.MAPPY_BUILDINGS_TWO_LEVEL_REFINEMENT === "0") {
@@ -156,6 +160,56 @@ async function getOrCreateGpuBackend(
   })();
 
   return gpuBackendLoading;
+}
+
+// ── WebGPU compute backend singleton cache ─────────────────────────────
+let webgpuBackendCache: import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null | undefined;
+
+/** Dispose the cached WebGPU backend. Must be called before process exit to avoid D3D12 segfault. */
+export function disposeWebGpuBackend(): void {
+  if (webgpuBackendCache) {
+    webgpuBackendCache.dispose();
+    webgpuBackendCache = null;
+  }
+}
+
+let webgpuBackendLoading: Promise<import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null> | null = null;
+
+async function getOrCreateWebGpuBackend(
+  obstacles: Array<{ centerX: number; centerY: number; height: number; [key: string]: unknown }>,
+): Promise<import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null> {
+  console.log("[webgpu-lazy] getOrCreateWebGpuBackend called");
+  if (webgpuBackendCache !== undefined) return webgpuBackendCache;
+  if (webgpuBackendLoading) return webgpuBackendLoading;
+
+  webgpuBackendLoading = (async () => {
+    try {
+      // Use relative path — @/ alias doesn't work in forked child processes
+      const mod = await import("./webgpu-compute-shadow-backend") as
+        { WebGpuComputeShadowBackend: typeof import("@/lib/sun/webgpu-compute-shadow-backend").WebGpuComputeShadowBackend };
+      const { WebGpuComputeShadowBackend } = mod;
+      const backend = await WebGpuComputeShadowBackend.createWithDxfMeshes(
+        obstacles as Parameters<typeof WebGpuComputeShadowBackend.createWithDxfMeshes>[0],
+        4096,
+      );
+      console.log(
+        `[evaluation-context] WebGPU compute backend ready: ${backend.name}, ${backend.triangleCount} triangles`,
+      );
+      webgpuBackendCache = backend;
+      return backend;
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[evaluation-context] WebGPU compute unavailable: ${msg}. Falling back to gpu-raster/CPU.`,
+      );
+      webgpuBackendCache = null;
+      return null;
+    } finally {
+      webgpuBackendLoading = null;
+    }
+  })();
+
+  return webgpuBackendLoading;
 }
 
 export async function buildSharedPointEvaluationSources(
@@ -221,12 +275,37 @@ export async function buildSharedPointEvaluationSources(
     }
   }
 
+  // ── WebGPU compute backend (optional, precompute only) ───────────────
+  // Uses an isolated subprocess (stdin/stdout) so Dawn/D3D12 never coexists
+  // with terrain file I/O in the same process (Intel Arc driver bug).
+  let webgpuComputeBackend: SharedPointEvaluationSources["webgpuComputeBackend"] = undefined;
+  if (BUILDINGS_SHADOW_MODE === "webgpu-compute" && buildingsIndex) {
+    try {
+      const { WebGpuIpcClient } = await import("./webgpu-ipc-client");
+      const client = await WebGpuIpcClient.create(options.region ?? "lausanne");
+      if (options.lv95Bounds) {
+        const maxH = buildingsIndex.obstacles.reduce((m, o) => Math.max(m, o.height), 0);
+        await client.setFrustumFocus(
+          { minX: options.lv95Bounds.minX, minY: options.lv95Bounds.minY,
+            maxX: options.lv95Bounds.maxX, maxY: options.lv95Bounds.maxY },
+          maxH,
+        );
+      }
+      webgpuComputeBackend = client;
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[evaluation-context] WebGPU IPC unavailable: ${msg}. Falling back to CPU.`);
+      webgpuComputeBackend = null;
+    }
+  }
+
   return {
     horizonMask,
     buildingsIndex,
     terrainTiles,
     vegetationSurfaceTiles,
     gpuShadowBackend,
+    webgpuComputeBackend,
   };
 }
 

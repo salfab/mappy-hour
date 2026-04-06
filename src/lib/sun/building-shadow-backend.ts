@@ -50,3 +50,36 @@ export interface BuildingShadowBackend {
   /** Release resources (GPU buffers, GL context, etc.) */
   dispose(): void;
 }
+
+/**
+ * Extended backend that supports batch evaluation of many points in one GPU dispatch.
+ * Used by the WebGPU compute backend for precompute (not the API server).
+ */
+export interface BatchBuildingShadowBackend extends BuildingShadowBackend {
+  /**
+   * Evaluate all points against the shadow map in a single GPU dispatch.
+   * Points are in centered coordinates (LV95 - origin), packed as vec4f.
+   * Returns a Uint32Array bitmask where bit=1 means blocked.
+   */
+  evaluateBatch(
+    points: Float32Array,
+    pointCount: number,
+    azimuthDeg: number,
+    altitudeDeg: number,
+  ): Promise<Uint32Array>;
+
+  /** Origin offsets for converting LV95 to centered coords. */
+  getOrigin(): { x: number; y: number };
+
+  /** Set frustum focus for shadow map precision. */
+  setFrustumFocus(
+    bounds: { minX: number; minY: number; maxX: number; maxY: number },
+    maxBuildingHeight: number,
+  ): void;
+}
+
+export function isBatchBackend(
+  backend: BuildingShadowBackend,
+): backend is BatchBuildingShadowBackend {
+  return "evaluateBatch" in backend;
+}
