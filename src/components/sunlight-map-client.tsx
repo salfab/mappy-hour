@@ -3511,29 +3511,31 @@ export function SunlightMapClient() {
           tile, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow,
         );
         if (showSunny && showShadow) {
-          // Shadow mask: tile rectangle with sunny zones as holes.
-          // Creates a gray overlay everywhere except sunny areas.
-          const { nw, ne, sw, se } = tile.tileCorners!;
-          const tileRect: [number, number][] = [
-            [sw.lat, sw.lon], [se.lat, se.lon],
-            [ne.lat, ne.lon], [nw.lat, nw.lon],
-            [sw.lat, sw.lon], // close
-          ];
-          // Collect all sunny outer rings as holes
-          const holes: [number, number][][] = [];
+          // Both layers: yellow sunny polygons + gray shadow polygons
           for (const polygon of contours.sunnyPolygons) {
-            if (polygon.length > 0) {
-              // Outer ring of this sunny polygon becomes a hole in the shadow
-              holes.push(polygon[0].map(([lat, lon]) => [lat, lon] as [number, number]));
-            }
+            const latLngRings = polygon.map(ring =>
+              ring.map(([lat, lon]) => [lat, lon] as [number, number])
+            );
+            L.polygon(latLngRings, {
+              color: "#eab308",
+              fillColor: "#facc15",
+              weight: 0.5,
+              opacity: 0.6,
+              fillOpacity: 0.4,
+            }).addTo(contourLayerRef.current!);
           }
-          L.polygon([tileRect, ...holes], {
-            color: "#475569",
-            fillColor: "#334155",
-            weight: 0,
-            opacity: 0,
-            fillOpacity: 0.35,
-          }).addTo(contourLayerRef.current!);
+          for (const polygon of contours.shadowPolygons) {
+            const latLngRings = polygon.map(ring =>
+              ring.map(([lat, lon]) => [lat, lon] as [number, number])
+            );
+            L.polygon(latLngRings, {
+              color: "#475569",
+              fillColor: "#334155",
+              weight: 0.5,
+              opacity: 0.6,
+              fillOpacity: 0.35,
+            }).addTo(contourLayerRef.current!);
+          }
         } else if (showSunny) {
           for (const polygon of contours.sunnyPolygons) {
             const latLngRings = polygon.map(ring =>
@@ -3548,20 +3550,18 @@ export function SunlightMapClient() {
             }).addTo(contourLayerRef.current!);
           }
         } else if (showShadow) {
-          // Shadow only: fill the whole tile with shadow
-          const { nw, ne, sw, se } = tile.tileCorners!;
-          const tileRect: [number, number][] = [
-            [sw.lat, sw.lon], [se.lat, se.lon],
-            [ne.lat, ne.lon], [nw.lat, nw.lon],
-            [sw.lat, sw.lon],
-          ];
-          L.polygon([tileRect], {
-            color: "#475569",
-            fillColor: "#334155",
-            weight: 0,
-            opacity: 0,
-            fillOpacity: 0.35,
-          }).addTo(contourLayerRef.current!);
+          for (const polygon of contours.shadowPolygons) {
+            const latLngRings = polygon.map(ring =>
+              ring.map(([lat, lon]) => [lat, lon] as [number, number])
+            );
+            L.polygon(latLngRings, {
+              color: "#475569",
+              fillColor: "#334155",
+              weight: 0.5,
+              opacity: 0.6,
+              fillOpacity: 0.35,
+            }).addTo(contourLayerRef.current!);
+          }
         }
       }
       return; // skip canvas path
