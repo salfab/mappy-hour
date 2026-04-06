@@ -3524,6 +3524,15 @@ export function SunlightMapClient() {
         sunShadowOverlayRef.current.remove();
         sunShadowOverlayRef.current = null;
       }
+      if (contourLayerRef.current) {
+        contourLayerRef.current.clearLayers();
+      }
+      for (const ov of perTileOverlaysRef.current.values()) {
+        const customImg = (ov.overlay as unknown as { _customImg?: HTMLElement })._customImg;
+        if (customImg) customImg.remove();
+        ov.overlay.remove();
+      }
+      perTileOverlaysRef.current.clear();
       sunShadowGridRef.current = null;
       return;
     }
@@ -3542,6 +3551,9 @@ export function SunlightMapClient() {
         ov.overlay.remove();
       }
       perTileOverlaysRef.current.clear();
+      if (contourLayerRef.current) {
+        contourLayerRef.current.clearLayers();
+      }
       if (sunShadowOverlayRef.current) {
         sunShadowOverlayRef.current.remove();
         sunShadowOverlayRef.current = null;
