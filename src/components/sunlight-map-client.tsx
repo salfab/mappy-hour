@@ -3590,18 +3590,22 @@ export function SunlightMapClient() {
         const contours = buildTileContourPolygons(
           tile, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow,
         );
+        // Only render sunny contours — shadow is the absence of sunny
+        // (rendering both causes visual overlap artifacts).
+        // Shadow checkbox controls opacity: if only shadow is checked,
+        // show shadow contours instead.
         if (showSunny) {
           for (const ring of contours.sunnyRings) {
             L.polygon([ring.map(([lat, lon]) => [lat, lon] as [number, number])], {
               color: "#eab308",
               fillColor: "#facc15",
               weight: 0.5,
-              opacity: 0.5,
-              fillOpacity: 0.35,
+              opacity: 0.6,
+              fillOpacity: 0.4,
             }).addTo(contourLayerRef.current!);
           }
-        }
-        if (showShadow) {
+        } else if (showShadow) {
+          // Show shadow only when sunny is off
           for (const ring of contours.shadowRings) {
             L.polygon([ring.map(([lat, lon]) => [lat, lon] as [number, number])], {
               color: "#6b7280",
