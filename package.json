@@ -48,7 +48,9 @@
     "setup": "pnpm run setup:all"
   },
   "dependencies": {
+    "@types/d3-contour": "^3.0.6",
     "adm-zip": "^0.5.16",
+    "d3-contour": "^4.0.2",
     "earcut": "^3.0.2",
     "geotiff": "^3.0.4",
     "gl": "^8.1.6",

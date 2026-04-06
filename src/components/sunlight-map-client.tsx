@@ -1440,13 +1440,16 @@ function paintSunShadowFrame(
  * Each vertex is positioned via bilinear interpolation from the tile's
  * 4 corners → precise lat/lon, no alignment error.
  */
+// d3-contour produces MultiPolygon GeoJSON with proper holes
+import { contours as d3Contours } from "d3-contour";
+
 function buildTileContourPolygons(
   tile: TimelineTile,
   frameIndex: number,
   decodedMaskCache: Map<string, Uint8Array>,
   ignoreVegetation: boolean,
-): { sunnyRings: Array<[number, number][]>; shadowRings: Array<[number, number][]> } {
-  const empty = { sunnyRings: [], shadowRings: [] };
+): { sunnyPolygons: Array<[number, number][][]>; shadowPolygons: Array<[number, number][][]> } {
+  const empty = { sunnyPolygons: [], shadowPolygons: [] };
   if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) return empty;
 
   const grid = tile.grid;
@@ -1473,130 +1476,47 @@ function buildTileContourPolygons(
   // Bilinear interpolation from tile corners for vertex positioning
   const { nw, ne, sw, se } = tile.tileCorners;
   const toLatLon = (fx: number, fy: number): [number, number] => {
-    // fx, fy are in grid coords: fx=0 → west edge, fx=tileW → east edge
-    // fy=0 → south edge, fy=tileH → north edge
+    // d3-contour uses x=col (0→tileW), y=row (0→tileH) where y=0 is top
+    // Our grid: iy=0 is south, iy=tileH-1 is north
+    // d3-contour y=0 is the first row in the flat array = iy=0 = south
     const tx = tileW > 0 ? fx / tileW : 0.5;
     const ty = tileH > 0 ? fy / tileH : 0.5;
+    // ty=0 → south, ty=1 → north
     const lat = sw.lat * (1 - tx) * (1 - ty) + se.lat * tx * (1 - ty) + nw.lat * (1 - tx) * ty + ne.lat * tx * ty;
     const lon = sw.lon * (1 - tx) * (1 - ty) + se.lon * tx * (1 - ty) + nw.lon * (1 - tx) * ty + ne.lon * tx * ty;
     return [lat, lon];
   };
 
-  // Helper: is cell (ix, iy) sunny outdoor?
-  const isSunnyOutdoor = (ix: number, iy: number): boolean => {
-    if (ix < 0 || ix >= tileW || iy < 0 || iy >= tileH) return false;
-    const cellIdx = iy * tileW + ix;
-    if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) return false;
-    return ((mask![cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
-  };
-
-  const isOutdoor = (ix: number, iy: number): boolean => {
-    if (ix < 0 || ix >= tileW || iy < 0 || iy >= tileH) return false;
-    const cellIdx = iy * tileW + ix;
-    if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) return false;
-    return true;
-  };
-
-  // Marching squares: collect edge segments between sunny and non-sunny cells.
-  // An edge exists between adjacent cells with different sunny state.
-  // We collect horizontal and vertical edge segments, then chain them into rings.
-  type Seg = { x1: number; y1: number; x2: number; y2: number };
-  const sunnyEdges: Seg[] = [];
-  const shadowEdges: Seg[] = [];
-
-  // Horizontal edges (between row iy-1 and row iy)
-  for (let iy = 0; iy <= tileH; iy++) {
+  // Build flat grid for d3-contour: 1 = sunny outdoor, 0 = not
+  const sunnyGrid = new Float64Array(tileW * tileH);
+  const shadowGrid = new Float64Array(tileW * tileH);
+  for (let iy = 0; iy < tileH; iy++) {
     for (let ix = 0; ix < tileW; ix++) {
-      const above = isSunnyOutdoor(ix, iy);
-      const below = isSunnyOutdoor(ix, iy - 1);
-      if (above !== below) {
-        sunnyEdges.push({ x1: ix, y1: iy, x2: ix + 1, y2: iy });
-      }
-      // Shadow contour: outdoor-non-sunny vs non-outdoor/boundary
-      const aboveOutdoorShadow = isOutdoor(ix, iy) && !isSunnyOutdoor(ix, iy);
-      const belowOutdoorShadow = isOutdoor(ix, iy - 1) && !isSunnyOutdoor(ix, iy - 1);
-      if (aboveOutdoorShadow !== belowOutdoorShadow) {
-        shadowEdges.push({ x1: ix, y1: iy, x2: ix + 1, y2: iy });
-      }
+      const cellIdx = iy * tileW + ix;
+      const isOutdoor = outdoorMask ? ((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1 : true;
+      const isSunny = isOutdoor && ((mask![cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
+      sunnyGrid[cellIdx] = isSunny ? 1 : 0;
+      shadowGrid[cellIdx] = (isOutdoor && !isSunny) ? 1 : 0;
     }
   }
 
-  // Vertical edges (between col ix-1 and col ix)
-  for (let ix = 0; ix <= tileW; ix++) {
-    for (let iy = 0; iy < tileH; iy++) {
-      const right = isSunnyOutdoor(ix, iy);
-      const left = isSunnyOutdoor(ix - 1, iy);
-      if (right !== left) {
-        sunnyEdges.push({ x1: ix, y1: iy, x2: ix, y2: iy + 1 });
-      }
-      const rightShadow = isOutdoor(ix, iy) && !isSunnyOutdoor(ix, iy);
-      const leftShadow = isOutdoor(ix - 1, iy) && !isSunnyOutdoor(ix - 1, iy);
-      if (rightShadow !== leftShadow) {
-        shadowEdges.push({ x1: ix, y1: iy, x2: ix, y2: iy + 1 });
-      }
-    }
+  // d3-contour extracts contour polygons with proper holes
+  const contourGen = d3Contours().size([tileW, tileH]).thresholds([0.5]);
+
+  function convertContour(contour: { coordinates: number[][][][] }): Array<[number, number][][]> {
+    return contour.coordinates.map((polygon: number[][][]) =>
+      polygon.map((ring: number[][]) =>
+        ring.map((pt: number[]) => toLatLon(pt[0], pt[1]))
+      )
+    );
   }
 
-  // Chain edge segments into closed rings
-  function chainEdges(edges: Seg[]): Array<[number, number][]> {
-    if (edges.length === 0) return [];
-    // Build adjacency: map from "x,y" → list of connected edges
-    const adj = new Map<string, Seg[]>();
-    const key = (x: number, y: number) => `${x},${y}`;
-    for (const e of edges) {
-      const k1 = key(e.x1, e.y1);
-      const k2 = key(e.x2, e.y2);
-      if (!adj.has(k1)) adj.set(k1, []);
-      if (!adj.has(k2)) adj.set(k2, []);
-      adj.get(k1)!.push(e);
-      adj.get(k2)!.push(e);
-    }
-
-    const used = new Set<number>();
-    const rings: Array<[number, number][]> = [];
-
-    for (let startIdx = 0; startIdx < edges.length; startIdx++) {
-      if (used.has(startIdx)) continue;
-      const ring: [number, number][] = [];
-      let currentEdge = edges[startIdx];
-      let cx = currentEdge.x1, cy = currentEdge.y1;
-      ring.push(toLatLon(cx, cy));
-      used.add(startIdx);
-      cx = currentEdge.x2;
-      cy = currentEdge.y2;
-
-      let safety = edges.length + 1;
-      while (safety-- > 0) {
-        ring.push(toLatLon(cx, cy));
-        if (cx === edges[startIdx].x1 && cy === edges[startIdx].y1) break; // closed
-        const k = key(cx, cy);
-        const candidates = adj.get(k);
-        if (!candidates) break;
-        let found = false;
-        for (let i = 0; i < candidates.length; i++) {
-          const idx = edges.indexOf(candidates[i]);
-          if (used.has(idx)) continue;
-          used.add(idx);
-          const next = candidates[i];
-          if (next.x1 === cx && next.y1 === cy) {
-            cx = next.x2; cy = next.y2;
-          } else {
-            cx = next.x1; cy = next.y1;
-          }
-          found = true;
-          break;
-        }
-        if (!found) break;
-      }
-      if (ring.length >= 4) rings.push(ring);
-    }
-
-    return rings;
-  }
+  const sunnyContours = contourGen(Array.from(sunnyGrid));
+  const shadowContours = contourGen(Array.from(shadowGrid));
 
   return {
-    sunnyRings: chainEdges(sunnyEdges),
-    shadowRings: chainEdges(shadowEdges),
+    sunnyPolygons: sunnyContours.length > 0 ? convertContour(sunnyContours[0]) : [],
+    shadowPolygons: shadowContours.length > 0 ? convertContour(shadowContours[0]) : [],
   };
 }
 
@@ -3590,13 +3510,15 @@ export function SunlightMapClient() {
         const contours = buildTileContourPolygons(
           tile, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow,
         );
-        // Only render sunny contours — shadow is the absence of sunny
-        // (rendering both causes visual overlap artifacts).
-        // Shadow checkbox controls opacity: if only shadow is checked,
-        // show shadow contours instead.
+        // Render sunny or shadow contour polygons (with holes from d3-contour)
         if (showSunny) {
-          for (const ring of contours.sunnyRings) {
-            L.polygon([ring.map(([lat, lon]) => [lat, lon] as [number, number])], {
+          for (const polygon of contours.sunnyPolygons) {
+            // polygon = [outerRing, hole1, hole2, ...]
+            // Leaflet L.polygon accepts [[outerLatLngs], [hole1LatLngs], ...]
+            const latLngRings = polygon.map(ring =>
+              ring.map(([lat, lon]) => [lat, lon] as [number, number])
+            );
+            L.polygon(latLngRings, {
               color: "#eab308",
               fillColor: "#facc15",
               weight: 0.5,
@@ -3605,9 +3527,11 @@ export function SunlightMapClient() {
             }).addTo(contourLayerRef.current!);
           }
         } else if (showShadow) {
-          // Show shadow only when sunny is off
-          for (const ring of contours.shadowRings) {
-            L.polygon([ring.map(([lat, lon]) => [lat, lon] as [number, number])], {
+          for (const polygon of contours.shadowPolygons) {
+            const latLngRings = polygon.map(ring =>
+              ring.map(([lat, lon]) => [lat, lon] as [number, number])
+            );
+            L.polygon(latLngRings, {
               color: "#6b7280",
               fillColor: "#64748b",
               weight: 0.5,
