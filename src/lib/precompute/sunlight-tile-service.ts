@@ -6,7 +6,8 @@ import {
   buildPointEvaluationContext,
   buildSharedPointEvaluationSources,
 } from "@/lib/sun/evaluation-context";
-import { lv95ToWgs84 } from "@/lib/geo/projection";
+import { isBatchBackend } from "@/lib/sun/building-shadow-backend";
+import { lv95ToWgs84, wgs84ToLv95 } from "@/lib/geo/projection";
 import {
   adaptiveHorizonSharingConfig,
   resolveAdaptiveTerrainHorizonForTile,
@@ -610,6 +611,7 @@ export async function computeSunlightTileArtifact(params: {
   const sourcesT0 = performance.now();
   const sharedSources = await buildSharedPointEvaluationSources({
     terrainHorizonOverride: terrainHorizonOverride ?? undefined,
+    region: params.region,
     lv95Bounds: {
       minX: params.tile.minEasting,
       minY: params.tile.minNorthing,
@@ -727,6 +729,25 @@ export async function computeSunlightTileArtifact(params: {
     (params.tile.minEasting + params.tile.maxEasting) / 2,
     (params.tile.minNorthing + params.tile.maxNorthing) / 2,
   );
+
+  // ── WebGPU batch path: prepare point array once for all frames ──────
+  const webgpuBackend = sharedSources.webgpuComputeBackend;
+  const useBatchPath = webgpuBackend != null && isBatchBackend(webgpuBackend);
+  let batchPointsF32: Float32Array | null = null;
+  if (useBatchPath) {
+    const origin = webgpuBackend.getOrigin();
+    batchPointsF32 = new Float32Array(preparedOutdoorPoints.length * 4);
+    for (let i = 0; i < preparedOutdoorPoints.length; i++) {
+      const pt = preparedOutdoorPoints[i];
+      const lv95 = wgs84ToLv95(pt.lon, pt.lat);
+      // Backend expects centered coords: x = easting - originX, y = elevation, z = northing - originY
+      batchPointsF32[i * 4 + 0] = lv95.easting - origin.x;
+      batchPointsF32[i * 4 + 1] = pt.pointElevationMeters ?? 0;
+      batchPointsF32[i * 4 + 2] = lv95.northing - origin.y;
+      batchPointsF32[i * 4 + 3] = 0; // padding for vec4f alignment
+    }
+  }
+
   for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
     throwIfAborted(params.signal);
     const sampleDate = samples[sampleIndex];
@@ -739,44 +760,105 @@ export async function computeSunlightTileArtifact(params: {
     if (frameSolarPosition.azimuthDeg < 0) {
       frameSolarPosition.azimuthDeg += 360;
     }
-    const sunnyMask = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
-    const sunnyMaskNoVegetation = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
-    const terrainMask = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
-    const buildingsMask = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
-    const vegetationMask = new Uint8Array(Math.ceil(preparedOutdoorPoints.length / 8));
+    const localTime = frameLocalDateTime.slice(11, 16);
+    const maskByteLen = Math.ceil(preparedOutdoorPoints.length / 8);
+
+    // ── Fast path: skip per-point evaluation when sun is below horizon ─
+    if (frameSolarPosition.altitudeDeg <= 0) {
+      // Sun below horizon → everything is dark, all masks are zero
+      frames.push({
+        index: sampleIndex,
+        localTime,
+        utcTime: sampleDate.toISOString(),
+        sunnyCount: 0,
+        sunnyCountNoVegetation: 0,
+        sunMaskBase64: Buffer.from(new Uint8Array(maskByteLen)).toString("base64"),
+        sunMaskNoVegetationBase64: Buffer.from(new Uint8Array(maskByteLen)).toString("base64"),
+        terrainBlockedMaskBase64: Buffer.from(new Uint8Array(maskByteLen)).toString("base64"),
+        buildingsBlockedMaskBase64: Buffer.from(new Uint8Array(maskByteLen)).toString("base64"),
+        vegetationBlockedMaskBase64: Buffer.from(new Uint8Array(maskByteLen)).toString("base64"),
+        diagnostics: {
+          horizonAngleDegByPoint: [],
+          buildingBlockerIdByPoint: [],
+          buildingBlockerDistanceMetersByPoint: [],
+          vegetationBlockerDistanceMetersByPoint: [],
+        },
+      });
+      completedFrameEvaluations += preparedOutdoorPoints.length;
+      continue;
+    }
+
+    const sunnyMask = new Uint8Array(maskByteLen);
+    const sunnyMaskNoVegetation = new Uint8Array(maskByteLen);
+    const terrainMask = new Uint8Array(maskByteLen);
+    const buildingsMask = new Uint8Array(maskByteLen);
+    const vegetationMask = new Uint8Array(maskByteLen);
     const horizonAngleDegByPoint: Array<number | null> = [];
     const buildingBlockerIdByPoint: Array<string | null> = [];
     let sunnyCount = 0;
     let sunnyCountNoVegetation = 0;
-    const localTime = frameLocalDateTime.slice(11, 16);
+
+    // ── GPU batch building shadow evaluation ─────────────────────────
+    let batchBuildingBlockedMask: Uint32Array | null = null;
+    if (useBatchPath && batchPointsF32) {
+      batchBuildingBlockedMask = await webgpuBackend.evaluateBatch(
+        batchPointsF32,
+        preparedOutdoorPoints.length,
+        frameSolarPosition.azimuthDeg,
+        frameSolarPosition.altitudeDeg,
+      );
+    }
 
     for (let pointIndex = 0; pointIndex < preparedOutdoorPoints.length; pointIndex += 1) {
       throwIfAborted(params.signal);
       const point = preparedOutdoorPoints[pointIndex];
-      const sample = evaluateInstantSunlight({
-        lat: point.lat,
-        lon: point.lon,
-        utcDate: sampleDate,
-        timeZone: params.timezone,
-        localDateTimeOverride: frameLocalDateTime,
-        horizonMask: point.horizonMask,
-        buildingShadowEvaluator: point.buildingShadowEvaluator,
-        vegetationShadowEvaluator: point.vegetationShadowEvaluator,
-        solarPositionOverride: frameSolarPosition,
-      });
+
+      // When using batch path, override building shadow with GPU result
+      const batchBuildingsBlocked = batchBuildingBlockedMask
+        ? ((batchBuildingBlockedMask[pointIndex >>> 5] >>> (pointIndex & 31)) & 1) === 1
+        : false;
+
+      const sample = useBatchPath
+        ? evaluateInstantSunlight({
+            lat: point.lat,
+            lon: point.lon,
+            utcDate: sampleDate,
+            timeZone: params.timezone,
+            localDateTimeOverride: frameLocalDateTime,
+            horizonMask: point.horizonMask,
+            // Skip per-point building shadow — already computed in batch
+            buildingShadowEvaluator: undefined,
+            vegetationShadowEvaluator: point.vegetationShadowEvaluator,
+            solarPositionOverride: frameSolarPosition,
+          })
+        : evaluateInstantSunlight({
+            lat: point.lat,
+            lon: point.lon,
+            utcDate: sampleDate,
+            timeZone: params.timezone,
+            localDateTimeOverride: frameLocalDateTime,
+            horizonMask: point.horizonMask,
+            buildingShadowEvaluator: point.buildingShadowEvaluator,
+            vegetationShadowEvaluator: point.vegetationShadowEvaluator,
+            solarPositionOverride: frameSolarPosition,
+          });
+
+      // Merge batch building result with per-point result
+      const buildingsBlocked = useBatchPath ? batchBuildingsBlocked : sample.buildingsBlocked;
+
       horizonAngleDegByPoint.push(
         sample.horizonAngleDeg === null ? null : Math.round(sample.horizonAngleDeg * 1000) / 1000,
       );
-      buildingBlockerIdByPoint.push(sample.buildingBlockerId);
+      buildingBlockerIdByPoint.push(useBatchPath ? null : sample.buildingBlockerId);
 
       const isSunnyNoVegetation =
         sample.aboveAstronomicalHorizon &&
         !sample.terrainBlocked &&
-        !sample.buildingsBlocked;
+        !buildingsBlocked;
       if (sample.terrainBlocked) {
         setMaskBit(terrainMask, pointIndex);
       }
-      if (sample.buildingsBlocked) {
+      if (buildingsBlocked) {
         setMaskBit(buildingsMask, pointIndex);
       }
       if (sample.vegetationBlocked) {
@@ -786,7 +868,8 @@ export async function computeSunlightTileArtifact(params: {
         setMaskBit(sunnyMaskNoVegetation, pointIndex);
         sunnyCountNoVegetation += 1;
       }
-      if (sample.isSunny) {
+      const isSunny = isSunnyNoVegetation && !sample.vegetationBlocked;
+      if (isSunny) {
         setMaskBit(sunnyMask, pointIndex);
         sunnyCount += 1;
       }
