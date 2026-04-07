@@ -11,6 +11,7 @@ import type {
 } from "leaflet";
 import type { CacheRunDetailResponse } from "@/lib/admin/cache-run-detail";
 import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
+import { lv95ToWgs84 } from "@/lib/geo/projection";
 
 type AreaMode = "instant" | "daily";
 type BaseMapStyle = "map" | "satellite";
@@ -1460,40 +1461,53 @@ function buildTileContourPolygons(
 
   const outdoorMask = getTileOutdoorMask(tile, decodedMaskCache);
 
-  // Bilinear interpolation from tile corners for vertex positioning
-  const { nw, ne, sw, se } = tile.tileCorners;
+  // Convert grid coordinates to lat/lon using exact LV95→WGS84 projection.
+  // Bilinear interpolation from tile corners is fast but produces slightly
+  // different curves for adjacent tiles at shared borders, causing visible
+  // seams. Direct projection gives identical coordinates for the same LV95
+  // point regardless of which tile it belongs to.
+  const gridMinE = grid.minIx;  // LV95 easting of first column
+  const gridMinN = grid.minIy;  // LV95 northing of first row (south)
   const toLatLon = (fx: number, fy: number): [number, number] => {
-    // d3-contour uses x=col (0→tileW), y=row (0→tileH) where y=0 is top
-    // Our grid: iy=0 is south, iy=tileH-1 is north
-    // d3-contour y=0 is the first row in the flat array = iy=0 = south
-    const tx = tileW > 0 ? fx / tileW : 0.5;
-    const ty = tileH > 0 ? fy / tileH : 0.5;
-    // ty=0 → south, ty=1 → north
-    const lat = sw.lat * (1 - tx) * (1 - ty) + se.lat * tx * (1 - ty) + nw.lat * (1 - tx) * ty + ne.lat * tx * ty;
-    const lon = sw.lon * (1 - tx) * (1 - ty) + se.lon * tx * (1 - ty) + nw.lon * (1 - tx) * ty + ne.lon * tx * ty;
-    return [lat, lon];
+    const easting = gridMinE + fx;
+    const northing = gridMinN + fy;
+    const wgs = lv95ToWgs84(easting, northing);
+    return [wgs.lat, wgs.lon];
   };
 
-  // Build flat grid for d3-contour: 1 = sunny outdoor, 0 = not
-  const sunnyGrid = new Float64Array(tileW * tileH);
-  const shadowGrid = new Float64Array(tileW * tileH);
+  // Build padded grid for d3-contour: add 1px border that mirrors edge
+  // values. Without padding, d3-contour doesn't generate contours at tile
+  // edges where the value is constant (e.g., all sunny up to the border),
+  // leaving visible gaps between adjacent tiles.
+  const padW = tileW + 2;
+  const padH = tileH + 2;
+  const sunnyGrid = new Float64Array(padW * padH);
+  const shadowGrid = new Float64Array(padW * padH);
   for (let iy = 0; iy < tileH; iy++) {
     for (let ix = 0; ix < tileW; ix++) {
       const cellIdx = iy * tileW + ix;
       const isOutdoor = outdoorMask ? ((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1 : true;
       const isSunny = isOutdoor && ((mask![cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
-      sunnyGrid[cellIdx] = isSunny ? 1 : 0;
-      shadowGrid[cellIdx] = (isOutdoor && !isSunny) ? 1 : 0;
+      const padIdx = (iy + 1) * padW + (ix + 1);
+      sunnyGrid[padIdx] = isSunny ? 1 : 0;
+      shadowGrid[padIdx] = (isOutdoor && !isSunny) ? 1 : 0;
     }
   }
+  // Padding stays 0 (default). This forces a 1→0 transition at every tile
+  // edge where there's data, which makes d3-contour trace a boundary there.
+  // Without this, edges with constant values (e.g., all sunny) produce no
+  // contour and leave a visible gap.
 
-  // d3-contour extracts contour polygons with proper holes
-  const contourGen = d3Contours().size([tileW, tileH]).thresholds([0.5]);
+  const contourGen = d3Contours().size([padW, padH]).thresholds([0.5]);
 
+  // d3-contour places isolines halfway between cells. With padding=0 and
+  // data starting at padded index 1, the transition at the left edge is at
+  // padded x=0.5, and at the right edge at padded x=tileW+0.5.
+  // Shifting by -0.5 maps these to tile x=0 and x=tileW exactly.
   function convertContour(contour: { coordinates: number[][][][] }): Array<[number, number][][]> {
     return contour.coordinates.map((polygon: number[][][]) =>
       polygon.map((ring: number[][]) =>
-        ring.map((pt: number[]) => toLatLon(pt[0], pt[1]))
+        ring.map((pt: number[]) => toLatLon(pt[0] - 0.5, pt[1] - 0.5))
       )
     );
   }
@@ -3507,10 +3521,10 @@ export function SunlightMapClient() {
               ring.map(([lat, lon]) => [lat, lon] as [number, number])
             );
             L.polygon(latLngRings, {
-              color: "#eab308",
+              color: "#facc15",
               fillColor: "#facc15",
-              weight: 0.5,
-              opacity: 0.6,
+              weight: 1,
+              opacity: 0.4,
               fillOpacity: 0.4,
             }).addTo(contourLayerRef.current!);
           }
@@ -3519,10 +3533,10 @@ export function SunlightMapClient() {
               ring.map(([lat, lon]) => [lat, lon] as [number, number])
             );
             L.polygon(latLngRings, {
-              color: "#475569",
+              color: "#334155",
               fillColor: "#334155",
-              weight: 0.5,
-              opacity: 0.6,
+              weight: 1,
+              opacity: 0.35,
               fillOpacity: 0.35,
             }).addTo(contourLayerRef.current!);
           }
@@ -3532,10 +3546,10 @@ export function SunlightMapClient() {
               ring.map(([lat, lon]) => [lat, lon] as [number, number])
             );
             L.polygon(latLngRings, {
-              color: "#eab308",
+              color: "#facc15",
               fillColor: "#facc15",
-              weight: 0.5,
-              opacity: 0.6,
+              weight: 1,
+              opacity: 0.4,
               fillOpacity: 0.4,
             }).addTo(contourLayerRef.current!);
           }
@@ -3545,10 +3559,10 @@ export function SunlightMapClient() {
               ring.map(([lat, lon]) => [lat, lon] as [number, number])
             );
             L.polygon(latLngRings, {
-              color: "#475569",
+              color: "#334155",
               fillColor: "#334155",
-              weight: 0.5,
-              opacity: 0.6,
+              weight: 1,
+              opacity: 0.35,
               fillOpacity: 0.35,
             }).addTo(contourLayerRef.current!);
           }
