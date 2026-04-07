@@ -40,7 +40,7 @@ const querySchema = z
     gridStepMeters: z.coerce.number().int().min(1).max(2000).default(250),
     maxPoints: z.coerce.number().int().min(1).max(MAX_OUTDOOR_POINTS).default(DEFAULT_MAX_OUTDOOR_POINTS),
     buildingHeightBiasMeters: z.coerce.number().min(-20).max(20).default(0),
-    cacheOnly: z.coerce.boolean().default(false),
+    cacheOnly: z.string().default("false").transform(v => v === "true" || v === "1"),
     maxComputeTiles: z.coerce.number().int().min(0).max(500).default(50),
   })
   .refine(

@@ -1180,6 +1180,7 @@ export async function* streamTilesForBbox(params: {
   onTileComputeProgress?: (event: TileComputeProgressEvent) => void;
 }): AsyncGenerator<StreamTileResult, StreamTilesInit | null> {
   const region = resolveRegionForBbox(params.bbox);
+  process.stderr.write(`[stream] bbox=${JSON.stringify(params.bbox)} region=${region} cacheOnly=${params.cacheOnly}\n`);
   if (!region) {
     return null;
   }
