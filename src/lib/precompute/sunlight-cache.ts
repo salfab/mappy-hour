@@ -466,10 +466,10 @@ export function buildTilePoints(tile: RegionTileSpec, gridStepMeters: number) {
         continue;
       }
 
+      // LV95 bounds check above is sufficient — no WGS84 bbox filter needed.
+      // The WGS84 bbox doesn't perfectly align with the LV95 grid due to
+      // projection differences, which caused missing points at tile edges.
       const wgs84 = lv95ToWgs84(easting, northing);
-      if (!pointInBbox(wgs84.lon, wgs84.lat, tile.bbox)) {
-        continue;
-      }
 
       points.push({
         id: `ix${ix}-iy${iy}`,

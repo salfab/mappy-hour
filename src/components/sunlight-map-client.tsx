@@ -1521,6 +1521,89 @@ function buildTileContourPolygons(
   };
 }
 
+/**
+ * Build contour polygons from ALL tiles merged into a single global grid.
+ * Eliminates tile seam artifacts entirely since d3-contour runs on one
+ * continuous surface. Coordinates use exact LV95→WGS84 projection.
+ */
+function buildMergedContourPolygons(
+  tiles: TimelineTile[],
+  frameIndex: number,
+  decodedMaskCache: Map<string, Uint8Array>,
+  ignoreVegetation: boolean,
+): { sunnyPolygons: Array<[number, number][][]>; shadowPolygons: Array<[number, number][][]> } {
+  const empty = { sunnyPolygons: [], shadowPolygons: [] };
+
+  // Find global grid bounds across all tiles
+  let globalMinIx = Infinity, globalMaxIx = -Infinity;
+  let globalMinIy = Infinity, globalMaxIy = -Infinity;
+  const validTiles: TimelineTile[] = [];
+  for (const tile of tiles) {
+    if (!tile.grid || tile.frames.length === 0) continue;
+    validTiles.push(tile);
+    if (tile.grid.minIx < globalMinIx) globalMinIx = tile.grid.minIx;
+    if (tile.grid.minIx + tile.grid.width > globalMaxIx) globalMaxIx = tile.grid.minIx + tile.grid.width;
+    if (tile.grid.minIy < globalMinIy) globalMinIy = tile.grid.minIy;
+    if (tile.grid.minIy + tile.grid.height > globalMaxIy) globalMaxIy = tile.grid.minIy + tile.grid.height;
+  }
+  if (validTiles.length === 0) return empty;
+
+  const globalW = globalMaxIx - globalMinIx;
+  const globalH = globalMaxIy - globalMinIy;
+
+  // Build merged grids
+  const sunnyGrid = new Float64Array(globalW * globalH);
+  const shadowGrid = new Float64Array(globalW * globalH);
+
+  for (const tile of validTiles) {
+    const grid = tile.grid!;
+    const tileW = grid.width;
+    const tileH = grid.height;
+    const mask = getTileMask(tile, frameIndex, ignoreVegetation, decodedMaskCache);
+    if (!mask) continue;
+    const outdoorMask = getTileOutdoorMask(tile, decodedMaskCache);
+    const offsetX = grid.minIx - globalMinIx;
+    const offsetY = grid.minIy - globalMinIy;
+
+    for (let iy = 0; iy < tileH; iy++) {
+      for (let ix = 0; ix < tileW; ix++) {
+        const cellIdx = iy * tileW + ix;
+        const isOutdoor = outdoorMask ? ((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1 : true;
+        const isSunny = isOutdoor && ((mask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
+        const globalIdx = (offsetY + iy) * globalW + (offsetX + ix);
+        sunnyGrid[globalIdx] = isSunny ? 1 : 0;
+        shadowGrid[globalIdx] = (isOutdoor && !isSunny) ? 1 : 0;
+      }
+    }
+  }
+
+  // Coordinate conversion: global grid index → exact LV95 → WGS84
+  const toLatLon = (fx: number, fy: number): [number, number] => {
+    const easting = globalMinIx + fx;
+    const northing = globalMinIy + fy;
+    const wgs = lv95ToWgs84(easting, northing);
+    return [wgs.lat, wgs.lon];
+  };
+
+  const contourGen = d3Contours().size([globalW, globalH]).thresholds([0.5]);
+
+  function convertContour(contour: { coordinates: number[][][][] }): Array<[number, number][][]> {
+    return contour.coordinates.map((polygon: number[][][]) =>
+      polygon.map((ring: number[][]) =>
+        ring.map((pt: number[]) => toLatLon(pt[0], pt[1]))
+      )
+    );
+  }
+
+  const sunnyContours = contourGen(Array.from(sunnyGrid));
+  const shadowContours = contourGen(Array.from(shadowGrid));
+
+  return {
+    sunnyPolygons: sunnyContours.length > 0 ? convertContour(sunnyContours[0]) : [],
+    shadowPolygons: shadowContours.length > 0 ? convertContour(shadowContours[0]) : [],
+  };
+}
+
 function paintTileCanvas(
   tile: TimelineTile,
   ctx: CanvasRenderingContext2D,
@@ -3509,65 +3592,29 @@ export function SunlightMapClient() {
       }
       contourLayerRef.current.clearLayers();
 
-      for (const tile of dailyTimeline.tiles) {
-        if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) continue;
-        const contours = buildTileContourPolygons(
-          tile, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow,
-        );
-        if (showSunny && showShadow) {
-          // Both layers: yellow sunny polygons + gray shadow polygons
-          for (const polygon of contours.sunnyPolygons) {
-            const latLngRings = polygon.map(ring =>
-              ring.map(([lat, lon]) => [lat, lon] as [number, number])
-            );
-            L.polygon(latLngRings, {
-              color: "#facc15",
-              fillColor: "#facc15",
-              weight: 1,
-              opacity: 0.4,
-              fillOpacity: 0.4,
-            }).addTo(contourLayerRef.current!);
-          }
-          for (const polygon of contours.shadowPolygons) {
-            const latLngRings = polygon.map(ring =>
-              ring.map(([lat, lon]) => [lat, lon] as [number, number])
-            );
-            L.polygon(latLngRings, {
-              color: "#334155",
-              fillColor: "#334155",
-              weight: 1,
-              opacity: 0.35,
-              fillOpacity: 0.35,
-            }).addTo(contourLayerRef.current!);
-          }
-        } else if (showSunny) {
-          for (const polygon of contours.sunnyPolygons) {
-            const latLngRings = polygon.map(ring =>
-              ring.map(([lat, lon]) => [lat, lon] as [number, number])
-            );
-            L.polygon(latLngRings, {
-              color: "#facc15",
-              fillColor: "#facc15",
-              weight: 1,
-              opacity: 0.4,
-              fillOpacity: 0.4,
-            }).addTo(contourLayerRef.current!);
-          }
-        } else if (showShadow) {
-          for (const polygon of contours.shadowPolygons) {
-            const latLngRings = polygon.map(ring =>
-              ring.map(([lat, lon]) => [lat, lon] as [number, number])
-            );
-            L.polygon(latLngRings, {
-              color: "#334155",
-              fillColor: "#334155",
-              weight: 1,
-              opacity: 0.35,
-              fillOpacity: 0.35,
-            }).addTo(contourLayerRef.current!);
-          }
+      // Merge all tiles into one grid → one set of contours → no tile seams
+      const contours = buildMergedContourPolygons(
+        dailyTimeline.tiles, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow,
+      );
+
+      function addPolygons(polys: Array<[number, number][][]>, color: string, fillOpacity: number) {
+        if (!L) return;
+        for (const polygon of polys) {
+          const latLngRings = polygon.map(ring =>
+            ring.map(([lat, lon]) => [lat, lon] as [number, number])
+          );
+          L.polygon(latLngRings, {
+            color,
+            fillColor: color,
+            weight: 0,
+            opacity: fillOpacity,
+            fillOpacity,
+          }).addTo(contourLayerRef.current!);
         }
       }
+
+      if (showSunny) addPolygons(contours.sunnyPolygons, "#facc15", 0.4);
+      if (showShadow) addPolygons(contours.shadowPolygons, "#334155", 0.35);
       return; // skip canvas path
     }
 
