@@ -110,7 +110,8 @@ async function main() {
       // Force re-render by using a unique azimuth per tile (the GPU backend
       // caches by azimuth/altitude and skips re-render if unchanged, but the
       // frustum focus changes per tile so we must force a new render).
-      gpuBackend.prepareSunPosition(i * 0.001, 89.999);
+      // Each tile gets a unique integer azimuth to bust the 1° rounding cache
+      gpuBackend.prepareSunPosition(i % 360, 90);
     }
 
     for (let j = 0; j < rawPoints.length; j++) {
