@@ -20,7 +20,7 @@
     "benchmark:precompute:cpu:breakdown": "tsx scripts/benchmark/profile-precompute-cpu-breakdown.ts",
     "benchmark:precompute:workers": "tsx scripts/benchmark/precompute-workers-parallelism.ts",
     "precompute": "MAPPY_BUILDINGS_SHADOW_MODE=gpu-raster tsx scripts/precompute/precompute-webgpu.ts --region=lausanne --grid-step-meters=1 --sample-every-minutes=15 --start-local-time=06:00 --end-local-time=21:00 --bbox=6.618,46.505,6.645,46.526 --skip-existing=true",
-    "precompute:grid-metadata": "tsx scripts/precompute/precompute-tile-grid-metadata.ts --region=lausanne --grid-step-meters=1 --bbox=6.618,46.505,6.645,46.526",
+    "precompute:grid-metadata": "MAPPY_BUILDINGS_SHADOW_MODE=gpu-raster tsx scripts/precompute/precompute-tile-grid-metadata.ts --region=lausanne --grid-step-meters=1 --bbox=6.618,46.505,6.645,46.526",
     "precompute:region": "tsx scripts/precompute/precompute-region-sunlight.ts",
     "precompute:lausanne:terraces:next-weekends": "tsx scripts/precompute/precompute-lausanne-terraces-next-two-weekends.ts",
     "cache:verify": "tsx scripts/precompute/manage-sunlight-cache.ts --action=verify",

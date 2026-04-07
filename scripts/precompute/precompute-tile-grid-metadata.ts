@@ -125,14 +125,36 @@ async function main() {
     let outdoorCount = 0;
     let indoorCount = 0;
 
+    // Indoor detection via zenith shadow map: render sun straight down,
+    // any point blocked = under a roof = indoor. Uses real DXF mesh
+    // geometry instead of convex hull footprints.
+    const gpuBackend = sharedSources.gpuShadowBackend;
+    if (gpuBackend) {
+      gpuBackend.prepareSunPosition(0, 90); // sun at zenith
+    }
+
     for (let j = 0; j < rawPoints.length; j++) {
       const pt = rawPoints[j];
       const context = await buildPointEvaluationContext(pt.lat, pt.lon, {
-        skipTerrainSamplingWhenIndoor: true,
+        skipTerrainSamplingWhenIndoor: false, // always sample elevation
         sharedSources,
+        skipIndoorCheck: true, // we'll use zenith shadow map instead
       });
 
-      if (context.insideBuilding) {
+      // Use zenith shadow map for indoor check (if GPU available)
+      let isIndoor = false;
+      if (gpuBackend && context.pointElevationMeters !== null) {
+        const result = gpuBackend.evaluate({
+          pointX: pt.lv95Easting,
+          pointY: pt.lv95Northing,
+          pointElevation: context.pointElevationMeters,
+          solarAzimuthDeg: 0,
+          solarAltitudeDeg: 90,
+        });
+        isIndoor = result.blocked;
+      }
+
+      if (isIndoor) {
         indoor[j] = true;
         elevations[j] = null;
         indoorCount++;
