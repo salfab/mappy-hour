@@ -54,7 +54,7 @@ const DEFAULT_CACHE_TILE_SIZE_METERS = 250;
 const RAD_TO_DEG = 180 / Math.PI;
 const BUILDING_SHADOW_MAX_DISTANCE_METERS = 2500;
 const BUILDING_TILE_ALLOWLIST_VERSION = "tile-allowlist-v1";
-const PRECOMPUTED_REGIONS: PrecomputedRegionName[] = ["lausanne", "nyon"];
+const PRECOMPUTED_REGIONS: PrecomputedRegionName[] = ["lausanne", "nyon", "morges", "geneve"];
 const manifestMemoryCache = new TtlCache<PrecomputedSunlightManifest | null>(60_000, 64);
 const tileMemoryCache = new TtlCache<PrecomputedSunlightTileArtifact | null>(60_000, 128);
 
