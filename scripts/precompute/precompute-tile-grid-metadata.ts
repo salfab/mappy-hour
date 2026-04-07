@@ -19,36 +19,13 @@ import { buildRegionTiles, getIntersectingTileIds, buildTilePoints } from "../..
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 import { getSunlightModelVersion } from "../../src/lib/precompute/model-version";
 import { buildSharedPointEvaluationSources, buildPointEvaluationContext } from "../../src/lib/sun/evaluation-context";
+import { getTileGridMetadataPath, loadTileGridMetadata } from "../../src/lib/precompute/tile-grid-metadata";
+export type { TileGridMetadata } from "../../src/lib/precompute/tile-grid-metadata";
+export { loadTileGridMetadata, getTileGridMetadataPath };
 
 const gzip = promisify(zlib.gzip);
 
-export interface TileGridMetadata {
-  tileId: string;
-  modelVersionHash: string;
-  gridStepMeters: number;
-  totalPoints: number;
-  outdoorCount: number;
-  indoorCount: number;
-  /** Per raw grid point: elevation in meters (null = indoor, skipped) */
-  elevations: (number | null)[];
-  /** Per raw grid point: true = inside a building */
-  indoor: boolean[];
-}
-
-export function getTileGridMetadataPath(region: string, modelVersionHash: string, gridStepMeters: number, tileId: string): string {
-  return path.join("data", "cache", "tile-grid-metadata", region, modelVersionHash, `g${gridStepMeters}`, `${tileId}.json.gz`);
-}
-
-export async function loadTileGridMetadata(region: string, modelVersionHash: string, gridStepMeters: number, tileId: string): Promise<TileGridMetadata | null> {
-  const filePath = getTileGridMetadataPath(region, modelVersionHash, gridStepMeters, tileId);
-  try {
-    const compressed = await fs.readFile(filePath);
-    const json = zlib.gunzipSync(compressed).toString("utf8");
-    return JSON.parse(json) as TileGridMetadata;
-  } catch {
-    return null;
-  }
-}
+import type { TileGridMetadata } from "../../src/lib/precompute/tile-grid-metadata";
 
 interface Args {
   region: PrecomputedRegionName;

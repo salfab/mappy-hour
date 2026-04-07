@@ -51,6 +51,8 @@ export interface SharedPointEvaluationSources {
   gpuShadowBackend?: import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null;
   /** WebGPU compute backend for batch evaluation (precompute only) */
   webgpuComputeBackend?: import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null;
+  /** Zenith indoor mask: isIndoor(easting, northing) → boolean. Loaded from grid metadata. */
+  zenithIndoorCheck?: (easting: number, northing: number) => boolean;
 }
 
 export interface BuildPointEvaluationContextOptions {
@@ -304,6 +306,43 @@ export async function buildSharedPointEvaluationSources(
     }
   }
 
+  // ── Zenith indoor mask (from pre-computed grid metadata) ─────────────
+  // Provides accurate indoor/outdoor detection using real DXF mesh geometry
+  // instead of convex hull footprints. Generated once per building model.
+  let zenithIndoorCheck: SharedPointEvaluationSources["zenithIndoorCheck"];
+  if (options.lv95Bounds) {
+    try {
+      const { loadTileGridMetadata } = await import("@/lib/precompute/tile-grid-metadata");
+      const { getSunlightModelVersion } = await import("@/lib/precompute/model-version");
+      const regionName = options.region ?? "lausanne";
+      const modelVersion = await getSunlightModelVersion(regionName as import("@/lib/precompute/sunlight-cache").PrecomputedRegionName, { buildingHeightBiasMeters: 0 });
+      // Find tile ID from lv95Bounds (tile bounds are 250m aligned)
+      const tileSizeMeters = 250;
+      const tileMinE = Math.floor(options.lv95Bounds.minX / tileSizeMeters) * tileSizeMeters;
+      const tileMinN = Math.floor(options.lv95Bounds.minY / tileSizeMeters) * tileSizeMeters;
+      const tileId = `e${tileMinE}_n${tileMinN}_s${tileSizeMeters}`;
+      const metadata = await loadTileGridMetadata(
+        regionName, modelVersion.modelVersionHash, 1, tileId,
+      );
+      if (metadata) {
+        const gridMinIx = Math.floor(tileMinE) + 0; // grid starts at tile boundary
+        const gridMinIy = Math.floor(tileMinN) + 0;
+        const gridW = Math.ceil(tileSizeMeters); // 250 columns for 1m grid
+        zenithIndoorCheck = (easting: number, northing: number) => {
+          const ix = Math.floor(easting) - gridMinIx;
+          const iy = Math.floor(northing) - gridMinIy;
+          if (ix < 0 || ix >= gridW || iy < 0 || iy >= metadata.totalPoints / gridW) return false;
+          const idx = iy * gridW + ix;
+          return metadata.indoor[idx] ?? false;
+        };
+        if (!indoorCheckLogged) {
+          console.error(`[indoor-check] Loaded zenith indoor mask for ${tileId} (${metadata.indoorCount} indoor)`);
+          indoorCheckLogged = true;
+        }
+      }
+    } catch {}
+  }
+
   return {
     horizonMask,
     buildingsIndex,
@@ -311,6 +350,7 @@ export async function buildSharedPointEvaluationSources(
     vegetationSurfaceTiles,
     gpuShadowBackend,
     webgpuComputeBackend,
+    zenithIndoorCheck,
   };
 }
 
@@ -341,34 +381,19 @@ export async function buildPointEvaluationContext(
           )
         : await sampleSwissTerrainElevationLv95(pointLv95.easting, pointLv95.northing);
 
-  // Indoor detection: prefer zenith shadow map (accurate for L/U shapes)
-  // over convex hull containment check (fallback).
-  const gpuBackend = sharedSources.gpuShadowBackend;
+  // Indoor detection priority:
+  // 1. Pre-computed zenith mask from grid metadata (fastest, most accurate)
+  // 2. GPU zenith shadow map render (accurate but slower, needs GPU backend)
+  // 3. Convex hull containment (fast but inaccurate for L/U shapes)
   let containment: { insideBuilding: boolean; buildingId: string | null };
   if (options.skipIndoorCheck) {
     containment = { insideBuilding: false, buildingId: null };
-  } else if (gpuBackend && pointElevationMeters !== null) {
-    // Zenith shadow map: render sun straight down, blocked = under a roof
-    if (!indoorCheckLogged) {
-      console.log("[indoor-check] Using zenith shadow map (real DXF mesh)");
-      indoorCheckLogged = true;
-    }
-    gpuBackend.prepareSunPosition(0, 89.999);
-    // Force re-render next time a real sun position is requested
-    // (the cache would otherwise skip re-render for the same rounded angles)
-    const zenithResult = gpuBackend.evaluate({
-      pointX: pointLv95.easting,
-      pointY: pointLv95.northing,
-      pointElevation: pointElevationMeters,
-      solarAzimuthDeg: 0,
-      solarAltitudeDeg: 89.999,
-    });
-    containment = { insideBuilding: zenithResult.blocked, buildingId: null };
+  } else if (sharedSources.zenithIndoorCheck) {
+    containment = {
+      insideBuilding: sharedSources.zenithIndoorCheck(pointLv95.easting, pointLv95.northing),
+      buildingId: null,
+    };
   } else if (buildingsIndex) {
-    if (!indoorCheckLogged) {
-      console.log("[indoor-check] FALLBACK: using convex hull containment (no GPU backend)");
-      indoorCheckLogged = true;
-    }
     containment = findContainingBuilding(
       buildingsIndex.obstacles,
       pointLv95.easting,
@@ -390,10 +415,11 @@ export async function buildPointEvaluationContext(
     : null;
 
   // ── GPU raster path ───────────────────────────────────────────────
+  const gpuBackend = sharedSources.gpuShadowBackend;
   const useGpuRaster =
     BUILDINGS_SHADOW_MODE === "gpu-raster" &&
-    gpuBackend != null && // not null and not undefined
-    gpuBackend !== null; // explicitly created (undefined = not attempted, null = failed)
+    gpuBackend != null &&
+    gpuBackend !== null;
 
   const buildingShadowEvaluator =
     buildingsIndex && pointElevationMeters !== null && !containment.insideBuilding
