@@ -130,7 +130,10 @@ async function main() {
     // geometry instead of convex hull footprints.
     const gpuBackend = sharedSources.gpuShadowBackend;
     if (gpuBackend) {
-      gpuBackend.prepareSunPosition(0, 90); // sun at zenith
+      // Force re-render by using a unique azimuth per tile (the GPU backend
+      // caches by azimuth/altitude and skips re-render if unchanged, but the
+      // frustum focus changes per tile so we must force a new render).
+      gpuBackend.prepareSunPosition(i * 0.001, 89.999);
     }
 
     for (let j = 0; j < rawPoints.length; j++) {

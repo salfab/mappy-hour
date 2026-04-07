@@ -127,6 +127,7 @@ const BUILDINGS_DETAILED_MAX_REFINEMENT_STEPS = 32;
 // level so it's created once and reused across all tiles/requests.
 let gpuBackendCache: import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null | undefined;
 let gpuBackendLoading: Promise<import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null> | null = null;
+let indoorCheckLogged = false;
 
 async function getOrCreateGpuBackend(
   obstacles: Array<{ centerX: number; centerY: number; height: number; [key: string]: unknown }>,
@@ -329,33 +330,54 @@ export async function buildPointEvaluationContext(
   const horizonMask = sharedSources.horizonMask;
   const buildingsIndex = sharedSources.buildingsIndex;
 
-  const containment = options.skipIndoorCheck
-    ? { insideBuilding: false, buildingId: null }
-    : buildingsIndex
-      ? findContainingBuilding(
-          buildingsIndex.obstacles,
-          pointLv95.easting,
-          pointLv95.northing,
-          buildingsIndex.spatialGrid,
-        )
-      : {
-          insideBuilding: false,
-          buildingId: null,
-        };
-
-  const shouldSkipTerrainSampling =
-    options.skipTerrainSamplingWhenIndoor && containment.insideBuilding;
+  // Sample terrain elevation first (needed for zenith shadow map indoor check)
   const pointElevationMeters = options.overrideElevation !== undefined
     ? options.overrideElevation
-    : shouldSkipTerrainSampling
-      ? null
-      : sharedSources.terrainTiles && sharedSources.terrainTiles.length > 0
-        ? sampleSwissTerrainElevationLv95FromTiles(
-            sharedSources.terrainTiles,
-            pointLv95.easting,
+    : sharedSources.terrainTiles && sharedSources.terrainTiles.length > 0
+      ? sampleSwissTerrainElevationLv95FromTiles(
+          sharedSources.terrainTiles,
+          pointLv95.easting,
             pointLv95.northing,
           )
         : await sampleSwissTerrainElevationLv95(pointLv95.easting, pointLv95.northing);
+
+  // Indoor detection: prefer zenith shadow map (accurate for L/U shapes)
+  // over convex hull containment check (fallback).
+  const gpuBackend = sharedSources.gpuShadowBackend;
+  let containment: { insideBuilding: boolean; buildingId: string | null };
+  if (options.skipIndoorCheck) {
+    containment = { insideBuilding: false, buildingId: null };
+  } else if (gpuBackend && pointElevationMeters !== null) {
+    // Zenith shadow map: render sun straight down, blocked = under a roof
+    if (!indoorCheckLogged) {
+      console.log("[indoor-check] Using zenith shadow map (real DXF mesh)");
+      indoorCheckLogged = true;
+    }
+    gpuBackend.prepareSunPosition(0, 89.999);
+    // Force re-render next time a real sun position is requested
+    // (the cache would otherwise skip re-render for the same rounded angles)
+    const zenithResult = gpuBackend.evaluate({
+      pointX: pointLv95.easting,
+      pointY: pointLv95.northing,
+      pointElevation: pointElevationMeters,
+      solarAzimuthDeg: 0,
+      solarAltitudeDeg: 89.999,
+    });
+    containment = { insideBuilding: zenithResult.blocked, buildingId: null };
+  } else if (buildingsIndex) {
+    if (!indoorCheckLogged) {
+      console.log("[indoor-check] FALLBACK: using convex hull containment (no GPU backend)");
+      indoorCheckLogged = true;
+    }
+    containment = findContainingBuilding(
+      buildingsIndex.obstacles,
+      pointLv95.easting,
+      pointLv95.northing,
+      buildingsIndex.spatialGrid,
+    );
+  } else {
+    containment = { insideBuilding: false, buildingId: null };
+  }
 
   const shouldEvaluateVegetation =
     pointElevationMeters !== null && !containment.insideBuilding;
@@ -368,7 +390,6 @@ export async function buildPointEvaluationContext(
     : null;
 
   // ── GPU raster path ───────────────────────────────────────────────
-  const gpuBackend = sharedSources.gpuShadowBackend;
   const useGpuRaster =
     BUILDINGS_SHADOW_MODE === "gpu-raster" &&
     gpuBackend != null && // not null and not undefined
@@ -500,7 +521,7 @@ export async function buildPointEvaluationContext(
       "No vegetation surface raster found. Run ingest:lausanne:vegetation:surface and/or ingest:nyon:vegetation:surface to enable vegetation shadow blocking.",
     );
   }
-  if (pointElevationMeters === null && !shouldSkipTerrainSampling) {
+  if (pointElevationMeters === null && !containment.insideBuilding) {
     warnings.push(
       "Point elevation unavailable from swissALTI3D. Building-shadow blocking was skipped.",
     );
