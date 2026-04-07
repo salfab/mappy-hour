@@ -12,6 +12,7 @@
  *     --bbox=6.618,46.505,6.645,46.526 --skip-existing=true
  */
 import { performance } from "node:perf_hooks";
+import { execSync } from "node:child_process";
 
 import { buildRegionTiles, getIntersectingTileIds } from "../../src/lib/precompute/sunlight-cache";
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
@@ -19,6 +20,7 @@ import { getSunlightModelVersion } from "../../src/lib/precompute/model-version"
 import { computeSunlightTileArtifact } from "../../src/lib/precompute/sunlight-tile-service";
 import { writePrecomputedSunlightTile, writePrecomputedSunlightManifest } from "../../src/lib/precompute/sunlight-cache";
 import { normalizeShadowCalibration } from "../../src/lib/sun/shadow-calibration";
+import { loadTileGridMetadata } from "./precompute-tile-grid-metadata";
 
 // ── Arg parsing (same as precompute-region-sunlight.ts) ────────────────
 
@@ -155,6 +157,9 @@ async function main() {
       );
 
       const tileStart = performance.now();
+      const gridMetadata = await loadTileGridMetadata(
+        args.region, modelVersion.modelVersionHash, args.gridStepMeters, tile.tileId,
+      );
       const artifact = await computeSunlightTileArtifact({
         region: args.region,
         modelVersionHash: modelVersion.modelVersionHash,
@@ -168,6 +173,7 @@ async function main() {
         tile,
         shadowCalibration,
         cooperativeYieldEveryPoints: 5000,
+        gridMetadata,
       });
 
       await writePrecomputedSunlightTile(artifact);
@@ -182,8 +188,13 @@ async function main() {
     }
 
     const dayMs = performance.now() - dayStart;
+    // Disk usage after each day
+    let diskUsage = "?";
+    try {
+      diskUsage = execSync("du -sh data/precomputed-sunlight-tiles/ 2>/dev/null || du -sh data/ 2>/dev/null || echo '?'", { encoding: "utf8", timeout: 30000 }).trim().split(/\s/)[0];
+    } catch {}
     console.log(
-      `[webgpu-precompute] date=${date} done: ${dayComputed} computed, ${daySkipped} skipped in ${(dayMs / 1000).toFixed(1)}s`,
+      `[webgpu-precompute] date=${date} done: ${dayComputed} computed, ${daySkipped} skipped in ${(dayMs / 1000).toFixed(1)}s — disk: ${diskUsage}`,
     );
   }
 

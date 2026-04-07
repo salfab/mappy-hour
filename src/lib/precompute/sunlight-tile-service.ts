@@ -6,6 +6,17 @@ import {
   buildPointEvaluationContext,
   buildSharedPointEvaluationSources,
 } from "@/lib/sun/evaluation-context";
+/** Pre-computed grid metadata (indoor/outdoor + elevations). */
+interface TileGridMetadata {
+  tileId: string;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  totalPoints: number;
+  outdoorCount: number;
+  indoorCount: number;
+  elevations: (number | null)[];
+  indoor: boolean[];
+}
 import { isBatchBackend } from "@/lib/sun/building-shadow-backend";
 import { lv95ToWgs84, wgs84ToLv95 } from "@/lib/geo/projection";
 import {
@@ -565,6 +576,8 @@ export async function computeSunlightTileArtifact(params: {
   cooperativeYieldEveryPoints?: number;
   onProgress?: (progress: SunlightTileComputeProgress) => void;
   signal?: AbortSignal;
+  /** Pre-computed grid metadata (indoor/outdoor + elevations). Skips per-point context building when provided. */
+  gridMetadata?: TileGridMetadata | null;
 }): Promise<PrecomputedSunlightTileArtifact> {
   const started = performance.now();
   const phaseMs = { adaptiveHorizon: 0, sharedSources: 0, pointContexts: 0, evaluations: 0 };
@@ -642,52 +655,104 @@ export async function computeSunlightTileArtifact(params: {
   phaseMs.sharedSources = performance.now() - sourcesT0;
 
   const pointsT0 = performance.now();
+  const gm = params.gridMetadata;
   for (let rawPointIndex = 0; rawPointIndex < rawTilePoints.length; rawPointIndex += 1) {
     throwIfAborted(params.signal);
     const point = rawTilePoints[rawPointIndex];
-    const context = await buildPointEvaluationContext(point.lat, point.lon, {
-      skipTerrainSamplingWhenIndoor: true,
-      terrainHorizonOverride: terrainHorizonOverride ?? undefined,
-      shadowCalibration: params.shadowCalibration,
-      sharedSources,
-      buildingShadowAllowedIds: tileBuildingAllowlist,
-    });
-    terrainMethod = context.terrainHorizonMethod;
-    buildingsMethod = `${context.buildingsShadowMethod}${buildingMethodSuffix}`;
-    vegetationMethod = context.vegetationShadowMethod ?? "none";
-    warnings.push(...context.warnings);
 
-    if (context.insideBuilding) {
+    // Fast path: use pre-computed grid metadata for indoor/elevation
+    if (gm && gm.indoor[rawPointIndex]) {
       indoorPointsExcluded += 1;
       points.push({
         ...point,
         insideBuilding: true,
-        indoorBuildingId: context.indoorBuildingId,
+        indoorBuildingId: null,
         outdoorIndex: null,
         pointElevationMeters: null,
       });
       continue;
     }
 
-    const outdoorIndex = preparedOutdoorPoints.length;
-    if (context.pointElevationMeters !== null) {
-      pointsWithElevation += 1;
+    if (gm) {
+      // Outdoor point with cached elevation — still need evaluator functions
+      const context = await buildPointEvaluationContext(point.lat, point.lon, {
+        skipTerrainSamplingWhenIndoor: true,
+        terrainHorizonOverride: terrainHorizonOverride ?? undefined,
+        shadowCalibration: params.shadowCalibration,
+        sharedSources,
+        buildingShadowAllowedIds: tileBuildingAllowlist,
+        // Override elevation from metadata to skip terrain sampling
+        overrideElevation: gm.elevations[rawPointIndex],
+        skipIndoorCheck: true,
+      });
+      terrainMethod = context.terrainHorizonMethod;
+      buildingsMethod = `${context.buildingsShadowMethod}${buildingMethodSuffix}`;
+      vegetationMethod = context.vegetationShadowMethod ?? "none";
+      warnings.push(...context.warnings);
+      const outdoorIndex = preparedOutdoorPoints.length;
+      if (gm.elevations[rawPointIndex] !== null) pointsWithElevation += 1;
+      preparedOutdoorPoints.push({
+        lat: point.lat,
+        lon: point.lon,
+        pointElevationMeters: gm.elevations[rawPointIndex],
+        horizonMask: context.horizonMask,
+        buildingShadowEvaluator: context.buildingShadowEvaluator,
+        vegetationShadowEvaluator: context.vegetationShadowEvaluator,
+      });
+      points.push({
+        ...point,
+        insideBuilding: false,
+        indoorBuildingId: null,
+        outdoorIndex,
+        pointElevationMeters: gm.elevations[rawPointIndex],
+      });
+    } else {
+      // Original path: full context building
+      const context = await buildPointEvaluationContext(point.lat, point.lon, {
+        skipTerrainSamplingWhenIndoor: true,
+        terrainHorizonOverride: terrainHorizonOverride ?? undefined,
+        shadowCalibration: params.shadowCalibration,
+        sharedSources,
+        buildingShadowAllowedIds: tileBuildingAllowlist,
+      });
+      terrainMethod = context.terrainHorizonMethod;
+      buildingsMethod = `${context.buildingsShadowMethod}${buildingMethodSuffix}`;
+      vegetationMethod = context.vegetationShadowMethod ?? "none";
+      warnings.push(...context.warnings);
+
+      if (context.insideBuilding) {
+        indoorPointsExcluded += 1;
+        points.push({
+          ...point,
+          insideBuilding: true,
+          indoorBuildingId: context.indoorBuildingId,
+          outdoorIndex: null,
+          pointElevationMeters: null,
+        });
+        continue;
+      }
+
+      const outdoorIndex = preparedOutdoorPoints.length;
+      if (context.pointElevationMeters !== null) {
+        pointsWithElevation += 1;
+      }
+      preparedOutdoorPoints.push({
+        lat: point.lat,
+        lon: point.lon,
+        pointElevationMeters: context.pointElevationMeters,
+        horizonMask: context.horizonMask,
+        buildingShadowEvaluator: context.buildingShadowEvaluator,
+        vegetationShadowEvaluator: context.vegetationShadowEvaluator,
+      });
+      points.push({
+        ...point,
+        insideBuilding: false,
+        indoorBuildingId: null,
+        outdoorIndex,
+        pointElevationMeters: context.pointElevationMeters,
+      });
     }
-    preparedOutdoorPoints.push({
-      lat: point.lat,
-      lon: point.lon,
-      pointElevationMeters: context.pointElevationMeters,
-      horizonMask: context.horizonMask,
-      buildingShadowEvaluator: context.buildingShadowEvaluator,
-      vegetationShadowEvaluator: context.vegetationShadowEvaluator,
-    });
-    points.push({
-      ...point,
-      insideBuilding: false,
-      indoorBuildingId: null,
-      outdoorIndex,
-      pointElevationMeters: context.pointElevationMeters,
-    });
+
     if (
       params.cooperativeYieldEveryPoints &&
       params.cooperativeYieldEveryPoints > 0 &&

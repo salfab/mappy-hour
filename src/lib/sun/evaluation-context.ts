@@ -59,6 +59,10 @@ export interface BuildPointEvaluationContextOptions {
   shadowCalibration?: ShadowCalibration;
   sharedSources?: SharedPointEvaluationSources;
   buildingShadowAllowedIds?: ReadonlySet<string>;
+  /** Skip the indoor/outdoor building containment check (assume outdoor). */
+  skipIndoorCheck?: boolean;
+  /** Override terrain elevation instead of sampling from terrain tiles. */
+  overrideElevation?: number | null;
 }
 
 export interface PointEvaluationContext {
@@ -325,29 +329,33 @@ export async function buildPointEvaluationContext(
   const horizonMask = sharedSources.horizonMask;
   const buildingsIndex = sharedSources.buildingsIndex;
 
-  const containment = buildingsIndex
-    ? findContainingBuilding(
-        buildingsIndex.obstacles,
-        pointLv95.easting,
-        pointLv95.northing,
-        buildingsIndex.spatialGrid,
-      )
-    : {
-        insideBuilding: false,
-        buildingId: null,
-      };
+  const containment = options.skipIndoorCheck
+    ? { insideBuilding: false, buildingId: null }
+    : buildingsIndex
+      ? findContainingBuilding(
+          buildingsIndex.obstacles,
+          pointLv95.easting,
+          pointLv95.northing,
+          buildingsIndex.spatialGrid,
+        )
+      : {
+          insideBuilding: false,
+          buildingId: null,
+        };
 
   const shouldSkipTerrainSampling =
     options.skipTerrainSamplingWhenIndoor && containment.insideBuilding;
-  const pointElevationMeters = shouldSkipTerrainSampling
-    ? null
-    : sharedSources.terrainTiles && sharedSources.terrainTiles.length > 0
-      ? sampleSwissTerrainElevationLv95FromTiles(
-          sharedSources.terrainTiles,
-          pointLv95.easting,
-          pointLv95.northing,
-        )
-      : await sampleSwissTerrainElevationLv95(pointLv95.easting, pointLv95.northing);
+  const pointElevationMeters = options.overrideElevation !== undefined
+    ? options.overrideElevation
+    : shouldSkipTerrainSampling
+      ? null
+      : sharedSources.terrainTiles && sharedSources.terrainTiles.length > 0
+        ? sampleSwissTerrainElevationLv95FromTiles(
+            sharedSources.terrainTiles,
+            pointLv95.easting,
+            pointLv95.northing,
+          )
+        : await sampleSwissTerrainElevationLv95(pointLv95.easting, pointLv95.northing);
 
   const shouldEvaluateVegetation =
     pointElevationMeters !== null && !containment.insideBuilding;
