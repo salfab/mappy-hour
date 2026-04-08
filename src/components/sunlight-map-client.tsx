@@ -2306,8 +2306,12 @@ export function SunlightMapClient() {
     () =>
       mode === "daily" &&
       Boolean(dailyTimeline?.stats) &&
-      Boolean(dailyExposureCells && dailyExposureCells.length > 0),
-    [dailyExposureCells, dailyTimeline?.stats, mode],
+      Boolean(
+        (dailyExposureCells && dailyExposureCells.length > 0) ||
+          ((dailyTimeline?.pointCount ?? 0) >= CANVAS_OVERLAY_THRESHOLD &&
+            (dailyTimeline?.tiles.length ?? 0) > 0),
+      ),
+    [dailyExposureCells, dailyTimeline?.pointCount, dailyTimeline?.stats, dailyTimeline?.tiles.length, mode],
   );
 
   const isDailyRangeInvalid = useMemo(() => {

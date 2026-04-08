@@ -775,6 +775,15 @@ export async function computeSunlightTileArtifact(params: {
   }
   phaseMs.pointContexts = performance.now() - pointsT0;
 
+  // Abort if terrain data is missing — producing tiles without elevation
+  // creates invalid cache entries (building shadows skipped, wrong results).
+  if (preparedOutdoorPoints.length > 0 && pointsWithElevation === 0) {
+    throw new Error(
+      `Terrain data unavailable for tile ${params.tile.tileId}: 0/${preparedOutdoorPoints.length} outdoor points have elevation. ` +
+      `Download terrain with: npx tsx scripts/ingest/download-terrain.ts --region=${params.region}`,
+    );
+  }
+
   params.onProgress?.({
     stage: "prepare-points",
     completed: rawTilePoints.length,
