@@ -118,24 +118,6 @@ interface AreaApiResponse {
   };
 }
 
-interface BuildingPolygon {
-  id: string;
-  footprint: Array<{
-    lat: number;
-    lon: number;
-  }>;
-}
-
-interface BuildingsAreaApiResponse {
-  count: number;
-  buildings: BuildingPolygon[];
-  warnings: string[];
-  stats: {
-    elapsedMs: number;
-    rawIntersectingCount: number;
-  };
-}
-
 type FoodVenueType = "restaurant" | "bar" | "snack" | "foodtruck" | "other";
 
 interface SunlitPlaceEntry {
@@ -929,26 +911,6 @@ function destinationPointByAzimuth(
   };
 }
 
-function computeFootprintCenter(
-  footprint: BuildingPolygon["footprint"],
-): { lat: number; lon: number } | null {
-  if (footprint.length === 0) {
-    return null;
-  }
-
-  let sumLat = 0;
-  let sumLon = 0;
-  for (const vertex of footprint) {
-    sumLat += vertex.lat;
-    sumLon += vertex.lon;
-  }
-
-  return {
-    lat: sumLat / footprint.length,
-    lon: sumLon / footprint.length,
-  };
-}
-
 function classifyTerrainSource(
   response: PointInstantApiResponse,
 ): "DEM local (colline du terrain de la ville)" | "montagnes" | null {
@@ -1129,20 +1091,6 @@ function mergePolygons(polygons: Polygon[]): MultiPolygon {
       }
     }
     return result;
-  }
-}
-
-function subtractPolygons(base: MultiPolygon, mask: MultiPolygon): MultiPolygon {
-  if (base.length === 0 || mask.length === 0) {
-    return base;
-  }
-
-  try {
-    const difference = polygonClipping.difference(base, mask);
-    return Array.isArray(difference) ? (difference as MultiPolygon) : [];
-  } catch {
-    // Keep base as fallback instead of crashing rendering.
-    return base;
   }
 }
 
@@ -1716,25 +1664,8 @@ function buildInstantBlockedContours(
   return mergePolygons(blockedCells);
 }
 
-function buildBuildingsContours(buildings: BuildingsAreaApiResponse | null): MultiPolygon {
-  if (!buildings || buildings.buildings.length === 0) {
-    return [];
-  }
-
-  const polygons: Polygon[] = [];
-  for (const building of buildings.buildings) {
-    if (building.footprint.length < 3) {
-      continue;
-    }
-    polygons.push([
-      closeRing(
-        building.footprint.map((vertex) => [vertex.lon, vertex.lat] as XY),
-      ),
-    ]);
-  }
-
-  return mergePolygons(polygons);
-}
+// buildBuildingsContours removed — instant mode no longer uses convex hull footprints.
+// Daily mode uses zenith shadow map (outdoor mask) from tile grid metadata instead.}
 
 function timelineMaskCacheKey(frameIndex: number, ignoreVegetation: boolean): string {
   return `${frameIndex}:${ignoreVegetation ? "no-veg" : "full"}`;
@@ -2189,7 +2120,6 @@ export function SunlightMapClient() {
   const heatmapLayerRef = useRef<LayerGroup | null>(null);
   const placesLayerRef = useRef<LayerGroup | null>(null);
   const clickHighlightLayerRef = useRef<LayerGroup | null>(null);
-  const lastBuildingsRef = useRef<BuildingsAreaApiResponse | null>(null);
   const leafletModuleRef = useRef<typeof import("leaflet") | null>(null);
   const placesRequestIdRef = useRef(0);
   const focusRunLoadedTokenRef = useRef<string | null>(null);
@@ -2224,9 +2154,6 @@ export function SunlightMapClient() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<AreaApiResponse | null>(null);
-  const [lastBuildings, setLastBuildings] = useState<BuildingsAreaApiResponse | null>(
-    null,
-  );
   const [sunlitPlaces, setSunlitPlaces] = useState<SunlitPlaceEntry[]>([]);
   const [placesWarnings, setPlacesWarnings] = useState<string[]>([]);
   const [placesError, setPlacesError] = useState<string | null>(null);
@@ -2239,7 +2166,6 @@ export function SunlightMapClient() {
     null,
   );
   const [dailyProgress, setDailyProgress] = useState<TimelineProgress | null>(null);
-  const [buildingWarnings, setBuildingWarnings] = useState<string[]>([]);
   const [showSunny, setShowSunny] = useState(true);
   const [showShadow, setShowShadow] = useState(true);
   const [showVegetation, setShowVegetation] = useState(true);
@@ -2277,10 +2203,6 @@ export function SunlightMapClient() {
     setFocusRunParamsFromUrl(parseFocusRunParams(searchParams));
     setDeepLinkParamsFromUrl(parseDeepLinkParams(searchParams));
   }, []);
-
-  useEffect(() => {
-    lastBuildingsRef.current = lastBuildings;
-  }, [lastBuildings]);
 
   useEffect(() => {
     baseMapStyleRef.current = baseMapStyle;
@@ -2357,14 +2279,14 @@ export function SunlightMapClient() {
   const activeWarnings = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
       return Array.from(
-        new Set([...dailyTimeline.warnings, ...buildingWarnings, ...placesWarnings]),
+        new Set([...dailyTimeline.warnings, ...placesWarnings]),
       );
     }
 
     return Array.from(
-      new Set([...(lastResult?.warnings ?? []), ...buildingWarnings, ...placesWarnings]),
+      new Set([...(lastResult?.warnings ?? []), ...placesWarnings]),
     );
-  }, [buildingWarnings, dailyTimeline, lastResult, mode, placesWarnings]);
+  }, [dailyTimeline, lastResult, mode, placesWarnings]);
 
   const activeFrameTime = useMemo(() => {
     if (!dailyTimeline || dailyTimeline.tiles.length === 0) {
@@ -2421,17 +2343,14 @@ export function SunlightMapClient() {
       return "Aucun calcul encore lancé.";
     }
     const warningCount = Array.from(
-      new Set([...(lastResult.warnings ?? []), ...buildingWarnings, ...placesWarnings]),
+      new Set([...(lastResult.warnings ?? []), ...placesWarnings]),
     ).length;
     const excludedIndoor = lastResult.stats.indoorPointsExcluded ?? 0;
-    const buildingCount = lastBuildings?.count ?? 0;
-    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, bâtiments: ${buildingCount}, terrasses soleil: ${sunlitPlaces.length}, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m, warnings: ${warningCount}`;
+    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, terrasses soleil: ${sunlitPlaces.length}, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m, warnings: ${warningCount}`;
   }, [
-    buildingWarnings,
     buildingHeightBiasMeters,
     dailyExposureHotspot,
     dailyTimeline,
-    lastBuildings?.count,
     lastResult,
     mode,
     placesWarnings,
@@ -2512,42 +2431,6 @@ export function SunlightMapClient() {
       };
 
       if (params.primarySource === "bâtiment") {
-        const blockerId =
-          params.response.sample.buildingBlockerId ??
-          params.response.pointContext.indoorBuildingId;
-        const building =
-          blockerId === null
-            ? null
-            : (lastBuildingsRef.current?.buildings.find(
-                (item) => item.id === blockerId,
-              ) ?? null);
-
-        if (building && building.footprint.length >= 3) {
-          const ring = building.footprint.map(
-            (vertex) => [vertex.lat, vertex.lon] as [number, number],
-          );
-          L.polygon(ring, {
-            color: "#c2410c",
-            fillColor: "#fb923c",
-            weight: 2.6,
-            opacity: 0.95,
-            fillOpacity: 0.28,
-          })
-            .addTo(highlightLayer)
-            .bindTooltip(`Bloqueur bâtiment: ${blockerId}`, { sticky: true });
-
-          const center = computeFootprintCenter(building.footprint);
-          if (center) {
-            drawRayToTarget(
-              center.lat,
-              center.lon,
-              "#ea580c",
-              "Rayon vers le bâtiment bloqueur",
-            );
-          }
-          return;
-        }
-
         const distance = params.response.sample.buildingBlockerDistanceMeters;
         if (distance !== null && Number.isFinite(distance) && distance > 0) {
           const fallbackPoint = destinationPointByAzimuth(
@@ -3188,7 +3071,6 @@ export function SunlightMapClient() {
   const renderLayers = useCallback(
     (
       response: AreaApiResponse | null,
-      buildings: BuildingsAreaApiResponse | null,
       places: SunlitPlaceEntry[],
       dailyExposureCellsInput: DailyExposureCell[] | null,
       visibility: {
@@ -3241,9 +3123,6 @@ export function SunlightMapClient() {
       const { sunnyContours, shadowContours } = !useCanvasOverlay && response
         ? buildSunAndShadowContours(response)
         : { sunnyContours: [], shadowContours: [] };
-      const buildingsContours = buildBuildingsContours(buildings);
-      const sunnyOutdoorContours = subtractPolygons(sunnyContours, buildingsContours);
-      const shadowOutdoorContours = subtractPolygons(shadowContours, buildingsContours);
       const vegetationContours = visibility.ignoreVegetationShadow
         ? []
         : useCanvasOverlay
@@ -3254,7 +3133,7 @@ export function SunlightMapClient() {
             );
 
       if (visibility.sunny && !useCanvasOverlay) {
-        for (const polygon of sunnyOutdoorContours) {
+        for (const polygon of sunnyContours) {
           const latLngRings = polygon.map((ring) =>
             ring.map(([lon, lat]) => [lat, lon] as [number, number]),
           );
@@ -3269,7 +3148,7 @@ export function SunlightMapClient() {
       }
 
       if (visibility.shadow && !useCanvasOverlay) {
-        for (const polygon of shadowOutdoorContours) {
+        for (const polygon of shadowContours) {
           const latLngRings = polygon.map((ring) =>
             ring.map(([lon, lat]) => [lat, lon] as [number, number]),
           );
@@ -3283,20 +3162,8 @@ export function SunlightMapClient() {
         }
       }
 
-      if (visibility.buildings) {
-        for (const polygon of buildingsContours) {
-          const latLngRings = polygon.map((ring) =>
-            ring.map(([lon, lat]) => [lat, lon] as [number, number]),
-          );
-          L.polygon(latLngRings, {
-            color: "#2563eb",
-            fillColor: "#2563eb",
-            weight: 0.9,
-            opacity: 0.58,
-            fillOpacity: 0.24,
-          }).addTo(buildingsLayer);
-        }
-      }
+      // Buildings layer in instant mode: cleared only (no convex hull footprints).
+      // Daily mode renders buildings via the tile contour layer (zenith outdoor mask).
 
       if (visibility.vegetation) {
         for (const polygon of vegetationContours) {
@@ -3456,7 +3323,6 @@ export function SunlightMapClient() {
     const isDailyMode = mode === "daily" && dailyTimeline && dailyTimeline.tiles.length > 0;
     renderLayers(
       isDailyMode ? null : visualAreaResponse,
-      isDailyMode ? null : lastBuildings,
       sunlitPlaces,
       dailyExposureCells,
       {
@@ -3474,7 +3340,6 @@ export function SunlightMapClient() {
     dailyExposureCells,
     dailyTimeline,
     ignoreVegetationShadow,
-    lastBuildings,
     mode,
     renderLayers,
     showBuildings,
@@ -3884,40 +3749,6 @@ export function SunlightMapClient() {
     }));
   }, [mode]);
 
-  const loadBuildingsLayer = useCallback(async (bbox: [number, number, number, number]) => {
-    const buildingsPayload = {
-      bbox,
-      maxBuildings: 6000,
-    };
-
-    const buildingsResponse = await fetch("/api/buildings/area", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(buildingsPayload),
-    });
-
-    if (buildingsResponse.ok) {
-      return (await buildingsResponse.json()) as BuildingsAreaApiResponse;
-    }
-
-    const buildingError = (await buildingsResponse.json().catch(() => null)) as
-      | { error?: string; detail?: string }
-      | null;
-    return {
-      count: 0,
-      buildings: [],
-      warnings: [
-        buildingError?.detail ?? buildingError?.error ?? "Buildings layer unavailable.",
-      ],
-      stats: {
-        elapsedMs: 0,
-        rawIntersectingCount: 0,
-      },
-    } satisfies BuildingsAreaApiResponse;
-  }, []);
-
   const loadSunlitPlaces = useCallback(
     async (bbox: [number, number, number, number]) => {
       const placesPayload = {
@@ -4021,7 +3852,6 @@ export function SunlightMapClient() {
 
     setIsLoading(true);
     setError(null);
-    setBuildingWarnings([]);
     setPlacesWarnings([]);
     setPlacesError(null);
     setSunlitPlaces([]);
@@ -4069,33 +3899,13 @@ export function SunlightMapClient() {
       });
 
       let streamFinished = false;
-      let buildingsFinished = false;
       let streamFailed = false;
 
       const finalizeIfDone = () => {
-        if (streamFinished && buildingsFinished) {
+        if (streamFinished) {
           setIsLoading(false);
         }
       };
-
-      void loadBuildingsLayer(bbox)
-        .then((buildingsJson) => {
-          setLastBuildings(buildingsJson);
-          setBuildingWarnings(
-            buildingsJson.warnings.map((warning) => `buildings: ${warning}`),
-          );
-        })
-        .catch((buildingError) => {
-          setError(
-            buildingError instanceof Error
-              ? buildingError.message
-              : "Buildings layer request failed.",
-          );
-        })
-        .finally(() => {
-          buildingsFinished = true;
-          finalizeIfDone();
-        });
 
       const query = new URLSearchParams({
         minLon: String(bbox[0]),
@@ -4248,50 +4058,13 @@ export function SunlightMapClient() {
     });
 
     let streamFinished = false;
-    let buildingsFinished = false;
     let streamFailed = false;
 
     const finalizeIfDone = () => {
-      if (streamFinished && buildingsFinished) {
+      if (streamFinished) {
         setIsLoading(false);
       }
     };
-
-    void loadBuildingsLayer(bbox)
-      .then((buildingsJson) => {
-        setLastBuildings(buildingsJson);
-        const prefixedWarnings = buildingsJson.warnings.map(
-          (warning) => `buildings: ${warning}`,
-        );
-        setBuildingWarnings(prefixedWarnings);
-        if (buildingsJson.warnings.length > 0) {
-          setDailyTimeline((previous) => {
-            if (!previous) {
-              return previous;
-            }
-            return {
-              ...previous,
-              warnings: Array.from(
-                new Set([
-                  ...previous.warnings,
-                  ...prefixedWarnings,
-                ]),
-              ),
-            };
-          });
-        }
-      })
-      .catch((buildingError) => {
-        setError(
-          buildingError instanceof Error
-            ? buildingError.message
-            : "Buildings layer request failed.",
-        );
-      })
-      .finally(() => {
-        buildingsFinished = true;
-        finalizeIfDone();
-      });
 
     const query = new URLSearchParams({
       minLon: String(bbox[0]),
@@ -4574,7 +4347,6 @@ export function SunlightMapClient() {
     dailyStartLocalTime,
     gridStepMeters,
     isDailyRangeInvalid,
-    loadBuildingsLayer,
     loadSunlitPlaces,
     localTime,
     mode,
