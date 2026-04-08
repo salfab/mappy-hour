@@ -1474,21 +1474,51 @@ function buildTileContourPolygons(
     return [lat, lon];
   };
 
-  // Build zero-padded grid for d3-contour. The 1px border of zeros forces
-  // d3-contour to generate contour edges at tile boundaries (where data
-  // meets the padding), preventing unattributed triangles at tile edges.
+  // Build zero-padded grid for d3-contour. Indoor cells are set to
+  // their nearest outdoor neighbor's value (sunny=1 or shadow=1) so
+  // that d3-contour does NOT create a boundary at building edges.
+  // The building footprint comes from the outdoor mask (separate layer),
+  // not from contour edges — this prevents the 0.5m smoothing artifact
+  // that made building outlines appear shifted.
   const padW = tileW + 2;
   const padH = tileH + 2;
   const sunnyGrid = new Float64Array(padW * padH);
   const shadowGrid = new Float64Array(padW * padH);
+  // First pass: set outdoor cells normally
   for (let iy = 0; iy < tileH; iy++) {
     for (let ix = 0; ix < tileW; ix++) {
       const cellIdx = iy * tileW + ix;
       const isOutdoor = outdoorMask ? ((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1 : true;
       const isSunny = isOutdoor && ((mask![cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
       const padIdx = (iy + 1) * padW + (ix + 1);
-      sunnyGrid[padIdx] = isSunny ? 1 : 0;
-      shadowGrid[padIdx] = (isOutdoor && !isSunny) ? 1 : 0;
+      if (isOutdoor) {
+        sunnyGrid[padIdx] = isSunny ? 1 : 0;
+        shadowGrid[padIdx] = isSunny ? 0 : 1;
+      }
+      // Indoor cells stay 0 for now, filled in second pass
+    }
+  }
+  // Second pass: fill indoor cells by flood-filling from nearest outdoor neighbor.
+  // This makes contours extend smoothly through buildings without edge artifacts.
+  for (let iy = 0; iy < tileH; iy++) {
+    for (let ix = 0; ix < tileW; ix++) {
+      const cellIdx = iy * tileW + ix;
+      const isOutdoor = outdoorMask ? ((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1 : true;
+      if (isOutdoor) continue;
+      const padIdx = (iy + 1) * padW + (ix + 1);
+      // Check 4-connected neighbors for an outdoor value to copy
+      for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+        const nx = ix + dx, ny = iy + dy;
+        if (nx < 0 || nx >= tileW || ny < 0 || ny >= tileH) continue;
+        const nIdx = ny * tileW + nx;
+        const nOutdoor = outdoorMask ? ((outdoorMask[nIdx >> 3] >> (nIdx & 7)) & 1) === 1 : true;
+        if (nOutdoor) {
+          const nPadIdx = (ny + 1) * padW + (nx + 1);
+          sunnyGrid[padIdx] = sunnyGrid[nPadIdx];
+          shadowGrid[padIdx] = shadowGrid[nPadIdx];
+          break;
+        }
+      }
     }
   }
 
@@ -3408,20 +3438,32 @@ export function SunlightMapClient() {
   );
 
   useEffect(() => {
-    renderLayers(visualAreaResponse, lastBuildings, sunlitPlaces, dailyExposureCells, {
-      sunny: showSunny,
-      shadow: showShadow,
-      vegetation: showVegetation,
-      buildings: showBuildings,
-      terrain: showTerrain,
-      heatmap: showHeatmap,
-      places: showPlaces,
-      ignoreVegetationShadow,
-    });
+    // In daily mode, the tile contour layer handles sunny/shadow/buildings
+    // rendering using the outdoor mask from grid metadata (zenith shadow map).
+    // Don't render the instant layers which use convex hull footprints.
+    const isDailyMode = mode === "daily" && dailyTimeline && dailyTimeline.tiles.length > 0;
+    renderLayers(
+      isDailyMode ? null : visualAreaResponse,
+      isDailyMode ? null : lastBuildings,
+      sunlitPlaces,
+      dailyExposureCells,
+      {
+        sunny: isDailyMode ? false : showSunny,
+        shadow: isDailyMode ? false : showShadow,
+        vegetation: isDailyMode ? false : showVegetation,
+        buildings: isDailyMode ? false : showBuildings,
+        terrain: isDailyMode ? false : showTerrain,
+        heatmap: showHeatmap,
+        places: showPlaces,
+        ignoreVegetationShadow,
+      },
+    );
   }, [
     dailyExposureCells,
+    dailyTimeline,
     ignoreVegetationShadow,
     lastBuildings,
+    mode,
     renderLayers,
     showBuildings,
     showHeatmap,
