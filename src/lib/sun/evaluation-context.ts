@@ -3,7 +3,6 @@ import {
   createDetailedBuildingShadowVerifier,
   evaluateBuildingsShadow,
   evaluateBuildingsShadowTwoLevel,
-  findContainingBuilding,
   loadBuildingsObstacleIndex,
 } from "@/lib/sun/buildings-shadow";
 import { HorizonMask, loadLausanneHorizonMask } from "@/lib/sun/horizon-mask";
@@ -393,14 +392,9 @@ export async function buildPointEvaluationContext(
       insideBuilding: sharedSources.zenithIndoorCheck(pointLv95.easting, pointLv95.northing),
       buildingId: null,
     };
-  } else if (buildingsIndex) {
-    containment = findContainingBuilding(
-      buildingsIndex.obstacles,
-      pointLv95.easting,
-      pointLv95.northing,
-      buildingsIndex.spatialGrid,
-    );
   } else {
+    // No zenith indoor check available — treat as outdoor.
+    // Convex hull containment is no longer used (inaccurate for L/U shapes).
     containment = { insideBuilding: false, buildingId: null };
   }
 

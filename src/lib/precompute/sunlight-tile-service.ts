@@ -375,7 +375,7 @@ function collectTileWindowBuildingAllowlist(params: {
   return allowedBlockerIds;
 }
 
-function resolveRegionForBbox(bbox: RegionBbox): PrecomputedRegionName | null {
+export function resolveRegionForBbox(bbox: RegionBbox): PrecomputedRegionName | null {
   return (
     PRECOMPUTED_REGIONS.find((region) => {
       const regionBbox = getPrecomputedRegionBbox(region);
@@ -1091,7 +1091,10 @@ async function getOrCreateTileArtifact(params: {
       gridMetadata = await loadTileGridMetadata(
         params.region, params.modelVersionHash, params.gridStepMeters, params.tile.tileId,
       );
-    } catch {}
+    } catch (e) {
+      process.stderr.write(`[grid-metadata] FAILED to load: ${e}\n`);
+    }
+    process.stderr.write(`[grid-metadata] tile=${params.tile.tileId} loaded=${!!gridMetadata} indoor=${gridMetadata?.indoorCount ?? '?'}\n`);
 
     const computed = await computeSunlightTileArtifact({
       region: params.region,

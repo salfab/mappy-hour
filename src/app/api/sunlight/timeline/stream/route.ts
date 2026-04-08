@@ -8,6 +8,7 @@ import { lv95ToWgs84, wgs84ToLv95 } from "@/lib/geo/projection";
 import { buildGridFromBbox } from "@/lib/geo/grid";
 import {
   streamTilesForBbox,
+  resolveRegionForBbox,
 } from "@/lib/precompute/sunlight-tile-service";
 import {
   decodeBase64Bytes,
@@ -268,6 +269,8 @@ export async function GET(request: Request) {
             },
           });
 
+          const region = resolveRegionForBbox(bbox);
+
           let sentStart = false;
           let totalPointCount = 0;
           let totalGridPointCount = 0;
@@ -358,15 +361,44 @@ export async function GET(request: Request) {
               continue;
             }
 
-            // Build grid cell → artifact outdoorIndex mapping
+            // Build grid cell → artifact outdoorIndex mapping.
+            // Indoor/outdoor comes from zenith grid metadata (independent
+            // of date), not from the cached tile's insideBuilding flags.
             const tileW = tileMaxIx - tileMinIx + 1;
             const tileH = tileMaxIy - tileMinIy + 1;
             const gridCellCount = tileW * tileH;
             const outdoorMask = new Uint8Array(Math.ceil(gridCellCount / 8));
             const cellToOutdoor = new Int32Array(gridCellCount).fill(-1);
+
+            // Load zenith indoor mask from grid metadata
+            const { loadTileGridMetadata } = await import("@/lib/precompute/tile-grid-metadata");
+            const { getSunlightModelVersion } = await import("@/lib/precompute/model-version");
+            const tileSizeMeters = 250;
+            const tileMinE = Math.floor(tileMinIx / tileSizeMeters) * tileSizeMeters;
+            const tileMinN = Math.floor(tileMinIy / tileSizeMeters) * tileSizeMeters;
+            const gmTileId = `e${tileMinE}_n${tileMinN}_s${tileSizeMeters}`;
+            const gmModelVersion = region ? await getSunlightModelVersion(
+              region as import("@/lib/precompute/sunlight-cache").PrecomputedRegionName,
+              shadowCalibration,
+            ) : null;
+            const gridMetadata = region && gmModelVersion ? await loadTileGridMetadata(
+              region, gmModelVersion.modelVersionHash, query.gridStepMeters, gmTileId,
+            ) : null;
+
             for (const p of artifact.points) {
               if (!pointInBbox(p.lon, p.lat, bbox)) continue;
-              if (p.insideBuilding || p.outdoorIndex === null) continue;
+              // Use zenith grid metadata for indoor check if available
+              let isIndoor: boolean;
+              if (gridMetadata) {
+                const gmIx = p.ix - tileMinE;
+                const gmIy = p.iy - tileMinN;
+                const gmW = Math.ceil(tileSizeMeters);
+                const gmIdx = gmIy * gmW + gmIx;
+                isIndoor = gridMetadata.indoor[gmIdx] ?? false;
+              } else {
+                isIndoor = p.insideBuilding;
+              }
+              if (isIndoor || p.outdoorIndex === null) continue;
               const cellIdx = (p.iy - tileMinIy) * tileW + (p.ix - tileMinIx);
               setMaskBit(outdoorMask, cellIdx);
               cellToOutdoor[cellIdx] = p.outdoorIndex;
