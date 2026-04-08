@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Indoor Detection Comparison: obs-42143 (U-shaped building, Lausanne)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a2e; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; padding: 20px; }
+  h1 { text-align: center; margin-bottom: 4px; font-size: 1.4em; color: #f0f0f0; }
+  .subtitle { text-align: center; margin-bottom: 16px; font-size: 0.85em; color: #888; }
+  .grid { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; }
+  .panel { background: #16213e; border-radius: 8px; padding: 12px; display: flex; flex-direction: column; align-items: center; }
+  .panel h2 { font-size: 0.95em; margin-bottom: 8px; color: #ccc; }
+  canvas { image-rendering: pixelated; border: 1px solid #333; }
+  .legend { display: flex; gap: 16px; justify-content: center; margin: 16px 0 8px; font-size: 0.82em; }
+  .legend span { display: flex; align-items: center; gap: 4px; }
+  .swatch { width: 14px; height: 14px; border-radius: 2px; display: inline-block; border: 1px solid #555; }
+  .stats { text-align: center; font-size: 0.82em; color: #999; margin-top: 8px; line-height: 1.6; }
+  .stats b { color: #ddd; }
+  #sseStatus { text-align: center; font-size: 0.8em; color: #666; margin-top: 4px; min-height: 1.2em; }
+</style>
+</head>
+<body>
+
+<h1>Indoor Detection: obs-42143</h1>
+<div class="subtitle">U-shaped building in Lausanne &mdash; LV95 2537772, 1152197 &mdash; 160&times;160m view</div>
+
+<div class="legend">
+  <span><span class="swatch" style="background:#e8c840"></span> Outdoor</span>
+  <span><span class="swatch" style="background:#2a2a3a"></span> Indoor</span>
+  <span><span class="swatch" style="background:#30a050"></span> Zenith-only indoor (diff)</span>
+  <span><span class="swatch" style="background:#d04040"></span> Hull-only indoor = courtyard recovered (diff)</span>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>Zenith Shadow Map</h2>
+    <canvas id="cZenith" width="160" height="160" style="width:320px;height:320px"></canvas>
+  </div>
+  <div class="panel">
+    <h2>Convex Hull (all footprints)</h2>
+    <canvas id="cHull" width="160" height="160" style="width:320px;height:320px"></canvas>
+  </div>
+  <div class="panel">
+    <h2>Difference</h2>
+    <canvas id="cDiff" width="160" height="160" style="width:320px;height:320px"></canvas>
+  </div>
+  <div class="panel">
+    <h2>SSE Live (outdoor mask from server)</h2>
+    <canvas id="cSSE" width="160" height="160" style="width:320px;height:320px"></canvas>
+    <div id="sseStatus">Not connected</div>
+  </div>
+</div>
+
+<div class="stats" id="statsBox"></div>
+
+<script>
+// --- Embedded data ---
+
+var ZENITH_B64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAeAAAAAAAAAAAAAAAAAAAAAAAAAD/AAAAAAAAAAAAAAAAAAAAAAAAwP8AAAAAAAAAAAAAAAAAAAAAAADw/wAAAAAAAAAAAAAAAAAAAAAAAPz/AAAAAAAAAAAAAAAAAAAAAACA/38AAAAAAAAA8AAAAAAAAAAAAOT/HwAAAAAAAAD/AAAAAAAAAAAA//8PAAAAAAAA+P8AAAAAAAAAAMD//wMAAAAAAMD//wAAAAAAAAAA8P//AQAAAAAA/v//AAAAAAAAAAD+/38AAAAAAPD///8AAAAAAAAAgP//HwAAAAAA/v///wAAAAAAAADg//8PAAAAAID/////AAAAAAAAAPj//wMAAAAA8P////8AAAAAAAAA/P//AQAAAAD4/////wAAAAAAAAD8/38AAAAAAP7/////AAAAAAAAAPz/HwAAAAAA//////8AAAAAAAAA/P8PAAAAAMD//////wAAAAAAAAD8/wMAAAAA8P//////AAAAAAAAAPz/AQAAAAD4//////8AAAAAAAAA/H8AAAAAAP7//////wAAAAAAAAD8HwAAAACA//////8fAAAAAAAAAPwPAAAAAMD//////wAAAAAAAAAA/AMAAAAA8P////8/AAAAAAAAAAD8AQAAAAD4/////38AAAAAAAAAAHwAAAAAAP7////7fwAAAAAAAAAAHAAAAACA////P/B/AAAAAAAAAAAMAAAAAMD///8D8H8AAAAAAAAAAAAAAAAA8P///wDwfwAAAAAAAAAAAAAAAAD4//8/AP7/AAAAAAAAAAAAAAAAAP7//x8A/P8AAAAAAAAAAAAAAACA////DwD8/wAAAAAAAAAAAAAAAMD///8fAPz/AAAAAAAAAAAAAAAA8P///x8A/P8BAAAAAAAAAAAAAAD4////vwD4/wEAAAAAAAAAAAAAAP7///8/APj/AQAAAAAAAAAAAACA/////z8A+P8BAAAAAAAAAAAAAMD/////Bwz4/wEAAAAAAAAAAAAA8P////8DDvj/AwAAAAAAAAAAAAD8/////4Af8P8DAAAAAAAAAAAAAP7//4//wB/w/wMAAAAAAAAAAACA////gx/gH/D/AwAAAAAAAAAAAMD///8BD/gf8P8DAAAAAAAAAAAA8P//fwACzD/w/wcAAAAAAAAAAAD8//8/gAPPP+D/BwAAAAAAAAAAAP7//w8gwN8/4P/HAAAAAAAAAACA////BzDg3w/g//8AAAAAAAAAAMD///8HDPj/AeD//wAAAAAAAAAA8P///wEP/n8AwP//AAAAAAAAAAD8////gAD/PwDA//8AAAAAAAAAAP7//z/AwP9/AMD//wAAAAAAAADg////DwDw//8BAP7/AAAAAAAAAPD///8HAOj//wEA/v8AAAAAAAAA/P///wEw4P//AYD//wAAAAAAAAD8////AbPg//8D/v//AAAAAAAAAPz///8jQMD//wP+//8AAAAAAAAA/P///z9AwP//A/7//wAAAAAAAAD8///nPwDA//8H/P//AAAAAAAAAPz//+F/AID//wf8//8AAAAAAAAA/P9/4P8A8P//D/z//wAAAAAAAAD8/z/w/wAR//8P+P//AAAAAAAAAPz/D/z/AAH//w/4//8AAAAAAAAA/P8H/v8AAf//H/j//wAAAAAAAAD8z4H8/wEA/v8PAPD/AAAAAAAAAPzD4fj/AQD+/w8A8P8AAAAAAAAA/AEI+P8BBPz/DwDw/wAAAAAAAAB8AAzw/wME/P8fAOD/AAAAAAAAADwADPD/Bwz8/x8A4P8AAAAAAAAADAAI8P8HDPj/HwDg/wAAAAAAAACAAAjg/w8A+P8/AOA/AAAAAAAAAOAAAMD/DxDw/z8A4AcAAAAAAAAAAAQwwP8PEPD/fwDAAAAAAAAAAAAMBDCA/x8w8P9/AAAAAAAAAAAAAAAAIID/HwDg/38AAAAAAAAAAAAAAAAggP8fAOD//wAAAAAAAAAAAAAAAAAA/z8A4P//AAAAAAAAAAAAAAAAAAD/PwDA//8AAAAAAAAAAAAAAACAAP8/AMD//wEAAAAAAAAAAAAAwIEA/n8AgP9/AAAAAAAAAAAAAADwAQD+fwCA/x8AAAAAAAAAAAAAAPwDAP5/AID/AwAAAAAAAAAAAAAA/wMC/P8AAH8AAAAAAAAAAAAAAMD/BwL8/wAAHwAAAAAAAAAAAAAA8P8HAPj/AQADAAAAAAAAAAAAAAD4/w8A+P8BAAAAAAAAAAAAAAAAAPj/DwD4/wEAAAAAAAAAAAAAAAAA8P8fAPD/AwAAAAAAAAAAAAAAAADw/x8A8P8DAAAAAAAAAAAAAAAAAOD/PwDw/wMAAAAAAAAAAAAAAAAA4P8/AOD/BwAAAAAAAAAAAAAAAADA/38A4P8HAAAAAAAAAAAAAAAAAMD/fwDg/wMAAAAAAAAAAAAAAAAAgP//AMB/AAAAAAAAAAAAAAAAAACA//8AwD8AAAAAAAAAAAAAAAAAAAD//wHADwAAAAAAAAAAAAAAAAAAAP//AYADAAAAAAAAAAAAAAAAAAAA/v8DgAAAAAAAAAAAAAAAAAAAAAD+/wMAAAAAAAAAAAAAAAAAAAAAAPz/BwAAAAAAAAAAAAAAAAAAAAAA/P8HAAAAAAAAAAAAAAAAAAAAAAD4/w8AAAAAAAAAAAAAAAAAAAAAAPj/DwAAAAAAAAAAAAAAAAAAAAAA8P8fAAAAAAAAAAAAAAAAAAAAAADw/x8AAAAAAAAAAAAAAAAAAAAABOD/BwAAAAAAAAAAAAAAAAAAAAAE4P8BAAAAAAAAAAAAAAAAAAAAAATAfwAAAAAAAAAAAAAAAAAAAAAADMAfAAAAAAAAAAAAAAAAAAAAAAAMgAcAAAAAAAAAAAAAAAAAAAAAAByAAQAAAAAAAAAAAAAAAAAAAAAAHAAAAAAAAAAAAAAAAAAAAAAAAAA8AAAAAAAAAAAAAAAAAAAAAAAAADwAAAAAAAAAAAAAAAAAAAAAAAAAPAAAAAAAAAAAAAAAAAAAAAAAAAB8AAAAAAAAAAAAAAAAAAAAAAAAAHwAAAAAAAAAAAAAAA4AAAAAAAAAHAAAAAAAAAAAAADADwAAAAAAAAAEAAAAAAAAAAAAAPAfAAAAAAAAAAAAAAAAAAAAAAAA/h8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+var HULL_B64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAAAAAAADAAAAAAAAAAAAAAAAAAAAAAAAAAcAAAAAAAAAAAAAAAAAAAAAAAAABwAAAAAAAAAAAAAAAAAAAAAAAAAHAAAAAAAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAeAAAAAAAAAAAAAAAAAAAAAAAAAD/AAAAAAAAAAAAAAAAAAAAAAAA4P8AAAAAAAAAAAAAAAAAAAAAAAD8/wAAAAAAAAAAAAAAAAAAAAAAAP//AAAAAAAAAAAAAAAAAAAAAADg/38AAAAAAAAA8AAAAAAAAAAAAPz/HwAAAAAAAAD/AAAAAAAAAAAA//8PAAAAAAAA+P8AAAAAAAAAAOD//wMAAAAAAMD//wAAAAAAAAAA+P//AAAAAAAA/v//AAAAAAAAAAD//38AAAAAAOD///8AAAAAAAAAwP//HwAAAAAA/v///wAAAAAAAAD4//8PAAAAAMD/////AAAAAAAAAP7//wMAAAAA8P////8AAAAAAADA////AAAAAAD4/////wAAAAAAAPD//38AAAAAAP7/////AAAAAAAA/v//HwAAAAAA//////8AAAAAAID///8PAAAAAMD//////wAAAAAA8P///wMAAAAA8P//////AAAAAAD8////AAAAAAD4//////8AAAAAgP///38AAAAAAP7//////wAAAADg////HwAAAAAA////////AAAAAPj///8PAAAAAMD///////8AAAAA/////wMAAAAA8P///////wAAAMD/////AAAAAAD4////////AAAA8P///38AAAAAAP7///////8AAADg////HwAAAACA/////////wAAAOD///8PAAAAAMD/////////AAAA8P///wMAAAAA8P////////8AAAD8////AAAAAAD4/////////wAAAP///38AAAAAAP7/////////AADA////HwAAAACA//////////8AAPD///8PAAAAAMD//////////wAA/v///wMAAAAA8P//////////AID/////AAAAAAD4//////////8A4P///38AAAAAAP7//////////wD4////HwAAAACA////////////AP7///8PAAAAAMD///////////+A/////wMAAAAA8P////////////D/////AAAAAAD4/////////////P///38AAAAAAP7/////////////////HwAAAACA//////////////////8PAAAAAMD//////////////////wMAAAAA8P//////////////////AQAAAAD8/////////////////38AAAAAAP7/////////////////PwAAAACA//////////////////8fAAAAAMD//////////////////wcAAAAA8P//////////////////AQAAAAD8//////////////////8AAAAAAP7/////////////////PwAAAADA//////////////////8PAAAAAOD//////////////////wMAAAAA+P//////////////////AQAAAAD8/////////////////38AAAAAAP//////////////////HwAAAADA//////////////////8PAAAAAOD//////////////////wMAAAAA+P//////////////////AAAAAAD8/////////////////38AAAAAAP//////////////////HwAAAADA//////////////////8HAAAAAOD//////////////////wMAAAAA+P//////////////////AAAAAAD+//////////////////8AAAAAAP///////////////////wAAAADA////////////////////AAAAAOD///////////////////8AAAAA+P///////////////////wAAAAD+//////////////////8/AAAAAP///////////////////wEAAADA//////////////////8/AAAAAOD//////////////////w8AAAAA+P//////////////////AwAAAAD+/////////////////z8AAAAAAP//////////////////HwAAAADA//////////////////8HAAAAAPD//////////////////wEAAAAA+P////////////////9/AAAAAAD+/////////////////x8AAAAAAP//////////////////BwAAAADA//////////////////8BAAAAAPD/////////////////fwAAAAAA+P////////////////8PAAAAAAD+/////////////////wMAAAAAAP//////////////////AAAAAADA/////////////////z8AAAAAAPD/////////////////DwAAAAAA+P////////////////8BAAAAAAD+////////////////fwAAAAAAAP////////////////8fAAAAAAAA/////////////////wcAAAAAAAD/////////////////AAAAAAAAAP///////////////z8AAAAAAAAA////////////////DwAAAAAAAAD///////////////8DAAAAAAAAAP///////////////wAAAAAAAAAA//////////////8PAAAAAAAAAAD//////////////wEAAAAAAAAAAP////////////8fAAAAAAAAAAAA/////////////wcAAAAAAAAAAAD/////////////BwAAAAAAAAAAAP////////////8PAAAAAAAAAAAA/////////////wcAAAAAAAAAAAD//////////8f/AQAAAAAAAAAAAP//////////wH8AAAAAAAAAAAAA/////////w+AHwAAAAAAAAAAAAD/////////B4AHAAAAAAAAAAAAAP////////8HAAEAAAAAAAAAAAAA/////////w8AAAAAAAAAAAAAAAD/////////DwAAAAAAAAAAAAAAAP//////g/8fAAAAAAAAAAAAAAAA/////3+A/x8AAAAAAAAAAAAAAAD/////HwD/PwAAAAAAAAAAAAAAAP////8/AP8/AAAAAAAAAAAAAAAA/////z8A/x8AAAAAAAAAAAAAAAD/////fwD+BwAAAAAAAAAAAAAAAP//H/9/AP4BAAAAAAAAAAAAAAAH//8B/n8APAAAAAAAAAAAAAAAwAf//wD+/wAMAAAAAAAAAAAAAAD4D///APz/AAAAAAAAAAAAAAAAAP8P//8A/P8BAAAAAAAAAAAAAADg/x///wH4/wEAAAAAAAAAAAAAAPj/H/j/Afj/AwAAAAAAAAAAAAAA//8f8P8D+P8AAAAAAAAAAAAAAOD//z/w/wPwHwAAAAAAAAAAAAAA8P//P+D/B/AHAAAAAAAAAAAAAADw//8/4P8H4AEAAAAAAAAAAAAAAPD//3/A/wcgAAAAAAAAAAAAAAAA4P//f8D/DwAAAAAAAAAAAAAAAADg////wP8PAAAAAAAAAAAAAADA/8D///+A/wcAAAAAAAAAAAAAAPj//////4D/AAAAAAAAAAAAAAAA////////AB8AAAAAAAAAAAAAAMD///////8AAwAAAAAAAAAAAAAA+P///////wAAAAAAAAAAAAAAAADw//////8/AAAAAAAAAAAAAAAAAPD//////38AAAAAAAAAAAAAAAAA8P//////fwAAAAAAAAAADAAAAADg////////AAAAAAAAAAAfAAAAAeD///////8AAAAAAAAAwB8AADgA4P///////wAAAAAAAAD4PwAAPgDA////////AAAAAAAAAP4/AAB+AMD///////8AAAAAAADA/38AAP8AgP///////wAAAAAAAPD/fwDg/wGA//////9/AAAAAAAA/P9/AOD/A4D//////w8=";
+
+var FOOTPRINTS = [{"id":"obs-34128","pts":[{"x":146.5,"y":65.1},{"x":150.6,"y":62.8},{"x":181.2,"y":56.4},{"x":186.2,"y":56.6},{"x":187.7,"y":59.1},{"x":190.1,"y":70.6},{"x":190.5,"y":74.9},{"x":188,"y":76},{"x":150.5,"y":83.9}]},{"id":"obs-34425","pts":[{"x":137.2,"y":68.6},{"x":145,"y":67.5},{"x":146.8,"y":69.1},{"x":151,"y":85.2},{"x":143.4,"y":88.4}]},{"id":"obs-35169","pts":[{"x":37.2,"y":81.2},{"x":62.9,"y":65.2},{"x":63.2,"y":65.5},{"x":69.6,"y":75.9},{"x":69.1,"y":76.2},{"x":43.8,"y":91.9}]},{"id":"obs-35205","pts":[{"x":27.9,"y":39.5},{"x":38,"y":35},{"x":75,"y":20.1},{"x":91.6,"y":14.2},{"x":93.8,"y":13.7},{"x":93.9,"y":13.7},{"x":95.4,"y":14.4},{"x":96.4,"y":16},{"x":96.3,"y":17.3},{"x":95.6,"y":19},{"x":44.8,"y":50.8},{"x":41.4,"y":52.8},{"x":31,"y":44.3}]},{"id":"obs-35383","pts":[{"x":0.4,"y":150.6},{"x":0.3,"y":151.1},{"x":-18.6,"y":155.5},{"x":-22.3,"y":145.7},{"x":-5.3,"y":137.4}]},{"id":"obs-36099","pts":[{"x":20.5,"y":122.3},{"x":32.1,"y":115.2},{"x":41.7,"y":137.6},{"x":29.4,"y":142.9}]},{"id":"obs-36182","pts":[{"x":20.6,"y":145.1},{"x":8.3,"y":149},{"x":1.3,"y":132.7},{"x":12.4,"y":126.1}]},{"id":"obs-36688","pts":[{"x":-30.8,"y":123.9},{"x":-12.1,"y":111.7},{"x":0.9,"y":103.7},{"x":2.7,"y":102.5},{"x":9.3,"y":113.2},{"x":-22.3,"y":132.8},{"x":-26,"y":135.1}]},{"id":"obs-37588","pts":[{"x":24.2,"y":89.2},{"x":37.2,"y":81.2},{"x":43.8,"y":91.9},{"x":34.6,"y":97.6},{"x":30.8,"y":99.9}]},{"id":"obs-37747","pts":[{"x":154.4,"y":79.8},{"x":158.8,"y":73.9},{"x":178.6,"y":69.7},{"x":184.2,"y":73.1},{"x":184.7,"y":75.5},{"x":160.5,"y":81.7},{"x":154.9,"y":82.5}]},{"id":"obs-37828","pts":[{"x":39.7,"y":109.1},{"x":51.5,"y":104},{"x":62.3,"y":129.1},{"x":50.5,"y":134.2}]},{"id":"obs-37846","pts":[{"x":146.8,"y":69.1},{"x":155.2,"y":60.7},{"x":172.7,"y":57},{"x":186.4,"y":55.6},{"x":188.7,"y":58.9},{"x":189.5,"y":62.8},{"x":191.1,"y":75.4},{"x":150.2,"y":85.3}]},{"id":"obs-37897","pts":[{"x":148.9,"y":67.3},{"x":173.8,"y":62.1},{"x":176.4,"y":61.5},{"x":184.5,"y":59.8},{"x":187.2,"y":72.4},{"x":159.8,"y":78.7},{"x":158.1,"y":79.1},{"x":154.4,"y":79.8},{"x":151.6,"y":80.4},{"x":149.1,"y":68.6}]},{"id":"obs-37960","pts":[{"x":150.2,"y":85.3},{"x":158.8,"y":73.9},{"x":158.8,"y":73.9},{"x":160.6,"y":82.1},{"x":151,"y":85.2},{"x":150.2,"y":85.4}]},{"id":"obs-39111","pts":[{"x":2.7,"y":102.5},{"x":24.2,"y":89.2},{"x":30.8,"y":99.9},{"x":9.3,"y":113.2}]},{"id":"obs-39964","pts":[{"x":84.1,"y":117.2},{"x":72,"y":123.1},{"x":59.8,"y":98.4},{"x":72,"y":92.5}]},{"id":"obs-39993","pts":[{"x":107.2,"y":148.4},{"x":119.9,"y":143.7},{"x":133.7,"y":145.1},{"x":158.1,"y":149},{"x":161.8,"y":157.9},{"x":120.1,"y":168.6},{"x":113.5,"y":165.6}]},{"id":"obs-40127","pts":[{"x":49,"y":159.8},{"x":68.2,"y":151.8},{"x":79.1,"y":178},{"x":59.9,"y":186}]},{"id":"obs-40286","pts":[{"x":-44.8,"y":76.4},{"x":38.2,"y":37.8},{"x":38.8,"y":39.1},{"x":44.1,"y":50.6},{"x":29.3,"y":61.1},{"x":-21.6,"y":91.4},{"x":-35.8,"y":99.9},{"x":-36,"y":100}]},{"id":"obs-40695","pts":[{"x":131.5,"y":139.1},{"x":154.8,"y":130.6},{"x":161.1,"y":147.9},{"x":137.9,"y":156.5},{"x":137.5,"y":155.3}]},{"id":"obs-41077","pts":[{"x":-40.8,"y":0.9},{"x":-15.9,"y":-7.6},{"x":-4.3,"y":-11.6},{"x":3.4,"y":11},{"x":-1.3,"y":12.6},{"x":-37.1,"y":12}]},{"id":"obs-41291","pts":[{"x":37,"y":138.6},{"x":30.1,"y":141.6},{"x":22,"y":122.4},{"x":32.6,"y":116.4},{"x":41.5,"y":137.1},{"x":37.2,"y":139}]},{"id":"obs-41701","pts":[{"x":98.9,"y":153},{"x":93.7,"y":154.7},{"x":103.1,"y":165.9},{"x":99,"y":167.2},{"x":99.3,"y":167.9},{"x":92.7,"y":170},{"x":92.5,"y":169.4},{"x":88.2,"y":170.8},{"x":84.3,"y":158.8},{"x":89.3,"y":157.2},{"x":88.7,"y":155.3},{"x":93.4,"y":153.8}]},{"id":"obs-42143","pts":[{"x":-25.6,"y":137.9},{"x":-22.3,"y":132.8},{"x":63.2,"y":65.5},{"x":125.2,"y":27},{"x":129.3,"y":25.2},{"x":168.8,"y":16.9},{"x":178.7,"y":21.1},{"x":180.4,"y":29.3},{"x":187.1,"y":61},{"x":136.8,"y":91.9},{"x":95.2,"y":110.7},{"x":-22.1,"y":143.6}]}];
+
+var W = 160, H = 160;
+
+// View bounds in LV95
+var VIEW_MIN_E = 2537692;
+var VIEW_MIN_N = 1152117;
+
+// Tile grid origin
+var TILE_ORIGIN_E = 2537750;
+var TILE_ORIGIN_N = 1152000;
+var TILE_SIZE = 250;
+
+// --- Decode base64 bitfield ---
+function decodeBitfield(b64, count) {
+  var raw = atob(b64);
+  var bytes = new Uint8Array(raw.length);
+  for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  var result = new Uint8Array(count);
+  for (var i = 0; i < count; i++) {
+    result[i] = (bytes[i >> 3] >> (i & 7)) & 1;
+  }
+  return result;
+}
+
+var zenith = decodeBitfield(ZENITH_B64, W * H);
+var hull = decodeBitfield(HULL_B64, W * H);
+
+// --- Colors ---
+var COL_OUTDOOR = [232, 200, 64, 255];    // yellow
+var COL_INDOOR  = [42, 42, 58, 255];      // dark gray
+var COL_ZENITH_ONLY = [48, 160, 80, 255]; // green (zenith says indoor, hull says outdoor)
+var COL_HULL_ONLY = [208, 64, 64, 255];   // red (hull says indoor, zenith says outdoor = courtyard)
+var COL_BOTH_INDOOR = [42, 42, 58, 255];  // dark gray (both agree indoor)
+var COL_BOTH_OUTDOOR = [232, 200, 64, 255]; // yellow (both agree outdoor)
+var COL_OOB = [30, 30, 50, 255];          // out of tile bounds
+
+// --- Render helpers ---
+// Note: canvas Y=0 is top. Our data row 0 = view south (lowest northing).
+// We flip Y so north is at top: canvas row r -> data row (H-1-r).
+
+function renderMask(canvasId, mask, label) {
+  var c = document.getElementById(canvasId);
+  var ctx = c.getContext("2d");
+  var img = ctx.createImageData(W, H);
+  var d = img.data;
+  var indoorCount = 0;
+  for (var cy = 0; cy < H; cy++) {
+    var dy = H - 1 - cy; // flip Y
+    for (var cx = 0; cx < W; cx++) {
+      var idx = dy * W + cx;
+      var px = (cy * W + cx) * 4;
+      var isIndoor = mask[idx];
+      if (isIndoor) indoorCount++;
+      var col = isIndoor ? COL_INDOOR : COL_OUTDOOR;
+      d[px] = col[0]; d[px+1] = col[1]; d[px+2] = col[2]; d[px+3] = col[3];
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // Draw building footprint outlines
+  drawFootprints(ctx);
+
+  return indoorCount;
+}
+
+function renderDiff(canvasId, zenithMask, hullMask) {
+  var c = document.getElementById(canvasId);
+  var ctx = c.getContext("2d");
+  var img = ctx.createImageData(W, H);
+  var d = img.data;
+  var zenithOnly = 0, hullOnly = 0, both = 0;
+  for (var cy = 0; cy < H; cy++) {
+    var dy = H - 1 - cy;
+    for (var cx = 0; cx < W; cx++) {
+      var idx = dy * W + cx;
+      var px = (cy * W + cx) * 4;
+      var z = zenithMask[idx];
+      var h = hullMask[idx];
+      var col;
+      if (z && h) { col = COL_BOTH_INDOOR; both++; }
+      else if (z && !h) { col = COL_ZENITH_ONLY; zenithOnly++; }
+      else if (!z && h) { col = COL_HULL_ONLY; hullOnly++; }
+      else { col = COL_BOTH_OUTDOOR; }
+      d[px] = col[0]; d[px+1] = col[1]; d[px+2] = col[2]; d[px+3] = col[3];
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  drawFootprints(ctx);
+  return { zenithOnly: zenithOnly, hullOnly: hullOnly, both: both };
+}
+
+function drawFootprints(ctx) {
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.lineWidth = 0.5;
+  for (var fi = 0; fi < FOOTPRINTS.length; fi++) {
+    var fp = FOOTPRINTS[fi];
+    var pts = fp.pts;
+    var isTarget = (fp.id === "obs-42143");
+    ctx.strokeStyle = isTarget ? "rgba(0,180,255,0.7)" : "rgba(255,255,255,0.25)";
+    ctx.lineWidth = isTarget ? 1 : 0.5;
+    ctx.beginPath();
+    // flip Y: canvas y = H - data y
+    ctx.moveTo(pts[0].x, H - pts[0].y);
+    for (var pi = 1; pi < pts.length; pi++) {
+      ctx.lineTo(pts[pi].x, H - pts[pi].y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+  }
+}
+
+// --- Render the 3 static panels ---
+var zCount = renderMask("cZenith", zenith, "Zenith");
+var hCount = renderMask("cHull", hull, "Hull");
+var diff = renderDiff("cDiff", zenith, hull);
+
+var total = W * H;
+document.getElementById("statsBox").innerHTML =
+  "<b>Zenith:</b> " + zCount + " indoor / " + (total - zCount) + " outdoor" +
+  " &nbsp;|&nbsp; <b>Hull:</b> " + hCount + " indoor / " + (total - hCount) + " outdoor" +
+  " &nbsp;|&nbsp; <b>Diff:</b> " + diff.both + " agree indoor, " +
+  diff.zenithOnly + " zenith-only, <b>" + diff.hullOnly + " hull-only (courtyard recovered)</b>" +
+  "<br>Courtyard area: ~" + diff.hullOnly + " m&sup2; correctly identified as outdoor by zenith shadow map";
+
+// --- SSE canvas: connect to live endpoint ---
+(function() {
+  var sseCanvas = document.getElementById("cSSE");
+  var sseCtx = sseCanvas.getContext("2d");
+  var statusEl = document.getElementById("sseStatus");
+
+  // Fill with placeholder
+  sseCtx.fillStyle = "#1a1a2e";
+  sseCtx.fillRect(0, 0, W, H);
+  sseCtx.fillStyle = "#555";
+  sseCtx.font = "11px sans-serif";
+  sseCtx.textAlign = "center";
+  sseCtx.fillText("Connecting to SSE...", W/2, H/2);
+
+  var sseUrl = "/api/sunlight/timeline/stream?" +
+    "date=2026-08-15&startLocalTime=12:00&endLocalTime=12:15&sampleEveryMinutes=15" +
+    "&gridStepMeters=1&buildingHeightBiasMeters=0&cacheOnly=false&maxComputeTiles=4" +
+    "&minLon=6.6198&minLat=46.5164&maxLon=6.6225&maxLat=46.5190";
+
+  statusEl.textContent = "Connecting...";
+
+  var es = new EventSource(sseUrl);
+  var startInfo = null;
+  var tilesReceived = 0;
+
+  es.addEventListener("start", function(e) {
+    startInfo = JSON.parse(e.data);
+    statusEl.textContent = "Started: " + startInfo.totalTiles + " tiles, frameCount=" + startInfo.frameCount;
+  });
+
+  es.addEventListener("tile", function(e) {
+    var tile = JSON.parse(e.data);
+    tilesReceived++;
+    statusEl.textContent = "Tile " + tilesReceived + "/" + (startInfo ? startInfo.totalTiles : "?") +
+      " | grid " + tile.grid.width + "x" + tile.grid.height + " | decoding...";
+
+    // Decode the gzip-compressed masks blob
+    decodeMasks(tile.masksBase64, tile.grid.width, tile.grid.height, startInfo ? startInfo.frameCount : 0)
+      .then(function(masks) {
+        // Render the outdoor mask onto our view
+        renderSSETile(tile, masks.outdoor);
+        statusEl.textContent = "Tile " + tilesReceived + "/" + (startInfo ? startInfo.totalTiles : "?") +
+          " rendered | outdoor bits: " + countBits(masks.outdoor, tile.grid.width * tile.grid.height);
+      })
+      .catch(function(err) {
+        statusEl.textContent = "Decode error: " + err.message;
+      });
+  });
+
+  es.addEventListener("done", function(e) {
+    es.close();
+    var info = JSON.parse(e.data);
+    statusEl.textContent = "Done! " + tilesReceived + " tiles, " +
+      (info.totalPointCount || "?") + " outdoor pts, " +
+      (info.totalIndoorExcluded || "?") + " indoor excluded";
+    // Draw footprints on top
+    drawFootprints(sseCtx);
+  });
+
+  es.addEventListener("error", function(e) {
+    if (es.readyState === EventSource.CLOSED) {
+      statusEl.textContent = "SSE connection closed";
+    } else {
+      statusEl.textContent = "SSE error (is the server running on localhost:3000?)";
+    }
+  });
+
+  function countBits(mask, count) {
+    var n = 0;
+    for (var i = 0; i < count; i++) {
+      if ((mask[i >> 3] >> (i & 7)) & 1) n++;
+    }
+    return n;
+  }
+
+  // Decompress gzip base64 blob using DecompressionStream
+  function decodeMasks(masksBase64, gridW, gridH, frameCount) {
+    var binaryStr = atob(masksBase64);
+    var compressed = new Uint8Array(binaryStr.length);
+    for (var i = 0; i < binaryStr.length; i++) {
+      compressed[i] = binaryStr.charCodeAt(i);
+    }
+
+    var ds = new DecompressionStream("gzip");
+    var writer = ds.writable.getWriter();
+    var reader = ds.readable.getReader();
+
+    writer.write(compressed);
+    writer.close();
+
+    var chunks = [];
+    var totalLen = 0;
+
+    function readAll() {
+      return reader.read().then(function(result) {
+        if (result.done) {
+          var decompressed = new Uint8Array(totalLen);
+          var offset = 0;
+          for (var i = 0; i < chunks.length; i++) {
+            decompressed.set(chunks[i], offset);
+            offset += chunks[i].length;
+          }
+          var maskBytes = Math.ceil((gridW * gridH) / 8);
+          var outdoor = decompressed.slice(0, maskBytes);
+          return { outdoor: outdoor };
+        }
+        chunks.push(result.value);
+        totalLen += result.value.length;
+        return readAll();
+      });
+    }
+
+    return readAll();
+  }
+
+  // Render a single SSE tile's outdoor mask onto the SSE canvas
+  function renderSSETile(tile, outdoorMask) {
+    var grid = tile.grid;
+    // grid.minIx, minIy are in absolute LV95 integer coords (meters)
+    // Our view: viewMinE..viewMinE+160, viewMinN..viewMinN+160
+    var img = sseCtx.getImageData(0, 0, W, H);
+    var d = img.data;
+
+    for (var gy = 0; gy < grid.height; gy++) {
+      var absN = grid.minIy + gy; // absolute northing
+      var vy = absN - VIEW_MIN_N; // view-space row (0 = south)
+      if (vy < 0 || vy >= H) continue;
+      var canvasY = H - 1 - vy; // flip for canvas
+
+      for (var gx = 0; gx < grid.width; gx++) {
+        var absE = grid.minIx + gx;
+        var vx = absE - VIEW_MIN_E;
+        if (vx < 0 || vx >= W) continue;
+
+        var cellIdx = gy * grid.width + gx;
+        var isOutdoor = (outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1;
+        var px = (canvasY * W + vx) * 4;
+        var col = isOutdoor ? COL_OUTDOOR : COL_INDOOR;
+        d[px] = col[0]; d[px+1] = col[1]; d[px+2] = col[2]; d[px+3] = col[3];
+      }
+    }
+    sseCtx.putImageData(img, 0, 0);
+  }
+})();
+</script>
+</body>
+</html>
