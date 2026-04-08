@@ -1084,6 +1084,15 @@ async function getOrCreateTileArtifact(params: {
   });
 
   const artifact = await runWithInFlightDedup(dedupKey, async () => {
+    // Load pre-computed grid metadata (zenith indoor mask + elevations)
+    let gridMetadata: TileGridMetadata | null | undefined;
+    try {
+      const { loadTileGridMetadata } = await import("@/lib/precompute/tile-grid-metadata");
+      gridMetadata = await loadTileGridMetadata(
+        params.region, params.modelVersionHash, params.gridStepMeters, params.tile.tileId,
+      );
+    } catch {}
+
     const computed = await computeSunlightTileArtifact({
       region: params.region,
       modelVersionHash: params.modelVersionHash,
@@ -1098,6 +1107,7 @@ async function getOrCreateTileArtifact(params: {
       shadowCalibration: params.shadowCalibration,
       cooperativeYieldEveryPoints: 5000,
       onProgress: params.onProgress,
+      gridMetadata,
     });
     if (params.persistMissingTiles) {
       await writePrecomputedSunlightTile(computed);
