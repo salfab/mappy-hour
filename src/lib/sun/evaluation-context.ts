@@ -324,9 +324,9 @@ export async function buildSharedPointEvaluationSources(
         regionName, modelVersion.modelVersionHash, 1, tileId,
       );
       if (metadata) {
-        const gridMinIx = Math.floor(tileMinE) + 0; // grid starts at tile boundary
-        const gridMinIy = Math.floor(tileMinN) + 0;
-        const gridW = Math.ceil(tileSizeMeters); // 250 columns for 1m grid
+        const gridMinIx = Math.floor(tileMinE);
+        const gridMinIy = Math.floor(tileMinN);
+        const gridW = Math.ceil(tileSizeMeters);
         zenithIndoorCheck = (easting: number, northing: number) => {
           const ix = Math.floor(easting) - gridMinIx;
           const iy = Math.floor(northing) - gridMinIy;
@@ -334,12 +334,100 @@ export async function buildSharedPointEvaluationSources(
           const idx = iy * gridW + ix;
           return metadata.indoor[idx] ?? false;
         };
-        if (!indoorCheckLogged) {
-          console.error(`[indoor-check] Loaded zenith indoor mask for ${tileId} (${metadata.indoorCount} indoor)`);
-          indoorCheckLogged = true;
+        console.error(`[indoor-check] Loaded zenith indoor mask for ${tileId} (${metadata.indoorCount} indoor)`);
+      } else if (gpuShadowBackend) {
+        // Grid metadata not pre-computed — generate zenith mask on the fly.
+        // Render sun straight down, blocked = under a roof = indoor.
+        console.error(`[indoor-check] No grid metadata for ${tileId}, computing zenith on the fly...`);
+        const tileMinE_ = tileMinE;
+        const tileMinN_ = tileMinN;
+        const gridW = Math.ceil(tileSizeMeters);
+        const gridH = gridW;
+        const gridCount = gridW * gridH;
+        const indoorMask = new Uint8Array(Math.ceil(gridCount / 8));
+
+        // Set frustum focus and render zenith shadow map
+        if ("setFrustumFocus" in gpuShadowBackend) {
+          (gpuShadowBackend as { setFrustumFocus: (b: { minX: number; minY: number; maxX: number; maxY: number }, h: number) => void }).setFrustumFocus(
+            { minX: tileMinE_, minY: tileMinN_, maxX: tileMinE_ + tileSizeMeters, maxY: tileMinN_ + tileSizeMeters },
+            buildingsIndex ? buildingsIndex.obstacles.reduce((m, o) => Math.max(m, o.height), 0) : 100,
+          );
         }
+        // Use unique azimuth to bust the render cache
+        gpuShadowBackend.prepareSunPosition(Math.floor(Math.random() * 360), 90);
+
+        // Evaluate each grid cell
+        let indoorCount = 0;
+        for (let iy = 0; iy < gridH; iy++) {
+          for (let ix = 0; ix < gridW; ix++) {
+            const easting = tileMinE_ + ix + 0.5;
+            const northing = tileMinN_ + iy + 0.5;
+            // Approximate ground elevation — the zenith ray is straight down so
+            // the exact elevation barely matters (just needs to be below the roof).
+            const approxElevation = 500;
+            const result = gpuShadowBackend.evaluate({
+              pointX: easting,
+              pointY: northing,
+              pointElevation: approxElevation,
+              solarAzimuthDeg: 0,
+              solarAltitudeDeg: 90,
+            });
+            if (result.blocked) {
+              const idx = iy * gridW + ix;
+              indoorMask[idx >> 3] |= 1 << (idx & 7);
+              indoorCount++;
+            }
+          }
+        }
+
+        // Save for next time
+        try {
+          const { getTileGridMetadataPath } = await import("@/lib/precompute/tile-grid-metadata");
+          const fs = await import("node:fs/promises");
+          const path = await import("node:path");
+          const zlib = await import("node:zlib");
+          const { promisify } = await import("node:util");
+          const gzip = promisify(zlib.gzip);
+          const indoor: boolean[] = new Array(gridCount);
+          const elevations: (number | null)[] = new Array(gridCount);
+          for (let i = 0; i < gridCount; i++) {
+            indoor[i] = ((indoorMask[i >> 3] >> (i & 7)) & 1) === 1;
+            elevations[i] = indoor[i] ? null : 0; // elevation filled later per-point
+          }
+          const gmData = {
+            tileId, modelVersionHash: modelVersion.modelVersionHash,
+            gridStepMeters: 1, totalPoints: gridCount,
+            outdoorCount: gridCount - indoorCount, indoorCount,
+            elevations, indoor,
+          };
+          const filePath = getTileGridMetadataPath(regionName, modelVersion.modelVersionHash, 1, tileId);
+          await fs.mkdir(path.dirname(filePath), { recursive: true });
+          const compressed = await gzip(JSON.stringify(gmData));
+          await fs.writeFile(filePath, compressed);
+          console.error(`[indoor-check] Computed and saved zenith mask for ${tileId} (${indoorCount} indoor)`);
+        } catch (saveErr) {
+          console.error(`[indoor-check] Failed to save zenith mask: ${saveErr}`);
+        }
+
+        const gridMinIx = tileMinE_;
+        const gridMinIy = tileMinN_;
+        zenithIndoorCheck = (easting: number, northing: number) => {
+          const ix = Math.floor(easting) - gridMinIx;
+          const iy = Math.floor(northing) - gridMinIy;
+          if (ix < 0 || ix >= gridW || iy < 0 || iy >= gridH) return false;
+          const idx = iy * gridW + ix;
+          return ((indoorMask[idx >> 3] >> (idx & 7)) & 1) === 1;
+        };
+      } else {
+        throw new Error(
+          `Indoor detection unavailable for tile ${tileId}: no grid metadata and no GPU backend. ` +
+          `Run 'npm run precompute:grid-metadata' to generate zenith indoor masks, ` +
+          `or set MAPPY_BUILDINGS_SHADOW_MODE=gpu-raster in .env to enable GPU-based detection.`
+        );
       }
-    } catch {}
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("Indoor detection unavailable")) throw e;
+    }
   }
 
   return {
