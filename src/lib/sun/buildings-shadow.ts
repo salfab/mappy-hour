@@ -1471,52 +1471,8 @@ export function createDetailedBuildingShadowVerifier(
   };
 }
 
-export function findContainingBuilding(
-  obstacles: BuildingObstacle[],
-  pointX: number,
-  pointY: number,
-  spatialGrid?: BuildingObstacleSpatialGrid,
-): BuildingContainmentResult {
-  const candidateIndices = spatialGrid
-    ? Array.from(
-        collectObstacleIndicesInBounds({
-          spatialGrid,
-          minX: pointX - DEFAULT_SPATIAL_GRID_CELL_SIZE_METERS,
-          maxX: pointX + DEFAULT_SPATIAL_GRID_CELL_SIZE_METERS,
-          minY: pointY - DEFAULT_SPATIAL_GRID_CELL_SIZE_METERS,
-          maxY: pointY + DEFAULT_SPATIAL_GRID_CELL_SIZE_METERS,
-        }),
-      )
-    : obstacles.map((_, index) => index);
-
-  for (const obstacleIndex of candidateIndices) {
-    const obstacle = obstacles[obstacleIndex];
-    if (!obstacle) {
-      continue;
-    }
-    if (!isPointInsideBoundingBox(pointX, pointY, obstacle)) {
-      continue;
-    }
-
-    if (
-      obstacle.footprint &&
-      obstacle.footprint.length >= 3 &&
-      !pointInPolygon(pointX, pointY, obstacle.footprint)
-    ) {
-      continue;
-    }
-
-    return {
-      insideBuilding: true,
-      buildingId: obstacle.id,
-    };
-  }
-
-  return {
-    insideBuilding: false,
-    buildingId: null,
-  };
-}
+// findContainingBuilding removed — indoor detection now uses zenith shadow map.
+// See git history for the original convex hull containment check.
 
 export function evaluateBuildingsShadow(
   obstacles: BuildingObstacle[],

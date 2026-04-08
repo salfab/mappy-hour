@@ -458,14 +458,8 @@ export async function loadGpuMeshes(
     }
   }
 
-  // ── Fallback: extrude footprints for unmatched obstacles ───────────
-  for (const obs of obstacles) {
-    if (matchedObstacleIds.has(obs.id)) continue;
-    if (!obs.footprint || obs.footprint.length < 3 || obs.height < 0.5) continue;
-    const triCount = extrudeFootprint(obs, originX, originY, allVertices);
-    fallbackTriangleCount += triCount;
-    fallbackObstacleCount++;
-  }
+  // Footprint extrusion fallback removed — 100% of buildings have DXF meshes.
+  // Unmatched obstacles are simply skipped (no footprint needed).
 
   const parseMs = performance.now() - parseT0;
 
