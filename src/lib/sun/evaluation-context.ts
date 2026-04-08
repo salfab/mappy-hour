@@ -123,17 +123,38 @@ const BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES = 2;
 const BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS = 3;
 const BUILDINGS_DETAILED_MAX_REFINEMENT_STEPS = 32;
 
-// ── GPU backend singleton cache ──────────────────────────────────────
-// The GPU backend loads all DXF meshes (~15s). We cache it at module
-// level so it's created once and reused across all tiles/requests.
+// ── GPU backend cache ────────────────────────────────────────────────
+// The GPU backend is created per focus zone (~5km radius). When the
+// focus moves to a different zone, the backend is recreated with only
+// the buildings in that zone (spatial VBO filtering, ADR-0008).
+const GPU_FOCUS_MARGIN_METERS = 5000; // load buildings within 5km of focus
 let gpuBackendCache: import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null | undefined;
+let gpuBackendFocusKey = "";
 let gpuBackendLoading: Promise<import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null> | null = null;
 let indoorCheckLogged = false;
 
+function focusKeyFromBounds(bounds: { minX: number; minY: number; maxX: number; maxY: number }): string {
+  // Round to 1km grid so nearby tiles share the same key
+  const cx = Math.round((bounds.minX + bounds.maxX) / 2 / 1000);
+  const cy = Math.round((bounds.minY + bounds.maxY) / 2 / 1000);
+  return `${cx},${cy}`;
+}
+
 async function getOrCreateGpuBackend(
-  obstacles: Array<{ centerX: number; centerY: number; height: number; [key: string]: unknown }>,
+  obstacles: Array<{ centerX: number; centerY: number; height: number; minX: number; maxX: number; minY: number; maxY: number; [key: string]: unknown }>,
+  focusBounds?: { minX: number; minY: number; maxX: number; maxY: number },
 ): Promise<import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null> {
-  // Already created or failed
+  const newFocusKey = focusBounds ? focusKeyFromBounds(focusBounds) : "all";
+
+  // If focus zone changed, invalidate the cache
+  if (gpuBackendCache && newFocusKey !== gpuBackendFocusKey) {
+    console.log(`[evaluation-context] GPU focus changed (${gpuBackendFocusKey} → ${newFocusKey}), recreating backend...`);
+    gpuBackendCache.dispose();
+    gpuBackendCache = undefined;
+    gpuBackendLoading = null;
+  }
+
+  // Already created for this zone
   if (gpuBackendCache !== undefined) return gpuBackendCache;
 
   // Another call is already creating it — wait for that
@@ -141,17 +162,29 @@ async function getOrCreateGpuBackend(
 
   gpuBackendLoading = (async () => {
     try {
+      // Filter obstacles to focus zone + margin
+      let filtered = obstacles;
+      if (focusBounds) {
+        const margin = GPU_FOCUS_MARGIN_METERS;
+        filtered = obstacles.filter(o =>
+          o.maxX > focusBounds.minX - margin && o.minX < focusBounds.maxX + margin &&
+          o.maxY > focusBounds.minY - margin && o.minY < focusBounds.maxY + margin,
+        );
+        console.log(`[evaluation-context] Spatial filter: ${filtered.length}/${obstacles.length} obstacles within ${margin}m of focus`);
+      }
+
       const { GpuBuildingShadowBackend } = await import(
         "@/lib/sun/gpu-building-shadow-backend"
       );
       const backend = await GpuBuildingShadowBackend.createWithDxfMeshes(
-        obstacles as Parameters<typeof GpuBuildingShadowBackend.createWithDxfMeshes>[0],
+        filtered as Parameters<typeof GpuBuildingShadowBackend.createWithDxfMeshes>[0],
         4096,
       );
       console.log(
-        `[evaluation-context] GPU raster backend ready: ${backend.name}, ${backend.triangleCount} triangles (cached for reuse)`,
+        `[evaluation-context] GPU raster backend ready: ${backend.name}, ${backend.triangleCount} triangles`,
       );
       gpuBackendCache = backend;
+      gpuBackendFocusKey = newFocusKey;
       return backend;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -258,7 +291,7 @@ export async function buildSharedPointEvaluationSources(
   // ── GPU raster backend (optional, cached at module level) ──────────
   let gpuShadowBackend: SharedPointEvaluationSources["gpuShadowBackend"] = undefined;
   if (BUILDINGS_SHADOW_MODE === "gpu-raster" && buildingsIndex) {
-    const backend = await getOrCreateGpuBackend(buildingsIndex.obstacles);
+    const backend = await getOrCreateGpuBackend(buildingsIndex.obstacles, options.lv95Bounds ?? undefined);
     if (backend) {
       // Update frustum focus for this specific tile (narrows the shadow map
       // to the tile area for higher resolution). setFrustumFocus is specific
