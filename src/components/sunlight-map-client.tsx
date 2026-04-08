@@ -1448,8 +1448,8 @@ function buildTileContourPolygons(
   frameIndex: number,
   decodedMaskCache: Map<string, Uint8Array>,
   ignoreVegetation: boolean,
-): { sunnyPolygons: Array<[number, number][][]>; shadowPolygons: Array<[number, number][][]> } {
-  const empty = { sunnyPolygons: [], shadowPolygons: [] };
+): { sunnyPolygons: Array<[number, number][][]>; shadowPolygons: Array<[number, number][][]>; buildingPolygons: Array<[number, number][][]> } {
+  const empty = { sunnyPolygons: [], shadowPolygons: [], buildingPolygons: [] };
   if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) return empty;
 
   const grid = tile.grid;
@@ -1535,12 +1535,24 @@ function buildTileContourPolygons(
     );
   }
 
+  // Buildings grid: indoor=1, outdoor=0 (inverse of outdoor mask)
+  const buildingsGrid = new Float64Array(padW * padH);
+  for (let iy = 0; iy < tileH; iy++) {
+    for (let ix = 0; ix < tileW; ix++) {
+      const cellIdx = iy * tileW + ix;
+      const isOutdoor = outdoorMask ? ((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1 : true;
+      buildingsGrid[(iy + 1) * padW + (ix + 1)] = isOutdoor ? 0 : 1;
+    }
+  }
+
   const sunnyContours = contourGen(Array.from(sunnyGrid));
   const shadowContours = contourGen(Array.from(shadowGrid));
+  const buildingContours = contourGen(Array.from(buildingsGrid));
 
   return {
     sunnyPolygons: sunnyContours.length > 0 ? convertContour(sunnyContours[0]) : [],
     shadowPolygons: shadowContours.length > 0 ? convertContour(shadowContours[0]) : [],
+    buildingPolygons: buildingContours.length > 0 ? convertContour(buildingContours[0]) : [],
   };
 }
 
@@ -3595,6 +3607,22 @@ export function SunlightMapClient() {
               fillColor: "#334155",
               weight: 0,
               fillOpacity: 0.35,
+            }).addTo(contourLayerRef.current!);
+          }
+        }
+
+        // Building footprints from zenith outdoor mask (not convex hull)
+        if (showBuildings) {
+          for (const polygon of contours.buildingPolygons) {
+            const latLngRings = polygon.map(ring =>
+              ring.map(([lat, lon]) => [lat, lon] as [number, number])
+            );
+            L.polygon(latLngRings, {
+              color: "#2563eb",
+              fillColor: "#2563eb",
+              weight: 0.5,
+              opacity: 0.5,
+              fillOpacity: 0.2,
             }).addTo(contourLayerRef.current!);
           }
         }
