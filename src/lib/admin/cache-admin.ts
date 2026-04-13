@@ -1085,6 +1085,18 @@ export async function precomputeCacheRuns(
   if (tiles.length === 0) {
     throw new Error("No tiles selected for precompute.");
   }
+
+  // Sort tiles by spatial focus zone (1km grid) to minimize GPU backend
+  // recreations. Tiles in the same zone share the same shadow-map mesh,
+  // so grouping them avoids costly dispose+rebuild cycles.
+  tiles.sort((a, b) => {
+    const aKey = Math.round((a.minEasting + a.maxEasting) / 2 / 1000) * 10000 +
+                 Math.round((a.minNorthing + a.maxNorthing) / 2 / 1000);
+    const bKey = Math.round((b.minEasting + b.maxEasting) / 2 / 1000) * 10000 +
+                 Math.round((b.minNorthing + b.maxNorthing) / 2 / 1000);
+    return aKey - bKey;
+  });
+
   const dates: CachePrecomputeResult["dates"] = [];
   const totalTiles = tiles.length * request.days;
   let completedTiles = 0;
@@ -1165,6 +1177,18 @@ export async function precomputeCacheRuns(
           }
         }
         try {
+          // Load pre-computed grid metadata (zenith indoor mask + elevations)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let gridMetadata: any;
+          try {
+            const { loadTileGridMetadata } = await import("@/lib/precompute/tile-grid-metadata");
+            gridMetadata = await loadTileGridMetadata(
+              request.region, modelVersion.modelVersionHash, request.gridStepMeters, tile.tileId,
+            );
+          } catch {
+            // grid metadata not available — proceed without
+          }
+
           const artifact = await computeSunlightTileArtifact({
             region: request.region,
             modelVersionHash: modelVersion.modelVersionHash,
@@ -1177,8 +1201,9 @@ export async function precomputeCacheRuns(
             endLocalTime: request.endLocalTime,
             tile,
             shadowCalibration,
-            cooperativeYieldEveryPoints: 50,
+            cooperativeYieldEveryPoints: 5000,
             signal: options.signal,
+            gridMetadata,
             onProgress: (tileProgress) => {
               const tileFraction =
                 tileProgress.total <= 0

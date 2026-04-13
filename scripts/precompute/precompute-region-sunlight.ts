@@ -1,6 +1,7 @@
 import { precomputeCacheRuns, type CachePrecomputeProgress } from "../../src/lib/admin/cache-admin";
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 import { buildRegionTiles, getIntersectingTileIds } from "../../src/lib/precompute/sunlight-cache";
+import { loadTileSelectionForRegion } from "../../src/lib/precompute/tile-selection-file";
 
 interface ParsedArgs {
   region: PrecomputedRegionName;
@@ -14,6 +15,7 @@ interface ParsedArgs {
   buildingHeightBiasMeters: number;
   skipExisting: boolean;
   bbox: [number, number, number, number] | null;
+  tileSelectionFile: string | null;
 }
 
 const DEFAULT_ARGS: ParsedArgs = {
@@ -28,6 +30,7 @@ const DEFAULT_ARGS: ParsedArgs = {
   buildingHeightBiasMeters: 0,
   skipExisting: true,
   bbox: null,
+  tileSelectionFile: null,
 };
 
 function parseBoolean(value: string): boolean | null {
@@ -46,7 +49,12 @@ function parseArgs(argv: string[]): ParsedArgs {
   for (const arg of argv) {
     if (arg.startsWith("--region=")) {
       const region = arg.slice("--region=".length);
-      if (region === "lausanne" || region === "nyon") {
+      if (
+        region === "lausanne" ||
+        region === "nyon" ||
+        region === "morges" ||
+        region === "geneve"
+      ) {
         result.region = region;
       }
       continue;
@@ -113,36 +121,57 @@ function parseArgs(argv: string[]): ParsedArgs {
       }
       continue;
     }
+    if (arg.startsWith("--tile-selection-file=")) {
+      result.tileSelectionFile = arg.slice("--tile-selection-file=".length);
+      continue;
+    }
   }
   return result;
 }
 
-function shouldLogProgress(
-  current: CachePrecomputeProgress,
-  previous: CachePrecomputeProgress | null,
-): boolean {
-  if (!previous) {
-    return true;
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "--";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600)
+    return `${Math.floor(seconds / 60)}m${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
+  if (seconds < 86400) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return `${h}h${String(m).padStart(2, "0")}m`;
   }
-  if (current.date !== previous.date) {
-    return true;
-  }
-  if (current.currentTileState !== previous.currentTileState) {
-    return true;
-  }
-  if (current.currentTilePhase !== previous.currentTilePhase) {
-    return true;
-  }
-  if (current.tileIndex !== previous.tileIndex) {
-    if (
-      current.tileIndex <= 3 ||
-      current.tileIndex === current.tilesTotal ||
-      current.tileIndex % 100 === 0
-    ) {
-      return true;
-    }
-  }
-  return false;
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${d}j${String(h).padStart(2, "0")}h${String(m).padStart(2, "0")}m`;
+}
+
+function progressBar(percent: number, width = 24): string {
+  const filled = Math.max(0, Math.min(width, Math.round((percent / 100) * width)));
+  return "█".repeat(filled) + "░".repeat(width - filled);
+}
+
+function computeEta(elapsedMs: number, progress: CachePrecomputeProgress): number | null {
+  if (elapsedMs <= 0 || progress.totalTiles <= 0) return null;
+  const runningFrac =
+    progress.currentTileState === "running" &&
+    typeof progress.currentTileProgressPercent === "number" &&
+    Number.isFinite(progress.currentTileProgressPercent)
+      ? Math.max(0, Math.min(1, progress.currentTileProgressPercent / 100))
+      : 0;
+  const equiv = Math.max(
+    progress.completedTiles + runningFrac,
+    (progress.percent / 100) * progress.totalTiles,
+  );
+  if (equiv <= 0) return null;
+  const remaining = Math.max(progress.totalTiles - equiv, 0);
+  return Math.max(0, Math.round(((elapsedMs / 1000) * remaining) / equiv));
+}
+
+// ── multi-worker live display helpers ───────────────────────────────────────
+interface RunningSlot {
+  tileIndex: number;
+  phase: string;
+  tilePercent: number;
 }
 
 async function main() {
@@ -153,28 +182,89 @@ async function main() {
 
   // Resolve bbox to tile IDs if specified
   let tileIds: string[] | undefined;
+  if (args.tileSelectionFile) {
+    const selection = await loadTileSelectionForRegion({
+      filePath: args.tileSelectionFile,
+      region: args.region,
+    });
+    tileIds = selection.tileIds;
+    console.log(
+      `[precompute] tileSelectionFile=${selection.filePath} generatedAt=${selection.generatedAt} → ${selection.tileIds.length} tiles`,
+    );
+  }
   if (args.bbox) {
     const [minLon, minLat, maxLon, maxLat] = args.bbox;
     const tileSizeMeters = 250;
-    const ids = getIntersectingTileIds({
+    const bboxTileIds = getIntersectingTileIds({
       region: args.region,
       tileSizeMeters,
       bbox: { minLon, minLat, maxLon, maxLat },
     });
-    tileIds = ids;
+    tileIds = tileIds
+      ? tileIds.filter((tileId) => bboxTileIds.includes(tileId))
+      : bboxTileIds;
     console.log(
-      `[precompute] bbox=[${args.bbox.join(",")}] → ${ids.length} tiles`,
+      `[precompute] bbox=[${args.bbox.join(",")}] → ${bboxTileIds.length} tiles (${tileIds.length} after filters)`,
     );
+  }
+
+  if (tileIds && tileIds.length === 0) {
+    throw new Error("No tiles selected after applying tile-selection-file/bbox filters.");
   }
 
   const allTiles = buildRegionTiles(args.region, 250);
   const tileCount = tileIds ? tileIds.length : allTiles.length;
 
+  const shadowMode = process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "(unset, default cpu)";
   console.log(
-    `[precompute] engine=cache-admin workers=${workers} region=${args.region} startDate=${args.startDate} days=${args.days} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} skipExisting=${args.skipExisting} tiles=${tileCount}`,
+    `[precompute] engine=cache-admin shadowMode=${shadowMode} workers=${workers} region=${args.region} startDate=${args.startDate} days=${args.days} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} skipExisting=${args.skipExisting} tiles=${tileCount}`,
   );
 
-  let lastProgress: CachePrecomputeProgress | null = null;
+  // ── display state ────────────────────────────────────────────────────────
+  let lastDayIndex = -1;
+  let skipAccumCount = 0;
+  const runningSlots = new Map<number, RunningSlot>();
+  let liveLineCount = 0;
+
+  function eraseLiveZone(): void {
+    if (liveLineCount === 0) return;
+    process.stdout.write(`\x1b[${liveLineCount}A\x1b[J`);
+    liveLineCount = 0;
+  }
+
+  function renderLiveZone(globalBar: string, globalPct: number, etaStr: string): void {
+    const slots = Array.from(runningSlots.values()).sort((a, b) => a.tileIndex - b.tileIndex);
+    const out: string[] = [];
+    if (skipAccumCount > 0) {
+      out.push(`  ⟿ ${skipAccumCount} tuile(s) ignorée(s) (cache existant)`);
+    }
+    if (slots.length > 0) {
+      out.push(`  ⟳ [${globalBar}] ${globalPct.toFixed(1).padStart(5)}%  ETA ${etaStr}`);
+      for (const slot of slots) {
+        const tileBar = progressBar(slot.tilePercent, 12);
+        out.push(
+          `    t${String(slot.tileIndex).padStart(3)}  [${tileBar}] ${String(Math.round(slot.tilePercent)).padStart(3)}%  ${slot.phase}`,
+        );
+      }
+    }
+    if (out.length === 0) return;
+    process.stdout.write(out.map((l) => l.padEnd(120, " ")).join("\n") + "\n");
+    liveLineCount = out.length;
+  }
+
+  function printPermanent(line: string): void {
+    eraseLiveZone();
+    process.stdout.write(line + "\n");
+  }
+
+  function flushSkips(): void {
+    if (skipAccumCount === 0) return;
+    const count = skipAccumCount;
+    skipAccumCount = 0;
+    printPermanent(`  ⟿ ${count} tuile(s) ignorée(s) (cache existant)`);
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   const startedAt = Date.now();
 
   const result = await precomputeCacheRuns(
@@ -193,24 +283,73 @@ async function main() {
     },
     {
       onProgress: (progress) => {
-        if (!shouldLogProgress(progress, lastProgress)) {
+        const elapsedMs = Date.now() - startedAt;
+        const eta = computeEta(elapsedMs, progress);
+        const etaStr = eta != null ? formatDuration(eta) : "--";
+        const globalBar = progressBar(progress.percent, 24);
+
+        // ── new day header ────────────────────────────────────────────────
+        if (progress.dayIndex !== lastDayIndex) {
+          flushSkips();
+          printPermanent(`\n  ── Jour ${progress.dayIndex}/${progress.daysTotal}  ${progress.date} ──`);
+          lastDayIndex = progress.dayIndex;
+        }
+
+        // ── skipped ───────────────────────────────────────────────────────
+        if (progress.currentTileState === "skipped") {
+          runningSlots.delete(progress.tileIndex);
+          skipAccumCount++;
+          eraseLiveZone();
+          renderLiveZone(globalBar, progress.percent, etaStr);
           return;
         }
-        lastProgress = progress;
-        console.log(
-          `[precompute] date=${progress.date} day=${progress.dayIndex}/${progress.daysTotal} tile=${progress.tileIndex}/${progress.tilesTotal} state=${progress.currentTileState} phase=${progress.currentTilePhase ?? "none"} progress=${progress.percent.toFixed(1)}% tileProgress=${(progress.currentTileProgressPercent ?? 0).toFixed(1)}%`,
-        );
+
+        // ── running ───────────────────────────────────────────────────────
+        if (progress.currentTileState === "running") {
+          runningSlots.set(progress.tileIndex, {
+            tileIndex: progress.tileIndex,
+            phase: progress.currentTilePhase ?? "...",
+            tilePercent: progress.currentTileProgressPercent ?? 0,
+          });
+          eraseLiveZone();
+          renderLiveZone(globalBar, progress.percent, etaStr);
+          return;
+        }
+
+        // ── computed / failed ─────────────────────────────────────────────
+        flushSkips();
+        runningSlots.delete(progress.tileIndex);
+
+        if (progress.currentTileState === "computed") {
+          const pts =
+            progress.currentTilePointCountOutdoor != null
+              ? `  ${progress.currentTilePointCountOutdoor.toLocaleString()} pts outdoor`
+              : "";
+          printPermanent(
+            `  ✓ t${progress.tileIndex}/${progress.tilesTotal}${pts}  [${globalBar}] ${progress.percent.toFixed(1).padStart(5)}%  ETA ${etaStr}`,
+          );
+        } else if (progress.currentTileState === "failed") {
+          printPermanent(`  ✗ t${progress.tileIndex}/${progress.tilesTotal}  ÉCHEC`);
+        }
+
+        eraseLiveZone();
+        renderLiveZone(globalBar, progress.percent, etaStr);
       },
     },
   );
 
+  // Flush any trailing live zone
+  flushSkips();
+  eraseLiveZone();
+
   const elapsedMs = Date.now() - startedAt;
   console.log(
-    `[precompute] completed region=${result.region} model=${result.modelVersionHash} totalDates=${result.totalDates} totalTiles=${result.totalTiles} elapsedMs=${elapsedMs}`,
+    `\n[precompute] ✓ terminé  region=${result.region}  model=${result.modelVersionHash}  totalDates=${result.totalDates}  totalTiles=${result.totalTiles}  durée=${formatDuration(elapsedMs / 1000)}`,
   );
   for (const day of result.dates) {
+    const icon = day.complete ? "✓" : day.failedTiles > 0 ? "✗" : "~";
     console.log(
-      `[precompute] date=${day.date} ok=${day.succeededTiles} skipped=${day.skippedTiles} failed=${day.failedTiles} complete=${day.complete} elapsedMs=${day.elapsedMs}`,
+      `  ${icon} ${day.date}  ok=${day.succeededTiles}  skip=${day.skippedTiles}  fail=${day.failedTiles}  durée=${formatDuration(day.elapsedMs / 1000)}`,
     );
   }
 }

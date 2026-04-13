@@ -18,6 +18,7 @@ import { promisify } from "node:util";
 import { buildRegionTiles, getIntersectingTileIds, buildTilePoints } from "../../src/lib/precompute/sunlight-cache";
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 import { getSunlightModelVersion } from "../../src/lib/precompute/model-version";
+import { loadTileSelectionForRegion } from "../../src/lib/precompute/tile-selection-file";
 import { buildSharedPointEvaluationSources, buildPointEvaluationContext } from "../../src/lib/sun/evaluation-context";
 import { getTileGridMetadataPath, loadTileGridMetadata } from "../../src/lib/precompute/tile-grid-metadata";
 export type { TileGridMetadata } from "../../src/lib/precompute/tile-grid-metadata";
@@ -31,10 +32,11 @@ interface Args {
   region: PrecomputedRegionName;
   gridStepMeters: number;
   bbox: [number, number, number, number] | null;
+  tileSelectionFile: string | null;
 }
 
 function parseArgs(argv: string[]): Args {
-  const result: Args = { region: "lausanne", gridStepMeters: 1, bbox: null };
+  const result: Args = { region: "lausanne", gridStepMeters: 1, bbox: null, tileSelectionFile: null };
   for (const arg of argv) {
     if (arg.startsWith("--region=")) result.region = arg.slice(9) as PrecomputedRegionName;
     else if (arg.startsWith("--grid-step-meters=")) result.gridStepMeters = Number(arg.slice(19));
@@ -44,6 +46,7 @@ function parseArgs(argv: string[]): Args {
         result.bbox = parts as [number, number, number, number];
       }
     }
+    else if (arg.startsWith("--tile-selection-file=")) result.tileSelectionFile = arg.slice("--tile-selection-file=".length);
   }
   return result;
 }
@@ -52,17 +55,35 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   const allTiles = buildRegionTiles(args.region, 250);
-  let tiles = allTiles;
+  let tileIds: string[] | null = null;
+  if (args.tileSelectionFile) {
+    const selection = await loadTileSelectionForRegion({
+      filePath: args.tileSelectionFile,
+      region: args.region,
+    });
+    tileIds = selection.tileIds;
+    console.log(
+      `[grid-metadata] tileSelectionFile=${selection.filePath} generatedAt=${selection.generatedAt} → ${selection.tileIds.length} tiles`,
+    );
+  }
   if (args.bbox) {
     const [minLon, minLat, maxLon, maxLat] = args.bbox;
-    const tileIds = getIntersectingTileIds({
+    const bboxTileIds = getIntersectingTileIds({
       region: args.region,
       tileSizeMeters: 250,
       bbox: { minLon, minLat, maxLon, maxLat },
     });
-    tiles = allTiles.filter(t => tileIds.includes(t.tileId));
-    console.log(`[grid-metadata] bbox → ${tiles.length} tiles`);
+    tileIds = tileIds
+      ? tileIds.filter((tileId) => bboxTileIds.includes(tileId))
+      : bboxTileIds;
+    console.log(`[grid-metadata] bbox → ${bboxTileIds.length} tiles (${tileIds.length} after filters)`);
   }
+
+  if (tileIds && tileIds.length === 0) {
+    throw new Error("No tiles selected after applying tile-selection-file/bbox filters.");
+  }
+
+  const tiles = tileIds ? allTiles.filter((tile) => tileIds.includes(tile.tileId)) : allTiles;
 
   const modelVersion = await getSunlightModelVersion(args.region, { buildingHeightBiasMeters: 0 });
   console.log(`[grid-metadata] region=${args.region} model=${modelVersion.modelVersionHash} tiles=${tiles.length} grid=${args.gridStepMeters}m`);
