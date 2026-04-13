@@ -153,24 +153,21 @@ function progressBar(percent: number, width = 24): string {
 function computeEta(stats: {
   computedCount: number;
   computedMs: number;
-  skippedCount: number;
   totalTiles: number;
   completedTiles: number;
   currentTileRunningFrac: number;
   currentTileRunningMs: number;
 }): number | null {
-  // Include partial progress of the tile currently being computed
   const effectiveComputed = stats.computedCount + stats.currentTileRunningFrac;
   const effectiveMs = stats.computedMs + stats.currentTileRunningMs;
   if (effectiveComputed < 0.05 || effectiveMs <= 0) return null;
 
   const avgMs = effectiveMs / effectiveComputed;
-  // Estimate what fraction of remaining tiles will need actual computation
-  const processed = stats.computedCount + stats.skippedCount;
-  const computeRatio = processed > 0 ? stats.computedCount / processed : 1;
+  // Treat every remaining tile as needing full computation.
+  // Pessimistic but converges fast: cached days zip through and
+  // reduce `remaining` without inflating the compute average.
   const remaining = Math.max(stats.totalTiles - stats.completedTiles - stats.currentTileRunningFrac, 0);
-  const remainingToCompute = remaining * computeRatio;
-  return Math.max(0, Math.round((avgMs * remainingToCompute) / 1000));
+  return Math.max(0, Math.round((avgMs * remaining) / 1000));
 }
 
 // ── multi-worker live display helpers ───────────────────────────────────────
@@ -235,7 +232,6 @@ async function main() {
   // ETA tracking: only count time spent actually computing tiles
   let computedTileCount = 0;
   let computedTileMs = 0;
-  let skippedTileCount = 0;
   let currentComputeTileIndex = -1;
   let currentTileStartMs = 0;
 
@@ -284,6 +280,18 @@ async function main() {
 
   const startedAt = Date.now();
 
+  // Intercept console.log/warn so that log lines from internal modules
+  // (evaluation-context, gpu-mesh-loader, etc.) go through printPermanent
+  // instead of breaking the ANSI live zone cursor tracking.
+  const _origLog = console.log;
+  const _origWarn = console.warn;
+  console.log = (...args: unknown[]) => {
+    printPermanent(args.map(String).join(" "));
+  };
+  console.warn = (...args: unknown[]) => {
+    printPermanent(args.map(String).join(" "));
+  };
+
   const result = await precomputeCacheRuns(
     {
       region: args.region,
@@ -321,14 +329,11 @@ async function main() {
           }
           computedTileCount++;
           currentComputeTileIndex = -1;
-        } else if (progress.currentTileState === "skipped") {
-          skippedTileCount++;
         }
 
         const eta = computeEta({
           computedCount: computedTileCount,
           computedMs: computedTileMs,
-          skippedCount: skippedTileCount,
           totalTiles: progress.totalTiles,
           completedTiles: progress.completedTiles,
           currentTileRunningFrac,
@@ -391,6 +396,10 @@ async function main() {
   // Flush any trailing live zone
   flushSkips();
   eraseLiveZone();
+
+  // Restore original console methods for final summary
+  console.log = _origLog;
+  console.warn = _origWarn;
 
   const elapsedMs = Date.now() - startedAt;
   console.log(
