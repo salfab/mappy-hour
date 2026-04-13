@@ -6,6 +6,7 @@ import { performance } from "node:perf_hooks";
 
 import {
   buildRegionTiles,
+  listCachedTileIds,
   loadPrecomputedSunlightManifest,
   loadPrecomputedSunlightTile,
   writePrecomputedSunlightManifest,
@@ -1110,10 +1111,53 @@ export async function precomputeCacheRuns(
     const succeededTileIds: string[] = [];
     const failedTileIds: string[] = [];
     const skippedTileIds: string[] = [];
+
+    // Single readdir per day instead of per-tile gunzip+parse for skip checks
+    const cachedTileIds = skipExisting
+      ? await listCachedTileIds({
+          region: request.region,
+          modelVersionHash: modelVersion.modelVersionHash,
+          date,
+          gridStepMeters: request.gridStepMeters,
+          sampleEveryMinutes: request.sampleEveryMinutes,
+          startLocalTime: request.startLocalTime,
+          endLocalTime: request.endLocalTime,
+        })
+      : new Set<string>();
+
     const runSequentialTiles = async () => {
       for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
         throwIfAborted(options.signal);
         const tile = tiles[tileIndex];
+
+        if (skipExisting && cachedTileIds.has(tile.tileId)) {
+          skippedTileIds.push(tile.tileId);
+          succeededTileIds.push(tile.tileId);
+          completedTiles += 1;
+          options.onProgress?.({
+            stage: "running",
+            date,
+            dayIndex: dayOffset + 1,
+            daysTotal: request.days,
+            tileIndex: tileIndex + 1,
+            tilesTotal: tiles.length,
+            completedTiles,
+            totalTiles,
+            percent:
+              totalTiles === 0
+                ? 100
+                : Math.round((completedTiles / totalTiles) * 1000) / 10,
+            currentTileState: "skipped",
+            currentTilePhase: null,
+            currentTileProgressPercent: 100,
+            currentTilePointCountTotal: null,
+            currentTilePointCountOutdoor: null,
+            currentTileFrameCountTotal: null,
+            currentTileFrameIndex: null,
+          });
+          continue;
+        }
+
         options.onProgress?.({
           stage: "running",
           date,
@@ -1135,47 +1179,6 @@ export async function precomputeCacheRuns(
           currentTileFrameCountTotal: null,
           currentTileFrameIndex: null,
         });
-
-        if (skipExisting) {
-          throwIfAborted(options.signal);
-          const existing = await loadPrecomputedSunlightTile({
-            region: request.region,
-            modelVersionHash: modelVersion.modelVersionHash,
-            date,
-            gridStepMeters: request.gridStepMeters,
-            sampleEveryMinutes: request.sampleEveryMinutes,
-            startLocalTime: request.startLocalTime,
-            endLocalTime: request.endLocalTime,
-            tileId: tile.tileId,
-          });
-          if (existing) {
-            skippedTileIds.push(tile.tileId);
-            succeededTileIds.push(tile.tileId);
-            completedTiles += 1;
-            options.onProgress?.({
-              stage: "running",
-              date,
-              dayIndex: dayOffset + 1,
-              daysTotal: request.days,
-              tileIndex: tileIndex + 1,
-              tilesTotal: tiles.length,
-              completedTiles,
-              totalTiles,
-              percent:
-                totalTiles === 0
-                  ? 100
-                  : Math.round((completedTiles / totalTiles) * 1000) / 10,
-              currentTileState: "skipped",
-              currentTilePhase: null,
-              currentTileProgressPercent: 100,
-              currentTilePointCountTotal: existing.stats.gridPointCount,
-              currentTilePointCountOutdoor: existing.stats.pointCount,
-              currentTileFrameCountTotal: existing.frames.length,
-              currentTileFrameIndex: existing.frames.length,
-            });
-            continue;
-          }
-        }
         try {
           // Load pre-computed grid metadata (zenith indoor mask + elevations)
           // eslint-disable-next-line @typescript-eslint/no-explicit-any

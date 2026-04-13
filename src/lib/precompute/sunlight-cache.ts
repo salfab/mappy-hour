@@ -387,6 +387,38 @@ export async function loadPrecomputedSunlightTile(params: {
   }
 }
 
+/**
+ * List tile IDs already cached for a given cache run (date + params).
+ * Uses a single readdir instead of per-tile gunzip+parse — ~1000× faster
+ * for skip-existing checks.
+ */
+export async function listCachedTileIds(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  date: string;
+  gridStepMeters: number;
+  sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
+}): Promise<Set<string>> {
+  const tilesDir = path.join(createCacheRunKey(params), "tiles");
+  try {
+    const entries = await fs.readdir(tilesDir);
+    const tileIds = new Set<string>();
+    for (const entry of entries) {
+      if (entry.endsWith(".json.gz")) {
+        tileIds.add(entry.slice(0, -".json.gz".length));
+      }
+    }
+    return tileIds;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return new Set();
+    }
+    throw error;
+  }
+}
+
 function getLv95BoundsForRegion(region: PrecomputedRegionName) {
   const bbox = getPrecomputedRegionBbox(region);
   const corners = [
