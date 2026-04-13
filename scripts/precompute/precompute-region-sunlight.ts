@@ -1,4 +1,4 @@
-import { precomputeCacheRuns, type CachePrecomputeProgress } from "../../src/lib/admin/cache-admin";
+import { precomputeCacheRuns } from "../../src/lib/admin/cache-admin";
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 import { buildRegionTiles, getIntersectingTileIds } from "../../src/lib/precompute/sunlight-cache";
 import { loadTileSelectionForRegion } from "../../src/lib/precompute/tile-selection-file";
@@ -150,21 +150,27 @@ function progressBar(percent: number, width = 24): string {
   return "█".repeat(filled) + "░".repeat(width - filled);
 }
 
-function computeEta(elapsedMs: number, progress: CachePrecomputeProgress): number | null {
-  if (elapsedMs <= 0 || progress.totalTiles <= 0) return null;
-  const runningFrac =
-    progress.currentTileState === "running" &&
-    typeof progress.currentTileProgressPercent === "number" &&
-    Number.isFinite(progress.currentTileProgressPercent)
-      ? Math.max(0, Math.min(1, progress.currentTileProgressPercent / 100))
-      : 0;
-  const equiv = Math.max(
-    progress.completedTiles + runningFrac,
-    (progress.percent / 100) * progress.totalTiles,
-  );
-  if (equiv <= 0) return null;
-  const remaining = Math.max(progress.totalTiles - equiv, 0);
-  return Math.max(0, Math.round(((elapsedMs / 1000) * remaining) / equiv));
+function computeEta(stats: {
+  computedCount: number;
+  computedMs: number;
+  skippedCount: number;
+  totalTiles: number;
+  completedTiles: number;
+  currentTileRunningFrac: number;
+  currentTileRunningMs: number;
+}): number | null {
+  // Include partial progress of the tile currently being computed
+  const effectiveComputed = stats.computedCount + stats.currentTileRunningFrac;
+  const effectiveMs = stats.computedMs + stats.currentTileRunningMs;
+  if (effectiveComputed < 0.05 || effectiveMs <= 0) return null;
+
+  const avgMs = effectiveMs / effectiveComputed;
+  // Estimate what fraction of remaining tiles will need actual computation
+  const processed = stats.computedCount + stats.skippedCount;
+  const computeRatio = processed > 0 ? stats.computedCount / processed : 1;
+  const remaining = Math.max(stats.totalTiles - stats.completedTiles - stats.currentTileRunningFrac, 0);
+  const remainingToCompute = remaining * computeRatio;
+  return Math.max(0, Math.round((avgMs * remainingToCompute) / 1000));
 }
 
 // ── multi-worker live display helpers ───────────────────────────────────────
@@ -226,6 +232,16 @@ async function main() {
   const runningSlots = new Map<number, RunningSlot>();
   let liveLineCount = 0;
 
+  // ETA tracking: only count time spent actually computing tiles
+  let computedTileCount = 0;
+  let computedTileMs = 0;
+  let skippedTileCount = 0;
+  let currentComputeTileIndex = -1;
+  let currentTileStartMs = 0;
+
+  // Day context for live zone
+  let currentDayLabel = "";
+
   function eraseLiveZone(): void {
     if (liveLineCount === 0) return;
     process.stdout.write(`\x1b[${liveLineCount}A\x1b[J`);
@@ -233,22 +249,23 @@ async function main() {
   }
 
   function renderLiveZone(globalBar: string, globalPct: number, etaStr: string): void {
+    const cols = process.stdout.columns || 120;
     const slots = Array.from(runningSlots.values()).sort((a, b) => a.tileIndex - b.tileIndex);
     const out: string[] = [];
     if (skipAccumCount > 0) {
       out.push(`  ⟿ ${skipAccumCount} tuile(s) ignorée(s) (cache existant)`);
     }
-    if (slots.length > 0) {
-      out.push(`  ⟳ [${globalBar}] ${globalPct.toFixed(1).padStart(5)}%  ETA ${etaStr}`);
-      for (const slot of slots) {
-        const tileBar = progressBar(slot.tilePercent, 12);
-        out.push(
-          `    t${String(slot.tileIndex).padStart(3)}  [${tileBar}] ${String(Math.round(slot.tilePercent)).padStart(3)}%  ${slot.phase}`,
-        );
-      }
+    // Always show global progress with day context
+    const dayCtx = currentDayLabel ? `  ${currentDayLabel}` : "";
+    out.push(`  ⟳${dayCtx}  [${globalBar}] ${globalPct.toFixed(1).padStart(5)}%  ETA ${etaStr}`);
+    for (const slot of slots) {
+      const tileBar = progressBar(slot.tilePercent, 12);
+      out.push(
+        `    t${String(slot.tileIndex).padStart(3)}  [${tileBar}] ${String(Math.round(slot.tilePercent)).padStart(3)}%  ${slot.phase}`,
+      );
     }
-    if (out.length === 0) return;
-    process.stdout.write(out.map((l) => l.padEnd(120, " ")).join("\n") + "\n");
+    // Truncate to terminal width + clear-to-EOL to prevent wrapping artefacts
+    process.stdout.write(out.map((l) => l.slice(0, cols) + "\x1b[K").join("\n") + "\n");
     liveLineCount = out.length;
   }
 
@@ -283,15 +300,48 @@ async function main() {
     },
     {
       onProgress: (progress) => {
-        const elapsedMs = Date.now() - startedAt;
-        const eta = computeEta(elapsedMs, progress);
+        // ── track compute-only ETA metrics ─────────────────────────────
+        const now = Date.now();
+        let currentTileRunningFrac = 0;
+        let currentTileRunningMs = 0;
+
+        if (progress.currentTileState === "running") {
+          if (progress.tileIndex !== currentComputeTileIndex) {
+            currentComputeTileIndex = progress.tileIndex;
+            currentTileStartMs = now;
+          }
+          currentTileRunningFrac =
+            typeof progress.currentTileProgressPercent === "number"
+              ? Math.max(0, Math.min(1, progress.currentTileProgressPercent / 100))
+              : 0;
+          currentTileRunningMs = now - currentTileStartMs;
+        } else if (progress.currentTileState === "computed") {
+          if (currentComputeTileIndex >= 0) {
+            computedTileMs += now - currentTileStartMs;
+          }
+          computedTileCount++;
+          currentComputeTileIndex = -1;
+        } else if (progress.currentTileState === "skipped") {
+          skippedTileCount++;
+        }
+
+        const eta = computeEta({
+          computedCount: computedTileCount,
+          computedMs: computedTileMs,
+          skippedCount: skippedTileCount,
+          totalTiles: progress.totalTiles,
+          completedTiles: progress.completedTiles,
+          currentTileRunningFrac,
+          currentTileRunningMs,
+        });
         const etaStr = eta != null ? formatDuration(eta) : "--";
         const globalBar = progressBar(progress.percent, 24);
 
         // ── new day header ────────────────────────────────────────────────
         if (progress.dayIndex !== lastDayIndex) {
           flushSkips();
-          printPermanent(`\n  ── Jour ${progress.dayIndex}/${progress.daysTotal}  ${progress.date} ──`);
+          currentDayLabel = `Jour ${progress.dayIndex}/${progress.daysTotal}  ${progress.date}`;
+          printPermanent(`\n  ── ${currentDayLabel} ──`);
           lastDayIndex = progress.dayIndex;
         }
 
