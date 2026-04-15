@@ -62,14 +62,22 @@ La boucle par-point unifiée est inlinée : pas d'appel à `evaluateInstantSunli
 
 Sur un scope de 200 jours, ça représente environ 30 heures de wall économisées (~152h → ~121h total compute).
 
-### 3. Pas de batched compute dispatch ni reload-points serveur Vulkan
+### 3. Pas de batched compute dispatch Vulkan seul — remplacé par l'architecture full-GPU (Phase A/B/C)
 
-Deux pistes ont été évaluées et écartées :
+La piste initiale « batch 60 frames en un seul dispatch GPU » a été écartée parce qu'elle ne gagnait que sur les ~5% de compute GPU pur. Mais cette observation était biaisée : la mesure considérait uniquement le building shadow batch. Une fois **tous** les checks per-point portés sur GPU (horizon, terrain, vegetation), le compute GPU devient dominant, et le gain potentiel change d'échelle.
 
-- **`reload_points` au serveur Rust** pour éviter le restart par tuile : ~5 min économisés sur Lausanne 161 tuiles, refactor 3-5 h. ROI insuffisant.
-- **Batched compute dispatch** (60 frames en un seul dispatch GPU) : ne peut gagner que sur les ~5% que représente Vulkan dans l'eval. Refactor Rust + WGSL 6-10 h. ROI insuffisant.
+La piste « `reload_points` pour éviter le restart serveur entre tuiles » était à l'origine écartée aussi (~5 min économisés pour 3-5 h de travail) mais a finalement été faite dans la Phase A ci-dessous, parce qu'elle est le prérequis mécanique pour les uploads horizon/vegetation des Phases B/C (sans serveur long-lived, on re-uploaderait 50-100 MB de rasters par tuile).
 
-**Pourquoi** : le bottleneck dominant est la boucle JS per-point, pas le compute GPU. Toute optim supplémentaire côté Vulkan reste sous le plafond imposé par cette boucle. Si on veut pousser plus loin, la prochaine cible naturelle est la vegetation evaluator qui fait du ray-marching CPU par point ; ce travail est orthogonal au choix du backend GPU.
+**Architecture full-GPU déployée (commits `89ee55d` → `8eccf18`, 2026-04-15)** :
+
+- **Phase A — long-lived server** : commandes `reload_points`, `reload_focus`, `reload_mesh` ; backend TS réutilise le serveur entre tuiles d'une même zone.
+- **Phase A.1 — in-place mesh swap** : `evaluation-context.ts` appelle `backend.updateMesh` sur focus-zone change, au lieu de dispose+recreate.
+- **Phase B — GPU horizon/terrain** : shader WGSL étendu avec les horizon masks uploadés par tuile (dedup par référence + hash) ; le shader produit terrainBlocked bitmask ; JS lit le bit au lieu d'appeler `isTerrainBlockedByHorizon`.
+- **Phase C — GPU vegetation ray-march** : rasters SwissSurface3D uploadés par région (dedup par hash) ; shader fait le ray-march 60 steps × 2m avec semantics identiques à `createVegetationShadowEvaluator` ; JS lit le bit au lieu de lancer le ray-march CPU.
+
+Résultat : le hot loop JS se réduit à 5 opérations bitwise par point (lecture des 3 bitmasks + set de 5 mask bits), plus le diagnostic `horizonAngleDegByPoint`. La boucle JS n'est plus le bottleneck.
+
+Smoke-test à petit scope (10 tuiles Lausanne, 06:00-09:00) : 56s, tous verts, pas de divergence observée lors de runs consécutifs. Bench à l'échelle (181 tuiles, 06:00-21:00) et comparaison divergence avec raster à faire séparément.
 
 ### 4. Pas de multi-view rendering (Batching C) — investigué et abandonné
 
