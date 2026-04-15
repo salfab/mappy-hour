@@ -5,6 +5,7 @@ import SunCalc from "suncalc";
 import {
   buildPointEvaluationContext,
   buildSharedPointEvaluationSources,
+  disposeWebGpuBackend,
 } from "@/lib/sun/evaluation-context";
 /** Pre-computed grid metadata (indoor/outdoor + elevations). */
 interface TileGridMetadata {
@@ -24,7 +25,14 @@ import {
   resolveAdaptiveTerrainHorizonForTile,
 } from "@/lib/sun/adaptive-horizon-sharing";
 import type { ShadowCalibration } from "@/lib/sun/shadow-calibration";
-import { evaluateInstantSunlight } from "@/lib/sun/solar";
+import {
+  getMaxHorizonAngle,
+  TERRAIN_HORIZON_SKIP_MARGIN_DEG,
+} from "@/lib/sun/solar";
+import {
+  getHorizonAngleForAzimuth,
+  isTerrainBlockedByHorizon,
+} from "@/lib/sun/horizon-mask";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
 import { getSunlightModelVersion } from "./model-version";
@@ -49,6 +57,12 @@ import {
   type RegionBbox,
   type RegionTileSpec,
 } from "./sunlight-cache";
+
+export async function disposeSunlightTileEvaluationBackends(): Promise<void> {
+  // Sync dispose on this branch; kept async-signed to match cache-admin expectations
+  // and stay compatible with async backends added later (e.g. rust-wgpu-vulkan).
+  disposeWebGpuBackend();
+}
 
 const DEFAULT_CACHE_TILE_SIZE_METERS = 250;
 const RAD_TO_DEG = 180 / Math.PI;
@@ -883,90 +897,108 @@ export async function computeSunlightTileArtifact(params: {
       );
     }
 
-    for (let pointIndex = 0; pointIndex < preparedOutdoorPoints.length; pointIndex += 1) {
-      throwIfAborted(params.signal);
-      const point = preparedOutdoorPoints[pointIndex];
+    {
+      // ── Unified fast-path: inline per-point work for all backends ──
+      // Building shadow source (in priority order):
+      //   1. batchBuildingBlockedMask (Vulkan / WebGPU batch backends)
+      //   2. point.buildingShadowEvaluator (gpu-raster / two-level / detailed / prism)
+      //   3. none → buildingsBlocked stays false (shouldn't happen in practice)
+      // Semantics match evaluateInstantSunlight() which is the canonical reference:
+      //   - aboveAstronomicalHorizon = true (frame-level skip above handles altitude <= 0)
+      //   - vegetation + per-point building eval skipped when terrainBlocked (evaluateAllBlockers=false)
+      //   - batch building is always read regardless of terrain (mask already computed for all points)
+      const azimuthDeg = frameSolarPosition.azimuthDeg;
+      const altitudeDeg = frameSolarPosition.altitudeDeg;
+      const yieldEvery = params.cooperativeYieldEveryPoints ?? 0;
+      const pointCount = preparedOutdoorPoints.length;
+      const useBatchMask = useBatchPath && batchBuildingBlockedMask !== null;
+      const buildingsMaskU32 = batchBuildingBlockedMask;
+      // Pre-allocate diagnostic arrays to avoid pointCount × frames push() reallocations
+      horizonAngleDegByPoint.length = pointCount;
+      buildingBlockerIdByPoint.length = pointCount;
+      // Default to null; per-point evaluator may overwrite below
+      buildingBlockerIdByPoint.fill(null, 0, pointCount);
 
-      // When using batch path, override building shadow with GPU result
-      const batchBuildingsBlocked = batchBuildingBlockedMask
-        ? ((batchBuildingBlockedMask[pointIndex >>> 5] >>> (pointIndex & 31)) & 1) === 1
-        : false;
+      for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+        // Throttle abort check (every 1024 points)
+        if ((pointIndex & 1023) === 0) throwIfAborted(params.signal);
 
-      const sample = useBatchPath
-        ? evaluateInstantSunlight({
-            lat: point.lat,
-            lon: point.lon,
-            utcDate: sampleDate,
-            timeZone: params.timezone,
-            localDateTimeOverride: frameLocalDateTime,
-            horizonMask: point.horizonMask,
-            // Skip per-point building shadow — already computed in batch
-            buildingShadowEvaluator: undefined,
-            vegetationShadowEvaluator: point.vegetationShadowEvaluator,
-            solarPositionOverride: frameSolarPosition,
-          })
-        : evaluateInstantSunlight({
-            lat: point.lat,
-            lon: point.lon,
-            utcDate: sampleDate,
-            timeZone: params.timezone,
-            localDateTimeOverride: frameLocalDateTime,
-            horizonMask: point.horizonMask,
-            buildingShadowEvaluator: point.buildingShadowEvaluator,
-            vegetationShadowEvaluator: point.vegetationShadowEvaluator,
-            solarPositionOverride: frameSolarPosition,
+        const point = preparedOutdoorPoints[pointIndex];
+        const horizonMask = point.horizonMask;
+
+        // Inline horizon + terrain check
+        let horizonAngleDeg: number | null = null;
+        let terrainBlocked = false;
+        if (horizonMask !== null) {
+          horizonAngleDeg = getHorizonAngleForAzimuth(horizonMask, azimuthDeg);
+          if (altitudeDeg <= getMaxHorizonAngle(horizonMask) + TERRAIN_HORIZON_SKIP_MARGIN_DEG) {
+            terrainBlocked = isTerrainBlockedByHorizon(horizonMask, azimuthDeg, altitudeDeg);
+          }
+        }
+
+        // Vegetation: only when not terrain-blocked (matches evaluateInstantSunlight)
+        let vegetationBlocked = false;
+        const vegEval = point.vegetationShadowEvaluator;
+        if (!terrainBlocked && vegEval !== undefined) {
+          vegetationBlocked = vegEval({ azimuthDeg, altitudeDeg }).blocked;
+        }
+
+        // Building: batch bitmask OR per-point evaluator OR none
+        let buildingsBlocked = false;
+        let buildingBlockerId: string | null = null;
+        if (useBatchMask && buildingsMaskU32 !== null) {
+          // Batch backends: bit already computed for this point
+          buildingsBlocked =
+            ((buildingsMaskU32[pointIndex >>> 5] >>> (pointIndex & 31)) & 1) === 1;
+        } else if (!terrainBlocked && point.buildingShadowEvaluator !== undefined) {
+          // Per-point evaluator: skip when terrain blocks (match slow-path semantic)
+          const buildingResult = point.buildingShadowEvaluator({ azimuthDeg, altitudeDeg });
+          buildingsBlocked = buildingResult.blocked;
+          buildingBlockerId = buildingResult.blockerId ?? null;
+        }
+
+        // Inline setMaskBit
+        const byteIndex = pointIndex >> 3;
+        const bit = 1 << (pointIndex & 7);
+        if (terrainBlocked) terrainMask[byteIndex] |= bit;
+        if (buildingsBlocked) buildingsMask[byteIndex] |= bit;
+        if (vegetationBlocked) vegetationMask[byteIndex] |= bit;
+
+        const isSunnyNoVegetation = !terrainBlocked && !buildingsBlocked;
+        if (isSunnyNoVegetation) {
+          sunnyMaskNoVegetation[byteIndex] |= bit;
+          sunnyCountNoVegetation += 1;
+          if (!vegetationBlocked) {
+            sunnyMask[byteIndex] |= bit;
+            sunnyCount += 1;
+          }
+        }
+
+        // Diagnostics (preserve API contract) — index assignment, not push
+        horizonAngleDegByPoint[pointIndex] =
+          horizonAngleDeg === null ? null : Math.round(horizonAngleDeg * 1000) / 1000;
+        if (!useBatchMask && buildingBlockerId !== null) {
+          // Only overwrite the pre-filled null when we actually have a blocker id
+          buildingBlockerIdByPoint[pointIndex] = buildingBlockerId;
+        }
+
+        // Cooperative yield
+        if (yieldEvery > 0 && pointIndex > 0 && pointIndex % yieldEvery === 0) {
+          params.onProgress?.({
+            stage: "evaluate-frames",
+            completed: completedFrameEvaluations,
+            total: totalFrameEvaluations,
+            pointCountTotal: rawTilePoints.length,
+            pointCountOutdoor: pointCount,
+            frameCountTotal: samples.length,
+            frameIndex: sampleIndex + 1,
+            elapsedMs: performance.now() - started,
           });
-
-      // Merge batch building result with per-point result
-      const buildingsBlocked = useBatchPath ? batchBuildingsBlocked : sample.buildingsBlocked;
-
-      horizonAngleDegByPoint.push(
-        sample.horizonAngleDeg === null ? null : Math.round(sample.horizonAngleDeg * 1000) / 1000,
-      );
-      buildingBlockerIdByPoint.push(useBatchPath ? null : sample.buildingBlockerId);
-
-      const isSunnyNoVegetation =
-        sample.aboveAstronomicalHorizon &&
-        !sample.terrainBlocked &&
-        !buildingsBlocked;
-      if (sample.terrainBlocked) {
-        setMaskBit(terrainMask, pointIndex);
+          await yieldToEventLoop();
+          throwIfAborted(params.signal);
+        }
+        completedFrameEvaluations += 1;
       }
-      if (buildingsBlocked) {
-        setMaskBit(buildingsMask, pointIndex);
-      }
-      if (sample.vegetationBlocked) {
-        setMaskBit(vegetationMask, pointIndex);
-      }
-      if (isSunnyNoVegetation) {
-        setMaskBit(sunnyMaskNoVegetation, pointIndex);
-        sunnyCountNoVegetation += 1;
-      }
-      const isSunny = isSunnyNoVegetation && !sample.vegetationBlocked;
-      if (isSunny) {
-        setMaskBit(sunnyMask, pointIndex);
-        sunnyCount += 1;
-      }
-      if (
-        params.cooperativeYieldEveryPoints &&
-        params.cooperativeYieldEveryPoints > 0 &&
-        pointIndex > 0 &&
-        pointIndex % params.cooperativeYieldEveryPoints === 0
-      ) {
-        params.onProgress?.({
-          stage: "evaluate-frames",
-          completed: completedFrameEvaluations,
-          total: totalFrameEvaluations,
-          pointCountTotal: rawTilePoints.length,
-          pointCountOutdoor: preparedOutdoorPoints.length,
-          frameCountTotal: samples.length,
-          frameIndex: sampleIndex + 1,
-          elapsedMs: performance.now() - started,
-        });
-        await yieldToEventLoop();
-        throwIfAborted(params.signal);
-      }
-      completedFrameEvaluations += 1;
     }
 
     frames.push({
