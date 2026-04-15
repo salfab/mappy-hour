@@ -8,7 +8,7 @@ import {
 import { getZonedDayRangeUtc } from "@/lib/time/zoned-date";
 
 const RAD_TO_DEG = 180 / Math.PI;
-const TERRAIN_HORIZON_SKIP_MARGIN_DEG = 0.25;
+export const TERRAIN_HORIZON_SKIP_MARGIN_DEG = 0.25;
 const horizonMaxAngleCache = new WeakMap<HorizonMask, number>();
 
 export interface PointSunlightInput {
@@ -152,7 +152,7 @@ function safeFormatDateTimeLocal(date: Date, timeZone: string): string | null {
   return formatDateTimeLocal(date, timeZone);
 }
 
-function getMaxHorizonAngle(horizonMask: HorizonMask): number {
+export function getMaxHorizonAngle(horizonMask: HorizonMask): number {
   const cached = horizonMaxAngleCache.get(horizonMask);
   if (cached !== undefined) {
     return cached;
