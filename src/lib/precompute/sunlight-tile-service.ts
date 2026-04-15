@@ -852,16 +852,18 @@ export async function computeSunlightTileArtifact(params: {
     originX: number;
     originY: number;
   } | null = null;
-  const useBatchShadows =
-    useBatchPath &&
-    webgpuBackend != null &&
-    typeof (webgpuBackend as { evaluateBatchWithShadows?: unknown })
-      .evaluateBatchWithShadows === "function";
-  if (useBatchShadows) {
-    // ── Horizon ─────────────────────────────────────────────────────
+  // ── Horizon mask dedup (always, not only for GPU batch paths) ──────
+  // Most points in a tile share the same HorizonMask reference thanks to
+  // adaptive horizon sharing. Deduping here lets us (a) build the GPU
+  // payload for Phase B+ backends and (b) precompute per-frame per-mask
+  // rounded horizon angles in the hot loop instead of recomputing them
+  // 32K times per frame.
+  let horizonMaskList: HorizonMask[] | null = null;
+  let pointMaskIndices: Uint32Array | null = null;
+  {
     const maskToIndex = new Map<object, number>();
-    const maskList: HorizonMask[] = [];
-    const pointMaskIndices = new Uint32Array(preparedOutdoorPoints.length);
+    const list: HorizonMask[] = [];
+    const indices = new Uint32Array(preparedOutdoorPoints.length);
     let allPointsHaveMask = true;
     for (let i = 0; i < preparedOutdoorPoints.length; i++) {
       const m = preparedOutdoorPoints[i].horizonMask;
@@ -871,18 +873,31 @@ export async function computeSunlightTileArtifact(params: {
       }
       const existing = maskToIndex.get(m);
       if (existing !== undefined) {
-        pointMaskIndices[i] = existing;
+        indices[i] = existing;
       } else {
-        const idx = maskList.length;
-        maskList.push(m);
+        const idx = list.length;
+        list.push(m);
         maskToIndex.set(m, idx);
-        pointMaskIndices[i] = idx;
+        indices[i] = idx;
       }
     }
-    if (allPointsHaveMask && maskList.length > 0) {
-      const masks = new Float32Array(maskList.length * 360);
-      for (let i = 0; i < maskList.length; i++) {
-        const bins = maskList[i].binsDeg;
+    if (allPointsHaveMask && list.length > 0) {
+      horizonMaskList = list;
+      pointMaskIndices = indices;
+    }
+  }
+
+  const useBatchShadows =
+    useBatchPath &&
+    webgpuBackend != null &&
+    typeof (webgpuBackend as { evaluateBatchWithShadows?: unknown })
+      .evaluateBatchWithShadows === "function";
+  if (useBatchShadows) {
+    // ── Horizon (build GPU payload from the deduped masks) ──────────
+    if (horizonMaskList && pointMaskIndices) {
+      const masks = new Float32Array(horizonMaskList.length * 360);
+      for (let i = 0; i < horizonMaskList.length; i++) {
+        const bins = horizonMaskList[i].binsDeg;
         const offset = i * 360;
         for (let b = 0; b < 360; b++) masks[offset + b] = bins[b];
       }
@@ -1132,6 +1147,32 @@ export async function computeSunlightTileArtifact(params: {
       // Default to null; per-point evaluator may overwrite below
       buildingBlockerIdByPoint.fill(null, 0, pointCount);
 
+      // Per-frame pre-compute: for each unique horizon mask in this tile,
+      // compute the (raw + rounded) horizon angles and the max-angle-plus-
+      // margin used by the terrain skip-check. The per-point hot loop
+      // then indexes into these small arrays (1-3 entries typically)
+      // instead of calling getHorizonAngleForAzimuth + getMaxHorizonAngle +
+      // Math.round per point. Saves ~32K × 3 function calls × 60 frames
+      // per tile.
+      let uniqueHorizonAnglesRaw: Float64Array | null = null;
+      let uniqueHorizonAnglesRounded: Float64Array | null = null;
+      let uniqueHorizonMaxPlusMargin: Float64Array | null = null;
+      if (horizonMaskList !== null) {
+        const count = horizonMaskList.length;
+        uniqueHorizonAnglesRaw = new Float64Array(count);
+        uniqueHorizonAnglesRounded = new Float64Array(count);
+        uniqueHorizonMaxPlusMargin = new Float64Array(count);
+        for (let i = 0; i < count; i++) {
+          const m = horizonMaskList[i];
+          const angle = getHorizonAngleForAzimuth(m, azimuthDeg);
+          uniqueHorizonAnglesRaw[i] = angle;
+          uniqueHorizonAnglesRounded[i] = Math.round(angle * 1000) / 1000;
+          uniqueHorizonMaxPlusMargin[i] =
+            getMaxHorizonAngle(m) + TERRAIN_HORIZON_SKIP_MARGIN_DEG;
+        }
+      }
+      const maskIndices = pointMaskIndices;
+
       for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
         // Throttle abort check (every 1024 points)
         if ((pointIndex & 1023) === 0) throwIfAborted(params.signal);
@@ -1140,16 +1181,22 @@ export async function computeSunlightTileArtifact(params: {
         const horizonMask = point.horizonMask;
 
         // Inline horizon + terrain check.
-        // Diagnostic horizonAngleDeg stays CPU-computed (O(1) array index).
-        // Terrain boolean comes from the GPU bitmask when available.
-        let horizonAngleDeg: number | null = null;
+        // Terrain boolean comes from the GPU bitmask when available,
+        // otherwise from the cached per-unique-mask angle (no per-point
+        // getHorizonAngleForAzimuth / getMaxHorizonAngle function call).
         let terrainBlocked = false;
         if (horizonMask !== null) {
-          horizonAngleDeg = getHorizonAngleForAzimuth(horizonMask, azimuthDeg);
           if (batchTerrainBlockedMask !== null) {
             terrainBlocked =
               ((batchTerrainBlockedMask[pointIndex >>> 5] >>> (pointIndex & 31)) & 1) === 1;
+          } else if (uniqueHorizonAnglesRaw !== null && uniqueHorizonMaxPlusMargin !== null && maskIndices !== null) {
+            // Fast path: cached per-unique-mask angle + max-plus-margin.
+            const mi = maskIndices[pointIndex];
+            if (altitudeDeg <= uniqueHorizonMaxPlusMargin[mi] && altitudeDeg <= uniqueHorizonAnglesRaw[mi]) {
+              terrainBlocked = true;
+            }
           } else if (altitudeDeg <= getMaxHorizonAngle(horizonMask) + TERRAIN_HORIZON_SKIP_MARGIN_DEG) {
+            // Fallback: per-point compute (legacy path, rarely hit now).
             terrainBlocked = isTerrainBlockedByHorizon(horizonMask, azimuthDeg, altitudeDeg);
           }
         }
@@ -1201,9 +1248,18 @@ export async function computeSunlightTileArtifact(params: {
           }
         }
 
-        // Diagnostics (preserve API contract) — index assignment, not push
-        horizonAngleDegByPoint[pointIndex] =
-          horizonAngleDeg === null ? null : Math.round(horizonAngleDeg * 1000) / 1000;
+        // Diagnostics (preserve API contract) — index assignment, not push.
+        // Use pre-rounded per-unique-mask cache when available; otherwise
+        // round per-point (only when the dedup didn't cover all points,
+        // i.e. some point had no mask).
+        if (uniqueHorizonAnglesRounded !== null && maskIndices !== null) {
+          horizonAngleDegByPoint[pointIndex] = uniqueHorizonAnglesRounded[maskIndices[pointIndex]];
+        } else if (horizonMask !== null) {
+          horizonAngleDegByPoint[pointIndex] =
+            Math.round(getHorizonAngleForAzimuth(horizonMask, azimuthDeg) * 1000) / 1000;
+        } else {
+          horizonAngleDegByPoint[pointIndex] = null;
+        }
         if (!useBatchMask && buildingBlockerId !== null) {
           // Only overwrite the pre-filled null when we actually have a blocker id
           buildingBlockerIdByPoint[pointIndex] = buildingBlockerId;
