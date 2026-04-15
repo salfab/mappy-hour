@@ -16,7 +16,10 @@ import {
   type RegionTileSpec,
 } from "@/lib/precompute/sunlight-cache";
 import { getSunlightModelVersion, SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "@/lib/precompute/model-version";
-import { computeSunlightTileArtifact } from "@/lib/precompute/sunlight-tile-service";
+import {
+  computeSunlightTileArtifact,
+  disposeSunlightTileEvaluationBackends,
+} from "@/lib/precompute/sunlight-tile-service";
 import { getSunlightCacheStorage } from "@/lib/precompute/sunlight-cache-storage";
 import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
 import { buildOutlineRingsFromTileIds } from "@/lib/admin/cache-run-outline";
@@ -224,6 +227,18 @@ type WorkerPoolMessage =
       error?: string;
     };
 
+type WorkerPoolCommand =
+  | {
+      type: "run";
+      task: WorkerPoolTaskPayload;
+    }
+  | {
+      type: "cancel";
+    }
+  | {
+      type: "shutdown";
+    };
+
 interface WorkerPoolRunResult {
   succeededTileIds: string[];
   skippedTileIds: string[];
@@ -236,6 +251,29 @@ function clampRatio(value: number): number {
     return 0;
   }
   return Math.max(0, Math.min(1, value));
+}
+
+function formatPrecomputeTileError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack || error.message;
+  }
+  if (typeof error === "object" && error !== null) {
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return String(error);
+}
+
+function formatPrecomputeTileFailureLog(params: {
+  region: PrecomputedRegionName;
+  date: string;
+  tileId: string;
+  error: string;
+}): string {
+  return JSON.stringify(params);
 }
 
 function resolvePrecomputeWorkerCount(tileCount: number): number {
@@ -396,10 +434,11 @@ async function runDateTilesWithWorkerPool(params: {
       skipExisting: params.skipExisting,
     };
     slot.currentTaskId = task.taskId;
-    slot.worker.send?.({
+    const command: WorkerPoolCommand = {
       type: "run",
       task: payload,
-    });
+    };
+    slot.worker.send?.(command);
     params.onProgress?.({
       stage: "running",
       date: params.date,
@@ -423,7 +462,19 @@ async function runDateTilesWithWorkerPool(params: {
     });
   };
 
-  const terminateWorkers = async () => {
+  const sendWorkerCommand = (worker: ChildProcess, command: WorkerPoolCommand): boolean => {
+    if (!worker.connected) {
+      return false;
+    }
+    try {
+      worker.send(command);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const shutdownWorkers = async () => {
     await Promise.all(
       workers.map(async (slot) => {
         try {
@@ -432,17 +483,92 @@ async function runDateTilesWithWorkerPool(params: {
             return;
           }
           await new Promise<void>((resolve) => {
-            const onExit = () => resolve();
-            worker.once("exit", onExit);
-            worker.kill("SIGTERM");
+            let resolved = false;
+            let forceKillTimer: NodeJS.Timeout | null = null;
+            const finish = () => {
+              if (resolved) return;
+              resolved = true;
+              if (forceKillTimer) clearTimeout(forceKillTimer);
+              resolve();
+            };
+
+            worker.once("exit", finish);
+
+            const sentShutdown = sendWorkerCommand(worker, { type: "shutdown" });
+            if (!sentShutdown) {
+              try {
+                worker.kill("SIGTERM");
+              } catch {
+                // Ignore shutdown signal failures.
+              }
+            }
+
+            forceKillTimer = setTimeout(() => {
+              try {
+                if (worker.exitCode === null && !worker.killed) {
+                  worker.kill("SIGTERM");
+                }
+              } catch {
+                // Ignore forced shutdown failures.
+              }
+              setTimeout(() => {
+                try {
+                  if (worker.exitCode === null && !worker.killed) {
+                    worker.kill("SIGKILL");
+                  }
+                } catch {
+                  // Ignore hard-stop failures.
+                }
+                finish();
+              }, 1000);
+            }, 5000);
+            forceKillTimer.unref?.();
+          });
+        } catch {
+          // Ignore worker shutdown failures.
+        }
+      }),
+    );
+  };
+
+  const cancelWorkers = async () => {
+    for (const slot of workers) {
+      sendWorkerCommand(slot.worker, { type: "cancel" });
+    }
+    await Promise.all(
+      workers.map(async (slot) => {
+        try {
+          const worker = slot.worker;
+          if (worker.exitCode !== null || worker.killed) {
+            return;
+          }
+          await new Promise<void>((resolve) => {
+            let resolved = false;
+            const finish = () => {
+              if (resolved) return;
+              resolved = true;
+              resolve();
+            };
+            worker.once("exit", finish);
             setTimeout(() => {
               try {
-                worker.kill("SIGKILL");
+                if (worker.exitCode === null && !worker.killed) {
+                  worker.kill("SIGTERM");
+                }
+              } catch {
+                // Ignore worker cancel failures.
+              }
+            }, 1000);
+            setTimeout(() => {
+              try {
+                if (worker.exitCode === null && !worker.killed) {
+                  worker.kill("SIGKILL");
+                }
               } catch {
                 // Ignore hard-stop failures.
               }
-              resolve();
-            }, 1000);
+              finish();
+            }, 5000);
           });
         } catch {
           // Ignore worker shutdown failures.
@@ -523,6 +649,14 @@ async function runDateTilesWithWorkerPool(params: {
           succeededTileIds.push(task.tile.tileId);
         } else if (message.state === "failed") {
           failedTileIds.push(task.tile.tileId);
+          console.warn(
+            `[cache-admin] tile precompute failed ${formatPrecomputeTileFailureLog({
+              region: params.region,
+              date: params.date,
+              tileId: task.tile.tileId,
+              error: message.error ?? "Unknown worker error.",
+            })}`,
+          );
         } else if (message.state === "cancelled") {
           if (params.signal?.aborted) {
             if (!settled) {
@@ -532,6 +666,14 @@ async function runDateTilesWithWorkerPool(params: {
             return;
           }
           failedTileIds.push(task.tile.tileId);
+          console.warn(
+            `[cache-admin] tile precompute cancelled ${formatPrecomputeTileFailureLog({
+              region: params.region,
+              date: params.date,
+              tileId: task.tile.tileId,
+              error: message.error ?? "Precompute cancelled.",
+            })}`,
+          );
         }
 
         emitDoneProgress(task, message);
@@ -568,16 +710,16 @@ async function runDateTilesWithWorkerPool(params: {
 
   const abortHandler = () => {
     for (const slot of workers) {
-      slot.worker.send?.({
-        type: "cancel",
-      });
+      sendWorkerCommand(slot.worker, { type: "cancel" });
     }
   };
 
   params.signal?.addEventListener("abort", abortHandler);
 
+  let runSucceeded = false;
   try {
     await runPromise;
+    runSucceeded = true;
     return {
       succeededTileIds,
       skippedTileIds,
@@ -586,7 +728,11 @@ async function runDateTilesWithWorkerPool(params: {
     };
   } finally {
     params.signal?.removeEventListener("abort", abortHandler);
-    await terminateWorkers();
+    if (runSucceeded && !params.signal?.aborted) {
+      await shutdownWorkers();
+    } else {
+      await cancelWorkers();
+    }
   }
 }
 
@@ -1268,6 +1414,14 @@ export async function precomputeCacheRuns(
             throw error;
           }
           failedTileIds.push(tile.tileId);
+          console.warn(
+            `[cache-admin] tile precompute failed ${formatPrecomputeTileFailureLog({
+              region: request.region,
+              date,
+              tileId: tile.tileId,
+              error: formatPrecomputeTileError(error),
+            })}`,
+          );
           completedTiles += 1;
           options.onProgress?.({
             stage: "running",
@@ -1341,7 +1495,11 @@ export async function precomputeCacheRuns(
     }
 
     if (!usedWorkerPool) {
-      await runSequentialTiles();
+      try {
+        await runSequentialTiles();
+      } finally {
+        await disposeSunlightTileEvaluationBackends();
+      }
     }
 
     const manifest: PrecomputedSunlightManifest = {
