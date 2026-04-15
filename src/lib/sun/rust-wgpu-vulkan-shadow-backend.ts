@@ -73,6 +73,31 @@ function hashHorizonPayload(
   return `${masks.length / 360}m:${pointMaskIndices.length}p:${hash.digest("hex")}`;
 }
 
+function hashVegetationPayload(
+  meta: Float32Array,
+  data: Float32Array,
+  nodata: number,
+  stepMeters: number,
+  maxDistanceMeters: number,
+  minClearance: number,
+  originX: number,
+  originY: number,
+): string {
+  const hash = crypto.createHash("sha1");
+  hash.update(Buffer.from(meta.buffer, meta.byteOffset, meta.byteLength));
+  hash.update(Buffer.from(data.buffer, data.byteOffset, data.byteLength));
+  const params = new Float32Array([
+    nodata,
+    stepMeters,
+    maxDistanceMeters,
+    minClearance,
+    originX,
+    originY,
+  ]);
+  hash.update(Buffer.from(params.buffer, params.byteOffset, params.byteLength));
+  return `${meta.length / 8}t:${data.length}f:${hash.digest("hex")}`;
+}
+
 export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   readonly name: string;
   // Mutable: reassigned on updateMesh when the focus zone (and therefore
@@ -100,6 +125,11 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   private serverHorizonHash: string | null = null;
   private horizonMasksBinPath: string | null = null;
   private horizonIndicesBinPath: string | null = null;
+  // Vegetation upload state. Hash includes origin since the shader uses
+  // it to translate centered point coords back to LV95 during ray-march.
+  private serverVegetationHash: string | null = null;
+  private vegetationMetaBinPath: string | null = null;
+  private vegetationDataBinPath: string | null = null;
 
   private constructor(params: {
     originX: number;
@@ -212,40 +242,52 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     azimuthDeg: number,
     altitudeDeg: number,
   ): Promise<Uint32Array> {
-    const { buildingsMask } = await this.evaluateBatchInternal(
-      points,
-      pointCount,
-      azimuthDeg,
-      altitudeDeg,
-    );
-    return buildingsMask;
+    const res = await this.evaluateBatchInternal(points, pointCount, azimuthDeg, altitudeDeg);
+    return res.buildingsMask;
   }
 
   /**
-   * Evaluate both buildings and terrain bitmasks in one dispatch.
-   * When `horizonPayload` is provided, the backend ensures it's uploaded
-   * (deduped by hash) before running the evaluation. After the first
-   * frame of a tile the hash is remembered and subsequent frames skip
-   * the upload.
+   * Evaluate buildings + terrain + vegetation bitmasks in one dispatch.
+   * Any payload provided in `options` is synced to the server (deduped
+   * by hash) after the points are in place. Absent payloads leave their
+   * kind on the server as-is; if a kind has never been uploaded, its
+   * mask in the result is null.
    */
-  async evaluateBatchWithTerrain(
+  async evaluateBatchWithShadows(
     points: Float32Array,
     pointCount: number,
     azimuthDeg: number,
     altitudeDeg: number,
-    horizonPayload?: { masks: Float32Array; pointMaskIndices: Uint32Array },
-  ): Promise<{ buildingsMask: Uint32Array; terrainMask: Uint32Array | null }> {
+    options?: {
+      horizon?: { masks: Float32Array; pointMaskIndices: Uint32Array };
+      vegetation?: {
+        meta: Float32Array;
+        data: Float32Array;
+        nodata: number;
+        stepMeters: number;
+        maxDistanceMeters: number;
+        minClearance: number;
+        originX: number;
+        originY: number;
+      };
+    },
+  ): Promise<{
+    buildingsMask: Uint32Array;
+    terrainMask: Uint32Array | null;
+    vegetationMask: Uint32Array | null;
+  }> {
     if (pointCount === 0) {
-      return { buildingsMask: new Uint32Array(0), terrainMask: null };
+      return { buildingsMask: new Uint32Array(0), terrainMask: null, vegetationMask: null };
     }
     await this.ensureServer(points, pointCount);
     if (!this.server) {
       throw new Error("Rust/wgpu Vulkan server failed to start.");
     }
-    // Sync the horizon payload with the server *after* points are in place,
-    // so the server's point count matches the indices count.
-    if (horizonPayload) {
-      await this.uploadHorizonMasks(horizonPayload);
+    if (options?.horizon) {
+      await this.uploadHorizonMasks(options.horizon);
+    }
+    if (options?.vegetation) {
+      await this.uploadVegetationRasters(options.vegetation);
     }
     return this.runEvaluate(pointCount, azimuthDeg, altitudeDeg);
   }
@@ -255,9 +297,13 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     pointCount: number,
     azimuthDeg: number,
     altitudeDeg: number,
-  ): Promise<{ buildingsMask: Uint32Array; terrainMask: Uint32Array | null }> {
+  ): Promise<{
+    buildingsMask: Uint32Array;
+    terrainMask: Uint32Array | null;
+    vegetationMask: Uint32Array | null;
+  }> {
     if (pointCount === 0) {
-      return { buildingsMask: new Uint32Array(0), terrainMask: null };
+      return { buildingsMask: new Uint32Array(0), terrainMask: null, vegetationMask: null };
     }
     await this.ensureServer(points, pointCount);
     if (!this.server) {
@@ -270,7 +316,11 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     pointCount: number,
     azimuthDeg: number,
     altitudeDeg: number,
-  ): Promise<{ buildingsMask: Uint32Array; terrainMask: Uint32Array | null }> {
+  ): Promise<{
+    buildingsMask: Uint32Array;
+    terrainMask: Uint32Array | null;
+    vegetationMask: Uint32Array | null;
+  }> {
     if (!this.server) {
       throw new Error("Rust/wgpu Vulkan server is not running.");
     }
@@ -288,7 +338,11 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       this.serverHorizonHash !== null && Array.isArray(result.terrainBlockedWords)
         ? Uint32Array.from(result.terrainBlockedWords)
         : null;
-    return { buildingsMask, terrainMask };
+    const vegetationMask =
+      this.serverVegetationHash !== null && Array.isArray(result.vegetationBlockedWords)
+        ? Uint32Array.from(result.vegetationBlockedWords)
+        : null;
+    return { buildingsMask, terrainMask, vegetationMask };
   }
 
   /**
@@ -351,6 +405,82 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     if (prevIndices) await this.deleteRuntimeFile(prevIndices);
   }
 
+  /**
+   * Upload packed vegetation rasters to the Rust server. Memoized by
+   * hash; identical payloads on subsequent calls are no-ops.
+   */
+  async uploadVegetationRasters(params: {
+    meta: Float32Array;
+    data: Float32Array;
+    nodata: number;
+    stepMeters: number;
+    maxDistanceMeters: number;
+    minClearance: number;
+    originX: number;
+    originY: number;
+  }): Promise<void> {
+    if (params.meta.length === 0 || params.data.length === 0) {
+      throw new Error("uploadVegetationRasters requires non-empty meta and data.");
+    }
+    if (params.meta.length % 8 !== 0) {
+      throw new Error(
+        `uploadVegetationRasters: meta length ${params.meta.length} is not a multiple of 8.`,
+      );
+    }
+    const hash = hashVegetationPayload(
+      params.meta,
+      params.data,
+      params.nodata,
+      params.stepMeters,
+      params.maxDistanceMeters,
+      params.minClearance,
+      params.originX,
+      params.originY,
+    );
+    if (this.server && this.serverVegetationHash === hash) {
+      return;
+    }
+    if (!this.server) {
+      throw new Error(
+        "uploadVegetationRasters called before the Rust server is running. Call evaluateBatch first to spin it up.",
+      );
+    }
+    const outputDir = this.outputDir;
+    await fs.mkdir(outputDir, { recursive: true });
+    const runId = `${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
+    const metaPath = path.join(outputDir, `${runId}.veg-meta.bin`);
+    const dataPath = path.join(outputDir, `${runId}.veg-data.bin`);
+    await fs.writeFile(
+      metaPath,
+      Buffer.from(params.meta.buffer, params.meta.byteOffset, params.meta.byteLength),
+    );
+    await writeFloat32Bin(dataPath, params.data);
+    try {
+      this.evaluationId += 1;
+      await this.server.uploadVegetationRasters(this.evaluationId, {
+        vegMetaBin: metaPath,
+        vegDataBin: dataPath,
+        vegNodata: params.nodata,
+        vegStepMeters: params.stepMeters,
+        vegMaxDistanceMeters: params.maxDistanceMeters,
+        vegMinClearance: params.minClearance,
+        originX: params.originX,
+        originY: params.originY,
+      });
+    } catch (error) {
+      await this.deleteRuntimeFile(metaPath);
+      await this.deleteRuntimeFile(dataPath);
+      throw error;
+    }
+    const prevMeta = this.vegetationMetaBinPath;
+    const prevData = this.vegetationDataBinPath;
+    this.vegetationMetaBinPath = metaPath;
+    this.vegetationDataBinPath = dataPath;
+    this.serverVegetationHash = hash;
+    if (prevMeta) await this.deleteRuntimeFile(prevMeta);
+    if (prevData) await this.deleteRuntimeFile(prevData);
+  }
+
   prepareSunPosition(): void {}
 
   evaluate(): BuildingShadowResult {
@@ -380,6 +510,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     this.serverPointsHash = null;
     this.serverFocusKey = null;
     this.serverHorizonHash = null;
+    this.serverVegetationHash = null;
     if (server) {
       console.log("[rust-wgpu-vulkan] Shutting down native server");
       await server.shutdownWithTimeout();
@@ -388,9 +519,13 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     await this.deleteRuntimeFile(this.pointsBinPath);
     await this.deleteRuntimeFile(this.horizonMasksBinPath);
     await this.deleteRuntimeFile(this.horizonIndicesBinPath);
+    await this.deleteRuntimeFile(this.vegetationMetaBinPath);
+    await this.deleteRuntimeFile(this.vegetationDataBinPath);
     this.pointsBinPath = null;
     this.horizonMasksBinPath = null;
     this.horizonIndicesBinPath = null;
+    this.vegetationMetaBinPath = null;
+    this.vegetationDataBinPath = null;
   }
 
   private async ensureServer(points: Float32Array, pointCount: number): Promise<void> {
@@ -513,15 +648,23 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     this.pointsBinPath = newPath;
     if (previous) await this.deleteRuntimeFile(previous);
     // reload_points recreates the shadow-compute resources on the server
-    // side, so any horizon data previously uploaded is gone. Invalidate
-    // our cached hash; caller must re-upload before relying on terrain.
+    // side, so any horizon/vegetation data previously uploaded is gone.
+    // Invalidate our cached hashes; callers must re-upload before relying
+    // on terrain / vegetation masks.
     this.serverHorizonHash = null;
+    this.serverVegetationHash = null;
     const prevMasks = this.horizonMasksBinPath;
     const prevIndices = this.horizonIndicesBinPath;
+    const prevVegMeta = this.vegetationMetaBinPath;
+    const prevVegData = this.vegetationDataBinPath;
     this.horizonMasksBinPath = null;
     this.horizonIndicesBinPath = null;
+    this.vegetationMetaBinPath = null;
+    this.vegetationDataBinPath = null;
     if (prevMasks) await this.deleteRuntimeFile(prevMasks);
     if (prevIndices) await this.deleteRuntimeFile(prevIndices);
+    if (prevVegMeta) await this.deleteRuntimeFile(prevVegMeta);
+    if (prevVegData) await this.deleteRuntimeFile(prevVegData);
   }
 
   private currentFocusKey(): string {

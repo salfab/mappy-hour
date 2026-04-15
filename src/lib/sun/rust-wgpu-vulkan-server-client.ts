@@ -23,6 +23,8 @@ export type RustWgpuVulkanResultMessage = {
   blockedWords?: number[];
   terrainBlockedPoints?: number | null;
   terrainBlockedWords?: number[] | null;
+  vegetationBlockedPoints?: number | null;
+  vegetationBlockedWords?: number[] | null;
   pointCount: number;
 };
 
@@ -273,6 +275,47 @@ export class RustWgpuVulkanShadowServer {
     return {
       maskCount: Number((message as { maskCount?: number }).maskCount ?? 0),
       pointCount: Number((message as { pointCount?: number }).pointCount ?? 0),
+      elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
+    };
+  }
+
+  /**
+   * Upload per-region vegetation rasters (SwissSurface3D) for the GPU
+   * ray-march. After this call, evaluate() results include
+   * vegetationBlockedWords.
+   */
+  async uploadVegetationRasters(
+    id: number,
+    params: {
+      vegMetaBin: string;
+      vegDataBin: string;
+      vegNodata: number;
+      vegStepMeters: number;
+      vegMaxDistanceMeters: number;
+      vegMinClearance: number;
+      originX: number;
+      originY: number;
+    },
+  ): Promise<{ tileCount: number; dataBytes: number; elapsedMs: number }> {
+    await this.writeJson({
+      id,
+      command: "upload_vegetation_rasters",
+      vegMetaBin: params.vegMetaBin,
+      vegDataBin: params.vegDataBin,
+      vegNodata: params.vegNodata,
+      vegStepMeters: params.vegStepMeters,
+      vegMaxDistanceMeters: params.vegMaxDistanceMeters,
+      vegMinClearance: params.vegMinClearance,
+      originX: params.originX,
+      originY: params.originY,
+    });
+    const message = await this.nextJson(this.evaluationTimeoutMs);
+    if (message.type !== "uploaded_vegetation_rasters") {
+      throw new Error(`Unexpected upload_vegetation_rasters response: ${JSON.stringify(message)}`);
+    }
+    return {
+      tileCount: Number((message as { tileCount?: number }).tileCount ?? 0),
+      dataBytes: Number((message as { dataBytes?: number }).dataBytes ?? 0),
       elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
     };
   }

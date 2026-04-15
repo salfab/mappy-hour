@@ -1570,7 +1570,7 @@ struct VegTileMeta {
     width: u32,
     height: u32,
     data_offset: u32,
-    _pad: u32,
+    nodata: f32,
 };
 
 @group(0) @binding(0) var<uniform> params: ShadowParams;
@@ -1599,7 +1599,7 @@ fn sample_veg_elevation(sx: f32, sy: f32) -> f32 {
         let fy = clamp(floor(v * f32(tm.height)), 0.0, f32(tm.height - 1u));
         let idx = u32(fy) * tm.width + u32(fx) + tm.data_offset;
         let val = veg_data[idx];
-        if (abs(val - params.veg_nodata) < 0.000001) {
+        if (abs(val - tm.nodata) < 0.000001) {
             return -1.0e6;
         }
         return val;

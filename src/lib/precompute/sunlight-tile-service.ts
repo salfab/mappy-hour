@@ -837,17 +837,28 @@ export async function computeSunlightTileArtifact(params: {
     }
   }
 
-  // ── Phase B: build packed horizon payload for the GPU terrain check ─
-  // The payload will be passed to evaluateBatchWithTerrain on every frame;
-  // the backend dedups via a content hash so only the first frame of a
-  // given (point set + horizon set) actually uploads.
+  // ── Phase B + C: build packed payloads for the GPU shadow compute ──
+  // Horizon + vegetation payloads are passed to evaluateBatchWithShadows
+  // on every frame; the backend dedups via content hash so only the first
+  // frame of a (points, horizon, vegetation) triple actually uploads.
   let horizonPayload: { masks: Float32Array; pointMaskIndices: Uint32Array } | null = null;
-  const useBatchTerrain =
+  let vegetationPayload: {
+    meta: Float32Array;
+    data: Float32Array;
+    nodata: number;
+    stepMeters: number;
+    maxDistanceMeters: number;
+    minClearance: number;
+    originX: number;
+    originY: number;
+  } | null = null;
+  const useBatchShadows =
     useBatchPath &&
     webgpuBackend != null &&
-    typeof (webgpuBackend as { evaluateBatchWithTerrain?: unknown })
-      .evaluateBatchWithTerrain === "function";
-  if (useBatchTerrain) {
+    typeof (webgpuBackend as { evaluateBatchWithShadows?: unknown })
+      .evaluateBatchWithShadows === "function";
+  if (useBatchShadows) {
+    // ── Horizon ─────────────────────────────────────────────────────
     const maskToIndex = new Map<object, number>();
     const maskList: HorizonMask[] = [];
     const pointMaskIndices = new Uint32Array(preparedOutdoorPoints.length);
@@ -876,6 +887,50 @@ export async function computeSunlightTileArtifact(params: {
         for (let b = 0; b < 360; b++) masks[offset + b] = bins[b];
       }
       horizonPayload = { masks, pointMaskIndices };
+    }
+    // ── Vegetation ──────────────────────────────────────────────────
+    const vegTiles = sharedSources.vegetationSurfaceTiles;
+    if (vegTiles && vegTiles.length > 0 && webgpuBackend) {
+      const origin = webgpuBackend.getOrigin();
+      // meta layout per tile (8 × 4 bytes): minX, minY, maxX, maxY,
+      // width (u32), height (u32), data_offset (u32), nodata (f32).
+      const meta = new Float32Array(vegTiles.length * 8);
+      const metaU32 = new Uint32Array(meta.buffer);
+      let totalFloats = 0;
+      for (const tile of vegTiles) totalFloats += tile.width * tile.height;
+      const data = new Float32Array(totalFloats);
+      let offsetFloats = 0;
+      for (let i = 0; i < vegTiles.length; i++) {
+        const t = vegTiles[i];
+        const slot = i * 8;
+        meta[slot + 0] = t.minX;
+        meta[slot + 1] = t.minY;
+        meta[slot + 2] = t.maxX;
+        meta[slot + 3] = t.maxY;
+        metaU32[slot + 4] = t.width;
+        metaU32[slot + 5] = t.height;
+        metaU32[slot + 6] = offsetFloats;
+        // nodata as f32; use NaN sentinel when tile has no nodata (won't match anything real)
+        meta[slot + 7] = t.nodata === null ? Number.NaN : t.nodata;
+        // Convert typed raster to f32 (GeoTIFF may return Int16/Uint16/etc)
+        const n = t.width * t.height;
+        if (t.raster instanceof Float32Array) {
+          data.set(t.raster.subarray(0, n), offsetFloats);
+        } else {
+          for (let k = 0; k < n; k++) data[offsetFloats + k] = Number(t.raster[k]);
+        }
+        offsetFloats += n;
+      }
+      vegetationPayload = {
+        meta,
+        data,
+        nodata: 0, // per-tile nodata is in meta; this param is unused by the shader now
+        stepMeters: 2,
+        maxDistanceMeters: 120,
+        minClearance: 4,
+        originX: origin.x,
+        originY: origin.y,
+      };
     }
   }
 
@@ -932,25 +987,37 @@ export async function computeSunlightTileArtifact(params: {
     // ── GPU batch building shadow evaluation ─────────────────────────
     let batchBuildingBlockedMask: Uint32Array | null = null;
     let batchTerrainBlockedMask: Uint32Array | null = null;
+    let batchVegetationBlockedMask: Uint32Array | null = null;
     if (useBatchPath && batchPointsF32) {
-      if (useBatchTerrain && horizonPayload) {
+      if (useBatchShadows && (horizonPayload || vegetationPayload)) {
         const out = await (webgpuBackend as {
-          evaluateBatchWithTerrain: (
+          evaluateBatchWithShadows: (
             points: Float32Array,
             pointCount: number,
             azimuthDeg: number,
             altitudeDeg: number,
-            horizonPayload?: { masks: Float32Array; pointMaskIndices: Uint32Array },
-          ) => Promise<{ buildingsMask: Uint32Array; terrainMask: Uint32Array | null }>;
-        }).evaluateBatchWithTerrain(
+            options?: {
+              horizon?: { masks: Float32Array; pointMaskIndices: Uint32Array };
+              vegetation?: typeof vegetationPayload;
+            },
+          ) => Promise<{
+            buildingsMask: Uint32Array;
+            terrainMask: Uint32Array | null;
+            vegetationMask: Uint32Array | null;
+          }>;
+        }).evaluateBatchWithShadows(
           batchPointsF32,
           preparedOutdoorPoints.length,
           frameSolarPosition.azimuthDeg,
           frameSolarPosition.altitudeDeg,
-          horizonPayload,
+          {
+            horizon: horizonPayload ?? undefined,
+            vegetation: vegetationPayload ?? undefined,
+          },
         );
         batchBuildingBlockedMask = out.buildingsMask;
         batchTerrainBlockedMask = out.terrainMask;
+        batchVegetationBlockedMask = out.vegetationMask;
       } else {
         batchBuildingBlockedMask = await webgpuBackend.evaluateBatch(
           batchPointsF32,
@@ -1005,11 +1072,20 @@ export async function computeSunlightTileArtifact(params: {
           }
         }
 
-        // Vegetation: only when not terrain-blocked (matches evaluateInstantSunlight)
+        // Vegetation: only when not terrain-blocked (matches evaluateInstantSunlight).
+        // If the GPU computed a vegetation bitmask for this frame, read it
+        // instead of running the CPU ray-march; otherwise fall back.
         let vegetationBlocked = false;
-        const vegEval = point.vegetationShadowEvaluator;
-        if (!terrainBlocked && vegEval !== undefined) {
-          vegetationBlocked = vegEval({ azimuthDeg, altitudeDeg }).blocked;
+        if (batchVegetationBlockedMask !== null) {
+          if (!terrainBlocked) {
+            vegetationBlocked =
+              ((batchVegetationBlockedMask[pointIndex >>> 5] >>> (pointIndex & 31)) & 1) === 1;
+          }
+        } else {
+          const vegEval = point.vegetationShadowEvaluator;
+          if (!terrainBlocked && vegEval !== undefined) {
+            vegetationBlocked = vegEval({ azimuthDeg, altitudeDeg }).blocked;
+          }
         }
 
         // Building: batch bitmask OR per-point evaluator OR none

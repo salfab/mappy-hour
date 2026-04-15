@@ -85,7 +85,7 @@ export interface BatchBuildingShadowBackend extends BuildingShadowBackend {
    * - `pointMaskIndices`: one u32 per point, indexing into `masks`
    *
    * The caller is responsible for passing the same `pointCount` in the
-   * subsequent evaluateBatch* call as was used when building
+   * subsequent evaluate call as was used when building
    * `pointMaskIndices`.
    */
   uploadHorizonMasks?(params: {
@@ -94,24 +94,57 @@ export interface BatchBuildingShadowBackend extends BuildingShadowBackend {
   }): Promise<void>;
 
   /**
-   * (Optional, Phase B+) Like evaluateBatch, but also returns the
-   * terrain-blocked bitmask produced by the GPU horizon check.
+   * (Optional, Phase C+) Upload per-region vegetation rasters so the
+   * shader can compute the vegetation-blocked bitmask via ray-march.
    *
-   * When `horizonPayload` is provided, the backend syncs it to the GPU
-   * (deduped by hash across frames) after the points are in place.
-   * Callers typically pass the same payload on every frame of a tile;
-   * the backend skips the actual upload when the hash matches.
-   *
-   * When no payload is provided and none has been uploaded yet,
-   * terrainMask is null.
+   * Meta is one entry per tile with absolute LV95 bounds + raster
+   * dimensions + offset into `data`. Data is the flat concatenation of
+   * all tile rasters as f32.
    */
-  evaluateBatchWithTerrain?(
+  uploadVegetationRasters?(params: {
+    meta: Float32Array; // tileCount × 8 slots (minX/minY/maxX/maxY as f32, width/height/dataOffset/pad as u32 reinterpreted as f32)
+    data: Float32Array;
+    nodata: number;
+    stepMeters: number;
+    maxDistanceMeters: number;
+    minClearance: number;
+    originX: number;
+    originY: number;
+  }): Promise<void>;
+
+  /**
+   * (Optional, Phase B+ / C+) Like evaluateBatch, but also returns the
+   * terrain-blocked and/or vegetation-blocked bitmasks produced on the
+   * GPU. When a payload is passed, the backend syncs it (deduped by
+   * hash across frames) after points are in place; subsequent frames
+   * of the same tile skip the actual upload.
+   *
+   * When no payload has ever been uploaded for a given kind, its mask
+   * in the result is null.
+   */
+  evaluateBatchWithShadows?(
     points: Float32Array,
     pointCount: number,
     azimuthDeg: number,
     altitudeDeg: number,
-    horizonPayload?: { masks: Float32Array; pointMaskIndices: Uint32Array },
-  ): Promise<{ buildingsMask: Uint32Array; terrainMask: Uint32Array | null }>;
+    options?: {
+      horizon?: { masks: Float32Array; pointMaskIndices: Uint32Array };
+      vegetation?: {
+        meta: Float32Array;
+        data: Float32Array;
+        nodata: number;
+        stepMeters: number;
+        maxDistanceMeters: number;
+        minClearance: number;
+        originX: number;
+        originY: number;
+      };
+    },
+  ): Promise<{
+    buildingsMask: Uint32Array;
+    terrainMask: Uint32Array | null;
+    vegetationMask: Uint32Array | null;
+  }>;
 }
 
 export function isBatchBackend(
