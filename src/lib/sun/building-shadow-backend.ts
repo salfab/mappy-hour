@@ -76,6 +76,42 @@ export interface BatchBuildingShadowBackend extends BuildingShadowBackend {
     bounds: { minX: number; minY: number; maxX: number; maxY: number },
     maxBuildingHeight: number,
   ): void;
+
+  /**
+   * (Optional, Phase B+) Upload per-tile horizon data so the shader can
+   * compute the terrain-blocked bitmask alongside the buildings bitmask.
+   *
+   * - `masks`: packed (maskCount × 360) f32 array of horizon angles (deg)
+   * - `pointMaskIndices`: one u32 per point, indexing into `masks`
+   *
+   * The caller is responsible for passing the same `pointCount` in the
+   * subsequent evaluateBatch* call as was used when building
+   * `pointMaskIndices`.
+   */
+  uploadHorizonMasks?(params: {
+    masks: Float32Array;
+    pointMaskIndices: Uint32Array;
+  }): Promise<void>;
+
+  /**
+   * (Optional, Phase B+) Like evaluateBatch, but also returns the
+   * terrain-blocked bitmask produced by the GPU horizon check.
+   *
+   * When `horizonPayload` is provided, the backend syncs it to the GPU
+   * (deduped by hash across frames) after the points are in place.
+   * Callers typically pass the same payload on every frame of a tile;
+   * the backend skips the actual upload when the hash matches.
+   *
+   * When no payload is provided and none has been uploaded yet,
+   * terrainMask is null.
+   */
+  evaluateBatchWithTerrain?(
+    points: Float32Array,
+    pointCount: number,
+    azimuthDeg: number,
+    altitudeDeg: number,
+    horizonPayload?: { masks: Float32Array; pointMaskIndices: Uint32Array },
+  ): Promise<{ buildingsMask: Uint32Array; terrainMask: Uint32Array | null }>;
 }
 
 export function isBatchBackend(

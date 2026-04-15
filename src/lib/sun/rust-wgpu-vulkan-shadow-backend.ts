@@ -63,6 +63,16 @@ function hashPoints(points: Float32Array, pointCount: number): string {
   return `${pointCount}:${crypto.createHash("sha1").update(buffer).digest("hex")}`;
 }
 
+function hashHorizonPayload(
+  masks: Float32Array,
+  pointMaskIndices: Uint32Array,
+): string {
+  const hash = crypto.createHash("sha1");
+  hash.update(Buffer.from(masks.buffer, masks.byteOffset, masks.byteLength));
+  hash.update(Buffer.from(pointMaskIndices.buffer, pointMaskIndices.byteOffset, pointMaskIndices.byteLength));
+  return `${masks.length / 360}m:${pointMaskIndices.length}p:${hash.digest("hex")}`;
+}
+
 export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   readonly name: string;
   // Mutable: reassigned on updateMesh when the focus zone (and therefore
@@ -84,6 +94,12 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   private serverFocusKey: string | null = null;
   private pointsBinPath: string | null = null;
   private evaluationId = 0;
+  // Horizon upload state: the masks/indices live on the server until
+  // invalidated (points change OR mesh change). We remember the hash of
+  // the last uploaded (masks + indices) to skip redundant uploads.
+  private serverHorizonHash: string | null = null;
+  private horizonMasksBinPath: string | null = null;
+  private horizonIndicesBinPath: string | null = null;
 
   private constructor(params: {
     originX: number;
@@ -196,21 +212,143 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     azimuthDeg: number,
     altitudeDeg: number,
   ): Promise<Uint32Array> {
+    const { buildingsMask } = await this.evaluateBatchInternal(
+      points,
+      pointCount,
+      azimuthDeg,
+      altitudeDeg,
+    );
+    return buildingsMask;
+  }
+
+  /**
+   * Evaluate both buildings and terrain bitmasks in one dispatch.
+   * When `horizonPayload` is provided, the backend ensures it's uploaded
+   * (deduped by hash) before running the evaluation. After the first
+   * frame of a tile the hash is remembered and subsequent frames skip
+   * the upload.
+   */
+  async evaluateBatchWithTerrain(
+    points: Float32Array,
+    pointCount: number,
+    azimuthDeg: number,
+    altitudeDeg: number,
+    horizonPayload?: { masks: Float32Array; pointMaskIndices: Uint32Array },
+  ): Promise<{ buildingsMask: Uint32Array; terrainMask: Uint32Array | null }> {
     if (pointCount === 0) {
-      return new Uint32Array(0);
+      return { buildingsMask: new Uint32Array(0), terrainMask: null };
     }
     await this.ensureServer(points, pointCount);
     if (!this.server) {
       throw new Error("Rust/wgpu Vulkan server failed to start.");
+    }
+    // Sync the horizon payload with the server *after* points are in place,
+    // so the server's point count matches the indices count.
+    if (horizonPayload) {
+      await this.uploadHorizonMasks(horizonPayload);
+    }
+    return this.runEvaluate(pointCount, azimuthDeg, altitudeDeg);
+  }
+
+  private async evaluateBatchInternal(
+    points: Float32Array,
+    pointCount: number,
+    azimuthDeg: number,
+    altitudeDeg: number,
+  ): Promise<{ buildingsMask: Uint32Array; terrainMask: Uint32Array | null }> {
+    if (pointCount === 0) {
+      return { buildingsMask: new Uint32Array(0), terrainMask: null };
+    }
+    await this.ensureServer(points, pointCount);
+    if (!this.server) {
+      throw new Error("Rust/wgpu Vulkan server failed to start.");
+    }
+    return this.runEvaluate(pointCount, azimuthDeg, altitudeDeg);
+  }
+
+  private async runEvaluate(
+    pointCount: number,
+    azimuthDeg: number,
+    altitudeDeg: number,
+  ): Promise<{ buildingsMask: Uint32Array; terrainMask: Uint32Array | null }> {
+    if (!this.server) {
+      throw new Error("Rust/wgpu Vulkan server is not running.");
     }
     this.evaluationId += 1;
     const result = await this.server.evaluate(this.evaluationId, azimuthDeg, altitudeDeg, {
       includeMask: true,
     });
     if (result.pointCount !== pointCount) {
-      throw new Error(`Rust/wgpu Vulkan point count mismatch: server=${result.pointCount}, expected=${pointCount}`);
+      throw new Error(
+        `Rust/wgpu Vulkan point count mismatch: server=${result.pointCount}, expected=${pointCount}`,
+      );
     }
-    return Uint32Array.from(result.blockedWords ?? []);
+    const buildingsMask = Uint32Array.from(result.blockedWords ?? []);
+    const terrainMask =
+      this.serverHorizonHash !== null && Array.isArray(result.terrainBlockedWords)
+        ? Uint32Array.from(result.terrainBlockedWords)
+        : null;
+    return { buildingsMask, terrainMask };
+  }
+
+  /**
+   * Upload packed horizon masks + per-point indices to the Rust server.
+   * After this call, evaluateBatchWithTerrain returns the terrain bitmask
+   * in addition to the buildings bitmask.
+   *
+   * The upload is memoized: a second call with the same (masks, indices)
+   * payload is a no-op.
+   */
+  async uploadHorizonMasks(params: {
+    masks: Float32Array;
+    pointMaskIndices: Uint32Array;
+  }): Promise<void> {
+    const { masks, pointMaskIndices } = params;
+    if (masks.length === 0 || pointMaskIndices.length === 0) {
+      throw new Error("uploadHorizonMasks requires non-empty masks and indices.");
+    }
+    if (masks.length % 360 !== 0) {
+      throw new Error(
+        `uploadHorizonMasks: masks length ${masks.length} is not a multiple of 360.`,
+      );
+    }
+    const hash = hashHorizonPayload(masks, pointMaskIndices);
+    if (this.server && this.serverHorizonHash === hash) {
+      return; // already uploaded on the current server session
+    }
+    // Server not up yet → just remember the payload; ensureServer will
+    // upload it after starting (or we upload right now if server is up).
+    if (!this.server) {
+      throw new Error(
+        "uploadHorizonMasks called before the Rust server is running. Call evaluateBatch first to spin it up.",
+      );
+    }
+    const outputDir = this.outputDir;
+    await fs.mkdir(outputDir, { recursive: true });
+    const runId = `${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
+    const masksPath = path.join(outputDir, `${runId}.horizon-masks.bin`);
+    const indicesPath = path.join(outputDir, `${runId}.horizon-indices.bin`);
+    await writeFloat32Bin(masksPath, masks);
+    await fs.writeFile(
+      indicesPath,
+      Buffer.from(pointMaskIndices.buffer, pointMaskIndices.byteOffset, pointMaskIndices.byteLength),
+    );
+    try {
+      this.evaluationId += 1;
+      await this.server.uploadHorizonMasks(this.evaluationId, masksPath, indicesPath);
+    } catch (error) {
+      await this.deleteRuntimeFile(masksPath);
+      await this.deleteRuntimeFile(indicesPath);
+      throw error;
+    }
+    // Cleanup previous files, then record new state.
+    const prevMasks = this.horizonMasksBinPath;
+    const prevIndices = this.horizonIndicesBinPath;
+    this.horizonMasksBinPath = masksPath;
+    this.horizonIndicesBinPath = indicesPath;
+    this.serverHorizonHash = hash;
+    if (prevMasks) await this.deleteRuntimeFile(prevMasks);
+    if (prevIndices) await this.deleteRuntimeFile(prevIndices);
   }
 
   prepareSunPosition(): void {}
@@ -241,13 +379,18 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     this.serverPointCount = null;
     this.serverPointsHash = null;
     this.serverFocusKey = null;
+    this.serverHorizonHash = null;
     if (server) {
       console.log("[rust-wgpu-vulkan] Shutting down native server");
       await server.shutdownWithTimeout();
       console.log("[rust-wgpu-vulkan] Native server stopped");
     }
     await this.deleteRuntimeFile(this.pointsBinPath);
+    await this.deleteRuntimeFile(this.horizonMasksBinPath);
+    await this.deleteRuntimeFile(this.horizonIndicesBinPath);
     this.pointsBinPath = null;
+    this.horizonMasksBinPath = null;
+    this.horizonIndicesBinPath = null;
   }
 
   private async ensureServer(points: Float32Array, pointCount: number): Promise<void> {
@@ -369,6 +512,16 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     const previous = this.pointsBinPath;
     this.pointsBinPath = newPath;
     if (previous) await this.deleteRuntimeFile(previous);
+    // reload_points recreates the shadow-compute resources on the server
+    // side, so any horizon data previously uploaded is gone. Invalidate
+    // our cached hash; caller must re-upload before relying on terrain.
+    this.serverHorizonHash = null;
+    const prevMasks = this.horizonMasksBinPath;
+    const prevIndices = this.horizonIndicesBinPath;
+    this.horizonMasksBinPath = null;
+    this.horizonIndicesBinPath = null;
+    if (prevMasks) await this.deleteRuntimeFile(prevMasks);
+    if (prevIndices) await this.deleteRuntimeFile(prevIndices);
   }
 
   private currentFocusKey(): string {

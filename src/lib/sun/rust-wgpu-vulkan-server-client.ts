@@ -21,6 +21,8 @@ export type RustWgpuVulkanResultMessage = {
   elapsedMs: number;
   blockedPoints: number;
   blockedWords?: number[];
+  terrainBlockedPoints?: number | null;
+  terrainBlockedWords?: number[] | null;
   pointCount: number;
 };
 
@@ -246,6 +248,33 @@ export class RustWgpuVulkanShadowServer {
     if (message.type !== "reloaded_focus") {
       throw new Error(`Unexpected reload_focus response: ${JSON.stringify(message)}`);
     }
+  }
+
+  /**
+   * Upload per-tile horizon masks for the GPU terrain check.
+   * After this call, evaluate() results include a terrainBlockedWords
+   * bitmask in addition to the buildings bitmask.
+   */
+  async uploadHorizonMasks(
+    id: number,
+    horizonMasksBinPath: string,
+    horizonIndicesBinPath: string,
+  ): Promise<{ maskCount: number; pointCount: number; elapsedMs: number }> {
+    await this.writeJson({
+      id,
+      command: "upload_horizon_masks",
+      horizonMasksBin: horizonMasksBinPath,
+      horizonIndicesBin: horizonIndicesBinPath,
+    });
+    const message = await this.nextJson(this.evaluationTimeoutMs);
+    if (message.type !== "uploaded_horizon_masks") {
+      throw new Error(`Unexpected upload_horizon_masks response: ${JSON.stringify(message)}`);
+    }
+    return {
+      maskCount: Number((message as { maskCount?: number }).maskCount ?? 0),
+      pointCount: Number((message as { pointCount?: number }).pointCount ?? 0),
+      elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
+    };
   }
 
   /**

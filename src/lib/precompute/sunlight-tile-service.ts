@@ -32,6 +32,7 @@ import {
 import {
   getHorizonAngleForAzimuth,
   isTerrainBlockedByHorizon,
+  type HorizonMask,
 } from "@/lib/sun/horizon-mask";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
@@ -836,6 +837,48 @@ export async function computeSunlightTileArtifact(params: {
     }
   }
 
+  // ── Phase B: build packed horizon payload for the GPU terrain check ─
+  // The payload will be passed to evaluateBatchWithTerrain on every frame;
+  // the backend dedups via a content hash so only the first frame of a
+  // given (point set + horizon set) actually uploads.
+  let horizonPayload: { masks: Float32Array; pointMaskIndices: Uint32Array } | null = null;
+  const useBatchTerrain =
+    useBatchPath &&
+    webgpuBackend != null &&
+    typeof (webgpuBackend as { evaluateBatchWithTerrain?: unknown })
+      .evaluateBatchWithTerrain === "function";
+  if (useBatchTerrain) {
+    const maskToIndex = new Map<object, number>();
+    const maskList: HorizonMask[] = [];
+    const pointMaskIndices = new Uint32Array(preparedOutdoorPoints.length);
+    let allPointsHaveMask = true;
+    for (let i = 0; i < preparedOutdoorPoints.length; i++) {
+      const m = preparedOutdoorPoints[i].horizonMask;
+      if (m === null || m === undefined) {
+        allPointsHaveMask = false;
+        break;
+      }
+      const existing = maskToIndex.get(m);
+      if (existing !== undefined) {
+        pointMaskIndices[i] = existing;
+      } else {
+        const idx = maskList.length;
+        maskList.push(m);
+        maskToIndex.set(m, idx);
+        pointMaskIndices[i] = idx;
+      }
+    }
+    if (allPointsHaveMask && maskList.length > 0) {
+      const masks = new Float32Array(maskList.length * 360);
+      for (let i = 0; i < maskList.length; i++) {
+        const bins = maskList[i].binsDeg;
+        const offset = i * 360;
+        for (let b = 0; b < 360; b++) masks[offset + b] = bins[b];
+      }
+      horizonPayload = { masks, pointMaskIndices };
+    }
+  }
+
   for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
     throwIfAborted(params.signal);
     const sampleDate = samples[sampleIndex];
@@ -888,13 +931,34 @@ export async function computeSunlightTileArtifact(params: {
 
     // ── GPU batch building shadow evaluation ─────────────────────────
     let batchBuildingBlockedMask: Uint32Array | null = null;
+    let batchTerrainBlockedMask: Uint32Array | null = null;
     if (useBatchPath && batchPointsF32) {
-      batchBuildingBlockedMask = await webgpuBackend.evaluateBatch(
-        batchPointsF32,
-        preparedOutdoorPoints.length,
-        frameSolarPosition.azimuthDeg,
-        frameSolarPosition.altitudeDeg,
-      );
+      if (useBatchTerrain && horizonPayload) {
+        const out = await (webgpuBackend as {
+          evaluateBatchWithTerrain: (
+            points: Float32Array,
+            pointCount: number,
+            azimuthDeg: number,
+            altitudeDeg: number,
+            horizonPayload?: { masks: Float32Array; pointMaskIndices: Uint32Array },
+          ) => Promise<{ buildingsMask: Uint32Array; terrainMask: Uint32Array | null }>;
+        }).evaluateBatchWithTerrain(
+          batchPointsF32,
+          preparedOutdoorPoints.length,
+          frameSolarPosition.azimuthDeg,
+          frameSolarPosition.altitudeDeg,
+          horizonPayload,
+        );
+        batchBuildingBlockedMask = out.buildingsMask;
+        batchTerrainBlockedMask = out.terrainMask;
+      } else {
+        batchBuildingBlockedMask = await webgpuBackend.evaluateBatch(
+          batchPointsF32,
+          preparedOutdoorPoints.length,
+          frameSolarPosition.azimuthDeg,
+          frameSolarPosition.altitudeDeg,
+        );
+      }
     }
 
     {
@@ -926,12 +990,17 @@ export async function computeSunlightTileArtifact(params: {
         const point = preparedOutdoorPoints[pointIndex];
         const horizonMask = point.horizonMask;
 
-        // Inline horizon + terrain check
+        // Inline horizon + terrain check.
+        // Diagnostic horizonAngleDeg stays CPU-computed (O(1) array index).
+        // Terrain boolean comes from the GPU bitmask when available.
         let horizonAngleDeg: number | null = null;
         let terrainBlocked = false;
         if (horizonMask !== null) {
           horizonAngleDeg = getHorizonAngleForAzimuth(horizonMask, azimuthDeg);
-          if (altitudeDeg <= getMaxHorizonAngle(horizonMask) + TERRAIN_HORIZON_SKIP_MARGIN_DEG) {
+          if (batchTerrainBlockedMask !== null) {
+            terrainBlocked =
+              ((batchTerrainBlockedMask[pointIndex >>> 5] >>> (pointIndex & 31)) & 1) === 1;
+          } else if (altitudeDeg <= getMaxHorizonAngle(horizonMask) + TERRAIN_HORIZON_SKIP_MARGIN_DEG) {
             terrainBlocked = isTerrainBlockedByHorizon(horizonMask, azimuthDeg, altitudeDeg);
           }
         }
