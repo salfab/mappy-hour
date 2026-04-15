@@ -327,6 +327,17 @@ function sampleSurfaceElevationLv95(
   return null;
 }
 
+function emptyVegetationShadowResult(checkedSamplesCount = 0): VegetationShadowResult {
+  return {
+    blocked: false,
+    blockerDistanceMeters: null,
+    blockerAltitudeAngleDeg: null,
+    blockerSurfaceElevationMeters: null,
+    blockerClearanceMeters: null,
+    checkedSamplesCount,
+  };
+}
+
 export function createVegetationShadowEvaluator(params: {
   tiles: VegetationSurfaceTile[];
   pointX: number;
@@ -339,17 +350,41 @@ export function createVegetationShadowEvaluator(params: {
   const maxDistanceMeters = params.maxDistanceMeters ?? DEFAULT_MAX_DISTANCE_METERS;
   const stepMeters = params.stepMeters ?? DEFAULT_STEP_METERS;
   const minClearanceMeters = params.minClearanceMeters ?? DEFAULT_MIN_CLEARANCE_METERS;
+  const pointX = params.pointX;
+  const pointY = params.pointY;
+  const pointElevation = params.pointElevation;
+
+  // ── Pre-filter to candidate tiles within maxDistanceMeters of the point ─
+  // The ray-march never reaches further than maxDistanceMeters from the
+  // point. Tiles outside that radius can never contribute to any sample.
+  // For most outdoor points in dense urban contexts, this leaves 0-2 tiles
+  // out of potentially many loaded for the whole bbox.
+  const candidateTiles: VegetationSurfaceTile[] = [];
+  for (const tile of params.tiles) {
+    if (
+      pointX + maxDistanceMeters < tile.minX ||
+      pointX - maxDistanceMeters > tile.maxX ||
+      pointY + maxDistanceMeters < tile.minY ||
+      pointY - maxDistanceMeters > tile.maxY
+    ) {
+      continue;
+    }
+    candidateTiles.push(tile);
+  }
+
+  // No candidate tile → evaluator is a no-op (saves the ray-march entirely).
+  if (candidateTiles.length === 0) {
+    return (sample) =>
+      sample.altitudeDeg <= 0 ? emptyVegetationShadowResult() : emptyVegetationShadowResult();
+  }
+
+  // Last-hit tile cache. Subsequent ray-march steps usually fall in the
+  // same tile (rays advance by stepMeters, tiles are typically much larger).
+  let lastHitTile: VegetationSurfaceTile | null = null;
 
   return (sample: VegetationShadowEvaluatorInput): VegetationShadowResult => {
     if (sample.altitudeDeg <= 0) {
-      return {
-        blocked: false,
-        blockerDistanceMeters: null,
-        blockerAltitudeAngleDeg: null,
-        blockerSurfaceElevationMeters: null,
-        blockerClearanceMeters: null,
-        checkedSamplesCount: 0,
-      };
+      return emptyVegetationShadowResult();
     }
 
     const azimuthRad = (sample.azimuthDeg * Math.PI) / 180;
@@ -362,21 +397,54 @@ export function createVegetationShadowEvaluator(params: {
       distanceMeters <= maxDistanceMeters;
       distanceMeters += stepMeters
     ) {
-      const sampleX = params.pointX + dirX * distanceMeters;
-      const sampleY = params.pointY + dirY * distanceMeters;
-      const surfaceElevation = sampleSurfaceElevationLv95(
-        params.tiles,
-        sampleX,
-        sampleY,
-      );
-      if (surfaceElevation === null) {
+      const sampleX = pointX + dirX * distanceMeters;
+      const sampleY = pointY + dirY * distanceMeters;
+
+      // Try cached tile first; fall back to scanning candidates on miss.
+      let hitTile: VegetationSurfaceTile | null = null;
+      if (
+        lastHitTile !== null &&
+        sampleX >= lastHitTile.minX &&
+        sampleX <= lastHitTile.maxX &&
+        sampleY >= lastHitTile.minY &&
+        sampleY <= lastHitTile.maxY
+      ) {
+        hitTile = lastHitTile;
+      } else {
+        for (const tile of candidateTiles) {
+          if (
+            sampleX < tile.minX ||
+            sampleX > tile.maxX ||
+            sampleY < tile.minY ||
+            sampleY > tile.maxY
+          ) {
+            continue;
+          }
+          hitTile = tile;
+          lastHitTile = tile;
+          break;
+        }
+      }
+
+      if (hitTile === null) {
+        continue;
+      }
+
+      const xRatio = (sampleX - hitTile.minX) / (hitTile.maxX - hitTile.minX);
+      const yRatio = (hitTile.maxY - sampleY) / (hitTile.maxY - hitTile.minY);
+      const x = clamp(Math.floor(xRatio * hitTile.width), 0, hitTile.width - 1);
+      const y = clamp(Math.floor(yRatio * hitTile.height), 0, hitTile.height - 1);
+      const index = y * hitTile.width + x;
+      const value = Number(hitTile.raster[index]);
+
+      if (!Number.isFinite(value) || valueIsNoData(value, hitTile.nodata)) {
         continue;
       }
 
       checkedSamplesCount += 1;
 
       // V1 approximation: local canopy/top clearance is estimated against point elevation.
-      const clearanceMeters = surfaceElevation - params.pointElevation;
+      const clearanceMeters = value - pointElevation;
       if (clearanceMeters < minClearanceMeters) {
         continue;
       }
@@ -389,21 +457,14 @@ export function createVegetationShadowEvaluator(params: {
           blockerDistanceMeters: Math.round(distanceMeters * 1000) / 1000,
           blockerAltitudeAngleDeg:
             Math.round(blockerAltitudeAngleDeg * 1000) / 1000,
-          blockerSurfaceElevationMeters: Math.round(surfaceElevation * 1000) / 1000,
+          blockerSurfaceElevationMeters: Math.round(value * 1000) / 1000,
           blockerClearanceMeters: Math.round(clearanceMeters * 1000) / 1000,
           checkedSamplesCount,
         };
       }
     }
 
-    return {
-      blocked: false,
-      blockerDistanceMeters: null,
-      blockerAltitudeAngleDeg: null,
-      blockerSurfaceElevationMeters: null,
-      blockerClearanceMeters: null,
-      checkedSamplesCount,
-    };
+    return emptyVegetationShadowResult(checkedSamplesCount);
   };
 }
 
