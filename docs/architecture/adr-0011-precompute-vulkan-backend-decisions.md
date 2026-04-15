@@ -76,6 +76,22 @@ Vulkan reste un mode opt-in (`--buildings-shadow-mode=rust-wgpu-vulkan` ou `MAPP
 
 **Pourquoi** : le speedup wall-clock Vulkan vs raster reste modeste (~1.13-1.41x selon la mesure) et la stabilité multi-worker n'est pas testée. Le gain ne justifie pas d'imposer une dépendance Rust/Vulkan en chemin critique.
 
+### 6. `MAPPY_PRECOMPUTE_WORKERS=1` reste la valeur verrouillée — worker pool Node cassé sous parallélisme
+
+Une tentative d'accélérer le precompute via `MAPPY_PRECOMPUTE_WORKERS=2` a été investiguée et **ne fonctionne pas en l'état** :
+
+- **Probe Rust brut** (binaire jetable, supprimé) : spawn N serveurs `mappyhour-wgpu-vulkan-probe.exe` concurrents, chacun avec mesh identique et points distincts. **Résultat : N=2 donne 3.5x throughput, N=3 donne 4.4x, zéro crash, zéro process résiduel sur Intel Arc**. La stabilité Vulkan multi-instance est validée au niveau driver.
+- **Précompute pipeline complet** avec `MAPPY_PRECOMPUTE_WORKERS=2`, 10 tuiles Lausanne, 06:00-09:00 :
+  - `workers=1` : 1m14s ✓
+  - `workers=2 rust-wgpu-vulkan` : **8m42s** (7× plus lent)
+  - `workers=2 gpu-raster` : **10m04s** (8× plus lent)
+- Le ralentissement n'est donc **pas Vulkan-spécifique** — raster aussi dégrade sévèrement. Les tuiles restent bloquées longtemps en phase `prepare-context` / `prepare-points` alors que la phase `evaluate-frames` est courte.
+- Hypothèses plausibles sur la cause racine du ralentissement (non confirmées) : contention I/O lors du chargement duplique de l'index bâtiments / rasters terrain / tiles végétation dans chaque worker Node, memory pressure forçant du swap, ou bug d'orchestration dans `src/lib/admin/cache-admin.ts`.
+
+**Décision** : `MAPPY_PRECOMPUTE_WORKERS` reste à 1 dans `package.json` pour `pnpm precompute:region:vulkan` et `pnpm precompute:all-regions:vulkan`. Le parallélisme multi-worker Node ne peut pas être activé sans investigation plus approfondie du worker pool, hors scope de la phase Vulkan actuelle.
+
+À reprendre si : l'orchestration worker pool est refactorée (par exemple partage des caches d'index via SharedArrayBuffer ou mémoire mmap, ou basculement worker threads au lieu de child processes pour partager la module-level cache).
+
 ## Conséquences
 
 ### Positives
