@@ -7,6 +7,12 @@ import { WebGpuComputeShadowBackend } from "@/lib/sun/webgpu-compute-shadow-back
 import { loadBuildingsObstacleIndex } from "@/lib/sun/buildings-shadow";
 
 async function main() {
+  const iterationsArg = process.argv.find((arg) => arg.startsWith("--iterations="));
+  const iterations = iterationsArg ? Number(iterationsArg.slice("--iterations=".length)) : 5;
+  if (!Number.isInteger(iterations) || iterations <= 0) {
+    throw new Error(`--iterations must be a positive integer, got ${iterationsArg}`);
+  }
+
   console.log("Loading obstacles...");
   const index = await loadBuildingsObstacleIndex("lausanne");
   if (!index) throw new Error("no index");
@@ -36,9 +42,9 @@ async function main() {
     points[i * 4 + 3] = 0;
   }
 
-  console.log(`\nRunning 5 evaluateBatch iterations (${N} points each)...\n`);
+  console.log(`\nRunning ${iterations} evaluateBatch iterations (${N} points each)...\n`);
 
-  for (let iter = 0; iter < 5; iter++) {
+  for (let iter = 0; iter < iterations; iter++) {
     const t1 = performance.now();
     const result = await backend.evaluateBatch(points, N, 180 + iter * 10, 45);
     const ms = performance.now() - t1;

@@ -76,6 +76,37 @@ function mat4TransformVec4(m: Mat4, x: number, y: number, z: number, w: number):
   ];
 }
 
+function nextPowerOfTwo(value: number): number {
+  return 2 ** Math.ceil(Math.log2(Math.max(value, 4)));
+}
+
+const DEFAULT_MAX_COMPUTE_POINTS_PER_DISPATCH = 16_384;
+
+function getDawnCreateArgs(): string[] {
+  const args: string[] = [];
+  const backend = process.env.MAPPY_WEBGPU_BACKEND?.trim();
+  const dllDir = process.env.MAPPY_WEBGPU_DLLDIR?.trim();
+
+  if (backend && backend !== "auto") {
+    args.push(`backend=${backend}`);
+  }
+  if (dllDir) {
+    args.push(`dlldir=${dllDir}`);
+  }
+
+  return args;
+}
+
+function getMaxComputePointsPerDispatch(): number {
+  const parsed = Number(
+    process.env.MAPPY_WEBGPU_COMPUTE_MAX_POINTS_PER_DISPATCH ??
+      DEFAULT_MAX_COMPUTE_POINTS_PER_DISPATCH,
+  );
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_MAX_COMPUTE_POINTS_PER_DISPATCH;
+}
+
 // ── WGSL shaders ───────────────────────────────────────────────────────
 
 const RENDER_WGSL = `
@@ -158,12 +189,19 @@ export class WebGpuComputeShadowBackend implements BuildingShadowBackend {
   private meshVbo: GPUBuffer;
   private vertexCount: number;
   private depthTexture: GPUTexture;
+  private depthTextureView: GPUTextureView;
   private renderPipeline: GPURenderPipeline;
   private renderUniformBuf: GPUBuffer;
   private renderBindGroup: GPUBindGroup;
   private computePipeline: GPUComputePipeline;
   private computeParamsBuf: GPUBuffer;
   private computeBGL: GPUBindGroupLayout;
+  private batchPointsBuf: GPUBuffer | null = null;
+  private batchPointsBufSize = 0;
+  private batchResultBuf: GPUBuffer | null = null;
+  private batchReadbackBuf: GPUBuffer | null = null;
+  private batchResultBufSize = 0;
+  private batchComputeBindGroup: GPUBindGroup | null = null;
 
   private originX: number;
   private originY: number;
@@ -183,6 +221,7 @@ export class WebGpuComputeShadowBackend implements BuildingShadowBackend {
     meshVbo: GPUBuffer,
     vertexCount: number,
     depthTexture: GPUTexture,
+    depthTextureView: GPUTextureView,
     renderPipeline: GPURenderPipeline,
     renderUniformBuf: GPUBuffer,
     renderBindGroup: GPUBindGroup,
@@ -200,6 +239,7 @@ export class WebGpuComputeShadowBackend implements BuildingShadowBackend {
     this.meshVbo = meshVbo;
     this.vertexCount = vertexCount;
     this.depthTexture = depthTexture;
+    this.depthTextureView = depthTextureView;
     this.renderPipeline = renderPipeline;
     this.renderUniformBuf = renderUniformBuf;
     this.renderBindGroup = renderBindGroup;
@@ -260,7 +300,8 @@ export class WebGpuComputeShadowBackend implements BuildingShadowBackend {
       (globalThis as Record<string, unknown>)[key] = value;
     }
 
-    const gpu = webgpu.create([]);
+    const dawnCreateArgs = getDawnCreateArgs();
+    const gpu = webgpu.create(dawnCreateArgs);
     const adapter = await gpu.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new Error("No WebGPU adapter found");
 
@@ -277,6 +318,9 @@ export class WebGpuComputeShadowBackend implements BuildingShadowBackend {
     });
 
     console.log(`[webgpu-compute] adapter: ${vendor} ${device} (${desc})`);
+    if (dawnCreateArgs.length > 0) {
+      console.log(`[webgpu-compute] dawn args: ${dawnCreateArgs.join(" ")}`);
+    }
 
     // Dawn/D3D12 segfaults on process exit if the device is not explicitly destroyed.
     let destroyed = false;
@@ -301,6 +345,7 @@ export class WebGpuComputeShadowBackend implements BuildingShadowBackend {
       format: "depth32float",
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
+    const depthTextureView = depthTexture.createView();
 
     const renderUniformBuf = gpuDevice.createBuffer({
       size: 64,
@@ -349,7 +394,7 @@ export class WebGpuComputeShadowBackend implements BuildingShadowBackend {
 
     return new WebGpuComputeShadowBackend(
       gpuDevice, meshVbo, vertices.length / 3,
-      depthTexture, renderPipeline, renderUniformBuf, renderBG,
+      depthTexture, depthTextureView, renderPipeline, renderUniformBuf, renderBG,
       computePipeline, computeParamsBuf, computeBGL,
       sceneBbox, originX, originY, resolution, triangleCount,
       `${vendor} ${device}`,
@@ -453,8 +498,127 @@ export class WebGpuComputeShadowBackend implements BuildingShadowBackend {
     this.lightMVP = this.computeLightMVP(azimuthDeg, altitudeDeg);
   }
 
-  evaluate(_query: BuildingShadowQuery): BuildingShadowResult {
+  evaluate(query: BuildingShadowQuery): BuildingShadowResult {
+    void query;
     return { blocked: false, blockerId: null, blockerDistanceMeters: null, blockerAltitudeAngleDeg: null };
+  }
+
+  private ensureBatchBuffers(pointsByteLength: number, resultBufSize: number): {
+    pointsBuf: GPUBuffer;
+    resultBuf: GPUBuffer;
+    readbackBuf: GPUBuffer;
+    computeBG: GPUBindGroup;
+  } {
+    let bindGroupDirty = false;
+
+    if (!this.batchPointsBuf || pointsByteLength > this.batchPointsBufSize) {
+      this.batchPointsBuf?.destroy();
+      this.batchPointsBufSize = nextPowerOfTwo(pointsByteLength);
+      this.batchPointsBuf = this.device.createBuffer({
+        size: this.batchPointsBufSize,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      bindGroupDirty = true;
+    }
+
+    if (
+      !this.batchResultBuf ||
+      !this.batchReadbackBuf ||
+      resultBufSize > this.batchResultBufSize
+    ) {
+      this.batchResultBuf?.destroy();
+      this.batchReadbackBuf?.destroy();
+      this.batchResultBufSize = nextPowerOfTwo(resultBufSize);
+      this.batchResultBuf = this.device.createBuffer({
+        size: this.batchResultBufSize,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+      });
+      this.batchReadbackBuf = this.device.createBuffer({
+        size: this.batchResultBufSize,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      bindGroupDirty = true;
+    }
+
+    if (!this.batchComputeBindGroup || bindGroupDirty) {
+      this.batchComputeBindGroup = this.device.createBindGroup({
+        layout: this.computeBGL,
+        entries: [
+          { binding: 0, resource: { buffer: this.computeParamsBuf } },
+          { binding: 1, resource: this.depthTextureView },
+          { binding: 2, resource: { buffer: this.batchPointsBuf } },
+          { binding: 3, resource: { buffer: this.batchResultBuf } },
+        ],
+      });
+    }
+
+    return {
+      pointsBuf: this.batchPointsBuf,
+      resultBuf: this.batchResultBuf,
+      readbackBuf: this.batchReadbackBuf,
+      computeBG: this.batchComputeBindGroup,
+    };
+  }
+
+  private encodeShadowMapRender(enc: GPUCommandEncoder): void {
+    const rp = enc.beginRenderPass({
+      colorAttachments: [],
+      depthStencilAttachment: {
+        view: this.depthTextureView,
+        depthClearValue: 1.0,
+        depthLoadOp: "clear",
+        depthStoreOp: "store",
+      },
+    });
+    rp.setPipeline(this.renderPipeline);
+    rp.setBindGroup(0, this.renderBindGroup);
+    rp.setVertexBuffer(0, this.meshVbo);
+    rp.draw(this.vertexCount);
+    rp.end();
+  }
+
+  private writeComputeParams(lightMVP: Mat4, pointCount: number): void {
+    const paramsData = new ArrayBuffer(80);
+    new Float32Array(paramsData, 0, 16).set(lightMVP);
+    const pv = new DataView(paramsData);
+    pv.setFloat32(64, this.resolution, true);
+    pv.setFloat32(68, WebGpuComputeShadowBackend.SHADOW_BIAS, true);
+    pv.setUint32(72, pointCount, true);
+    pv.setUint32(76, 0, true);
+    this.device.queue.writeBuffer(this.computeParamsBuf, 0, new Uint8Array(paramsData));
+  }
+
+  private async runComputeDispatch(
+    points: Float32Array,
+    pointCount: number,
+  ): Promise<Uint32Array> {
+    const resultWords = Math.ceil(pointCount / 32);
+    const resultBufSize = Math.max(resultWords * 4, 4);
+    const { pointsBuf, resultBuf, readbackBuf, computeBG } = this.ensureBatchBuffers(
+      points.byteLength,
+      resultBufSize,
+    );
+
+    const device = this.device;
+    const pointsUpload = new Float32Array(points);
+    device.queue.writeBuffer(pointsBuf, 0, pointsUpload);
+    device.queue.writeBuffer(resultBuf, 0, new Uint8Array(resultBufSize));
+
+    const enc = device.createCommandEncoder();
+    const cp = enc.beginComputePass();
+    cp.setPipeline(this.computePipeline);
+    cp.setBindGroup(0, computeBG);
+    cp.dispatchWorkgroups(Math.ceil(pointCount / 256));
+    cp.end();
+    enc.copyBufferToBuffer(resultBuf, 0, readbackBuf, 0, resultBufSize);
+
+    device.queue.submit([enc.finish()]);
+    await device.queue.onSubmittedWorkDone();
+
+    await readbackBuf.mapAsync(GPUMapMode.READ);
+    const result = new Uint32Array(readbackBuf.getMappedRange().slice(0, resultBufSize));
+    readbackBuf.unmap();
+    return result;
   }
 
   async evaluateBatch(
@@ -467,88 +631,50 @@ export class WebGpuComputeShadowBackend implements BuildingShadowBackend {
     const lightMVP = this.computeLightMVP(azimuthDeg, altitudeDeg);
 
     const device = this.device;
-    const resolution = this.resolution;
-    const resultWords = Math.ceil(pointCount / 32);
-    const resultBufSize = Math.max(resultWords * 4, 4);
-
     device.queue.writeBuffer(this.renderUniformBuf, 0, lightMVP as unknown as ArrayBuffer);
-
-    const paramsData = new ArrayBuffer(80);
-    new Float32Array(paramsData, 0, 16).set(lightMVP);
-    const pv = new DataView(paramsData);
-    pv.setFloat32(64, resolution, true);
-    pv.setFloat32(68, WebGpuComputeShadowBackend.SHADOW_BIAS, true);
-    pv.setUint32(72, pointCount, true);
-    pv.setUint32(76, 0, true);
-    device.queue.writeBuffer(this.computeParamsBuf, 0, new Uint8Array(paramsData));
-
-    const pointsBuf = device.createBuffer({
-      size: points.byteLength,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(pointsBuf, 0, points as unknown as ArrayBuffer);
-
-    const resultBuf = device.createBuffer({
-      size: resultBufSize,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
-    });
-    const readbackBuf = device.createBuffer({
-      size: resultBufSize,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-
-    const computeBG = device.createBindGroup({
-      layout: this.computeBGL,
-      entries: [
-        { binding: 0, resource: { buffer: this.computeParamsBuf } },
-        { binding: 1, resource: this.depthTexture.createView() },
-        { binding: 2, resource: { buffer: pointsBuf } },
-        { binding: 3, resource: { buffer: resultBuf } },
-      ],
-    });
-
-    const enc = device.createCommandEncoder();
-
-    const rp = enc.beginRenderPass({
-      colorAttachments: [],
-      depthStencilAttachment: {
-        view: this.depthTexture.createView(),
-        depthClearValue: 1.0,
-        depthLoadOp: "clear",
-        depthStoreOp: "store",
-      },
-    });
-    rp.setPipeline(this.renderPipeline);
-    rp.setBindGroup(0, this.renderBindGroup);
-    rp.setVertexBuffer(0, this.meshVbo);
-    rp.draw(this.vertexCount);
-    rp.end();
-
-    const cp = enc.beginComputePass();
-    cp.setPipeline(this.computePipeline);
-    cp.setBindGroup(0, computeBG);
-    cp.dispatchWorkgroups(Math.ceil(pointCount / 256));
-    cp.end();
-
-    enc.copyBufferToBuffer(resultBuf, 0, readbackBuf, 0, resultBufSize);
-
-    device.queue.submit([enc.finish()]);
+    const renderEnc = device.createCommandEncoder();
+    this.encodeShadowMapRender(renderEnc);
+    device.queue.submit([renderEnc.finish()]);
     await device.queue.onSubmittedWorkDone();
 
     const tGpu = performance.now();
     this.lastPrepareMs = tGpu - t0;
 
-    await readbackBuf.mapAsync(GPUMapMode.READ);
-    const result = new Uint32Array(readbackBuf.getMappedRange().slice(0));
-    readbackBuf.unmap();
+    const maxPointsPerDispatch = getMaxComputePointsPerDispatch();
+    const result = new Uint32Array(Math.ceil(pointCount / 32));
+    for (let offset = 0; offset < pointCount; offset += maxPointsPerDispatch) {
+      const chunkPointCount = Math.min(maxPointsPerDispatch, pointCount - offset);
+      const chunkPoints = points.subarray(offset * 4, (offset + chunkPointCount) * 4);
+      this.writeComputeParams(lightMVP, chunkPointCount);
+      const chunkResult = await this.runComputeDispatch(chunkPoints, chunkPointCount);
+      for (let localIndex = 0; localIndex < chunkPointCount; localIndex += 1) {
+        if (((chunkResult[localIndex >>> 5] >>> (localIndex & 31)) & 1) === 1) {
+          result[(offset + localIndex) >>> 5] |= 1 << ((offset + localIndex) & 31);
+        }
+      }
+    }
 
     this.lastComputeMs = performance.now() - t0;
 
-    pointsBuf.destroy();
-    resultBuf.destroy();
-    readbackBuf.destroy();
-
     return result;
+  }
+
+  async renderShadowMapForBenchmark(
+    azimuthDeg: number,
+    altitudeDeg: number,
+  ): Promise<number> {
+    const t0 = performance.now();
+    const lightMVP = this.computeLightMVP(azimuthDeg, altitudeDeg);
+    this.device.queue.writeBuffer(this.renderUniformBuf, 0, lightMVP as unknown as ArrayBuffer);
+
+    const enc = this.device.createCommandEncoder();
+    this.encodeShadowMapRender(enc);
+    this.device.queue.submit([enc.finish()]);
+    await this.device.queue.onSubmittedWorkDone();
+
+    const elapsedMs = performance.now() - t0;
+    this.lastPrepareMs = elapsedMs;
+    return elapsedMs;
   }
 
   getOrigin(): { x: number; y: number } {
@@ -563,6 +689,9 @@ export class WebGpuComputeShadowBackend implements BuildingShadowBackend {
       process.removeListener("SIGTERM", safeDestroy);
     }
     this.meshVbo.destroy();
+    this.batchPointsBuf?.destroy();
+    this.batchResultBuf?.destroy();
+    this.batchReadbackBuf?.destroy();
     this.depthTexture.destroy();
     this.renderUniformBuf.destroy();
     this.computeParamsBuf.destroy();

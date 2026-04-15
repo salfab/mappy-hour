@@ -8,6 +8,12 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 
+import type { loadBuildingsObstacleIndex } from "./buildings-shadow";
+
+const DEFAULT_WEBGPU_FOCUS_MARGIN_METERS = 5000;
+type BuildingsIndex = NonNullable<Awaited<ReturnType<typeof loadBuildingsObstacleIndex>>>;
+type BuildingObstacle = BuildingsIndex["obstacles"][number];
+
 async function loadModules() {
   const dir = __dirname;
   const backendUrl = pathToFileURL(join(dir, "webgpu-compute-shadow-backend.ts")).href;
@@ -23,6 +29,23 @@ function send(msg: Record<string, unknown>) {
   process.stdout.write(JSON.stringify(msg) + "\n");
 }
 
+function parseFocusBounds(value: unknown): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const minX = Number(record.minX);
+  const minY = Number(record.minY);
+  const maxX = Number(record.maxX);
+  const maxY = Number(record.maxY);
+  if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+function getFocusMarginMeters(): number {
+  const raw = process.env.MAPPY_WEBGPU_FOCUS_MARGIN_METERS;
+  const parsed = raw === undefined ? DEFAULT_WEBGPU_FOCUS_MARGIN_METERS : Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_WEBGPU_FOCUS_MARGIN_METERS;
+}
+
 async function handleMessage(msg: Record<string, unknown>) {
   try {
     if (msg.type === "init") {
@@ -30,10 +53,29 @@ async function handleMessage(msg: Record<string, unknown>) {
       const mods = await loadModules();
       const index = await mods.loadBuildingsObstacleIndex();
       if (!index) { send({ type: "error", error: "No buildings index" }); return; }
-      backend = await mods.WebGpuComputeShadowBackend.createWithDxfMeshes(index.obstacles, 4096);
-      const origin = backend!.getOrigin();
-      console.error(`[gpu-worker] Ready: ${backend!.name}`);
-      send({ type: "ready", name: backend!.name, originX: origin.x, originY: origin.y });
+      const focusBounds = parseFocusBounds(msg.focusBounds);
+      let obstacles = index.obstacles;
+      if (focusBounds) {
+        const margin = getFocusMarginMeters();
+        obstacles = index.obstacles.filter((obstacle: BuildingObstacle) =>
+          obstacle.maxX > focusBounds.minX - margin &&
+          obstacle.minX < focusBounds.maxX + margin &&
+          obstacle.maxY > focusBounds.minY - margin &&
+          obstacle.minY < focusBounds.maxY + margin
+        );
+        console.error(
+          `[gpu-worker] Spatial filter: ${obstacles.length}/${index.obstacles.length} obstacles within ${margin}m of focus`,
+        );
+      }
+      const activeBackend = await mods.WebGpuComputeShadowBackend.createWithDxfMeshes(obstacles, 4096);
+      backend = activeBackend;
+      if (focusBounds) {
+        const maxH = obstacles.reduce((max: number, obstacle: BuildingObstacle) => Math.max(max, obstacle.height), 0);
+        activeBackend.setFrustumFocus(focusBounds, maxH);
+      }
+      const origin = activeBackend.getOrigin();
+      console.error(`[gpu-worker] Ready: ${activeBackend.name}`);
+      send({ type: "ready", name: activeBackend.name, originX: origin.x, originY: origin.y });
     } else if (msg.type === "focus") {
       if (!backend) { send({ type: "error", error: "Not initialized" }); return; }
       backend.setFrustumFocus(
