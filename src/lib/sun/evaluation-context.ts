@@ -52,6 +52,14 @@ export interface SharedPointEvaluationSources {
   webgpuComputeBackend?: import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null;
   /** Zenith indoor mask: isIndoor(easting, northing) → boolean. Loaded from grid metadata. */
   zenithIndoorCheck?: (easting: number, northing: number) => boolean;
+  /**
+   * True when the backend's batch API will compute the vegetation-blocked
+   * bitmask on GPU (Phase C+). When set, per-point `vegetationShadowEvaluator`
+   * closures are NOT constructed by `buildPointEvaluationContext` because the
+   * hot loop reads `batchVegetationBlockedMask` directly and never invokes
+   * them. Saves ~400ms/tile of closure-allocation work for 62.5K grid points.
+   */
+  vegetationShadowHandledByBackend?: boolean;
 }
 
 export interface BuildPointEvaluationContextOptions {
@@ -655,6 +663,17 @@ export async function buildSharedPointEvaluationSources(
     }
   }
 
+  // The vegetation bitmask is produced by the GPU when the batch backend
+  // exposes both `uploadVegetationRasters` and `evaluateBatchFramesWithShadows`
+  // (Phase C + D). In that case the hot loop reads the GPU bitmask and never
+  // invokes the per-point CPU closure — skip its construction upstream.
+  const vegetationShadowHandledByBackend =
+    webgpuComputeBackend != null &&
+    typeof (webgpuComputeBackend as { uploadVegetationRasters?: unknown })
+      .uploadVegetationRasters === "function" &&
+    typeof (webgpuComputeBackend as { evaluateBatchFramesWithShadows?: unknown })
+      .evaluateBatchFramesWithShadows === "function";
+
   return {
     horizonMask,
     buildingsIndex,
@@ -663,6 +682,7 @@ export async function buildSharedPointEvaluationSources(
     gpuShadowBackend,
     webgpuComputeBackend,
     zenithIndoorCheck,
+    vegetationShadowHandledByBackend,
   };
 }
 
@@ -831,18 +851,23 @@ export async function buildPointEvaluationContext(
           };
         })()
       : undefined;
+  // Phase F: skip the per-point CPU evaluator when the batch backend computes
+  // the vegetation bitmask on GPU. Mirrors the existing `useBatchBuildingBackend`
+  // short-circuit for buildings above.
   const vegetationShadowEvaluator =
-    vegetationSurfaceTiles &&
-    vegetationSurfaceTiles.length > 0 &&
-    pointElevationMeters !== null &&
-    !containment.insideBuilding
-      ? createVegetationShadowEvaluator({
-          tiles: vegetationSurfaceTiles,
-          pointX: pointLv95.easting,
-          pointY: pointLv95.northing,
-          pointElevation: pointElevationMeters,
-        })
-      : undefined;
+    sharedSources.vegetationShadowHandledByBackend
+      ? undefined
+      : vegetationSurfaceTiles &&
+        vegetationSurfaceTiles.length > 0 &&
+        pointElevationMeters !== null &&
+        !containment.insideBuilding
+        ? createVegetationShadowEvaluator({
+            tiles: vegetationSurfaceTiles,
+            pointX: pointLv95.easting,
+            pointY: pointLv95.northing,
+            pointElevation: pointElevationMeters,
+          })
+        : undefined;
 
   const warnings: string[] = [];
   if (!horizonMask) {
