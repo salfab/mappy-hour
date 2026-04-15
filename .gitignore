@@ -55,5 +55,8 @@ next-env.d.ts
 /.tmp-*.*
 /scripts/tmp/**
 
+# Rust build artifacts (heavy: ~1.4GB for wgpu-vulkan-probe debug+release builds)
+/tools/**/target/
+
 # local assistant/session metadata
 .claude/
