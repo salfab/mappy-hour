@@ -5,8 +5,11 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 const SHADOW_WORKGROUP_SIZE: u32 = 256;
-const SHADOW_PARAMS_SIZE: u64 = 80;
+// 64 (mat4x4f) + 16 (resolution/bias/point_count/has_horizon)
+// + 16 (azimuth/altitude/_pad/_pad) = 96 bytes
+const SHADOW_PARAMS_SIZE: u64 = 96;
 const SHADOW_BIAS: f32 = 0.0002;
+const HORIZON_BINS: u32 = 360;
 const DEFAULT_POINT_COUNT: u32 = 32_186;
 
 #[derive(Debug)]
@@ -391,6 +394,11 @@ struct ServerRequest {
     max_z: Option<f32>,
     #[serde(default, alias = "maxBuildingHeight")]
     max_building_height: Option<f32>,
+    // upload_horizon_masks: two file paths (masks = f32[], indices = u32[])
+    #[serde(default, alias = "horizonMasksBin")]
+    horizon_masks_bin: Option<String>,
+    #[serde(default, alias = "horizonIndicesBin")]
+    horizon_indices_bin: Option<String>,
 }
 
 fn run_shadow_server(
@@ -484,6 +492,8 @@ fn run_shadow_server(
                     "elapsedMs": round2(result.elapsed_ms),
                     "blockedPoints": result.blocked_count.unwrap_or(0),
                     "blockedWords": if request.include_mask { result.blocked_words } else { None },
+                    "terrainBlockedPoints": result.terrain_blocked_count,
+                    "terrainBlockedWords": if request.include_mask { result.terrain_blocked_words } else { None },
                     "pointCount": engine.point_count().unwrap_or(0),
                 }))?;
             }
@@ -581,6 +591,49 @@ fn run_shadow_server(
                     }
                 }
             }
+            "upload_horizon_masks" => {
+                let masks_path = match request.horizon_masks_bin.as_deref() {
+                    Some(p) => PathBuf::from(p),
+                    None => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "upload_horizon_masks requires horizonMasksBin",
+                        }))?;
+                        continue;
+                    }
+                };
+                let indices_path = match request.horizon_indices_bin.as_deref() {
+                    Some(p) => PathBuf::from(p),
+                    None => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "upload_horizon_masks requires horizonIndicesBin",
+                        }))?;
+                        continue;
+                    }
+                };
+                let started = Instant::now();
+                match engine.upload_horizon_masks(device, queue, &masks_path, &indices_path) {
+                    Ok((mask_count, point_count)) => {
+                        write_server_message(serde_json::json!({
+                            "type": "uploaded_horizon_masks",
+                            "id": id,
+                            "maskCount": mask_count,
+                            "pointCount": point_count,
+                            "elapsedMs": round2(started.elapsed().as_secs_f64() * 1000.0),
+                        }))?;
+                    }
+                    Err(error) => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": format!("upload_horizon_masks failed: {error}"),
+                        }))?;
+                    }
+                }
+            }
             "ping" => {
                 write_server_message(serde_json::json!({
                     "type": "pong",
@@ -658,6 +711,9 @@ struct DepthShadowEvaluation {
     elapsed_ms: f64,
     blocked_count: Option<u32>,
     blocked_words: Option<Vec<u32>>,
+    // Filled only when horizon masks have been uploaded.
+    terrain_blocked_count: Option<u32>,
+    terrain_blocked_words: Option<Vec<u32>>,
 }
 
 impl DepthShadowEngine {
@@ -847,8 +903,15 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             bytemuck::cast_slice(&light_mvp),
         );
         if let Some(shadow) = &self.shadow_compute {
-            let shadow_params =
-                encode_shadow_params(light_mvp, self.resolution, shadow.point_count, SHADOW_BIAS);
+            let shadow_params = encode_shadow_params(
+                light_mvp,
+                self.resolution,
+                shadow.point_count,
+                SHADOW_BIAS,
+                shadow.has_horizon,
+                azimuth_deg,
+                altitude_deg,
+            );
             queue.write_buffer(&shadow.params_buffer, 0, &shadow_params);
         }
 
@@ -881,6 +944,11 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
 
         if let Some(shadow) = &self.shadow_compute {
             encoder.clear_buffer(&shadow.result_buffer, 0, Some(shadow.result_copy_size));
+            encoder.clear_buffer(
+                &shadow.terrain_result_buffer,
+                0,
+                Some(shadow.result_copy_size),
+            );
 
             {
                 let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -899,6 +967,15 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 0,
                 shadow.result_copy_size,
             );
+            if shadow.has_horizon {
+                encoder.copy_buffer_to_buffer(
+                    &shadow.terrain_result_buffer,
+                    0,
+                    &shadow.terrain_readback_buffer,
+                    0,
+                    shadow.result_copy_size,
+                );
+            }
         }
 
         let submission = queue.submit([encoder.finish()]);
@@ -909,17 +986,31 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             })
             .map_err(|error| format!("device poll failed at evaluation {sequence}: {error:?}"))?;
 
-        let (blocked_count, blocked_words) = if let Some(shadow) = &self.shadow_compute {
-            let readback = read_shadow_results(device, shadow, sequence)?;
-            (Some(readback.blocked_count), Some(readback.words))
-        } else {
-            (None, None)
-        };
+        let (blocked_count, blocked_words, terrain_blocked_count, terrain_blocked_words) =
+            if let Some(shadow) = &self.shadow_compute {
+                let readback = read_shadow_results(device, shadow, sequence)?;
+                let (terrain_count, terrain_words) = if shadow.has_horizon {
+                    let terrain = read_terrain_results(device, shadow, sequence)?;
+                    (Some(terrain.blocked_count), Some(terrain.words))
+                } else {
+                    (None, None)
+                };
+                (
+                    Some(readback.blocked_count),
+                    Some(readback.words),
+                    terrain_count,
+                    terrain_words,
+                )
+            } else {
+                (None, None, None, None)
+            };
 
         Ok(DepthShadowEvaluation {
             elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
             blocked_count,
             blocked_words,
+            terrain_blocked_count,
+            terrain_blocked_words,
         })
     }
 
@@ -962,6 +1053,95 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         Ok(new_count)
     }
 
+    /// Replace the horizon masks used by the terrain-blocked check in the
+    /// compute shader. After this call, evaluate() will produce both the
+    /// buildings bitmask (as before) and a terrain-blocked bitmask.
+    ///
+    /// `masks_bin` is a raw Float32 blob of (mask_count × 360) values.
+    /// `indices_bin` is a raw Uint32 blob of (point_count) mask indices,
+    /// one per outdoor point in the same order as the points buffer.
+    fn upload_horizon_masks(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        masks_bin: &Path,
+        indices_bin: &Path,
+    ) -> Result<(u32, u32), String> {
+        let shadow = self
+            .shadow_compute
+            .as_mut()
+            .ok_or_else(|| "upload_horizon_masks: no active shadow compute".to_string())?;
+
+        // Read mask file
+        let masks_bytes = std::fs::read(masks_bin)
+            .map_err(|e| format!("failed to read horizon masks {}: {e}", masks_bin.display()))?;
+        if masks_bytes.is_empty() || masks_bytes.len() % (HORIZON_BINS as usize * 4) != 0 {
+            return Err(format!(
+                "horizon masks file must be mask_count × {} × 4 bytes, got {} for {}",
+                HORIZON_BINS,
+                masks_bytes.len(),
+                masks_bin.display(),
+            ));
+        }
+        let mask_count = (masks_bytes.len() / (HORIZON_BINS as usize * 4)) as u32;
+
+        // Read indices file
+        let indices_bytes = std::fs::read(indices_bin).map_err(|e| {
+            format!("failed to read horizon indices {}: {e}", indices_bin.display())
+        })?;
+        if indices_bytes.len() % 4 != 0 {
+            return Err(format!(
+                "horizon indices file must be u32-aligned, got {} for {}",
+                indices_bytes.len(),
+                indices_bin.display(),
+            ));
+        }
+        let indices_count = (indices_bytes.len() / 4) as u32;
+        if indices_count != shadow.point_count {
+            return Err(format!(
+                "horizon indices count {} does not match point count {}",
+                indices_count, shadow.point_count,
+            ));
+        }
+
+        // Recreate the masks + indices storage buffers at the right size
+        // and upload the data.
+        let masks_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgpu-vulkan-probe-horizon-masks"),
+            size: masks_bytes.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&masks_buffer, 0, &masks_bytes);
+
+        let indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgpu-vulkan-probe-horizon-indices"),
+            size: indices_bytes.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&indices_buffer, 0, &indices_bytes);
+
+        // Rebuild the bind group with the new buffers.
+        let new_bind_group = build_compute_bind_group(
+            device,
+            &shadow.bind_group_layout,
+            &shadow.params_buffer,
+            &shadow.depth_view_ref,
+            &shadow.points_buffer,
+            &shadow.result_buffer,
+            &masks_buffer,
+            &indices_buffer,
+            &shadow.terrain_result_buffer,
+        );
+
+        shadow.horizon_masks_buffer = masks_buffer;
+        shadow.horizon_indices_buffer = indices_buffer;
+        shadow.bind_group = new_bind_group;
+        shadow.has_horizon = true;
+        Ok((mask_count, indices_count))
+    }
+
     /// Replace the mesh (buildings geometry) used for shadow-map rendering.
     /// Recreates the vertex buffer and updates raw_bounds. Render pipeline
     /// stays the same (layout unchanged). Shadow-compute resources are also
@@ -995,7 +1175,19 @@ struct ShadowComputeResources {
     params_buffer: wgpu::Buffer,
     result_buffer: wgpu::Buffer,
     readback_buffer: wgpu::Buffer,
+    // Terrain (horizon-based) blocked bitmask output.
+    terrain_result_buffer: wgpu::Buffer,
+    terrain_readback_buffer: wgpu::Buffer,
+    // Horizon storage inputs. Dummy (4 bytes each) when no horizon has been
+    // uploaded yet; the shader skips the horizon check in that case via
+    // params.has_horizon == 0.
+    horizon_masks_buffer: wgpu::Buffer,
+    horizon_indices_buffer: wgpu::Buffer,
+    has_horizon: bool,
+    points_buffer: wgpu::Buffer,
+    depth_view_ref: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
+    bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
     point_count: u32,
     result_word_count: u32,
@@ -1052,6 +1244,34 @@ fn create_shadow_compute_resources(
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
+    // Terrain bitmask (same layout as buildings).
+    let terrain_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-terrain-results"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let terrain_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-terrain-readback"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    // Dummy horizon buffers (replaced by upload_horizon_masks).
+    let horizon_masks_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-horizon-masks-dummy"),
+        size: 16, // minimal, must be >= binding size min
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let horizon_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-horizon-indices-dummy"),
+        size: 16,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
 
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-shader"),
@@ -1062,13 +1282,20 @@ struct ShadowParams {
     resolution: f32,
     bias: f32,
     point_count: u32,
-    _pad: u32,
+    has_horizon: u32,
+    azimuth_deg: f32,
+    altitude_deg: f32,
+    _pad0: f32,
+    _pad1: f32,
 };
 
 @group(0) @binding(0) var<uniform> params: ShadowParams;
 @group(0) @binding(1) var shadow_map: texture_depth_2d;
 @group(0) @binding(2) var<storage, read> points: array<vec4f>;
 @group(0) @binding(3) var<storage, read_write> results: array<atomic<u32>>;
+@group(0) @binding(4) var<storage, read> horizon_masks: array<f32>;
+@group(0) @binding(5) var<storage, read> point_mask_indices: array<u32>;
+@group(0) @binding(6) var<storage, read_write> terrain_results: array<atomic<u32>>;
 
 @compute @workgroup_size(256)
 fn cs(@builtin(global_invocation_id) global_id: vec3u) {
@@ -1077,6 +1304,22 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
 
+    let word_index = point_index / 32u;
+    let bit = 1u << (point_index & 31u);
+
+    // ── Terrain blocked check (horizon mask lookup) ────────────────────
+    if (params.has_horizon != 0u) {
+        let mask_idx = point_mask_indices[point_index];
+        var az = params.azimuth_deg;
+        if (az < 0.0) { az = az + 360.0; }
+        let az_bin = u32(round(az)) % 360u;
+        let horizon_angle = horizon_masks[mask_idx * 360u + az_bin];
+        if (params.altitude_deg <= horizon_angle) {
+            atomicOr(&terrain_results[word_index], bit);
+        }
+    }
+
+    // ── Buildings shadow-map sampling (unchanged semantics) ────────────
     let point = points[point_index].xyz;
     let clip = params.light_mvp * vec4f(point, 1.0);
     let ndc = clip.xyz / clip.w;
@@ -1110,8 +1353,6 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
     let d11 = textureLoad(shadow_map, vec2i(px1, py1), 0);
 
     if (d00 < threshold || d10 < threshold || d01 < threshold || d11 < threshold) {
-        let word_index = point_index / 32u;
-        let bit = 1u << (point_index & 31u);
         atomicOr(&results[word_index], bit);
     }
 }
@@ -1162,30 +1403,52 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
                 },
                 count: None,
             },
+            // horizon_masks (read)
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // point_mask_indices (read)
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // terrain_results (read_write)
+            wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("wgpu-vulkan-probe-shadow-compute-bg"),
-        layout: &bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: params_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(depth_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: points_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: result_buffer.as_entire_binding(),
-            },
-        ],
-    });
+    let bind_group = build_compute_bind_group(
+        device,
+        &bind_group_layout,
+        &params_buffer,
+        depth_view,
+        &points_buffer,
+        &result_buffer,
+        &horizon_masks_buffer,
+        &horizon_indices_buffer,
+        &terrain_result_buffer,
+    );
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-pipeline-layout"),
         bind_group_layouts: &[Some(&bind_group_layout)],
@@ -1209,7 +1472,15 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         params_buffer,
         result_buffer,
         readback_buffer,
+        terrain_result_buffer,
+        terrain_readback_buffer,
+        horizon_masks_buffer,
+        horizon_indices_buffer,
+        has_horizon: false,
+        points_buffer,
+        depth_view_ref: depth_view.clone(),
         bind_group,
+        bind_group_layout,
         pipeline,
         point_count,
         result_word_count,
@@ -1218,11 +1489,40 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
     })
 }
 
+fn build_compute_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    params: &wgpu::Buffer,
+    depth_view: &wgpu::TextureView,
+    points: &wgpu::Buffer,
+    results: &wgpu::Buffer,
+    horizon_masks: &wgpu::Buffer,
+    horizon_indices: &wgpu::Buffer,
+    terrain_results: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("wgpu-vulkan-probe-shadow-compute-bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth_view) },
+            wgpu::BindGroupEntry { binding: 2, resource: points.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: results.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 4, resource: horizon_masks.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 5, resource: horizon_indices.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 6, resource: terrain_results.as_entire_binding() },
+        ],
+    })
+}
+
 fn encode_shadow_params(
     light_mvp: Mat4,
     resolution: u32,
     point_count: u32,
     bias: f32,
+    has_horizon: bool,
+    azimuth_deg: f32,
+    altitude_deg: f32,
 ) -> [u8; SHADOW_PARAMS_SIZE as usize] {
     let mut bytes = [0; SHADOW_PARAMS_SIZE as usize];
     let mut offset = 0;
@@ -1231,12 +1531,24 @@ fn encode_shadow_params(
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         offset += 4;
     }
+    // resolution, bias
     for value in [resolution as f32, bias] {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         offset += 4;
     }
-    for value in [point_count, 0] {
+    // point_count, has_horizon
+    for value in [point_count, if has_horizon { 1 } else { 0 }] {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        offset += 4;
+    }
+    // azimuth_deg, altitude_deg
+    for value in [azimuth_deg, altitude_deg] {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        offset += 4;
+    }
+    // _pad0, _pad1
+    for _ in 0..2 {
+        bytes[offset..offset + 4].copy_from_slice(&0.0_f32.to_le_bytes());
         offset += 4;
     }
 
@@ -1248,10 +1560,43 @@ fn read_shadow_results(
     shadow: &ShadowComputeResources,
     iteration: u32,
 ) -> Result<ShadowReadback, String> {
+    read_bitmask_buffer(
+        device,
+        &shadow.readback_buffer,
+        shadow.result_copy_size,
+        shadow.result_word_count,
+        iteration,
+        "buildings",
+    )
+}
+
+fn read_terrain_results(
+    device: &wgpu::Device,
+    shadow: &ShadowComputeResources,
+    iteration: u32,
+) -> Result<ShadowReadback, String> {
+    read_bitmask_buffer(
+        device,
+        &shadow.terrain_readback_buffer,
+        shadow.result_copy_size,
+        shadow.result_word_count,
+        iteration,
+        "terrain",
+    )
+}
+
+fn read_bitmask_buffer(
+    device: &wgpu::Device,
+    readback_buffer: &wgpu::Buffer,
+    copy_size: u64,
+    word_count: u32,
+    iteration: u32,
+    label: &str,
+) -> Result<ShadowReadback, String> {
     let (sender, receiver) = std::sync::mpsc::channel();
-    shadow.readback_buffer.map_async(
+    readback_buffer.map_async(
         wgpu::MapMode::Read,
-        0..shadow.result_copy_size,
+        0..copy_size,
         move |result| {
             let _ = sender.send(result);
         },
@@ -1262,22 +1607,24 @@ fn read_shadow_results(
             timeout: Some(Duration::from_secs(30)),
         })
         .map_err(|error| {
-            format!("device poll for readback failed at iteration {iteration}: {error:?}")
+            format!("device poll for {label} readback failed at iteration {iteration}: {error:?}")
         })?;
 
     receiver
         .recv_timeout(Duration::from_secs(30))
-        .map_err(|error| format!("readback callback timed out at iteration {iteration}: {error}"))?
-        .map_err(|error| format!("readback map failed at iteration {iteration}: {error:?}"))?;
+        .map_err(|error| {
+            format!("{label} readback callback timed out at iteration {iteration}: {error}")
+        })?
+        .map_err(|error| format!("{label} readback map failed at iteration {iteration}: {error:?}"))?;
 
-    let payload_size = u64::from(shadow.result_word_count) * 4;
+    let payload_size = u64::from(word_count) * 4;
     let words = {
-        let data = shadow.readback_buffer.get_mapped_range(0..payload_size);
+        let data = readback_buffer.get_mapped_range(0..payload_size);
         data.chunks_exact(4)
             .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect::<Vec<_>>()
     };
-    shadow.readback_buffer.unmap();
+    readback_buffer.unmap();
     let blocked_count = words.iter().map(|word| word.count_ones()).sum();
 
     Ok(ShadowReadback {
