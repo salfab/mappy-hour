@@ -6,10 +6,14 @@ use std::time::{Duration, Instant};
 
 const SHADOW_WORKGROUP_SIZE: u32 = 256;
 // 64 (mat4x4f) + 16 (resolution/bias/point_count/has_horizon)
-// + 16 (azimuth/altitude/_pad/_pad) = 96 bytes
-const SHADOW_PARAMS_SIZE: u64 = 96;
+// + 16 (azimuth/altitude/_pad/_pad)
+// + 32 (has_vegetation/num_veg_tiles/step/max_distance/min_clearance/nodata/origin_x/origin_y)
+// = 128 bytes
+const SHADOW_PARAMS_SIZE: u64 = 128;
 const SHADOW_BIAS: f32 = 0.0002;
 const HORIZON_BINS: u32 = 360;
+// Size of each VegetationTileMeta struct in the storage buffer (8 × 4 bytes).
+const VEG_TILE_META_SIZE: u64 = 32;
 const DEFAULT_POINT_COUNT: u32 = 32_186;
 
 #[derive(Debug)]
@@ -399,6 +403,23 @@ struct ServerRequest {
     horizon_masks_bin: Option<String>,
     #[serde(default, alias = "horizonIndicesBin")]
     horizon_indices_bin: Option<String>,
+    // upload_vegetation_rasters: meta + data paths + march params
+    #[serde(default, alias = "vegMetaBin")]
+    veg_meta_bin: Option<String>,
+    #[serde(default, alias = "vegDataBin")]
+    veg_data_bin: Option<String>,
+    #[serde(default, alias = "vegNodata")]
+    veg_nodata: Option<f32>,
+    #[serde(default, alias = "vegStepMeters")]
+    veg_step_meters: Option<f32>,
+    #[serde(default, alias = "vegMaxDistanceMeters")]
+    veg_max_distance_meters: Option<f32>,
+    #[serde(default, alias = "vegMinClearance")]
+    veg_min_clearance: Option<f32>,
+    #[serde(default, alias = "originX")]
+    origin_x: Option<f32>,
+    #[serde(default, alias = "originY")]
+    origin_y: Option<f32>,
 }
 
 fn run_shadow_server(
@@ -494,6 +515,8 @@ fn run_shadow_server(
                     "blockedWords": if request.include_mask { result.blocked_words } else { None },
                     "terrainBlockedPoints": result.terrain_blocked_count,
                     "terrainBlockedWords": if request.include_mask { result.terrain_blocked_words } else { None },
+                    "vegetationBlockedPoints": result.vegetation_blocked_count,
+                    "vegetationBlockedWords": if request.include_mask { result.vegetation_blocked_words } else { None },
                     "pointCount": engine.point_count().unwrap_or(0),
                 }))?;
             }
@@ -634,6 +657,57 @@ fn run_shadow_server(
                     }
                 }
             }
+            "upload_vegetation_rasters" => {
+                let meta_path = match request.veg_meta_bin.as_deref() {
+                    Some(p) => PathBuf::from(p),
+                    None => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "upload_vegetation_rasters requires vegMetaBin",
+                        }))?;
+                        continue;
+                    }
+                };
+                let data_path = match request.veg_data_bin.as_deref() {
+                    Some(p) => PathBuf::from(p),
+                    None => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "upload_vegetation_rasters requires vegDataBin",
+                        }))?;
+                        continue;
+                    }
+                };
+                let nodata = request.veg_nodata.unwrap_or(f32::NAN);
+                let step = request.veg_step_meters.unwrap_or(2.0);
+                let max_d = request.veg_max_distance_meters.unwrap_or(120.0);
+                let min_clear = request.veg_min_clearance.unwrap_or(4.0);
+                let ox = request.origin_x.unwrap_or(0.0);
+                let oy = request.origin_y.unwrap_or(0.0);
+                let started = Instant::now();
+                match engine.upload_vegetation_rasters(
+                    device, queue, &meta_path, &data_path, nodata, step, max_d, min_clear, ox, oy,
+                ) {
+                    Ok((tile_count, data_bytes)) => {
+                        write_server_message(serde_json::json!({
+                            "type": "uploaded_vegetation_rasters",
+                            "id": id,
+                            "tileCount": tile_count,
+                            "dataBytes": data_bytes,
+                            "elapsedMs": round2(started.elapsed().as_secs_f64() * 1000.0),
+                        }))?;
+                    }
+                    Err(error) => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": format!("upload_vegetation_rasters failed: {error}"),
+                        }))?;
+                    }
+                }
+            }
             "ping" => {
                 write_server_message(serde_json::json!({
                     "type": "pong",
@@ -714,6 +788,9 @@ struct DepthShadowEvaluation {
     // Filled only when horizon masks have been uploaded.
     terrain_blocked_count: Option<u32>,
     terrain_blocked_words: Option<Vec<u32>>,
+    // Filled only when vegetation rasters have been uploaded.
+    vegetation_blocked_count: Option<u32>,
+    vegetation_blocked_words: Option<Vec<u32>>,
 }
 
 impl DepthShadowEngine {
@@ -911,6 +988,14 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 shadow.has_horizon,
                 azimuth_deg,
                 altitude_deg,
+                shadow.has_vegetation,
+                shadow.num_veg_tiles,
+                shadow.veg_step_meters,
+                shadow.veg_max_distance_meters,
+                shadow.veg_min_clearance,
+                shadow.veg_nodata,
+                shadow.origin_x,
+                shadow.origin_y,
             );
             queue.write_buffer(&shadow.params_buffer, 0, &shadow_params);
         }
@@ -949,6 +1034,11 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 0,
                 Some(shadow.result_copy_size),
             );
+            encoder.clear_buffer(
+                &shadow.veg_result_buffer,
+                0,
+                Some(shadow.result_copy_size),
+            );
 
             {
                 let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -976,6 +1066,15 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                     shadow.result_copy_size,
                 );
             }
+            if shadow.has_vegetation {
+                encoder.copy_buffer_to_buffer(
+                    &shadow.veg_result_buffer,
+                    0,
+                    &shadow.veg_readback_buffer,
+                    0,
+                    shadow.result_copy_size,
+                );
+            }
         }
 
         let submission = queue.submit([encoder.finish()]);
@@ -986,24 +1085,45 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             })
             .map_err(|error| format!("device poll failed at evaluation {sequence}: {error:?}"))?;
 
-        let (blocked_count, blocked_words, terrain_blocked_count, terrain_blocked_words) =
-            if let Some(shadow) = &self.shadow_compute {
-                let readback = read_shadow_results(device, shadow, sequence)?;
-                let (terrain_count, terrain_words) = if shadow.has_horizon {
-                    let terrain = read_terrain_results(device, shadow, sequence)?;
-                    (Some(terrain.blocked_count), Some(terrain.words))
-                } else {
-                    (None, None)
-                };
-                (
-                    Some(readback.blocked_count),
-                    Some(readback.words),
-                    terrain_count,
-                    terrain_words,
-                )
+        let (
+            blocked_count,
+            blocked_words,
+            terrain_blocked_count,
+            terrain_blocked_words,
+            vegetation_blocked_count,
+            vegetation_blocked_words,
+        ) = if let Some(shadow) = &self.shadow_compute {
+            let readback = read_shadow_results(device, shadow, sequence)?;
+            let (terrain_count, terrain_words) = if shadow.has_horizon {
+                let terrain = read_terrain_results(device, shadow, sequence)?;
+                (Some(terrain.blocked_count), Some(terrain.words))
             } else {
-                (None, None, None, None)
+                (None, None)
             };
+            let (veg_count, veg_words) = if shadow.has_vegetation {
+                let veg = read_bitmask_buffer(
+                    device,
+                    &shadow.veg_readback_buffer,
+                    shadow.result_copy_size,
+                    shadow.result_word_count,
+                    sequence,
+                    "vegetation",
+                )?;
+                (Some(veg.blocked_count), Some(veg.words))
+            } else {
+                (None, None)
+            };
+            (
+                Some(readback.blocked_count),
+                Some(readback.words),
+                terrain_count,
+                terrain_words,
+                veg_count,
+                veg_words,
+            )
+        } else {
+            (None, None, None, None, None, None)
+        };
 
         Ok(DepthShadowEvaluation {
             elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
@@ -1011,6 +1131,8 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             blocked_words,
             terrain_blocked_count,
             terrain_blocked_words,
+            vegetation_blocked_count,
+            vegetation_blocked_words,
         })
     }
 
@@ -1133,6 +1255,9 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             &masks_buffer,
             &indices_buffer,
             &shadow.terrain_result_buffer,
+            &shadow.veg_tiles_meta_buffer,
+            &shadow.veg_data_buffer,
+            &shadow.veg_result_buffer,
         );
 
         shadow.horizon_masks_buffer = masks_buffer;
@@ -1140,6 +1265,106 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         shadow.bind_group = new_bind_group;
         shadow.has_horizon = true;
         Ok((mask_count, indices_count))
+    }
+
+    /// Replace the vegetation rasters used by the shader ray-march. The
+    /// masks + indices horizon state is preserved.
+    ///
+    /// - `meta_bin`: packed (tile_count × 32 bytes) VegTileMeta blob.
+    ///   Each tile header = (minX, minY, maxX, maxY, width, height,
+    ///   data_offset_in_floats, _pad).
+    /// - `data_bin`: concatenated rasters as f32 (a single flat storage
+    ///   buffer; tile_i rows = width*height floats starting at data_offset).
+    /// - `nodata`: value treated as no-data (common across all tiles).
+    /// - `step_meters` / `max_distance_meters` / `min_clearance`: matches
+    ///   the DEFAULT_* values of createVegetationShadowEvaluator().
+    /// - `origin_x` / `origin_y`: LV95 offset used by the points buffer
+    ///   (the shader converts point.x/z back to LV95 space for the march).
+    #[allow(clippy::too_many_arguments)]
+    fn upload_vegetation_rasters(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        meta_bin: &Path,
+        data_bin: &Path,
+        nodata: f32,
+        step_meters: f32,
+        max_distance_meters: f32,
+        min_clearance: f32,
+        origin_x: f32,
+        origin_y: f32,
+    ) -> Result<(u32, u64), String> {
+        let shadow = self
+            .shadow_compute
+            .as_mut()
+            .ok_or_else(|| "upload_vegetation_rasters: no active shadow compute".to_string())?;
+
+        let meta_bytes = std::fs::read(meta_bin)
+            .map_err(|e| format!("failed to read veg meta {}: {e}", meta_bin.display()))?;
+        if meta_bytes.is_empty() || meta_bytes.len() % (VEG_TILE_META_SIZE as usize) != 0 {
+            return Err(format!(
+                "veg meta file must be a multiple of {} bytes, got {} for {}",
+                VEG_TILE_META_SIZE,
+                meta_bytes.len(),
+                meta_bin.display(),
+            ));
+        }
+        let tile_count = (meta_bytes.len() / VEG_TILE_META_SIZE as usize) as u32;
+
+        let data_bytes = std::fs::read(data_bin)
+            .map_err(|e| format!("failed to read veg data {}: {e}", data_bin.display()))?;
+        if data_bytes.len() % 4 != 0 {
+            return Err(format!(
+                "veg data file must be f32-aligned, got {} for {}",
+                data_bytes.len(),
+                data_bin.display(),
+            ));
+        }
+        let data_bytes_len = data_bytes.len() as u64;
+
+        let meta_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgpu-vulkan-probe-veg-tiles-meta"),
+            size: meta_bytes.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&meta_buffer, 0, &meta_bytes);
+
+        let data_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgpu-vulkan-probe-veg-data"),
+            size: data_bytes.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&data_buffer, 0, &data_bytes);
+
+        let new_bind_group = build_compute_bind_group(
+            device,
+            &shadow.bind_group_layout,
+            &shadow.params_buffer,
+            &shadow.depth_view_ref,
+            &shadow.points_buffer,
+            &shadow.result_buffer,
+            &shadow.horizon_masks_buffer,
+            &shadow.horizon_indices_buffer,
+            &shadow.terrain_result_buffer,
+            &meta_buffer,
+            &data_buffer,
+            &shadow.veg_result_buffer,
+        );
+
+        shadow.veg_tiles_meta_buffer = meta_buffer;
+        shadow.veg_data_buffer = data_buffer;
+        shadow.bind_group = new_bind_group;
+        shadow.has_vegetation = true;
+        shadow.num_veg_tiles = tile_count;
+        shadow.veg_nodata = nodata;
+        shadow.veg_step_meters = step_meters;
+        shadow.veg_max_distance_meters = max_distance_meters;
+        shadow.veg_min_clearance = min_clearance;
+        shadow.origin_x = origin_x;
+        shadow.origin_y = origin_y;
+        Ok((tile_count, data_bytes_len))
     }
 
     /// Replace the mesh (buildings geometry) used for shadow-map rendering.
@@ -1184,6 +1409,19 @@ struct ShadowComputeResources {
     horizon_masks_buffer: wgpu::Buffer,
     horizon_indices_buffer: wgpu::Buffer,
     has_horizon: bool,
+    // Vegetation ray-march inputs. Dummy until upload_vegetation_rasters.
+    veg_tiles_meta_buffer: wgpu::Buffer,
+    veg_data_buffer: wgpu::Buffer,
+    veg_result_buffer: wgpu::Buffer,
+    veg_readback_buffer: wgpu::Buffer,
+    has_vegetation: bool,
+    num_veg_tiles: u32,
+    veg_nodata: f32,
+    veg_step_meters: f32,
+    veg_max_distance_meters: f32,
+    veg_min_clearance: f32,
+    origin_x: f32,
+    origin_y: f32,
     points_buffer: wgpu::Buffer,
     depth_view_ref: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
@@ -1272,6 +1510,33 @@ fn create_shadow_compute_resources(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+    // Dummy vegetation buffers (replaced by upload_vegetation_rasters).
+    let veg_tiles_meta_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-veg-tiles-meta-dummy"),
+        size: 32, // at least one VegTileMeta struct
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let veg_data_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-veg-data-dummy"),
+        size: 16,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let veg_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-veg-results"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let veg_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-veg-readback"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
 
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-shader"),
@@ -1287,6 +1552,25 @@ struct ShadowParams {
     altitude_deg: f32,
     _pad0: f32,
     _pad1: f32,
+    has_vegetation: u32,
+    num_veg_tiles: u32,
+    veg_step_meters: f32,
+    veg_max_distance_meters: f32,
+    veg_min_clearance: f32,
+    veg_nodata: f32,
+    origin_x: f32,
+    origin_y: f32,
+};
+
+struct VegTileMeta {
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+    width: u32,
+    height: u32,
+    data_offset: u32,
+    _pad: u32,
 };
 
 @group(0) @binding(0) var<uniform> params: ShadowParams;
@@ -1296,6 +1580,32 @@ struct ShadowParams {
 @group(0) @binding(4) var<storage, read> horizon_masks: array<f32>;
 @group(0) @binding(5) var<storage, read> point_mask_indices: array<u32>;
 @group(0) @binding(6) var<storage, read_write> terrain_results: array<atomic<u32>>;
+@group(0) @binding(7) var<storage, read> veg_tiles_meta: array<VegTileMeta>;
+@group(0) @binding(8) var<storage, read> veg_data: array<f32>;
+@group(0) @binding(9) var<storage, read_write> vegetation_results: array<atomic<u32>>;
+
+fn sample_veg_elevation(sx: f32, sy: f32) -> f32 {
+    // Linear scan — in practice only 2-10 tiles are loaded per region,
+    // so the cost is bounded. Returns -1e6 when no tile covers (sx,sy)
+    // or when the sample is nodata.
+    for (var i = 0u; i < params.num_veg_tiles; i = i + 1u) {
+        let tm = veg_tiles_meta[i];
+        if (sx < tm.min_x || sx > tm.max_x || sy < tm.min_y || sy > tm.max_y) {
+            continue;
+        }
+        let u = (sx - tm.min_x) / (tm.max_x - tm.min_x);
+        let v = (tm.max_y - sy) / (tm.max_y - tm.min_y);
+        let fx = clamp(floor(u * f32(tm.width)), 0.0, f32(tm.width - 1u));
+        let fy = clamp(floor(v * f32(tm.height)), 0.0, f32(tm.height - 1u));
+        let idx = u32(fy) * tm.width + u32(fx) + tm.data_offset;
+        let val = veg_data[idx];
+        if (abs(val - params.veg_nodata) < 0.000001) {
+            return -1.0e6;
+        }
+        return val;
+    }
+    return -1.0e6;
+}
 
 @compute @workgroup_size(256)
 fn cs(@builtin(global_invocation_id) global_id: vec3u) {
@@ -1306,6 +1616,7 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
 
     let word_index = point_index / 32u;
     let bit = 1u << (point_index & 31u);
+    let point = points[point_index].xyz;
 
     // ── Terrain blocked check (horizon mask lookup) ────────────────────
     if (params.has_horizon != 0u) {
@@ -1319,8 +1630,36 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         }
     }
 
+    // ── Vegetation ray-march (swisssurface3d-raster-step-ray-v1) ──────
+    if (params.has_vegetation != 0u && params.altitude_deg > 0.0) {
+        let az_rad = params.azimuth_deg * 3.14159265 / 180.0;
+        let dir_x = sin(az_rad);
+        let dir_y = cos(az_rad);
+        let point_x_lv95 = point.x + params.origin_x;
+        let point_y_lv95 = point.z + params.origin_y;
+        let point_elev = point.y;
+
+        var dist = params.veg_step_meters;
+        loop {
+            if (dist > params.veg_max_distance_meters) { break; }
+            let sx = point_x_lv95 + dir_x * dist;
+            let sy = point_y_lv95 + dir_y * dist;
+            let surface_elev = sample_veg_elevation(sx, sy);
+            if (surface_elev > -1.0e5) {
+                let clearance = surface_elev - point_elev;
+                if (clearance >= params.veg_min_clearance) {
+                    let blocker_angle = atan2(clearance, dist) * 180.0 / 3.14159265;
+                    if (params.altitude_deg <= blocker_angle) {
+                        atomicOr(&vegetation_results[word_index], bit);
+                        break;
+                    }
+                }
+            }
+            dist = dist + params.veg_step_meters;
+        }
+    }
+
     // ── Buildings shadow-map sampling (unchanged semantics) ────────────
-    let point = points[point_index].xyz;
     let clip = params.light_mvp * vec4f(point, 1.0);
     let ndc = clip.xyz / clip.w;
     if (
@@ -1436,6 +1775,39 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
                 },
                 count: None,
             },
+            // veg_tiles_meta (read)
+            wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // veg_data (read)
+            wgpu::BindGroupLayoutEntry {
+                binding: 8,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // vegetation_results (read_write)
+            wgpu::BindGroupLayoutEntry {
+                binding: 9,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
     let bind_group = build_compute_bind_group(
@@ -1448,6 +1820,9 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         &horizon_masks_buffer,
         &horizon_indices_buffer,
         &terrain_result_buffer,
+        &veg_tiles_meta_buffer,
+        &veg_data_buffer,
+        &veg_result_buffer,
     );
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-pipeline-layout"),
@@ -1477,6 +1852,18 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         horizon_masks_buffer,
         horizon_indices_buffer,
         has_horizon: false,
+        veg_tiles_meta_buffer,
+        veg_data_buffer,
+        veg_result_buffer,
+        veg_readback_buffer,
+        has_vegetation: false,
+        num_veg_tiles: 0,
+        veg_nodata: 0.0,
+        veg_step_meters: 2.0,
+        veg_max_distance_meters: 120.0,
+        veg_min_clearance: 4.0,
+        origin_x: 0.0,
+        origin_y: 0.0,
         points_buffer,
         depth_view_ref: depth_view.clone(),
         bind_group,
@@ -1489,6 +1876,7 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_compute_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -1499,6 +1887,9 @@ fn build_compute_bind_group(
     horizon_masks: &wgpu::Buffer,
     horizon_indices: &wgpu::Buffer,
     terrain_results: &wgpu::Buffer,
+    veg_tiles_meta: &wgpu::Buffer,
+    veg_data: &wgpu::Buffer,
+    vegetation_results: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-bg"),
@@ -1511,10 +1902,14 @@ fn build_compute_bind_group(
             wgpu::BindGroupEntry { binding: 4, resource: horizon_masks.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 5, resource: horizon_indices.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 6, resource: terrain_results.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 7, resource: veg_tiles_meta.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 8, resource: veg_data.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 9, resource: vegetation_results.as_entire_binding() },
         ],
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_shadow_params(
     light_mvp: Mat4,
     resolution: u32,
@@ -1523,6 +1918,14 @@ fn encode_shadow_params(
     has_horizon: bool,
     azimuth_deg: f32,
     altitude_deg: f32,
+    has_vegetation: bool,
+    num_veg_tiles: u32,
+    veg_step_meters: f32,
+    veg_max_distance_meters: f32,
+    veg_min_clearance: f32,
+    veg_nodata: f32,
+    origin_x: f32,
+    origin_y: f32,
 ) -> [u8; SHADOW_PARAMS_SIZE as usize] {
     let mut bytes = [0; SHADOW_PARAMS_SIZE as usize];
     let mut offset = 0;
@@ -1549,6 +1952,26 @@ fn encode_shadow_params(
     // _pad0, _pad1
     for _ in 0..2 {
         bytes[offset..offset + 4].copy_from_slice(&0.0_f32.to_le_bytes());
+        offset += 4;
+    }
+    // has_vegetation, num_veg_tiles
+    for value in [if has_vegetation { 1u32 } else { 0 }, num_veg_tiles] {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        offset += 4;
+    }
+    // veg_step_meters, veg_max_distance_meters, veg_min_clearance, veg_nodata
+    for value in [
+        veg_step_meters,
+        veg_max_distance_meters,
+        veg_min_clearance,
+        veg_nodata,
+    ] {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        offset += 4;
+    }
+    // origin_x, origin_y
+    for value in [origin_x, origin_y] {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         offset += 4;
     }
 
