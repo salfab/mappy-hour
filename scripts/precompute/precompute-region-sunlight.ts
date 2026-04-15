@@ -1,7 +1,8 @@
-import { precomputeCacheRuns } from "../../src/lib/admin/cache-admin";
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 import { buildRegionTiles, getIntersectingTileIds } from "../../src/lib/precompute/sunlight-cache";
 import { loadTileSelectionForRegion } from "../../src/lib/precompute/tile-selection-file";
+
+type ExperimentalBuildingsShadowMode = "gpu-raster" | "rust-wgpu-vulkan";
 
 interface ParsedArgs {
   region: PrecomputedRegionName;
@@ -16,6 +17,7 @@ interface ParsedArgs {
   skipExisting: boolean;
   bbox: [number, number, number, number] | null;
   tileSelectionFile: string | null;
+  buildingsShadowMode: ExperimentalBuildingsShadowMode | null;
 }
 
 const DEFAULT_ARGS: ParsedArgs = {
@@ -31,6 +33,7 @@ const DEFAULT_ARGS: ParsedArgs = {
   skipExisting: true,
   bbox: null,
   tileSelectionFile: null,
+  buildingsShadowMode: null,
 };
 
 function parseBoolean(value: string): boolean | null {
@@ -42,6 +45,16 @@ function parseBoolean(value: string): boolean | null {
     return false;
   }
   return null;
+}
+
+function parseBuildingsShadowMode(value: string): ExperimentalBuildingsShadowMode {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "gpu-raster" || normalized === "rust-wgpu-vulkan") {
+    return normalized;
+  }
+  throw new Error(
+    `Invalid --buildings-shadow-mode=${value}. Expected gpu-raster or rust-wgpu-vulkan.`,
+  );
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -125,6 +138,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       result.tileSelectionFile = arg.slice("--tile-selection-file=".length);
       continue;
     }
+    if (arg.startsWith("--buildings-shadow-mode=")) {
+      result.buildingsShadowMode = parseBuildingsShadowMode(
+        arg.slice("--buildings-shadow-mode=".length),
+      );
+      continue;
+    }
   }
   return result;
 }
@@ -179,6 +198,10 @@ interface RunningSlot {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.buildingsShadowMode) {
+    process.env.MAPPY_BUILDINGS_SHADOW_MODE = args.buildingsShadowMode;
+  }
+  const { precomputeCacheRuns } = await import("../../src/lib/admin/cache-admin");
   const workers =
     process.env.MAPPY_PRECOMPUTE_WORKERS?.trim() ||
     "(auto: min(4, max(2, cpu-1)))";
@@ -222,6 +245,16 @@ async function main() {
   console.log(
     `[precompute] engine=cache-admin shadowMode=${shadowMode} workers=${workers} region=${args.region} startDate=${args.startDate} days=${args.days} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} skipExisting=${args.skipExisting} tiles=${tileCount}`,
   );
+  if (shadowMode === "rust-wgpu-vulkan") {
+    console.warn(
+      `[precompute] EXPERIMENTAL buildingsShadowMode=rust-wgpu-vulkan cachePolicy=shared-contract skipExisting=${args.skipExisting}`,
+    );
+    if (args.skipExisting) {
+      console.warn(
+        "[precompute] skip-existing=true réutilise volontairement les tuiles déjà calculées avec gpu-raster si elles partagent le même modèle de cache.",
+      );
+    }
+  }
 
   // ── display state ────────────────────────────────────────────────────────
   let lastDayIndex = -1;
