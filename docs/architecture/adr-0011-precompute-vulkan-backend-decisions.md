@@ -87,7 +87,8 @@ Smoke-test à petit scope (10 tuiles Lausanne, 06:00-09:00) : 56s, tous verts, p
 | Après Phase A/A.1 | ~14.5s | ~45 min | équivalent (socle pour B/C) |
 | Après Phase C (GPU full) | ~13.5s | ~41 min | **-9%** |
 | Après Phase D (frame batching) | ~12.0s | ~36 min | **-20%** |
-| **Après Phase E (sunny bits GPU)** | **~3.33s** | **~9m42s** | **-77%** (3.6× vs D) |
+| Après Phase E (sunny bits GPU) | ~3.33s | ~9m42s | **-77%** (3.6× vs D) |
+| **Après Phase F (skip dead-code JS)** | **~3.07s** | **~9m15s** | **-79%** (-8% vs E) |
 
 **Divergence Vulkan full-GPU vs gpu-raster** (matrix bench 3 tuiles, 12:00-15:00, 12 frames) :
 - terrain : 0.000% (lookup nearest-neighbor identique f32 GPU / f64 CPU)
@@ -136,6 +137,21 @@ Gain mesuré : **scale bench 181 tuiles top-priority 06:00-21:00, skip-existing=
 Vs Phase D : 12.0 → 3.33s/tuile = **3.6× speedup, -72% wall** ; vs baseline avant Phase A : **4.35× speedup, -77% wall**. Sur 200 jours de précompute (181 tuiles × 200), ça représente ~33h de compute total au lieu de ~120h avec Phase D — économie d'environ **87h** sur 200 jours.
 
 L'observation empirique : la boucle par-point (~30K points outdoor × 60 frames = 1.8M itérations) était la dominante CPU post-Phase-D. En la déplaçant sur GPU, l'eval tombe autour de 0.3-0.4s/tuile (vs ~4s/tuile en Phase D) ; le reste du temps tuile est désormais dominé par `prepare-points` (~0.5s) et le setup indoor mask. Le prochain bottleneck structurel est la préparation des points côté Node, pas le compute GPU.
+
+### Phase F — skip de la closure vegetation CPU inutilisée (commit `bc1c153`)
+
+Après Phase E, le breakdown per-tile en steady state est `points 0.5s, eval 0.4s, horizon 0s, sources 0s` — la phase `prepare-points` devient le dominant (~50% du temps tuile).
+
+L'enquête a révélé que `buildPointEvaluationContext` (`evaluation-context.ts:669`) construit un `vegetationShadowEvaluator` per-point (62 500 closures/tuile) qui n'est **jamais appelé** en mode Vulkan Phase E : le hot loop `sunlight-tile-service.ts:1295-1305` lit `batchVegetationBlockedMask` (bitmask produit par le shader) dès qu'il est non-null, ce qui est toujours le cas quand `evaluateBatchFramesWithShadows` est disponible. La closure CPU est donc du dead code dans ce chemin.
+
+Le pattern existe déjà pour `buildingShadowEvaluator` (court-circuit `useBatchBuildingBackend → undefined` ligne 759-761). Phase F applique la même logique pour la vegetation :
+
+1. **`SharedPointEvaluationSources`** gagne un flag `vegetationShadowHandledByBackend` qui vaut `true` quand le backend expose simultanément `uploadVegetationRasters` et `evaluateBatchFramesWithShadows` (feature-detection via `typeof ... === "function"`).
+2. **`buildPointEvaluationContext`** skip la construction de la closure vegetation quand le flag est vrai.
+
+Précision : zéro impact. En mode `gpu-raster` (API prod), `webgpuComputeBackend` reste `undefined` → flag = false → les routes API continuent à construire et utiliser leur closure CPU. En Vulkan, la closure était déjà ignorée par le hot loop. Le patch supprime une allocation inutile, rien d'autre.
+
+Gain mesuré : **-8% wall** sur le même bench 181 tuiles 06:00-21:00, **3.33s → 3.07s/tuile**, 9m42s → 9m15s. Sur 200 jours : ~2.5h économisées (33h → 30.5h). Le gain est plus modeste que l'estimation initiale (~12%) car `createVegetationShadowEvaluator` est lui-même peu coûteux (pré-filtrage de tiles O(N) avec N≤10 + allocation d'une closure légère). Reste positif, et le code gagne en symétrie.
 
 ### 4. Pas de multi-view rendering (Batching C) — investigué et abandonné
 
