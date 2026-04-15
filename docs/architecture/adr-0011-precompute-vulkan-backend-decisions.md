@@ -86,7 +86,8 @@ Smoke-test à petit scope (10 tuiles Lausanne, 06:00-09:00) : 56s, tous verts, p
 | Avant Phase A (état initial Codex, release build + JS hot loop unifié) | ~14.5s | ~45 min | — |
 | Après Phase A/A.1 | ~14.5s | ~45 min | équivalent (socle pour B/C) |
 | Après Phase C (GPU full) | ~13.5s | ~41 min | **-9%** |
-| **Après Phase D (frame batching)** | **~12.0s** | **~36 min** | **-20%** |
+| Après Phase D (frame batching) | ~12.0s | ~36 min | **-20%** |
+| **Après Phase E (sunny bits GPU)** | **~3.33s** | **~9m42s** | **-77%** (3.6× vs D) |
 
 **Divergence Vulkan full-GPU vs gpu-raster** (matrix bench 3 tuiles, 12:00-15:00, 12 frames) :
 - terrain : 0.000% (lookup nearest-neighbor identique f32 GPU / f64 CPU)
@@ -104,6 +105,37 @@ Rust : méthode `evaluate_batch_frames` sur `DepthShadowEngine`, alloue N unifor
 TS : `evaluateBatchFramesWithShadows` au niveau backend ; tile-service pré-calcule les sun positions et batch-appelle avant la loop JS, qui ne fait plus que lire les bitmasks par frame.
 
 Gain : -11% wall vs Phase C, -20% vs baseline avant A. Sur 200 jours de précompute, ~30h économisées.
+
+### Phase E — dérivation des bitmasks sunny/sunnyNoVeg sur GPU (commit `c33e7d5`)
+
+Après Phase D, la boucle JS par-point ne fait plus que 5 opérations bitwise (lecture de `buildingsMask`/`terrainMask`/`vegetationMask`, écriture de `sunnyMask`/`sunnyMaskNoVegetation`) + incrément des compteurs. Phase E porte ces opérations sur GPU directement dans le compute shader de Vulkan.
+
+Shader WGSL étendu avec deux storage buffers supplémentaires (bindings 10/11) remplis dans le même dispatch que les bitmasks buildings/terrain/vegetation :
+
+```
+sunny       = NOT(buildings) AND NOT(terrain) AND NOT(vegetation)
+sunnyNoVeg  = NOT(buildings) AND NOT(terrain)
+```
+
+Les compteurs `sunnyCount` et `sunnyNoVegCount` sont accumulés par atomics dans la même passe et renvoyés dans la réponse `evaluate_batch_frames`.
+
+Prérequis device : le bind group contient maintenant 10 storage buffers (défaut wgpu = 8). `DeviceDescriptor::required_limits.max_storage_buffers_per_shader_stage = 12` bumpé au device request (Intel Arc expose 1024, donc pas de contrainte hardware). Sans ce bump, wgpu émet une validation error au create_bind_group_layout.
+
+TS : `evaluateBatchFramesWithShadows` renvoie maintenant `sunnyMask`/`sunnyNoVegMask`/`sunnyCount`/`sunnyNoVegCount` par frame. Le hot loop de `sunlight-tile-service.ts` ajoute un fast-path Phase E : quand le backend fournit déjà les 5 masques, la boucle par-point est court-circuitée et chaque `Uint32Array` est bulk-copié via une view `Uint8Array` dans le `Uint8Array` d'artefact final (byte-compatible en little-endian). Le diagnostic `horizonAngleDegByPoint` est conservé via le cache par-point déjà en place (commit `0d315b7`), donc l'artefact final est byte-identique à la version pré-Phase-E.
+
+Sémantique : la formule est identique mot-pour-mot à la boucle JS — `sunny` ne dépend que des bits calculés dans la même dispatch, aucun nouveau ray-march ou lookup. La divergence vs Phase D est donc nulle par construction (validation : smoke 3 tuiles Morges 12:00-12:15 OK).
+
+Gain mesuré : **scale bench 181 tuiles top-priority 06:00-21:00, skip-existing=false** :
+
+- Lausanne 161 tuiles en 8m18s (3.09s/tuile)
+- Morges 12 tuiles en 54s
+- Nyon 4 tuiles en 21s
+- Genève 4 tuiles en 29s
+- **Total 181 tuiles en ~9m42s, avg 3.33s/tuile**
+
+Vs Phase D : 12.0 → 3.33s/tuile = **3.6× speedup, -72% wall** ; vs baseline avant Phase A : **4.35× speedup, -77% wall**. Sur 200 jours de précompute (181 tuiles × 200), ça représente ~33h de compute total au lieu de ~120h avec Phase D — économie d'environ **87h** sur 200 jours.
+
+L'observation empirique : la boucle par-point (~30K points outdoor × 60 frames = 1.8M itérations) était la dominante CPU post-Phase-D. En la déplaçant sur GPU, l'eval tombe autour de 0.3-0.4s/tuile (vs ~4s/tuile en Phase D) ; le reste du temps tuile est désormais dominé par `prepare-points` (~0.5s) et le setup indoor mask. Le prochain bottleneck structurel est la préparation des points côté Node, pas le compute GPU.
 
 ### 4. Pas de multi-view rendering (Batching C) — investigué et abandonné
 
