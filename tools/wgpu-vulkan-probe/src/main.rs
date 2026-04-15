@@ -420,6 +420,11 @@ struct ServerRequest {
     origin_x: Option<f32>,
     #[serde(default, alias = "originY")]
     origin_y: Option<f32>,
+    // evaluate_batch: parallel arrays of sun positions
+    #[serde(default, alias = "azimuthsDeg")]
+    azimuths_deg: Option<Vec<f32>>,
+    #[serde(default, alias = "altitudesDeg")]
+    altitudes_deg: Option<Vec<f32>>,
 }
 
 fn run_shadow_server(
@@ -708,6 +713,84 @@ fn run_shadow_server(
                     }
                 }
             }
+            "evaluate_batch" => {
+                let azimuths = match request.azimuths_deg.as_ref() {
+                    Some(v) if !v.is_empty() => v,
+                    _ => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "evaluate_batch requires non-empty azimuthsDeg",
+                        }))?;
+                        continue;
+                    }
+                };
+                let altitudes = match request.altitudes_deg.as_ref() {
+                    Some(v) if !v.is_empty() => v,
+                    _ => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "evaluate_batch requires non-empty altitudesDeg",
+                        }))?;
+                        continue;
+                    }
+                };
+                if azimuths.len() != altitudes.len() {
+                    write_server_message(serde_json::json!({
+                        "type": "error",
+                        "id": id,
+                        "message": format!(
+                            "evaluate_batch azimuthsDeg ({}) and altitudesDeg ({}) lengths differ",
+                            azimuths.len(), altitudes.len()
+                        ),
+                    }))?;
+                    continue;
+                }
+                let frames: Vec<(f32, f32)> = azimuths
+                    .iter()
+                    .zip(altitudes.iter())
+                    .map(|(a, b)| (*a, *b))
+                    .collect();
+                sequence += frames.len() as u32;
+                let base_seq = sequence - frames.len() as u32 + 1;
+                match engine.evaluate_batch_frames(device, queue, &frames, base_seq) {
+                    Ok(results) => {
+                        let frame_msgs: Vec<serde_json::Value> = results
+                            .iter()
+                            .enumerate()
+                            .map(|(i, r)| {
+                                serde_json::json!({
+                                    "azimuthDeg": frames[i].0,
+                                    "altitudeDeg": frames[i].1,
+                                    "blockedPoints": r.blocked_count,
+                                    "blockedWords": if request.include_mask { r.blocked_words.clone() } else { vec![] },
+                                    "terrainBlockedPoints": r.terrain_blocked_count,
+                                    "terrainBlockedWords": if request.include_mask { r.terrain_blocked_words.clone() } else { None },
+                                    "vegetationBlockedPoints": r.vegetation_blocked_count,
+                                    "vegetationBlockedWords": if request.include_mask { r.vegetation_blocked_words.clone() } else { None },
+                                })
+                            })
+                            .collect();
+                        write_server_message(serde_json::json!({
+                            "type": "batch_result",
+                            "id": id,
+                            "sequenceStart": base_seq,
+                            "frameCount": frames.len(),
+                            "elapsedMsPerFrame": round2(results[0].elapsed_ms),
+                            "frames": frame_msgs,
+                            "pointCount": engine.point_count().unwrap_or(0),
+                        }))?;
+                    }
+                    Err(error) => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": format!("evaluate_batch failed: {error}"),
+                        }))?;
+                    }
+                }
+            }
             "ping" => {
                 write_server_message(serde_json::json!({
                     "type": "pong",
@@ -774,6 +857,7 @@ struct DepthShadowEngine {
     depth_view: wgpu::TextureView,
     render_uniform_buffer: wgpu::Buffer,
     render_bind_group: wgpu::BindGroup,
+    render_bind_group_layout: wgpu::BindGroupLayout,
     render_pipeline: wgpu::RenderPipeline,
     shadow_compute: Option<ShadowComputeResources>,
     raw_bounds: MeshBounds,
@@ -789,6 +873,16 @@ struct DepthShadowEvaluation {
     terrain_blocked_count: Option<u32>,
     terrain_blocked_words: Option<Vec<u32>>,
     // Filled only when vegetation rasters have been uploaded.
+    vegetation_blocked_count: Option<u32>,
+    vegetation_blocked_words: Option<Vec<u32>>,
+}
+
+struct BatchFrameEvaluation {
+    elapsed_ms: f64,
+    blocked_count: u32,
+    blocked_words: Vec<u32>,
+    terrain_blocked_count: Option<u32>,
+    terrain_blocked_words: Option<Vec<u32>>,
     vegetation_blocked_count: Option<u32>,
     vegetation_blocked_words: Option<Vec<u32>>,
 }
@@ -952,6 +1046,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             depth_view,
             render_uniform_buffer,
             render_bind_group,
+            render_bind_group_layout: bind_group_layout,
             render_pipeline,
             shadow_compute,
             raw_bounds,
@@ -1134,6 +1229,306 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             vegetation_blocked_count,
             vegetation_blocked_words,
         })
+    }
+
+    /// Evaluate N frames in a single GPU submission. Each frame is one
+    /// (azimuth, altitude) pair; the shader renders its depth map,
+    /// computes the 3 bitmasks, and copies them into per-frame slots of
+    /// big readback buffers. One submit + one poll + one mapAsync per
+    /// readback buffer, regardless of N.
+    ///
+    /// Per-frame slots are allocated on demand: render_uniform_buffer +
+    /// render_bind_group + params_buffer + compute_bind_group × N. The
+    /// shared GPU resources (depth texture, mesh, points, horizon,
+    /// vegetation) are reused as in the single-frame path.
+    fn evaluate_batch_frames(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        frames: &[(f32, f32)],
+        start_sequence: u32,
+    ) -> Result<Vec<BatchFrameEvaluation>, String> {
+        if frames.is_empty() {
+            return Ok(Vec::new());
+        }
+        let shadow = self
+            .shadow_compute
+            .as_ref()
+            .ok_or_else(|| "evaluate_batch_frames: no active shadow compute".to_string())?;
+
+        let n = frames.len();
+        let frame_size = shadow.result_copy_size;
+        let total_size = frame_size * n as u64;
+
+        // Allocate per-frame buffers + bind groups (throwaway, cheap).
+        let mut render_uniforms: Vec<wgpu::Buffer> = Vec::with_capacity(n);
+        let mut render_bgs: Vec<wgpu::BindGroup> = Vec::with_capacity(n);
+        let mut compute_params: Vec<wgpu::Buffer> = Vec::with_capacity(n);
+        let mut compute_bgs: Vec<wgpu::BindGroup> = Vec::with_capacity(n);
+
+        for i in 0..n {
+            let render_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("batch-render-uniform"),
+                size: 64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let render_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("batch-render-bg"),
+                layout: &self.render_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: render_uniform.as_entire_binding(),
+                }],
+            });
+            let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("batch-compute-params"),
+                size: SHADOW_PARAMS_SIZE,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let compute_bg = build_compute_bind_group(
+                device,
+                &shadow.bind_group_layout,
+                &params_buf,
+                &shadow.depth_view_ref,
+                &shadow.points_buffer,
+                &shadow.result_buffer,
+                &shadow.horizon_masks_buffer,
+                &shadow.horizon_indices_buffer,
+                &shadow.terrain_result_buffer,
+                &shadow.veg_tiles_meta_buffer,
+                &shadow.veg_data_buffer,
+                &shadow.veg_result_buffer,
+            );
+            render_uniforms.push(render_uniform);
+            render_bgs.push(render_bg);
+            compute_params.push(params_buf);
+            compute_bgs.push(compute_bg);
+            let _ = i;
+        }
+
+        // Pre-write per-frame uniforms on the queue timeline.
+        for (i, &(az, alt)) in frames.iter().enumerate() {
+            let mvp = compute_light_mvp(self.raw_bounds, self.focus_bounds, az, alt);
+            queue.write_buffer(
+                &render_uniforms[i],
+                0,
+                bytemuck::cast_slice(&mvp),
+            );
+            let params = encode_shadow_params(
+                mvp,
+                self.resolution,
+                shadow.point_count,
+                SHADOW_BIAS,
+                shadow.has_horizon,
+                az,
+                alt,
+                shadow.has_vegetation,
+                shadow.num_veg_tiles,
+                shadow.veg_step_meters,
+                shadow.veg_max_distance_meters,
+                shadow.veg_min_clearance,
+                shadow.veg_nodata,
+                shadow.origin_x,
+                shadow.origin_y,
+            );
+            queue.write_buffer(&compute_params[i], 0, &params);
+        }
+
+        // Big readback buffers, sized for N frames.
+        let readback_buildings = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("batch-readback-buildings"),
+            size: total_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let readback_terrain = if shadow.has_horizon {
+            Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("batch-readback-terrain"),
+                size: total_size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }))
+        } else {
+            None
+        };
+        let readback_veg = if shadow.has_vegetation {
+            Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("batch-readback-vegetation"),
+                size: total_size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }))
+        } else {
+            None
+        };
+
+        let started_at = Instant::now();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("wgpu-vulkan-probe-batch-encoder"),
+        });
+
+        for (i, _) in frames.iter().enumerate() {
+            // Clear result buffers between frames (same shared buffers, rewritten per frame).
+            encoder.clear_buffer(&shadow.result_buffer, 0, Some(shadow.result_copy_size));
+            if shadow.has_horizon {
+                encoder.clear_buffer(
+                    &shadow.terrain_result_buffer,
+                    0,
+                    Some(shadow.result_copy_size),
+                );
+            }
+            if shadow.has_vegetation {
+                encoder.clear_buffer(
+                    &shadow.veg_result_buffer,
+                    0,
+                    Some(shadow.result_copy_size),
+                );
+            }
+
+            // Depth render pass (clears depth texture via LoadOp::Clear).
+            {
+                let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("batch-depth-pass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                rp.set_pipeline(&self.render_pipeline);
+                rp.set_bind_group(0, &render_bgs[i], &[]);
+                rp.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                rp.draw(0..self.vertex_count, 0..1);
+            }
+
+            // Compute pass.
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("batch-shadow-compute-pass"),
+                    timestamp_writes: None,
+                });
+                cp.set_pipeline(&shadow.pipeline);
+                cp.set_bind_group(0, &compute_bgs[i], &[]);
+                cp.dispatch_workgroups(shadow.workgroup_count, 1, 1);
+            }
+
+            // Copy this frame's result bitmasks into per-frame slot of the big readback.
+            let offset = i as u64 * frame_size;
+            encoder.copy_buffer_to_buffer(
+                &shadow.result_buffer,
+                0,
+                &readback_buildings,
+                offset,
+                frame_size,
+            );
+            if let Some(rb) = readback_terrain.as_ref() {
+                encoder.copy_buffer_to_buffer(
+                    &shadow.terrain_result_buffer,
+                    0,
+                    rb,
+                    offset,
+                    frame_size,
+                );
+            }
+            if let Some(rb) = readback_veg.as_ref() {
+                encoder.copy_buffer_to_buffer(
+                    &shadow.veg_result_buffer,
+                    0,
+                    rb,
+                    offset,
+                    frame_size,
+                );
+            }
+        }
+
+        let submission = queue.submit([encoder.finish()]);
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(Duration::from_secs(60)),
+            })
+            .map_err(|e| {
+                format!("device poll failed at batch starting seq {start_sequence}: {e:?}")
+            })?;
+
+        let gpu_elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+
+        // Map and decode all readback buffers.
+        let buildings_per_frame = map_and_split_batch(
+            device,
+            &readback_buildings,
+            n,
+            frame_size,
+            shadow.result_word_count,
+            start_sequence,
+            "buildings",
+        )?;
+        let terrain_per_frame = match readback_terrain.as_ref() {
+            Some(rb) => Some(map_and_split_batch(
+                device,
+                rb,
+                n,
+                frame_size,
+                shadow.result_word_count,
+                start_sequence,
+                "terrain",
+            )?),
+            None => None,
+        };
+        let veg_per_frame = match readback_veg.as_ref() {
+            Some(rb) => Some(map_and_split_batch(
+                device,
+                rb,
+                n,
+                frame_size,
+                shadow.result_word_count,
+                start_sequence,
+                "vegetation",
+            )?),
+            None => None,
+        };
+
+        let avg_elapsed_ms = gpu_elapsed_ms / n as f64;
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let b_words = buildings_per_frame[i].clone();
+            let b_count: u32 = b_words.iter().map(|w| w.count_ones()).sum();
+            let (t_count, t_words) = match terrain_per_frame.as_ref() {
+                Some(vec) => {
+                    let w = vec[i].clone();
+                    let c: u32 = w.iter().map(|x| x.count_ones()).sum();
+                    (Some(c), Some(w))
+                }
+                None => (None, None),
+            };
+            let (v_count, v_words) = match veg_per_frame.as_ref() {
+                Some(vec) => {
+                    let w = vec[i].clone();
+                    let c: u32 = w.iter().map(|x| x.count_ones()).sum();
+                    (Some(c), Some(w))
+                }
+                None => (None, None),
+            };
+            out.push(BatchFrameEvaluation {
+                elapsed_ms: avg_elapsed_ms,
+                blocked_count: b_count,
+                blocked_words: b_words,
+                terrain_blocked_count: t_count,
+                terrain_blocked_words: t_words,
+                vegetation_blocked_count: v_count,
+                vegetation_blocked_words: v_words,
+            });
+        }
+        Ok(out)
     }
 
     fn triangle_count(&self) -> u32 {
@@ -2054,6 +2449,59 @@ fn read_bitmask_buffer(
         blocked_count,
         words,
     })
+}
+
+/// Map a single big readback buffer containing N frames × copy_size_per_frame
+/// of GPU-side data, split it into N per-frame Vec<u32> bitmasks.
+fn map_and_split_batch(
+    device: &wgpu::Device,
+    readback_buffer: &wgpu::Buffer,
+    frame_count: usize,
+    copy_size_per_frame: u64,
+    word_count_per_frame: u32,
+    start_seq: u32,
+    label: &str,
+) -> Result<Vec<Vec<u32>>, String> {
+    let total_size = copy_size_per_frame * frame_count as u64;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    readback_buffer.map_async(wgpu::MapMode::Read, 0..total_size, move |result| {
+        let _ = sender.send(result);
+    });
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(Duration::from_secs(60)),
+        })
+        .map_err(|e| {
+            format!("device poll for batch {label} readback failed at seq {start_seq}: {e:?}")
+        })?;
+    receiver
+        .recv_timeout(Duration::from_secs(60))
+        .map_err(|e| {
+            format!("batch {label} readback callback timed out at seq {start_seq}: {e}")
+        })?
+        .map_err(|e| {
+            format!("batch {label} readback map failed at seq {start_seq}: {e:?}")
+        })?;
+
+    let payload_bytes = u64::from(word_count_per_frame) * 4;
+    let mut out = Vec::with_capacity(frame_count);
+    {
+        let data = readback_buffer.get_mapped_range(0..total_size);
+        for i in 0..frame_count {
+            let frame_offset = i as u64 * copy_size_per_frame;
+            let start = frame_offset as usize;
+            let end = (frame_offset + payload_bytes) as usize;
+            let slice = &data[start..end];
+            let words: Vec<u32> = slice
+                .chunks_exact(4)
+                .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect();
+            out.push(words);
+        }
+    }
+    readback_buffer.unmap();
+    Ok(out)
 }
 
 fn load_vertices(

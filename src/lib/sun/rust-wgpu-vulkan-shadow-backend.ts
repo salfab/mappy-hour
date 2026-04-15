@@ -292,6 +292,80 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     return this.runEvaluate(pointCount, azimuthDeg, altitudeDeg);
   }
 
+  /**
+   * Phase D: evaluate N frames in a single GPU submission, using the
+   * Rust server's evaluate_batch command. Horizon/vegetation uploads
+   * happen at most once before the batch runs (hash-deduped).
+   *
+   * Returns one {buildingsMask, terrainMask, vegetationMask} per frame,
+   * in the same order as `frames`.
+   */
+  async evaluateBatchFramesWithShadows(
+    frames: Array<{ azimuthDeg: number; altitudeDeg: number }>,
+    points: Float32Array,
+    pointCount: number,
+    options?: {
+      horizon?: { masks: Float32Array; pointMaskIndices: Uint32Array };
+      vegetation?: {
+        meta: Float32Array;
+        data: Float32Array;
+        nodata: number;
+        stepMeters: number;
+        maxDistanceMeters: number;
+        minClearance: number;
+        originX: number;
+        originY: number;
+      };
+    },
+  ): Promise<
+    Array<{
+      buildingsMask: Uint32Array;
+      terrainMask: Uint32Array | null;
+      vegetationMask: Uint32Array | null;
+    }>
+  > {
+    if (frames.length === 0) return [];
+    if (pointCount === 0) {
+      return frames.map(() => ({
+        buildingsMask: new Uint32Array(0),
+        terrainMask: null,
+        vegetationMask: null,
+      }));
+    }
+    await this.ensureServer(points, pointCount);
+    if (!this.server) {
+      throw new Error("Rust/wgpu Vulkan server failed to start.");
+    }
+    if (options?.horizon) {
+      await this.uploadHorizonMasks(options.horizon);
+    }
+    if (options?.vegetation) {
+      await this.uploadVegetationRasters(options.vegetation);
+    }
+    this.evaluationId += 1;
+    const azimuthsDeg = frames.map((f) => f.azimuthDeg);
+    const altitudesDeg = frames.map((f) => f.altitudeDeg);
+    const result = await this.server.evaluateBatch(this.evaluationId, azimuthsDeg, altitudesDeg, {
+      includeMask: true,
+    });
+    if (result.pointCount !== pointCount) {
+      throw new Error(
+        `Rust/wgpu Vulkan batch point count mismatch: server=${result.pointCount}, expected=${pointCount}`,
+      );
+    }
+    const hasTerrain = this.serverHorizonHash !== null;
+    const hasVeg = this.serverVegetationHash !== null;
+    return result.frames.map((f) => ({
+      buildingsMask: Uint32Array.from(f.blockedWords ?? []),
+      terrainMask: hasTerrain && Array.isArray(f.terrainBlockedWords)
+        ? Uint32Array.from(f.terrainBlockedWords)
+        : null,
+      vegetationMask: hasVeg && Array.isArray(f.vegetationBlockedWords)
+        ? Uint32Array.from(f.vegetationBlockedWords)
+        : null,
+    }));
+  }
+
   private async evaluateBatchInternal(
     points: Float32Array,
     pointCount: number,

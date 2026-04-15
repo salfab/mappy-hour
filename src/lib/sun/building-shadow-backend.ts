@@ -145,6 +145,40 @@ export interface BatchBuildingShadowBackend extends BuildingShadowBackend {
     terrainMask: Uint32Array | null;
     vegetationMask: Uint32Array | null;
   }>;
+
+  /**
+   * (Optional, Phase D+) Batch-evaluate N frames in a single GPU
+   * submission. Each frame has its own (azimuth, altitude); shadow
+   * payloads (horizon / vegetation) are synced once before the batch
+   * runs, then one depth-render + compute-dispatch per frame is
+   * encoded in a single command buffer with one submit/poll.
+   *
+   * Returns one result per frame, in the same order as `frames`.
+   */
+  evaluateBatchFramesWithShadows?(
+    frames: Array<{ azimuthDeg: number; altitudeDeg: number }>,
+    points: Float32Array,
+    pointCount: number,
+    options?: {
+      horizon?: { masks: Float32Array; pointMaskIndices: Uint32Array };
+      vegetation?: {
+        meta: Float32Array;
+        data: Float32Array;
+        nodata: number;
+        stepMeters: number;
+        maxDistanceMeters: number;
+        minClearance: number;
+        originX: number;
+        originY: number;
+      };
+    },
+  ): Promise<
+    Array<{
+      buildingsMask: Uint32Array;
+      terrainMask: Uint32Array | null;
+      vegetationMask: Uint32Array | null;
+    }>
+  >;
 }
 
 export function isBatchBackend(

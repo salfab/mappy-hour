@@ -934,6 +934,82 @@ export async function computeSunlightTileArtifact(params: {
     }
   }
 
+  // ── Phase D: batch-evaluate all lit frames in ONE GPU submission ────
+  // Pre-compute sun positions for every sample, group the lit ones
+  // (altitudeDeg > 0), call evaluateBatchFramesWithShadows once per
+  // tile. For backends that don't expose the batch API (webgpu-compute,
+  // gpu-raster slow path), this stays null and the frame loop falls
+  // back to the per-frame path.
+  type PerFrameSun = {
+    sampleIndex: number;
+    sampleDate: Date;
+    frameLocalDateTime: string;
+    altitudeDeg: number;
+    azimuthDeg: number;
+  };
+  const perFrame: PerFrameSun[] = new Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    const d = samples[i];
+    const ft = formatDateTimeLocal(d, params.timezone);
+    const pos = SunCalc.getPosition(d, tileCenterWgs84.lat, tileCenterWgs84.lon);
+    let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
+    if (az < 0) az += 360;
+    perFrame[i] = {
+      sampleIndex: i,
+      sampleDate: d,
+      frameLocalDateTime: ft,
+      altitudeDeg: pos.altitude * RAD_TO_DEG,
+      azimuthDeg: az,
+    };
+  }
+
+  const useBatchFrames =
+    useBatchShadows &&
+    webgpuBackend != null &&
+    typeof (webgpuBackend as { evaluateBatchFramesWithShadows?: unknown })
+      .evaluateBatchFramesWithShadows === "function";
+  // Results indexed by sampleIndex; null means "below horizon, no GPU work needed".
+  type FrameMasks = {
+    buildingsMask: Uint32Array | null;
+    terrainMask: Uint32Array | null;
+    vegetationMask: Uint32Array | null;
+  };
+  const batchFrameResults: Array<FrameMasks | null> = new Array(samples.length).fill(null);
+  if (useBatchFrames && batchPointsF32) {
+    const litIndices: number[] = [];
+    const litFrames: Array<{ azimuthDeg: number; altitudeDeg: number }> = [];
+    for (const f of perFrame) {
+      if (f.altitudeDeg > 0) {
+        litIndices.push(f.sampleIndex);
+        litFrames.push({ azimuthDeg: f.azimuthDeg, altitudeDeg: f.altitudeDeg });
+      }
+    }
+    if (litFrames.length > 0) {
+      const litResults = await (webgpuBackend as {
+        evaluateBatchFramesWithShadows: (
+          frames: Array<{ azimuthDeg: number; altitudeDeg: number }>,
+          points: Float32Array,
+          pointCount: number,
+          options?: {
+            horizon?: { masks: Float32Array; pointMaskIndices: Uint32Array };
+            vegetation?: typeof vegetationPayload;
+          },
+        ) => Promise<Array<FrameMasks>>;
+      }).evaluateBatchFramesWithShadows(
+        litFrames,
+        batchPointsF32,
+        preparedOutdoorPoints.length,
+        {
+          horizon: horizonPayload ?? undefined,
+          vegetation: vegetationPayload ?? undefined,
+        },
+      );
+      for (let k = 0; k < litResults.length; k++) {
+        batchFrameResults[litIndices[k]] = litResults[k];
+      }
+    }
+  }
+
   for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
     throwIfAborted(params.signal);
     const sampleDate = samples[sampleIndex];
@@ -988,7 +1064,13 @@ export async function computeSunlightTileArtifact(params: {
     let batchBuildingBlockedMask: Uint32Array | null = null;
     let batchTerrainBlockedMask: Uint32Array | null = null;
     let batchVegetationBlockedMask: Uint32Array | null = null;
-    if (useBatchPath && batchPointsF32) {
+    // Phase D fast path: batch for this tile was pre-computed upfront.
+    const preComputed = batchFrameResults[sampleIndex];
+    if (preComputed) {
+      batchBuildingBlockedMask = preComputed.buildingsMask;
+      batchTerrainBlockedMask = preComputed.terrainMask;
+      batchVegetationBlockedMask = preComputed.vegetationMask;
+    } else if (useBatchPath && batchPointsF32) {
       if (useBatchShadows && (horizonPayload || vegetationPayload)) {
         const out = await (webgpuBackend as {
           evaluateBatchWithShadows: (
