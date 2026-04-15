@@ -32,18 +32,35 @@ Le client TS pointe sur `tools/wgpu-vulkan-probe/target/release/` au lieu de `ta
 
 **Pourquoi** : le binaire debug est ~10x plus lent sur le compute. Le surcoût de compilation release (~3 min sur la première build) est largement compensé dès le premier run de précompute non-trivial.
 
-### 2. Hot loop précompute split en chemin batch / chemin per-point
+### 2. Hot loop précompute unifié pour tous les backends
 
-`computeSunlightTileArtifact` dans `src/lib/precompute/sunlight-tile-service.ts` distingue désormais explicitement deux chemins par frame :
+**Version initiale (commit 4f885db)** : le hot loop était split en deux chemins — fast-path optimisé pour les backends batch (rust-wgpu-vulkan, webgpu-compute) et slow-path inchangé pour les autres (gpu-raster, two-level, detailed, prism) qui continuait à passer par `evaluateInstantSunlight()`.
 
-- **Fast-path** quand un backend batch est disponible (`rust-wgpu-vulkan` ou `webgpu-compute`) : la boucle par-point est inlinée et n'appelle plus `evaluateInstantSunlight()`. Les masques `terrain`, `vegetation`, `sunny` sont écrits via opérations bitwise directes. Les arrays de diagnostic (`horizonAngleDegByPoint`, `buildingBlockerIdByPoint`) sont pré-allouées à la longueur exacte. L'abort signal est vérifié toutes les 1024 itérations.
-- **Slow-path** sémantiquement identique au comportement précédent pour les modes `gpu-raster`, `two-level`, `prism`, `detailed`, `webgpu-compute`-fallback : appelle `evaluateInstantSunlight()` par point.
+**Version finale (commit 5157a5c)** : le hot loop est unifié en un seul loop qui détermine la source du building shadow par point :
 
-`getMaxHorizonAngle` et `TERRAIN_HORIZON_SKIP_MARGIN_DEG` sont exposés depuis `solar.ts` pour permettre l'inline dans le fast-path tout en gardant `evaluateInstantSunlight` comme source canonique pour les autres chemins.
+1. bitmask batch (rust-wgpu-vulkan / webgpu-compute via `evaluateBatch`)
+2. évaluateur per-point (`point.buildingShadowEvaluator` pour gpu-raster / two-level / detailed / prism)
+3. aucun (fallback `detailed-direct-v1`)
 
-**Pourquoi** : dans le bench de référence, le compute GPU Vulkan ne représente que ~5% du temps eval par tuile (le reste est CPU dans la boucle JS qui itère ~32K points × 60 frames). Inliner le hot path économise ~17% du temps eval Vulkan, ce qui se traduit par ~25% en mesure brute (le reste étant variance OS).
+La boucle par-point unifiée est inlinée : pas d'appel à `evaluateInstantSunlight()`, pas d'allocation de `SunSample`, masques bitwise directs, diagnostic arrays pré-allouées, abort signal tous les 1024 itérations.
 
-Le slow-path est volontairement laissé inchangé : le mode `gpu-raster` actuellement en production n'a pas besoin de cette optim, et le risque de régression sur les autres modes ne justifie pas un refactor unifié.
+`getMaxHorizonAngle` et `TERRAIN_HORIZON_SKIP_MARGIN_DEG` sont exposés depuis `solar.ts` pour permettre l'inline, avec `evaluateInstantSunlight` qui reste la source canonique pour les callers externes (routes API, tests).
+
+**Sémantique préservée exactement par rapport à `evaluateInstantSunlight` :**
+
+- `aboveAstronomicalHorizon` = true (le skip de frame en haut du loop filtre les cas altitude ≤ 0)
+- vegetation eval + building per-point eval skippés quand `terrainBlocked` (matche `evaluateSecondaryBlockers` avec `evaluateAllBlockers=false`)
+- bitmask batch est toujours lu indépendamment de `terrainBlocked` (le bit est déjà calculé pour tous les points dans le dispatch batch — sémantique Vulkan historique conservée)
+
+**Pourquoi** : le compute GPU Vulkan ne représente que ~5% du temps eval par tuile. Le reste est CPU dans la boucle JS (~32K points × 60 frames). Inliner cette boucle pour TOUS les backends, pas seulement les batch, amène les mêmes gains au mode `gpu-raster` qui est le mode de production par défaut.
+
+**Mesures (pnpm precompute:all-regions en mode gpu-raster, top-priority 181 tuiles, 06:00-21:00) :**
+
+- Baseline (ancien split fast/slow) : 15.16s/tuile moyenne
+- Unifié (commit 5157a5c) : 12.06s/tuile moyenne
+- Speedup : **~20% wall-time**
+
+Sur un scope de 200 jours, ça représente environ 30 heures de wall économisées (~152h → ~121h total compute).
 
 ### 3. Pas de batched compute dispatch ni reload-points serveur Vulkan
 
