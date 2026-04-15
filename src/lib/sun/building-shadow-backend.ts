@@ -177,6 +177,10 @@ export interface BatchBuildingShadowBackend extends BuildingShadowBackend {
       buildingsMask: Uint32Array;
       terrainMask: Uint32Array | null;
       vegetationMask: Uint32Array | null;
+      sunnyMask: Uint32Array;
+      sunnyNoVegMask: Uint32Array;
+      sunnyCount: number;
+      sunnyNoVegCount: number;
     }>
   >;
 }

@@ -322,6 +322,10 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       buildingsMask: Uint32Array;
       terrainMask: Uint32Array | null;
       vegetationMask: Uint32Array | null;
+      sunnyMask: Uint32Array;
+      sunnyNoVegMask: Uint32Array;
+      sunnyCount: number;
+      sunnyNoVegCount: number;
     }>
   > {
     if (frames.length === 0) return [];
@@ -330,6 +334,10 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         buildingsMask: new Uint32Array(0),
         terrainMask: null,
         vegetationMask: null,
+        sunnyMask: new Uint32Array(0),
+        sunnyNoVegMask: new Uint32Array(0),
+        sunnyCount: 0,
+        sunnyNoVegCount: 0,
       }));
     }
     await this.ensureServer(points, pointCount);
@@ -363,6 +371,12 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       vegetationMask: hasVeg && Array.isArray(f.vegetationBlockedWords)
         ? Uint32Array.from(f.vegetationBlockedWords)
         : null,
+      sunnyMask: Array.isArray(f.sunnyWords) ? Uint32Array.from(f.sunnyWords) : new Uint32Array(0),
+      sunnyNoVegMask: Array.isArray(f.sunnyNoVegWords)
+        ? Uint32Array.from(f.sunnyNoVegWords)
+        : new Uint32Array(0),
+      sunnyCount: Number(f.sunnyPoints ?? 0),
+      sunnyNoVegCount: Number(f.sunnyNoVegPoints ?? 0),
     }));
   }
 

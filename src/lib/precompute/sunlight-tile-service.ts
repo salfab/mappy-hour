@@ -988,6 +988,10 @@ export async function computeSunlightTileArtifact(params: {
     buildingsMask: Uint32Array | null;
     terrainMask: Uint32Array | null;
     vegetationMask: Uint32Array | null;
+    sunnyMask: Uint32Array | null;
+    sunnyNoVegMask: Uint32Array | null;
+    sunnyCount: number;
+    sunnyNoVegCount: number;
   };
   const batchFrameResults: Array<FrameMasks | null> = new Array(samples.length).fill(null);
   if (useBatchFrames && batchPointsF32) {
@@ -1085,6 +1089,89 @@ export async function computeSunlightTileArtifact(params: {
       batchBuildingBlockedMask = preComputed.buildingsMask;
       batchTerrainBlockedMask = preComputed.terrainMask;
       batchVegetationBlockedMask = preComputed.vegetationMask;
+
+      // ── Phase E fast path: GPU already produced sunny + sunnyNoVeg.
+      // Bulk-copy the 5 bitmasks from Uint32Array GPU output to the
+      // Uint8Array artifact masks (little-endian byte layout matches).
+      // Skip the per-point JS loop entirely for mask assignment +
+      // sunny computation + counts. The per-frame horizon angle
+      // diagnostic is still filled via the precomputed per-unique-mask
+      // cache (vectorized assignment).
+      const phaseE =
+        preComputed.buildingsMask !== null &&
+        preComputed.terrainMask !== null &&
+        preComputed.vegetationMask !== null &&
+        preComputed.sunnyMask !== null &&
+        preComputed.sunnyNoVegMask !== null;
+      if (phaseE) {
+        const pointCount = preparedOutdoorPoints.length;
+        // Helper: view a Uint32Array as Uint8Array of exactly maskByteLen
+        // bytes (little-endian, bit-0-at-LSB matches our mask convention).
+        const u8View = (u32: Uint32Array) =>
+          new Uint8Array(u32.buffer, u32.byteOffset, Math.min(u32.byteLength, maskByteLen));
+        buildingsMask.set(u8View(preComputed.buildingsMask!));
+        terrainMask.set(u8View(preComputed.terrainMask!));
+        vegetationMask.set(u8View(preComputed.vegetationMask!));
+        sunnyMask.set(u8View(preComputed.sunnyMask!));
+        sunnyMaskNoVegetation.set(u8View(preComputed.sunnyNoVegMask!));
+        sunnyCount = preComputed.sunnyCount;
+        sunnyCountNoVegetation = preComputed.sunnyNoVegCount;
+        // Diagnostic horizon angle — per-unique-mask cache.
+        horizonAngleDegByPoint.length = pointCount;
+        buildingBlockerIdByPoint.length = pointCount;
+        buildingBlockerIdByPoint.fill(null, 0, pointCount);
+        if (pointMaskIndices !== null && horizonMaskList !== null) {
+          // Precompute rounded unique horizon angles for this frame.
+          const uniqueRounded = new Float64Array(horizonMaskList.length);
+          for (let i = 0; i < horizonMaskList.length; i++) {
+            uniqueRounded[i] =
+              Math.round(getHorizonAngleForAzimuth(horizonMaskList[i], frameSolarPosition.azimuthDeg) * 1000) / 1000;
+          }
+          for (let i = 0; i < pointCount; i++) {
+            horizonAngleDegByPoint[i] = uniqueRounded[pointMaskIndices[i]];
+          }
+        } else {
+          // Fallback per-point (rare — some point had no mask).
+          for (let i = 0; i < pointCount; i++) {
+            const m = preparedOutdoorPoints[i].horizonMask;
+            horizonAngleDegByPoint[i] = m === null
+              ? null
+              : Math.round(getHorizonAngleForAzimuth(m, frameSolarPosition.azimuthDeg) * 1000) / 1000;
+          }
+        }
+        frames.push({
+          index: sampleIndex,
+          localTime,
+          utcTime: sampleDate.toISOString(),
+          sunnyCount,
+          sunnyCountNoVegetation,
+          sunMaskBase64: Buffer.from(sunnyMask).toString("base64"),
+          sunMaskNoVegetationBase64: Buffer.from(sunnyMaskNoVegetation).toString("base64"),
+          terrainBlockedMaskBase64: Buffer.from(terrainMask).toString("base64"),
+          buildingsBlockedMaskBase64: Buffer.from(buildingsMask).toString("base64"),
+          vegetationBlockedMaskBase64: Buffer.from(vegetationMask).toString("base64"),
+          diagnostics: {
+            horizonAngleDegByPoint,
+            buildingBlockerIdByPoint,
+            buildingBlockerDistanceMetersByPoint: [],
+            vegetationBlockerDistanceMetersByPoint: [],
+          },
+        });
+        completedFrameEvaluations += pointCount;
+        params.onProgress?.({
+          stage: "evaluate-frames",
+          completed: completedFrameEvaluations,
+          total: totalFrameEvaluations,
+          pointCountTotal: rawTilePoints.length,
+          pointCountOutdoor: pointCount,
+          frameCountTotal: samples.length,
+          frameIndex: sampleIndex + 1,
+          elapsedMs: performance.now() - started,
+        });
+        await yieldToEventLoop();
+        throwIfAborted(params.signal);
+        continue;
+      }
     } else if (useBatchPath && batchPointsF32) {
       if (useBatchShadows && (horizonPayload || vegetationPayload)) {
         const out = await (webgpuBackend as {

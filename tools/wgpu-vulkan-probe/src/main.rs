@@ -241,8 +241,23 @@ async fn run(config: Config) -> Result<(), String> {
         info.driver_info,
     );
 
+    let adapter_limits = adapter.limits();
+    let mut required_limits = wgpu::Limits::default();
+    // Phase E: shadow compute shader now uses 10 storage buffers
+    // (points, buildings, horizon_masks, horizon_indices, terrain, veg_meta,
+    //  veg_data, vegetation, sunny, sunny_no_veg). Default limit is 8.
+    required_limits.max_storage_buffers_per_shader_stage = adapter_limits
+        .max_storage_buffers_per_shader_stage
+        .max(12);
     let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor::default())
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("wgpu-vulkan-probe-device"),
+            required_features: wgpu::Features::empty(),
+            required_limits,
+            memory_hints: wgpu::MemoryHints::default(),
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+        })
         .await
         .map_err(|error| format!("request_device failed: {error:?}"))?;
 
@@ -522,6 +537,10 @@ fn run_shadow_server(
                     "terrainBlockedWords": if request.include_mask { result.terrain_blocked_words } else { None },
                     "vegetationBlockedPoints": result.vegetation_blocked_count,
                     "vegetationBlockedWords": if request.include_mask { result.vegetation_blocked_words } else { None },
+                    "sunnyPoints": result.sunny_count,
+                    "sunnyWords": if request.include_mask { Some(result.sunny_words) } else { None },
+                    "sunnyNoVegPoints": result.sunny_no_veg_count,
+                    "sunnyNoVegWords": if request.include_mask { Some(result.sunny_no_veg_words) } else { None },
                     "pointCount": engine.point_count().unwrap_or(0),
                 }))?;
             }
@@ -769,6 +788,10 @@ fn run_shadow_server(
                                     "terrainBlockedWords": if request.include_mask { r.terrain_blocked_words.clone() } else { None },
                                     "vegetationBlockedPoints": r.vegetation_blocked_count,
                                     "vegetationBlockedWords": if request.include_mask { r.vegetation_blocked_words.clone() } else { None },
+                                    "sunnyPoints": r.sunny_count,
+                                    "sunnyWords": if request.include_mask { Some(r.sunny_words.clone()) } else { None },
+                                    "sunnyNoVegPoints": r.sunny_no_veg_count,
+                                    "sunnyNoVegWords": if request.include_mask { Some(r.sunny_no_veg_words.clone()) } else { None },
                                 })
                             })
                             .collect();
@@ -875,6 +898,11 @@ struct DepthShadowEvaluation {
     // Filled only when vegetation rasters have been uploaded.
     vegetation_blocked_count: Option<u32>,
     vegetation_blocked_words: Option<Vec<u32>>,
+    // Phase E: final sunny bitmasks (derived on GPU).
+    sunny_count: u32,
+    sunny_words: Vec<u32>,
+    sunny_no_veg_count: u32,
+    sunny_no_veg_words: Vec<u32>,
 }
 
 struct BatchFrameEvaluation {
@@ -885,6 +913,10 @@ struct BatchFrameEvaluation {
     terrain_blocked_words: Option<Vec<u32>>,
     vegetation_blocked_count: Option<u32>,
     vegetation_blocked_words: Option<Vec<u32>>,
+    sunny_count: u32,
+    sunny_words: Vec<u32>,
+    sunny_no_veg_count: u32,
+    sunny_no_veg_words: Vec<u32>,
 }
 
 impl DepthShadowEngine {
@@ -1134,6 +1166,12 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 0,
                 Some(shadow.result_copy_size),
             );
+            encoder.clear_buffer(&shadow.sunny_result_buffer, 0, Some(shadow.result_copy_size));
+            encoder.clear_buffer(
+                &shadow.sunny_no_veg_result_buffer,
+                0,
+                Some(shadow.result_copy_size),
+            );
 
             {
                 let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1170,6 +1208,20 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                     shadow.result_copy_size,
                 );
             }
+            encoder.copy_buffer_to_buffer(
+                &shadow.sunny_result_buffer,
+                0,
+                &shadow.sunny_readback_buffer,
+                0,
+                shadow.result_copy_size,
+            );
+            encoder.copy_buffer_to_buffer(
+                &shadow.sunny_no_veg_result_buffer,
+                0,
+                &shadow.sunny_no_veg_readback_buffer,
+                0,
+                shadow.result_copy_size,
+            );
         }
 
         let submission = queue.submit([encoder.finish()]);
@@ -1187,6 +1239,10 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             terrain_blocked_words,
             vegetation_blocked_count,
             vegetation_blocked_words,
+            sunny_count,
+            sunny_words,
+            sunny_no_veg_count,
+            sunny_no_veg_words,
         ) = if let Some(shadow) = &self.shadow_compute {
             let readback = read_shadow_results(device, shadow, sequence)?;
             let (terrain_count, terrain_words) = if shadow.has_horizon {
@@ -1208,6 +1264,22 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             } else {
                 (None, None)
             };
+            let sunny = read_bitmask_buffer(
+                device,
+                &shadow.sunny_readback_buffer,
+                shadow.result_copy_size,
+                shadow.result_word_count,
+                sequence,
+                "sunny",
+            )?;
+            let sunny_no_veg = read_bitmask_buffer(
+                device,
+                &shadow.sunny_no_veg_readback_buffer,
+                shadow.result_copy_size,
+                shadow.result_word_count,
+                sequence,
+                "sunny-no-veg",
+            )?;
             (
                 Some(readback.blocked_count),
                 Some(readback.words),
@@ -1215,9 +1287,13 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 terrain_words,
                 veg_count,
                 veg_words,
+                sunny.blocked_count,
+                sunny.words,
+                sunny_no_veg.blocked_count,
+                sunny_no_veg.words,
             )
         } else {
-            (None, None, None, None, None, None)
+            (None, None, None, None, None, None, 0, Vec::new(), 0, Vec::new())
         };
 
         Ok(DepthShadowEvaluation {
@@ -1228,6 +1304,10 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             terrain_blocked_words,
             vegetation_blocked_count,
             vegetation_blocked_words,
+            sunny_count,
+            sunny_words,
+            sunny_no_veg_count,
+            sunny_no_veg_words,
         })
     }
 
@@ -1300,6 +1380,8 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 &shadow.veg_tiles_meta_buffer,
                 &shadow.veg_data_buffer,
                 &shadow.veg_result_buffer,
+                &shadow.sunny_result_buffer,
+                &shadow.sunny_no_veg_result_buffer,
             );
             render_uniforms.push(render_uniform);
             render_bgs.push(render_bg);
@@ -1363,6 +1445,18 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         } else {
             None
         };
+        let readback_sunny = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("batch-readback-sunny"),
+            size: total_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let readback_sunny_no_veg = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("batch-readback-sunny-no-veg"),
+            size: total_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
 
         let started_at = Instant::now();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1386,6 +1480,12 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                     Some(shadow.result_copy_size),
                 );
             }
+            encoder.clear_buffer(&shadow.sunny_result_buffer, 0, Some(shadow.result_copy_size));
+            encoder.clear_buffer(
+                &shadow.sunny_no_veg_result_buffer,
+                0,
+                Some(shadow.result_copy_size),
+            );
 
             // Depth render pass (clears depth texture via LoadOp::Clear).
             {
@@ -1448,6 +1548,20 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                     frame_size,
                 );
             }
+            encoder.copy_buffer_to_buffer(
+                &shadow.sunny_result_buffer,
+                0,
+                &readback_sunny,
+                offset,
+                frame_size,
+            );
+            encoder.copy_buffer_to_buffer(
+                &shadow.sunny_no_veg_result_buffer,
+                0,
+                &readback_sunny_no_veg,
+                offset,
+                frame_size,
+            );
         }
 
         let submission = queue.submit([encoder.finish()]);
@@ -1496,6 +1610,24 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             )?),
             None => None,
         };
+        let sunny_per_frame = map_and_split_batch(
+            device,
+            &readback_sunny,
+            n,
+            frame_size,
+            shadow.result_word_count,
+            start_sequence,
+            "sunny",
+        )?;
+        let sunny_no_veg_per_frame = map_and_split_batch(
+            device,
+            &readback_sunny_no_veg,
+            n,
+            frame_size,
+            shadow.result_word_count,
+            start_sequence,
+            "sunny-no-veg",
+        )?;
 
         let avg_elapsed_ms = gpu_elapsed_ms / n as f64;
         let mut out = Vec::with_capacity(n);
@@ -1518,6 +1650,10 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 }
                 None => (None, None),
             };
+            let sunny_w = sunny_per_frame[i].clone();
+            let sunny_c: u32 = sunny_w.iter().map(|x| x.count_ones()).sum();
+            let sunny_no_veg_w = sunny_no_veg_per_frame[i].clone();
+            let sunny_no_veg_c: u32 = sunny_no_veg_w.iter().map(|x| x.count_ones()).sum();
             out.push(BatchFrameEvaluation {
                 elapsed_ms: avg_elapsed_ms,
                 blocked_count: b_count,
@@ -1526,6 +1662,10 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 terrain_blocked_words: t_words,
                 vegetation_blocked_count: v_count,
                 vegetation_blocked_words: v_words,
+                sunny_count: sunny_c,
+                sunny_words: sunny_w,
+                sunny_no_veg_count: sunny_no_veg_c,
+                sunny_no_veg_words: sunny_no_veg_w,
             });
         }
         Ok(out)
@@ -1653,6 +1793,8 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             &shadow.veg_tiles_meta_buffer,
             &shadow.veg_data_buffer,
             &shadow.veg_result_buffer,
+            &shadow.sunny_result_buffer,
+            &shadow.sunny_no_veg_result_buffer,
         );
 
         shadow.horizon_masks_buffer = masks_buffer;
@@ -1746,6 +1888,8 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             &meta_buffer,
             &data_buffer,
             &shadow.veg_result_buffer,
+            &shadow.sunny_result_buffer,
+            &shadow.sunny_no_veg_result_buffer,
         );
 
         shadow.veg_tiles_meta_buffer = meta_buffer;
@@ -1817,6 +1961,13 @@ struct ShadowComputeResources {
     veg_min_clearance: f32,
     origin_x: f32,
     origin_y: f32,
+    // Phase E: final sunny bitmasks computed in the shader (derived from
+    // terrain/buildings/vegetation locals, matching the artifact semantic
+    // bit-for-bit so the JS hot loop can drop the per-point combining).
+    sunny_result_buffer: wgpu::Buffer,
+    sunny_readback_buffer: wgpu::Buffer,
+    sunny_no_veg_result_buffer: wgpu::Buffer,
+    sunny_no_veg_readback_buffer: wgpu::Buffer,
     points_buffer: wgpu::Buffer,
     depth_view_ref: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
@@ -1905,6 +2056,36 @@ fn create_shadow_compute_resources(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+    // Sunny + sunny-no-vegetation bitmask outputs (Phase E).
+    let sunny_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-sunny-results"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let sunny_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-sunny-readback"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let sunny_no_veg_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-sunny-no-veg-results"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let sunny_no_veg_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-sunny-no-veg-readback"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
     // Dummy vegetation buffers (replaced by upload_vegetation_rasters).
     let veg_tiles_meta_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("wgpu-vulkan-probe-veg-tiles-meta-dummy"),
@@ -1978,6 +2159,8 @@ struct VegTileMeta {
 @group(0) @binding(7) var<storage, read> veg_tiles_meta: array<VegTileMeta>;
 @group(0) @binding(8) var<storage, read> veg_data: array<f32>;
 @group(0) @binding(9) var<storage, read_write> vegetation_results: array<atomic<u32>>;
+@group(0) @binding(10) var<storage, read_write> sunny_results: array<atomic<u32>>;
+@group(0) @binding(11) var<storage, read_write> sunny_no_veg_results: array<atomic<u32>>;
 
 fn sample_veg_elevation(sx: f32, sy: f32) -> f32 {
     // Linear scan — in practice only 2-10 tiles are loaded per region,
@@ -2013,6 +2196,10 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
     let bit = 1u << (point_index & 31u);
     let point = points[point_index].xyz;
 
+    var terrain_blocked: bool = false;
+    var vegetation_blocked: bool = false;
+    var buildings_blocked: bool = false;
+
     // ── Terrain blocked check (horizon mask lookup) ────────────────────
     if (params.has_horizon != 0u) {
         let mask_idx = point_mask_indices[point_index];
@@ -2021,12 +2208,14 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         let az_bin = u32(round(az)) % 360u;
         let horizon_angle = horizon_masks[mask_idx * 360u + az_bin];
         if (params.altitude_deg <= horizon_angle) {
-            atomicOr(&terrain_results[word_index], bit);
+            terrain_blocked = true;
         }
     }
 
     // ── Vegetation ray-march (swisssurface3d-raster-step-ray-v1) ──────
-    if (params.has_vegetation != 0u && params.altitude_deg > 0.0) {
+    // Gated by !terrain_blocked to match JS evaluateInstantSunlight semantic
+    // (evaluateSecondaryBlockers skips veg when terrain blocks).
+    if (params.has_vegetation != 0u && !terrain_blocked && params.altitude_deg > 0.0) {
         let az_rad = params.azimuth_deg * 3.14159265 / 180.0;
         let dir_x = sin(az_rad);
         let dir_y = cos(az_rad);
@@ -2045,7 +2234,7 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
                 if (clearance >= params.veg_min_clearance) {
                     let blocker_angle = atan2(clearance, dist) * 180.0 / 3.14159265;
                     if (params.altitude_deg <= blocker_angle) {
-                        atomicOr(&vegetation_results[word_index], bit);
+                        vegetation_blocked = true;
                         break;
                     }
                 }
@@ -2058,37 +2247,46 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
     let clip = params.light_mvp * vec4f(point, 1.0);
     let ndc = clip.xyz / clip.w;
     if (
-        ndc.x < -1.0 || ndc.x > 1.0 ||
-        ndc.y < -1.0 || ndc.y > 1.0 ||
-        ndc.z < 0.0 || ndc.z > 1.0
+        ndc.x >= -1.0 && ndc.x <= 1.0 &&
+        ndc.y >= -1.0 && ndc.y <= 1.0 &&
+        ndc.z >= 0.0 && ndc.z <= 1.0
     ) {
-        return;
+        let u_coord = (ndc.x * 0.5 + 0.5) * params.resolution;
+        let v_coord = (0.5 - ndc.y * 0.5) * params.resolution;
+        let px = i32(floor(u_coord));
+        let py = i32(floor(v_coord));
+        let resolution = i32(params.resolution);
+
+        if (px >= 0 && px < resolution && py >= 0 && py < resolution) {
+            let point_depth = ndc.z;
+            let threshold = point_depth - params.bias;
+
+            let px1 = select(max(px - 1, 0), min(px + 1, resolution - 1), (u_coord - f32(px)) >= 0.5);
+            let py1 = select(max(py - 1, 0), min(py + 1, resolution - 1), (v_coord - f32(py)) >= 0.5);
+
+            let d00 = textureLoad(shadow_map, vec2i(px, py), 0);
+            let d10 = textureLoad(shadow_map, vec2i(px1, py), 0);
+            let d01 = textureLoad(shadow_map, vec2i(px, py1), 0);
+            let d11 = textureLoad(shadow_map, vec2i(px1, py1), 0);
+
+            if (d00 < threshold || d10 < threshold || d01 < threshold || d11 < threshold) {
+                buildings_blocked = true;
+            }
+        }
     }
 
-    let u_coord = (ndc.x * 0.5 + 0.5) * params.resolution;
-    let v_coord = (0.5 - ndc.y * 0.5) * params.resolution;
-    let px = i32(floor(u_coord));
-    let py = i32(floor(v_coord));
-    let resolution = i32(params.resolution);
+    // ── Write all 5 bitmasks via atomicOr ───────────────────────────
+    if (terrain_blocked) { atomicOr(&terrain_results[word_index], bit); }
+    if (vegetation_blocked) { atomicOr(&vegetation_results[word_index], bit); }
+    if (buildings_blocked) { atomicOr(&results[word_index], bit); }
 
-    if (px < 0 || px >= resolution || py < 0 || py >= resolution) {
-        return;
-    }
-
-    let point_depth = ndc.z;
-    let threshold = point_depth - params.bias;
-
-    let px1 = select(max(px - 1, 0), min(px + 1, resolution - 1), (u_coord - f32(px)) >= 0.5);
-    let py1 = select(max(py - 1, 0), min(py + 1, resolution - 1), (v_coord - f32(py)) >= 0.5);
-
-    let d00 = textureLoad(shadow_map, vec2i(px, py), 0);
-    let d10 = textureLoad(shadow_map, vec2i(px1, py), 0);
-    let d01 = textureLoad(shadow_map, vec2i(px, py1), 0);
-    let d11 = textureLoad(shadow_map, vec2i(px1, py1), 0);
-
-    if (d00 < threshold || d10 < threshold || d01 < threshold || d11 < threshold) {
-        atomicOr(&results[word_index], bit);
-    }
+    // Sun above astronomical horizon is implied by altitude > 0 (caller
+    // also skips dark frames in JS). We derive sunny bits from the locals
+    // so they match the artifact semantic exactly.
+    let is_sunny_no_veg = !terrain_blocked && !buildings_blocked;
+    let is_sunny = is_sunny_no_veg && !vegetation_blocked;
+    if (is_sunny_no_veg) { atomicOr(&sunny_no_veg_results[word_index], bit); }
+    if (is_sunny) { atomicOr(&sunny_results[word_index], bit); }
 }
 "#,
         )),
@@ -2203,6 +2401,28 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
                 },
                 count: None,
             },
+            // sunny_results (read_write)
+            wgpu::BindGroupLayoutEntry {
+                binding: 10,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // sunny_no_veg_results (read_write)
+            wgpu::BindGroupLayoutEntry {
+                binding: 11,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
     let bind_group = build_compute_bind_group(
@@ -2218,6 +2438,8 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         &veg_tiles_meta_buffer,
         &veg_data_buffer,
         &veg_result_buffer,
+        &sunny_result_buffer,
+        &sunny_no_veg_result_buffer,
     );
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-pipeline-layout"),
@@ -2259,6 +2481,10 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         veg_min_clearance: 4.0,
         origin_x: 0.0,
         origin_y: 0.0,
+        sunny_result_buffer,
+        sunny_readback_buffer,
+        sunny_no_veg_result_buffer,
+        sunny_no_veg_readback_buffer,
         points_buffer,
         depth_view_ref: depth_view.clone(),
         bind_group,
@@ -2285,6 +2511,8 @@ fn build_compute_bind_group(
     veg_tiles_meta: &wgpu::Buffer,
     veg_data: &wgpu::Buffer,
     vegetation_results: &wgpu::Buffer,
+    sunny_results: &wgpu::Buffer,
+    sunny_no_veg_results: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-bg"),
@@ -2300,6 +2528,8 @@ fn build_compute_bind_group(
             wgpu::BindGroupEntry { binding: 7, resource: veg_tiles_meta.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 8, resource: veg_data.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 9, resource: vegetation_results.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 10, resource: sunny_results.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 11, resource: sunny_no_veg_results.as_entire_binding() },
         ],
     })
 }

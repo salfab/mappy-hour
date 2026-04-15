@@ -37,6 +37,10 @@ export type RustWgpuVulkanBatchFrame = {
   terrainBlockedWords?: number[] | null;
   vegetationBlockedPoints?: number | null;
   vegetationBlockedWords?: number[] | null;
+  sunnyPoints?: number;
+  sunnyWords?: number[] | null;
+  sunnyNoVegPoints?: number;
+  sunnyNoVegWords?: number[] | null;
 };
 
 export type RustWgpuVulkanBatchResultMessage = {
