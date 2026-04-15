@@ -54,7 +54,23 @@ Deux pistes ont été évaluées et écartées :
 
 **Pourquoi** : le bottleneck dominant est la boucle JS per-point, pas le compute GPU. Toute optim supplémentaire côté Vulkan reste sous le plafond imposé par cette boucle. Si on veut pousser plus loin, la prochaine cible naturelle est la vegetation evaluator qui fait du ray-marching CPU par point ; ce travail est orthogonal au choix du backend GPU.
 
-### 4. Pas de promotion Vulkan en production
+### 4. Pas de multi-view rendering (Batching C) — investigué et abandonné
+
+Une seconde tentative, après avoir constaté que les tuiles denses (suburbs Lausanne, 56K triangles vs 12K pour le centre) rendent le shadow-map render dominant :
+
+- **Approche** : utiliser `VK_KHR_multiview` pour rendre N shadow-maps en un seul render pass, le vertex shader sélectionnant la matrice MVP via `@builtin(view_index)`.
+- **Probe technique** (binaire jetable, supprimé) : valide que la stack `wgpu 29.0.1 + Naga WGSL + Intel Arc Vulkan` supporte multiview, avec `max_multiview_view_count = 16` annoncé par l'adapter.
+- **Bénéfice empirique mesuré** sur 30K triangles, résolution 4096², 100 itérations :
+  - N=4 layers : speedup multiview/sequential = **1.07x** (gain 7%)
+  - N=8 layers : speedup = **1.20x** (gain 17%)
+  - N=16 layers : ne fonctionne pas — seulement 8 layers reçoivent les triangles malgré `max_multiview_view_count=16` annoncé, soit bug driver Intel soit limite wgpu non remontée
+- **Extrapolation production** : le render pass représente ~30-50% du temps de frame Vulkan ; un gain de 17% sur le render donne ~5-9% sur l'eval phase et ~3-7% sur le wall total Lausanne.
+- **Coût refactor estimé** : 8-12h (texture array, shader vertex/compute, protocole serveur, client TS, boucle hot loop pour grouper les frames par chunks).
+- **Décision** : abandonné. Le ratio gain/effort est défavorable face à `MAPPY_PRECOMPUTE_WORKERS=2` (gain attendu ~45% wall sur Lausanne pour 2-3h de travail, dont une partie est juste la validation de stabilité multi-process).
+
+À reconsidérer si : (a) la stabilité multi-worker s'avère bloquée et workers > 1 n'est pas utilisable, (b) une nouvelle génération de driver Intel exposerait un gain multiview significativement plus élevé, (c) le bottleneck change (par exemple si la boucle JS est elle-même portée sur GPU et que le render redevient dominant).
+
+### 5. Pas de promotion Vulkan en production
 
 Vulkan reste un mode opt-in (`--buildings-shadow-mode=rust-wgpu-vulkan` ou `MAPPY_BUILDINGS_SHADOW_MODE=rust-wgpu-vulkan`). `gpu-raster` reste le chemin par défaut.
 
