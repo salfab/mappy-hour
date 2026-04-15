@@ -1,4 +1,7 @@
-import { computeSunlightTileArtifact } from "../../src/lib/precompute/sunlight-tile-service";
+import {
+  computeSunlightTileArtifact,
+  disposeSunlightTileEvaluationBackends,
+} from "../../src/lib/precompute/sunlight-tile-service";
 import {
   loadPrecomputedSunlightTile,
   writePrecomputedSunlightTile,
@@ -32,7 +35,11 @@ type WorkerCancelMessage = {
   type: "cancel";
 };
 
-type WorkerInboundMessage = WorkerRunMessage | WorkerCancelMessage;
+type WorkerShutdownMessage = {
+  type: "shutdown";
+};
+
+type WorkerInboundMessage = WorkerRunMessage | WorkerCancelMessage | WorkerShutdownMessage;
 
 type WorkerProgressMessage = {
   type: "progress";
@@ -58,6 +65,8 @@ type WorkerDoneMessage = {
 
 let activeAbortController: AbortController | null = null;
 let activeTaskId: string | null = null;
+let shutdownRequested = false;
+let shutdownStarted = false;
 
 function postMessage(message: WorkerProgressMessage | WorkerDoneMessage): void {
   if (typeof process.send === "function") {
@@ -65,7 +74,49 @@ function postMessage(message: WorkerProgressMessage | WorkerDoneMessage): void {
   }
 }
 
+async function shutdownWorker(): Promise<void> {
+  if (shutdownStarted) {
+    return;
+  }
+  shutdownStarted = true;
+
+  try {
+    await disposeSunlightTileEvaluationBackends();
+  } catch (error) {
+    console.error(
+      `[cache-precompute-worker] backend cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+  } finally {
+    if (process.connected) {
+      process.disconnect();
+    }
+    process.exit();
+  }
+}
+
+function requestShutdown(): void {
+  shutdownRequested = true;
+  activeAbortController?.abort();
+  if (!activeTaskId) {
+    void shutdownWorker();
+  }
+}
+
 async function runTask(task: WorkerTask): Promise<void> {
+  if (shutdownRequested) {
+    postMessage({
+      type: "done",
+      taskId: task.taskId,
+      state: "cancelled",
+      pointCountTotal: null,
+      pointCountOutdoor: null,
+      frameCountTotal: null,
+      error: "Worker shutdown requested.",
+    });
+    return;
+  }
+
   const abortController = new AbortController();
   activeAbortController = abortController;
   activeTaskId = task.taskId;
@@ -172,6 +223,9 @@ async function runTask(task: WorkerTask): Promise<void> {
       activeAbortController = null;
       activeTaskId = null;
     }
+    if (shutdownRequested) {
+      void shutdownWorker();
+    }
   }
 }
 
@@ -182,5 +236,13 @@ process.on("message", (message: WorkerInboundMessage) => {
   }
   if (message.type === "run") {
     void runTask(message.task);
+    return;
+  }
+  if (message.type === "shutdown") {
+    requestShutdown();
   }
 });
+
+process.once("disconnect", requestShutdown);
+process.once("SIGTERM", requestShutdown);
+process.once("SIGINT", requestShutdown);
