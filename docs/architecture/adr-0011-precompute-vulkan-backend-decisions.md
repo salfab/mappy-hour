@@ -77,7 +77,33 @@ La piste « `reload_points` pour éviter le restart serveur entre tuiles » éta
 
 Résultat : le hot loop JS se réduit à 5 opérations bitwise par point (lecture des 3 bitmasks + set de 5 mask bits), plus le diagnostic `horizonAngleDegByPoint`. La boucle JS n'est plus le bottleneck.
 
-Smoke-test à petit scope (10 tuiles Lausanne, 06:00-09:00) : 56s, tous verts, pas de divergence observée lors de runs consécutifs. Bench à l'échelle (181 tuiles, 06:00-21:00) et comparaison divergence avec raster à faire séparément.
+Smoke-test à petit scope (10 tuiles Lausanne, 06:00-09:00) : 56s, tous verts, pas de divergence observée lors de runs consécutifs.
+
+**Scale bench 181 tuiles Lausanne 06:00-21:00 après chaque phase** (steady state avg) :
+
+| Config | avg/tile | 181 tuiles | Gain cumul vs baseline |
+|---|---|---|---|
+| Avant Phase A (état initial Codex, release build + JS hot loop unifié) | ~14.5s | ~45 min | — |
+| Après Phase A/A.1 | ~14.5s | ~45 min | équivalent (socle pour B/C) |
+| Après Phase C (GPU full) | ~13.5s | ~41 min | **-9%** |
+| **Après Phase D (frame batching)** | **~12.0s** | **~36 min** | **-20%** |
+
+**Divergence Vulkan full-GPU vs gpu-raster** (matrix bench 3 tuiles, 12:00-15:00, 12 frames) :
+- terrain : 0.000% (lookup nearest-neighbor identique f32 GPU / f64 CPU)
+- buildings : 0.34-0.54% (héritée, shader vs WebGL raster)
+- vegetation : 1.3-1.8% (ray-march f32 vs f64, distribution équilibrée leftOnly/rightOnly)
+- sun (mask final) : 1.2-1.3%
+
+Biais symétrique (leftOnly ≈ rightOnly) → pas de sur/sous-blocage systématique, bruit de bord lié aux arrondis flottants.
+
+### Phase D — batching frames en un seul dispatch (commit `83bbed4`)
+
+Le per-frame submit/poll/readback contribuait ~50% de l'overhead eval. Phase D collecte toutes les frames lit d'une tuile en amont, encode N × (clear + render + compute + copy) dans UN command buffer, puis UN submit + UN poll + UN mapAsync par readback. Horizon/vegetation sont uploadés une fois avant le batch.
+
+Rust : méthode `evaluate_batch_frames` sur `DepthShadowEngine`, alloue N uniforms + N bind groups à la volée, 3 gros readback buffers sizés N × result_copy_size.
+TS : `evaluateBatchFramesWithShadows` au niveau backend ; tile-service pré-calcule les sun positions et batch-appelle avant la loop JS, qui ne fait plus que lire les bitmasks par frame.
+
+Gain : -11% wall vs Phase C, -20% vs baseline avant A. Sur 200 jours de précompute, ~30h économisées.
 
 ### 4. Pas de multi-view rendering (Batching C) — investigué et abandonné
 
