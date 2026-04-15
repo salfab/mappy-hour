@@ -65,14 +65,17 @@ function hashPoints(points: Float32Array, pointCount: number): string {
 
 export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   readonly name: string;
-  readonly triangleCount: number;
+  // Mutable: reassigned on updateMesh when the focus zone (and therefore
+  // the filtered mesh) changes. Consumers that read these fields should
+  // not cache them across evaluateBatch calls.
+  triangleCount: number;
 
-  private readonly originX: number;
-  private readonly originY: number;
   private readonly resolution: number;
-  private readonly meshBinPath: string;
   private readonly outputDir: string;
-  private readonly sceneBounds: Bounds3d;
+  private originX: number;
+  private originY: number;
+  private meshBinPath: string;
+  private sceneBounds: Bounds3d;
   private focusBounds: Bounds2d | null = null;
   private maxBuildingHeight: number;
   private server: RustWgpuVulkanShadowServer | null = null;
@@ -137,6 +140,54 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   setFrustumFocus(bounds: Bounds2d, maxBuildingHeight: number): void {
     this.focusBounds = { ...bounds };
     this.maxBuildingHeight = maxBuildingHeight;
+  }
+
+  /**
+   * Replace the mesh with a new filtered obstacle set (usually after a
+   * focus-zone change). If a server is running, the mesh is reloaded in
+   * place without tearing down the Vulkan device; otherwise the new mesh
+   * will be used by the next server start.
+   *
+   * Any previously set focus bounds are cleared — callers should call
+   * setFrustumFocus() again with the new focus bounds right after.
+   */
+  async updateMesh(obstacles: ObstacleArray): Promise<void> {
+    const sceneBounds = computeObstacleBounds(obstacles);
+    const originX = (sceneBounds.minX + sceneBounds.maxX) / 2;
+    const originY = (sceneBounds.minY + sceneBounds.maxY) / 2;
+    const mesh = await loadGpuMeshes(obstacles, originX, originY);
+    const runId = `${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
+    const newMeshBinPath = path.join(this.outputDir, `${runId}.mesh.bin`);
+    await writeFloat32Bin(newMeshBinPath, mesh.vertices);
+    const maxBuildingHeight = obstacles.reduce(
+      (max, obstacle) => Math.max(max, obstacle.height),
+      0,
+    );
+
+    if (this.server) {
+      try {
+        this.evaluationId += 1;
+        await this.server.reloadMesh(this.evaluationId, newMeshBinPath);
+      } catch (error) {
+        // Clean up the new mesh bin if the reload failed (we'll keep the old one).
+        await this.deleteRuntimeFile(newMeshBinPath);
+        throw error;
+      }
+    }
+
+    // Commit new mesh state and drop the previous mesh file.
+    const previousMeshPath = this.meshBinPath;
+    this.meshBinPath = newMeshBinPath;
+    this.originX = originX;
+    this.originY = originY;
+    this.sceneBounds = sceneBounds;
+    this.triangleCount = mesh.triangleCount;
+    this.maxBuildingHeight = maxBuildingHeight;
+    // Invalidate the cached focus key so the next evaluateBatch will sync
+    // the server's focus (caller usually calls setFrustumFocus right after
+    // updateMesh, so the value itself is already fresh).
+    this.serverFocusKey = null;
+    await this.deleteRuntimeFile(previousMeshPath);
   }
 
   async evaluateBatch(

@@ -261,9 +261,65 @@ async function getOrCreateRustWgpuVulkanBackend(
   const margin = getRustWgpuVulkanFocusMarginMeters();
   const newFocusKey = focusBounds ? `${focusKeyFromBounds(focusBounds)}|m${margin}` : "all";
 
-  if (rustWgpuVulkanBackendCache && newFocusKey !== rustWgpuVulkanBackendFocusKey) {
-    console.log(`[evaluation-context] Rust/wgpu Vulkan focus changed (${rustWgpuVulkanBackendFocusKey} -> ${newFocusKey}), recreating backend...`);
-    rustWgpuVulkanBackendCache.dispose();
+  if (
+    rustWgpuVulkanBackendCache &&
+    newFocusKey !== rustWgpuVulkanBackendFocusKey &&
+    "updateMesh" in rustWgpuVulkanBackendCache
+  ) {
+    // Focus zone changed → keep the same backend (and its native Vulkan
+    // server) alive and swap the mesh + focus in place instead of
+    // destroying/recreating the whole stack.
+    const backend = rustWgpuVulkanBackendCache as unknown as {
+      updateMesh: (o: typeof obstacles) => Promise<void>;
+      setFrustumFocus: (
+        bounds: { minX: number; minY: number; maxX: number; maxY: number },
+        maxH: number,
+      ) => void;
+      triangleCount: number;
+      name: string;
+      dispose: () => void;
+    };
+    let filtered = obstacles;
+    if (focusBounds) {
+      filtered = obstacles.filter(
+        (o) =>
+          o.maxX > focusBounds.minX - margin && o.minX < focusBounds.maxX + margin &&
+          o.maxY > focusBounds.minY - margin && o.minY < focusBounds.maxY + margin,
+      );
+    }
+    if (filtered.length === 0) {
+      // No obstacles in the new focus zone — drop the backend to fall back to CPU.
+      console.log(`[evaluation-context] Rust/wgpu Vulkan new focus has 0 obstacles, dropping backend.`);
+      rustWgpuVulkanBackendCache.dispose();
+      rustWgpuVulkanBackendCache = null;
+      rustWgpuVulkanBackendFocusKey = newFocusKey;
+      return null;
+    }
+    try {
+      console.log(
+        `[evaluation-context] Rust/wgpu Vulkan focus changed (${rustWgpuVulkanBackendFocusKey} -> ${newFocusKey}), updating mesh in place (${filtered.length}/${obstacles.length} obstacles)...`,
+      );
+      await backend.updateMesh(filtered);
+      if (focusBounds) {
+        const maxH = filtered.reduce((max, o) => Math.max(max, o.height), 0);
+        backend.setFrustumFocus(focusBounds, maxH);
+      }
+      rustWgpuVulkanBackendFocusKey = newFocusKey;
+      console.log(
+        `[evaluation-context] Rust/wgpu Vulkan mesh updated: ${backend.name}, ${backend.triangleCount} triangles`,
+      );
+      return rustWgpuVulkanBackendCache;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[evaluation-context] Rust/wgpu Vulkan updateMesh failed (${msg}), recreating backend...`,
+      );
+      rustWgpuVulkanBackendCache.dispose();
+      rustWgpuVulkanBackendCache = undefined;
+      rustWgpuVulkanBackendLoading = null;
+    }
+  } else if (rustWgpuVulkanBackendCache && newFocusKey !== rustWgpuVulkanBackendFocusKey) {
+    // Cache is null (previous start failed) — just reset state.
     rustWgpuVulkanBackendCache = undefined;
     rustWgpuVulkanBackendLoading = null;
   }
