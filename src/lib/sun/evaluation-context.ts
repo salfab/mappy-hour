@@ -48,7 +48,7 @@ export interface SharedPointEvaluationSources {
   >;
   /** GPU shadow backend, created when MAPPY_BUILDINGS_SHADOW_MODE=gpu-raster */
   gpuShadowBackend?: import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null;
-  /** WebGPU compute backend for batch evaluation (precompute only) */
+  /** GPU compute backend for batch evaluation (precompute only). */
   webgpuComputeBackend?: import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null;
   /** Zenith indoor mask: isIndoor(easting, northing) → boolean. Loaded from grid metadata. */
   zenithIndoorCheck?: (easting: number, northing: number) => boolean;
@@ -105,11 +105,18 @@ export interface PointEvaluationContext {
   };
 }
 
-type BuildingsShadowMode = "detailed" | "two-level" | "prism" | "gpu-raster" | "webgpu-compute";
+type BuildingsShadowMode = "detailed" | "two-level" | "prism" | "gpu-raster" | "webgpu-compute" | "rust-wgpu-vulkan";
 
 function parseBuildingsShadowMode(): BuildingsShadowMode {
   const raw = (process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "").trim().toLowerCase();
-  if (raw === "detailed" || raw === "two-level" || raw === "prism" || raw === "gpu-raster" || raw === "webgpu-compute") {
+  if (
+    raw === "detailed" ||
+    raw === "two-level" ||
+    raw === "prism" ||
+    raw === "gpu-raster" ||
+    raw === "webgpu-compute" ||
+    raw === "rust-wgpu-vulkan"
+  ) {
     return raw;
   }
   if (process.env.MAPPY_BUILDINGS_TWO_LEVEL_REFINEMENT === "0") {
@@ -131,7 +138,11 @@ const GPU_FOCUS_MARGIN_METERS = 5000; // load buildings within 5km of focus
 let gpuBackendCache: import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null | undefined;
 let gpuBackendFocusKey = "";
 let gpuBackendLoading: Promise<import("@/lib/sun/building-shadow-backend").BuildingShadowBackend | null> | null = null;
-let indoorCheckLogged = false;
+
+function getRustWgpuVulkanFocusMarginMeters(): number {
+  const parsed = Number(process.env.MAPPY_RUST_WGPU_FOCUS_MARGIN_METERS ?? 500);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 500;
+}
 
 function focusKeyFromBounds(bounds: { minX: number; minY: number; maxX: number; maxY: number }): string {
   // Round to 1km grid so nearby tiles share the same key
@@ -210,10 +221,129 @@ export function disposeWebGpuBackend(): void {
     webgpuBackendCache.dispose();
     webgpuBackendCache = null;
   }
+  if (rustWgpuVulkanBackendCache) {
+    rustWgpuVulkanBackendCache.dispose();
+    rustWgpuVulkanBackendCache = null;
+  }
+}
+
+export async function disposeWebGpuBackendAsync(): Promise<void> {
+  if (webgpuBackendCache) {
+    webgpuBackendCache.dispose();
+    webgpuBackendCache = null;
+  }
+  if (BUILDINGS_SHADOW_MODE === "rust-wgpu-vulkan") {
+    console.log(
+      `[evaluation-context] Rust/wgpu Vulkan dispose: ${rustWgpuVulkanBackendCache ? "backend cached" : "no cached backend"}`,
+    );
+  }
+  if (rustWgpuVulkanBackendCache) {
+    const backend = rustWgpuVulkanBackendCache;
+    rustWgpuVulkanBackendCache = null;
+    if ("shutdown" in backend && typeof backend.shutdown === "function") {
+      await (backend.shutdown as () => Promise<void>)();
+    } else {
+      backend.dispose();
+    }
+  }
 }
 
 let webgpuBackendLoading: Promise<import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null> | null = null;
 
+let rustWgpuVulkanBackendCache: import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null | undefined;
+let rustWgpuVulkanBackendFocusKey = "";
+let rustWgpuVulkanBackendLoading: Promise<import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null> | null = null;
+
+async function getOrCreateRustWgpuVulkanBackend(
+  obstacles: Array<{ centerX: number; centerY: number; height: number; minX: number; maxX: number; minY: number; maxY: number; [key: string]: unknown }>,
+  focusBounds?: { minX: number; minY: number; maxX: number; maxY: number },
+): Promise<import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null> {
+  const margin = getRustWgpuVulkanFocusMarginMeters();
+  const newFocusKey = focusBounds ? `${focusKeyFromBounds(focusBounds)}|m${margin}` : "all";
+
+  if (rustWgpuVulkanBackendCache && newFocusKey !== rustWgpuVulkanBackendFocusKey) {
+    console.log(`[evaluation-context] Rust/wgpu Vulkan focus changed (${rustWgpuVulkanBackendFocusKey} -> ${newFocusKey}), recreating backend...`);
+    rustWgpuVulkanBackendCache.dispose();
+    rustWgpuVulkanBackendCache = undefined;
+    rustWgpuVulkanBackendLoading = null;
+  }
+
+  if (rustWgpuVulkanBackendCache !== undefined) {
+    if (rustWgpuVulkanBackendCache && focusBounds && "setFrustumFocus" in rustWgpuVulkanBackendCache) {
+      const maxH = obstacles.reduce((max, obstacle) => Math.max(max, obstacle.height), 0);
+      (rustWgpuVulkanBackendCache as {
+        setFrustumFocus: (
+          bounds: { minX: number; minY: number; maxX: number; maxY: number },
+          maxH: number,
+        ) => void;
+      }).setFrustumFocus(
+        {
+          minX: focusBounds.minX,
+          minY: focusBounds.minY,
+          maxX: focusBounds.maxX,
+          maxY: focusBounds.maxY,
+        },
+        maxH,
+      );
+    }
+    return rustWgpuVulkanBackendCache;
+  }
+  if (rustWgpuVulkanBackendLoading) return rustWgpuVulkanBackendLoading;
+
+  rustWgpuVulkanBackendLoading = (async () => {
+    try {
+      let filtered = obstacles;
+      if (focusBounds) {
+        filtered = obstacles.filter(o =>
+          o.maxX > focusBounds.minX - margin && o.minX < focusBounds.maxX + margin &&
+          o.maxY > focusBounds.minY - margin && o.minY < focusBounds.maxY + margin,
+        );
+        console.log(`[evaluation-context] Rust/wgpu Vulkan spatial filter: ${filtered.length}/${obstacles.length} obstacles within ${margin}m of focus`);
+      }
+      if (filtered.length === 0) {
+        return null;
+      }
+
+      const { RustWgpuVulkanShadowBackend } = await import(
+        "@/lib/sun/rust-wgpu-vulkan-shadow-backend"
+      );
+      const backend = await RustWgpuVulkanShadowBackend.createWithDxfMeshes(
+        filtered as Parameters<typeof RustWgpuVulkanShadowBackend.createWithDxfMeshes>[0],
+        4096,
+      );
+      if (focusBounds) {
+        const maxH = filtered.reduce((max, obstacle) => Math.max(max, obstacle.height), 0);
+        backend.setFrustumFocus(
+          {
+            minX: focusBounds.minX,
+            minY: focusBounds.minY,
+            maxX: focusBounds.maxX,
+            maxY: focusBounds.maxY,
+          },
+          maxH,
+        );
+      }
+      console.log(
+        `[evaluation-context] Rust/wgpu Vulkan backend ready: ${backend.name}, ${backend.triangleCount} triangles`,
+      );
+      rustWgpuVulkanBackendCache = backend;
+      rustWgpuVulkanBackendFocusKey = newFocusKey;
+      return backend;
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[evaluation-context] Rust/wgpu Vulkan unavailable: ${msg}. Falling back to CPU.`);
+      rustWgpuVulkanBackendCache = null;
+      return null;
+    } finally {
+      rustWgpuVulkanBackendLoading = null;
+    }
+  })();
+
+  return rustWgpuVulkanBackendLoading;
+}
+
+// Kept for direct in-process WebGPU experiments; the safer precompute path uses WebGpuIpcClient.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function getOrCreateWebGpuBackend(
   obstacles: Array<{ centerX: number; centerY: number; height: number; [key: string]: unknown }>,
 ): Promise<import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null> {
@@ -321,7 +451,7 @@ export async function buildSharedPointEvaluationSources(
   if (BUILDINGS_SHADOW_MODE === "webgpu-compute" && buildingsIndex) {
     try {
       const { WebGpuIpcClient } = await import("./webgpu-ipc-client");
-      const client = await WebGpuIpcClient.create(options.region ?? "lausanne");
+      const client = await WebGpuIpcClient.create(options.region ?? "lausanne", options.lv95Bounds ?? undefined);
       if (options.lv95Bounds) {
         const maxH = buildingsIndex.obstacles.reduce((m, o) => Math.max(m, o.height), 0);
         await client.setFrustumFocus(
@@ -336,6 +466,12 @@ export async function buildSharedPointEvaluationSources(
       console.warn(`[evaluation-context] WebGPU IPC unavailable: ${msg}. Falling back to CPU.`);
       webgpuComputeBackend = null;
     }
+  }
+  if (BUILDINGS_SHADOW_MODE === "rust-wgpu-vulkan" && buildingsIndex) {
+    webgpuComputeBackend = await getOrCreateRustWgpuVulkanBackend(
+      buildingsIndex.obstacles,
+      options.lv95Bounds ?? undefined,
+    );
   }
 
   // ── Zenith indoor mask (from pre-computed grid metadata) ─────────────
@@ -535,6 +671,9 @@ export async function buildPointEvaluationContext(
     BUILDINGS_SHADOW_MODE === "gpu-raster" &&
     gpuBackend != null &&
     gpuBackend !== null;
+  const useBatchBuildingBackend =
+    (BUILDINGS_SHADOW_MODE === "webgpu-compute" || BUILDINGS_SHADOW_MODE === "rust-wgpu-vulkan") &&
+    sharedSources.webgpuComputeBackend != null;
 
   const buildingShadowEvaluator =
     buildingsIndex && pointElevationMeters !== null && !containment.insideBuilding
@@ -560,6 +699,9 @@ export async function buildPointEvaluationContext(
                 checkedObstaclesCount: 0,
               };
             };
+          }
+          if (useBatchBuildingBackend) {
+            return undefined;
           }
 
           // ── CPU evaluator (existing logic) ───────────────────────
@@ -678,6 +820,10 @@ export async function buildPointEvaluationContext(
       ? `${buildingsIndex.method}${
           useGpuRaster
             ? "|gpu-raster-v1"
+            : useBatchBuildingBackend && BUILDINGS_SHADOW_MODE === "webgpu-compute"
+              ? "|webgpu-compute-batch-v1"
+            : useBatchBuildingBackend && BUILDINGS_SHADOW_MODE === "rust-wgpu-vulkan"
+              ? "|rust-wgpu-vulkan-v1"
             : BUILDINGS_SHADOW_MODE === "gpu-raster" && !useGpuRaster
               ? "|gpu-raster-fallback-cpu|detailed-direct-v1"
               : BUILDINGS_SHADOW_MODE === "two-level"
