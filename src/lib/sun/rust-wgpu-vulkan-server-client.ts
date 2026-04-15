@@ -201,6 +201,77 @@ export class RustWgpuVulkanShadowServer {
     return message;
   }
 
+  /**
+   * Replace the points buffer without restarting the server.
+   * Keeps mesh, depth texture, render pipeline alive.
+   */
+  async reloadPoints(
+    id: number,
+    pointsBinPath: string,
+  ): Promise<{ pointCount: number; elapsedMs: number }> {
+    await this.writeJson({
+      id,
+      command: "reload_points",
+      pointsBin: pointsBinPath,
+    });
+    const message = await this.nextJson(this.evaluationTimeoutMs);
+    if (message.type !== "reloaded_points") {
+      throw new Error(`Unexpected reload_points response: ${JSON.stringify(message)}`);
+    }
+    return {
+      pointCount: Number((message as { pointCount?: number }).pointCount ?? 0),
+      elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
+    };
+  }
+
+  /**
+   * Replace the focus bounds used for light MVP projection.
+   * No GPU resource change.
+   */
+  async reloadFocus(
+    id: number,
+    focus: RustWgpuVulkanFocusBounds,
+    maxBuildingHeight: number,
+  ): Promise<void> {
+    await this.writeJson({
+      id,
+      command: "reload_focus",
+      minX: focus.minX,
+      minZ: focus.minZ,
+      maxX: focus.maxX,
+      maxZ: focus.maxZ,
+      maxBuildingHeight,
+    });
+    const message = await this.nextJson(this.evaluationTimeoutMs);
+    if (message.type !== "reloaded_focus") {
+      throw new Error(`Unexpected reload_focus response: ${JSON.stringify(message)}`);
+    }
+  }
+
+  /**
+   * Replace the mesh (buildings geometry).
+   * Recreates vertex buffer + raw_bounds. Render pipeline and
+   * shadow-compute resources are kept.
+   */
+  async reloadMesh(
+    id: number,
+    meshBinPath: string,
+  ): Promise<{ triangleCount: number; elapsedMs: number }> {
+    await this.writeJson({
+      id,
+      command: "reload_mesh",
+      meshBin: meshBinPath,
+    });
+    const message = await this.nextJson(this.evaluationTimeoutMs);
+    if (message.type !== "reloaded_mesh") {
+      throw new Error(`Unexpected reload_mesh response: ${JSON.stringify(message)}`);
+    }
+    return {
+      triangleCount: Number((message as { triangleCount?: number }).triangleCount ?? 0),
+      elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
+    };
+  }
+
   async shutdown(): Promise<void> {
     if (this.hasExited()) {
       this.closeStreams();

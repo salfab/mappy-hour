@@ -375,6 +375,22 @@ struct ServerRequest {
     altitude_deg: Option<f32>,
     #[serde(default, alias = "includeMask")]
     include_mask: bool,
+    // reload_points / reload_mesh paths (absolute file paths written by Node)
+    #[serde(default, alias = "pointsBin")]
+    points_bin: Option<String>,
+    #[serde(default, alias = "meshBin")]
+    mesh_bin: Option<String>,
+    // reload_focus fields
+    #[serde(default, alias = "minX")]
+    min_x: Option<f32>,
+    #[serde(default, alias = "minZ")]
+    min_z: Option<f32>,
+    #[serde(default, alias = "maxX")]
+    max_x: Option<f32>,
+    #[serde(default, alias = "maxZ")]
+    max_z: Option<f32>,
+    #[serde(default, alias = "maxBuildingHeight")]
+    max_building_height: Option<f32>,
 }
 
 fn run_shadow_server(
@@ -383,7 +399,7 @@ fn run_shadow_server(
     config: &Config,
 ) -> Result<(), String> {
     eprintln!("[wgpu-vulkan-probe] server-setup-start");
-    let engine = DepthShadowEngine::create(DepthShadowEngineConfig {
+    let mut engine = DepthShadowEngine::create(DepthShadowEngineConfig {
         device,
         queue,
         triangles: config.triangles,
@@ -470,6 +486,100 @@ fn run_shadow_server(
                     "blockedWords": if request.include_mask { result.blocked_words } else { None },
                     "pointCount": engine.point_count().unwrap_or(0),
                 }))?;
+            }
+            "reload_points" => {
+                let path = match request.points_bin.as_deref() {
+                    Some(p) => PathBuf::from(p),
+                    None => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "reload_points requires pointsBin/points_bin",
+                        }))?;
+                        continue;
+                    }
+                };
+                let started = Instant::now();
+                match engine.reload_points(device, queue, &path) {
+                    Ok(new_count) => {
+                        write_server_message(serde_json::json!({
+                            "type": "reloaded_points",
+                            "id": id,
+                            "pointCount": new_count,
+                            "elapsedMs": round2(started.elapsed().as_secs_f64() * 1000.0),
+                        }))?;
+                    }
+                    Err(error) => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": format!("reload_points failed: {error}"),
+                        }))?;
+                    }
+                }
+            }
+            "reload_focus" => {
+                let focus = match (
+                    request.min_x,
+                    request.min_z,
+                    request.max_x,
+                    request.max_z,
+                    request.max_building_height,
+                ) {
+                    (Some(mx), Some(mz), Some(xx), Some(xz), Some(mh)) => FocusBounds {
+                        min_x: mx,
+                        min_z: mz,
+                        max_x: xx,
+                        max_z: xz,
+                        max_building_height: mh,
+                    },
+                    _ => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "reload_focus requires minX, minZ, maxX, maxZ, maxBuildingHeight",
+                        }))?;
+                        continue;
+                    }
+                };
+                engine.reload_focus(focus);
+                write_server_message(serde_json::json!({
+                    "type": "reloaded_focus",
+                    "id": id,
+                    "focusBounds": focus.format(),
+                }))?;
+            }
+            "reload_mesh" => {
+                let path = match request.mesh_bin.as_deref() {
+                    Some(p) => PathBuf::from(p),
+                    None => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "reload_mesh requires meshBin/mesh_bin",
+                        }))?;
+                        continue;
+                    }
+                };
+                let started = Instant::now();
+                match engine.reload_mesh(device, queue, &path) {
+                    Ok(new_triangle_count) => {
+                        write_server_message(serde_json::json!({
+                            "type": "reloaded_mesh",
+                            "id": id,
+                            "triangleCount": new_triangle_count,
+                            "rawBounds": engine.raw_bounds.format(),
+                            "elapsedMs": round2(started.elapsed().as_secs_f64() * 1000.0),
+                        }))?;
+                    }
+                    Err(error) => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": format!("reload_mesh failed: {error}"),
+                        }))?;
+                    }
+                }
             }
             "ping" => {
                 write_server_message(serde_json::json!({
@@ -821,6 +931,63 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         self.shadow_compute
             .as_ref()
             .map(|shadow| shadow.point_count)
+    }
+
+    /// Replace the focus bounds used for light MVP projection.
+    /// Cheap: no GPU resource change.
+    fn reload_focus(&mut self, focus: FocusBounds) {
+        self.focus_bounds = Some(focus);
+    }
+
+    /// Replace the points used by the shadow-compute pass.
+    /// Recreates only the shadow-compute resources; mesh, render pipeline
+    /// and depth texture are untouched.
+    fn reload_points(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        points_bin: &Path,
+    ) -> Result<u32, String> {
+        let compute = create_shadow_compute_resources(
+            device,
+            queue,
+            &self.depth_view,
+            self.raw_bounds,
+            self.resolution,
+            None,
+            Some(points_bin),
+        )?;
+        let new_count = compute.point_count;
+        self.shadow_compute = Some(compute);
+        Ok(new_count)
+    }
+
+    /// Replace the mesh (buildings geometry) used for shadow-map rendering.
+    /// Recreates the vertex buffer and updates raw_bounds. Render pipeline
+    /// stays the same (layout unchanged). Shadow-compute resources are also
+    /// untouched (they reference depth_view, not the mesh).
+    fn reload_mesh(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mesh_bin: &Path,
+    ) -> Result<u32, String> {
+        let (vertices, vertex_source, raw_bounds) = load_vertices(0, Some(mesh_bin))?;
+        let vertex_bytes = bytemuck::cast_slice(&vertices);
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgpu-vulkan-probe-vertices"),
+            size: vertex_bytes.len() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&vertex_buffer, 0, vertex_bytes);
+        queue.submit([]);
+        self.vertex_buffer = vertex_buffer;
+        self.vertex_count = (vertices.len() / 3) as u32;
+        self.vertex_source = vertex_source;
+        self.vertex_bytes = vertex_bytes.len();
+        self.raw_bounds = raw_bounds;
+        Ok(self.vertex_count / 3)
     }
 }
 

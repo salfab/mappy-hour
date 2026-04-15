@@ -210,7 +210,31 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       ) {
         return;
       }
-      await this.shutdownServer();
+      // Long-lived path: only points and/or focus changed — reload in place.
+      // (Mesh is constructor-bound and does not change over the backend's lifetime.)
+      const pointsChanged =
+        this.serverPointCount !== pointCount || this.serverPointsHash !== pointsHash;
+      const focusChanged = this.serverFocusKey !== focusKey;
+      try {
+        if (focusChanged) {
+          await this.reloadFocusOnServer();
+        }
+        if (pointsChanged) {
+          await this.reloadPointsOnServer(points, pointCount);
+        }
+        this.serverPointCount = pointCount;
+        this.serverPointsHash = pointsHash;
+        this.serverFocusKey = focusKey;
+        return;
+      } catch (error) {
+        // On reload failure, fall through to full restart to stay safe.
+        console.warn(
+          `[rust-wgpu-vulkan] Reload failed, falling back to full server restart: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        await this.shutdownServer();
+      }
     }
 
     const outputDir = this.outputDir;
@@ -248,6 +272,52 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     this.serverPointCount = pointCount;
     this.serverPointsHash = pointsHash;
     this.serverFocusKey = focusKey;
+  }
+
+  private async reloadFocusOnServer(): Promise<void> {
+    if (!this.server) throw new Error("Cannot reload_focus: server is not running.");
+    const focus = this.focusBounds ?? {
+      minX: this.sceneBounds.minX,
+      minY: this.sceneBounds.minY,
+      maxX: this.sceneBounds.maxX,
+      maxY: this.sceneBounds.maxY,
+    };
+    this.evaluationId += 1;
+    await this.server.reloadFocus(
+      this.evaluationId,
+      {
+        minX: focus.minX - this.originX,
+        minZ: focus.minY - this.originY,
+        maxX: focus.maxX - this.originX,
+        maxZ: focus.maxY - this.originY,
+      },
+      this.maxBuildingHeight,
+    );
+  }
+
+  private async reloadPointsOnServer(points: Float32Array, pointCount: number): Promise<void> {
+    if (!this.server) throw new Error("Cannot reload_points: server is not running.");
+    // Write new points bin, ask server to load it, drop the previous bin only
+    // after the server confirms (so we can always roll back on failure).
+    const outputDir = this.outputDir;
+    await fs.mkdir(outputDir, { recursive: true });
+    const newPath = path.join(
+      outputDir,
+      `${process.pid}-${Date.now()}-${crypto.randomUUID()}.points.bin`,
+    );
+    await writeFloat32Bin(newPath, points.subarray(0, pointCount * 4));
+    this.evaluationId += 1;
+    const result = await this.server.reloadPoints(this.evaluationId, newPath);
+    if (result.pointCount !== pointCount) {
+      await this.deleteRuntimeFile(newPath);
+      throw new Error(
+        `Rust/wgpu Vulkan reload_points mismatch: server=${result.pointCount}, expected=${pointCount}`,
+      );
+    }
+    // Cleanup previous points bin now that the server uses the new one.
+    const previous = this.pointsBinPath;
+    this.pointsBinPath = newPath;
+    if (previous) await this.deleteRuntimeFile(previous);
   }
 
   private currentFocusKey(): string {
