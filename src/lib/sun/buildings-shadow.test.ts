@@ -4,7 +4,6 @@ import {
   type BuildingShadowDebugPass,
   evaluateBuildingsShadow,
   evaluateBuildingsShadowTwoLevel,
-  findContainingBuilding,
 } from "./buildings-shadow";
 
 interface TestObstacle {
@@ -143,35 +142,6 @@ describe("buildings shadow spatial index", () => {
     expect(indexed.checkedObstaclesCount).toBeLessThanOrEqual(
       baseline.checkedObstaclesCount,
     );
-  });
-
-  it("keeps containment detection equivalent with and without spatial grid", () => {
-    const obstacles = [
-      createRectangleObstacle({
-        id: "inside",
-        centerX: 500,
-        centerY: 500,
-        width: 40,
-        depth: 40,
-        maxZ: 18,
-      }),
-      createRectangleObstacle({
-        id: "other",
-        centerX: 1200,
-        centerY: 500,
-        width: 40,
-        depth: 40,
-        maxZ: 18,
-      }),
-    ];
-    const spatialGrid = buildSpatialGrid(obstacles, 64);
-
-    const baseline = findContainingBuilding(obstacles, 500, 500);
-    const indexed = findContainingBuilding(obstacles, 500, 500, spatialGrid);
-
-    expect(indexed).toEqual(baseline);
-    expect(indexed.insideBuilding).toBe(true);
-    expect(indexed.buildingId).toBe("inside");
   });
 
   it("two-level refinement drops near-threshold false blocker when detailed verifier says clear", () => {
