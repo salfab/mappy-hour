@@ -691,6 +691,9 @@ export async function buildPointEvaluationContext(
   lon: number,
   options: BuildPointEvaluationContextOptions = {},
 ): Promise<PointEvaluationContext> {
+  const shadowCalibration =
+    options.shadowCalibration ?? DEFAULT_SHADOW_CALIBRATION;
+  const pointLv95 = wgs84ToLv95(lon, lat);
   const sharedSources =
     options.sharedSources ??
     (await buildSharedPointEvaluationSources({
@@ -698,49 +701,6 @@ export async function buildPointEvaluationContext(
     }));
   const horizonMask = sharedSources.horizonMask;
   const buildingsIndex = sharedSources.buildingsIndex;
-
-  // ── Niveau 2 fast path: batch backend handles all evaluators ──────
-  // When both building and vegetation closures would return undefined
-  // (GPU batch mode) AND we have override elevation + skip indoor check
-  // (gridMetadata path in the precompute caller), skip all intermediate
-  // work. Saves ~1-2µs/point from avoided conditionals + allocations.
-  if (
-    sharedSources.vegetationShadowHandledByBackend &&
-    options.skipIndoorCheck &&
-    options.overrideElevation !== undefined
-  ) {
-    const useBatchBuildingBackend =
-      (BUILDINGS_SHADOW_MODE === "webgpu-compute" || BUILDINGS_SHADOW_MODE === "rust-wgpu-vulkan") &&
-      sharedSources.webgpuComputeBackend != null;
-    return {
-      pointLv95: wgs84ToLv95(lon, lat),
-      insideBuilding: false,
-      indoorBuildingId: null,
-      pointElevationMeters: options.overrideElevation,
-      terrainHorizonMethod: horizonMask?.method ?? "none",
-      buildingsShadowMethod: buildingsIndex
-        ? `${buildingsIndex.method}${
-            useBatchBuildingBackend && BUILDINGS_SHADOW_MODE === "webgpu-compute"
-              ? "|webgpu-compute-batch-v1"
-              : useBatchBuildingBackend && BUILDINGS_SHADOW_MODE === "rust-wgpu-vulkan"
-                ? "|rust-wgpu-vulkan-v1"
-                : ""
-          }`
-        : "none",
-      vegetationShadowMethod:
-        sharedSources.vegetationSurfaceTiles && sharedSources.vegetationSurfaceTiles.length > 0
-          ? vegetationShadowMethod
-          : "none",
-      warnings: [],
-      horizonMask,
-      buildingShadowEvaluator: undefined,
-      vegetationShadowEvaluator: undefined,
-    };
-  }
-
-  const shadowCalibration =
-    options.shadowCalibration ?? DEFAULT_SHADOW_CALIBRATION;
-  const pointLv95 = wgs84ToLv95(lon, lat);
 
   // Sample terrain elevation first (needed for zenith shadow map indoor check)
   const pointElevationMeters = options.overrideElevation !== undefined
