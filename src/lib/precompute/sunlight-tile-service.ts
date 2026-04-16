@@ -671,48 +671,56 @@ export async function computeSunlightTileArtifact(params: {
 
   const pointsT0 = performance.now();
   const gm = params.gridMetadata;
-  for (let rawPointIndex = 0; rawPointIndex < rawTilePoints.length; rawPointIndex += 1) {
-    throwIfAborted(params.signal);
-    const point = rawTilePoints[rawPointIndex];
-
-    // Fast path: use pre-computed grid metadata for indoor/elevation
-    if (gm && gm.indoor[rawPointIndex]) {
-      indoorPointsExcluded += 1;
-      points.push({
-        ...point,
-        insideBuilding: true,
-        indoorBuildingId: null,
-        outdoorIndex: null,
-        pointElevationMeters: null,
-      });
-      continue;
-    }
-
-    if (gm) {
-      // Outdoor point with cached elevation — still need evaluator functions
-      const context = await buildPointEvaluationContext(point.lat, point.lon, {
-        skipTerrainSamplingWhenIndoor: true,
-        terrainHorizonOverride: terrainHorizonOverride ?? undefined,
-        shadowCalibration: params.shadowCalibration,
-        sharedSources,
-        buildingShadowAllowedIds: tileBuildingAllowlist,
-        // Override elevation from metadata to skip terrain sampling
-        overrideElevation: gm.elevations[rawPointIndex],
-        skipIndoorCheck: true,
-      });
-      terrainMethod = context.terrainHorizonMethod;
-      buildingsMethod = `${context.buildingsShadowMethod}${buildingMethodSuffix}`;
-      vegetationMethod = context.vegetationShadowMethod ?? "none";
-      warnings.push(...context.warnings);
+  // ── Niveau 3 fast path: skip buildPointEvaluationContext entirely ──
+  // When the batch backend handles all evaluators on GPU and grid metadata
+  // provides indoor/elevation, the 62 500 async calls per tile are pure
+  // overhead (~5µs microtask each = ~310ms). Replace with a tight sync
+  // loop that builds minimal PreparedOutdoorPoint entries directly.
+  // Method strings are resolved via ONE async call on the first outdoor
+  // point; all subsequent points reuse them.
+  const batchSkipsAllEvaluators = gm && sharedSources.vegetationShadowHandledByBackend === true;
+  if (batchSkipsAllEvaluators) {
+    const horizonMask = sharedSources.horizonMask;
+    let methodsResolved = false;
+    for (let rawPointIndex = 0; rawPointIndex < rawTilePoints.length; rawPointIndex += 1) {
+      const point = rawTilePoints[rawPointIndex];
+      if (gm.indoor[rawPointIndex]) {
+        indoorPointsExcluded += 1;
+        points.push({
+          ...point,
+          insideBuilding: true,
+          indoorBuildingId: null,
+          outdoorIndex: null,
+          pointElevationMeters: null,
+        });
+        continue;
+      }
+      // Resolve method strings once from the first outdoor point
+      if (!methodsResolved) {
+        const context = await buildPointEvaluationContext(point.lat, point.lon, {
+          skipTerrainSamplingWhenIndoor: true,
+          terrainHorizonOverride: terrainHorizonOverride ?? undefined,
+          shadowCalibration: params.shadowCalibration,
+          sharedSources,
+          buildingShadowAllowedIds: tileBuildingAllowlist,
+          overrideElevation: gm.elevations[rawPointIndex],
+          skipIndoorCheck: true,
+        });
+        terrainMethod = context.terrainHorizonMethod;
+        buildingsMethod = `${context.buildingsShadowMethod}${buildingMethodSuffix}`;
+        vegetationMethod = context.vegetationShadowMethod ?? "none";
+        warnings.push(...context.warnings);
+        methodsResolved = true;
+      }
       const outdoorIndex = preparedOutdoorPoints.length;
       if (gm.elevations[rawPointIndex] !== null) pointsWithElevation += 1;
       preparedOutdoorPoints.push({
         lat: point.lat,
         lon: point.lon,
         pointElevationMeters: gm.elevations[rawPointIndex],
-        horizonMask: context.horizonMask,
-        buildingShadowEvaluator: context.buildingShadowEvaluator,
-        vegetationShadowEvaluator: context.vegetationShadowEvaluator,
+        horizonMask,
+        buildingShadowEvaluator: undefined,
+        vegetationShadowEvaluator: undefined,
       });
       points.push({
         ...point,
@@ -721,71 +729,144 @@ export async function computeSunlightTileArtifact(params: {
         outdoorIndex,
         pointElevationMeters: gm.elevations[rawPointIndex],
       });
-    } else {
-      // Original path: full context building
-      const context = await buildPointEvaluationContext(point.lat, point.lon, {
-        skipTerrainSamplingWhenIndoor: true,
-        terrainHorizonOverride: terrainHorizonOverride ?? undefined,
-        shadowCalibration: params.shadowCalibration,
-        sharedSources,
-        buildingShadowAllowedIds: tileBuildingAllowlist,
-      });
-      terrainMethod = context.terrainHorizonMethod;
-      buildingsMethod = `${context.buildingsShadowMethod}${buildingMethodSuffix}`;
-      vegetationMethod = context.vegetationShadowMethod ?? "none";
-      warnings.push(...context.warnings);
+      if (
+        params.cooperativeYieldEveryPoints &&
+        params.cooperativeYieldEveryPoints > 0 &&
+        rawPointIndex > 0 &&
+        (rawPointIndex + 1) % params.cooperativeYieldEveryPoints === 0
+      ) {
+        params.onProgress?.({
+          stage: "prepare-points",
+          completed: rawPointIndex + 1,
+          total: rawTilePoints.length,
+          pointCountTotal: rawTilePoints.length,
+          pointCountOutdoor: preparedOutdoorPoints.length,
+          frameCountTotal: 0,
+          frameIndex: null,
+          elapsedMs: performance.now() - started,
+        });
+        await yieldToEventLoop();
+        throwIfAborted(params.signal);
+      }
+    }
+  } else {
+    // ── Original loop: full buildPointEvaluationContext per point ────
+    for (let rawPointIndex = 0; rawPointIndex < rawTilePoints.length; rawPointIndex += 1) {
+      throwIfAborted(params.signal);
+      const point = rawTilePoints[rawPointIndex];
 
-      if (context.insideBuilding) {
+      // Fast path: use pre-computed grid metadata for indoor/elevation
+      if (gm && gm.indoor[rawPointIndex]) {
         indoorPointsExcluded += 1;
         points.push({
           ...point,
           insideBuilding: true,
-          indoorBuildingId: context.indoorBuildingId,
+          indoorBuildingId: null,
           outdoorIndex: null,
           pointElevationMeters: null,
         });
         continue;
       }
 
-      const outdoorIndex = preparedOutdoorPoints.length;
-      if (context.pointElevationMeters !== null) {
-        pointsWithElevation += 1;
-      }
-      preparedOutdoorPoints.push({
-        lat: point.lat,
-        lon: point.lon,
-        pointElevationMeters: context.pointElevationMeters,
-        horizonMask: context.horizonMask,
-        buildingShadowEvaluator: context.buildingShadowEvaluator,
-        vegetationShadowEvaluator: context.vegetationShadowEvaluator,
-      });
-      points.push({
-        ...point,
-        insideBuilding: false,
-        indoorBuildingId: null,
-        outdoorIndex,
-        pointElevationMeters: context.pointElevationMeters,
-      });
-    }
+      if (gm) {
+        // Outdoor point with cached elevation — still need evaluator functions
+        const context = await buildPointEvaluationContext(point.lat, point.lon, {
+          skipTerrainSamplingWhenIndoor: true,
+          terrainHorizonOverride: terrainHorizonOverride ?? undefined,
+          shadowCalibration: params.shadowCalibration,
+          sharedSources,
+          buildingShadowAllowedIds: tileBuildingAllowlist,
+          // Override elevation from metadata to skip terrain sampling
+          overrideElevation: gm.elevations[rawPointIndex],
+          skipIndoorCheck: true,
+        });
+        terrainMethod = context.terrainHorizonMethod;
+        buildingsMethod = `${context.buildingsShadowMethod}${buildingMethodSuffix}`;
+        vegetationMethod = context.vegetationShadowMethod ?? "none";
+        warnings.push(...context.warnings);
+        const outdoorIndex = preparedOutdoorPoints.length;
+        if (gm.elevations[rawPointIndex] !== null) pointsWithElevation += 1;
+        preparedOutdoorPoints.push({
+          lat: point.lat,
+          lon: point.lon,
+          pointElevationMeters: gm.elevations[rawPointIndex],
+          horizonMask: context.horizonMask,
+          buildingShadowEvaluator: context.buildingShadowEvaluator,
+          vegetationShadowEvaluator: context.vegetationShadowEvaluator,
+        });
+        points.push({
+          ...point,
+          insideBuilding: false,
+          indoorBuildingId: null,
+          outdoorIndex,
+          pointElevationMeters: gm.elevations[rawPointIndex],
+        });
+      } else {
+        // Original path: full context building
+        const context = await buildPointEvaluationContext(point.lat, point.lon, {
+          skipTerrainSamplingWhenIndoor: true,
+          terrainHorizonOverride: terrainHorizonOverride ?? undefined,
+          shadowCalibration: params.shadowCalibration,
+          sharedSources,
+          buildingShadowAllowedIds: tileBuildingAllowlist,
+        });
+        terrainMethod = context.terrainHorizonMethod;
+        buildingsMethod = `${context.buildingsShadowMethod}${buildingMethodSuffix}`;
+        vegetationMethod = context.vegetationShadowMethod ?? "none";
+        warnings.push(...context.warnings);
 
-    if (
-      params.cooperativeYieldEveryPoints &&
-      params.cooperativeYieldEveryPoints > 0 &&
-      rawPointIndex > 0 &&
-      (rawPointIndex + 1) % params.cooperativeYieldEveryPoints === 0
-    ) {
-      params.onProgress?.({
-        stage: "prepare-points",
-        completed: rawPointIndex + 1,
-        total: rawTilePoints.length,
-        pointCountTotal: rawTilePoints.length,
-        pointCountOutdoor: preparedOutdoorPoints.length,
-        frameCountTotal: 0,
-        frameIndex: null,
-        elapsedMs: performance.now() - started,
-      });
-      await yieldToEventLoop();
-      throwIfAborted(params.signal);
+        if (context.insideBuilding) {
+          indoorPointsExcluded += 1;
+          points.push({
+            ...point,
+            insideBuilding: true,
+            indoorBuildingId: context.indoorBuildingId,
+            outdoorIndex: null,
+            pointElevationMeters: null,
+          });
+          continue;
+        }
+
+        const outdoorIndex = preparedOutdoorPoints.length;
+        if (context.pointElevationMeters !== null) {
+          pointsWithElevation += 1;
+        }
+        preparedOutdoorPoints.push({
+          lat: point.lat,
+          lon: point.lon,
+          pointElevationMeters: context.pointElevationMeters,
+          horizonMask: context.horizonMask,
+          buildingShadowEvaluator: context.buildingShadowEvaluator,
+          vegetationShadowEvaluator: context.vegetationShadowEvaluator,
+        });
+        points.push({
+          ...point,
+          insideBuilding: false,
+          indoorBuildingId: null,
+          outdoorIndex,
+          pointElevationMeters: context.pointElevationMeters,
+        });
+      }
+
+      if (
+        params.cooperativeYieldEveryPoints &&
+        params.cooperativeYieldEveryPoints > 0 &&
+        rawPointIndex > 0 &&
+        (rawPointIndex + 1) % params.cooperativeYieldEveryPoints === 0
+      ) {
+        params.onProgress?.({
+          stage: "prepare-points",
+          completed: rawPointIndex + 1,
+          total: rawTilePoints.length,
+          pointCountTotal: rawTilePoints.length,
+          pointCountOutdoor: preparedOutdoorPoints.length,
+          frameCountTotal: 0,
+          frameIndex: null,
+          elapsedMs: performance.now() - started,
+        });
+        await yieldToEventLoop();
+        throwIfAborted(params.signal);
+      }
     }
   }
   phaseMs.pointContexts = performance.now() - pointsT0;
