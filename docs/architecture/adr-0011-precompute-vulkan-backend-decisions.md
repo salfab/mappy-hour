@@ -153,6 +153,18 @@ Précision : zéro impact. En mode `gpu-raster` (API prod), `webgpuComputeBacken
 
 Gain mesuré : **-8% wall** sur le même bench 181 tuiles 06:00-21:00, **3.33s → 3.07s/tuile**, 9m42s → 9m15s. Sur 200 jours : ~2.5h économisées (33h → 30.5h). Le gain est plus modeste que l'estimation initiale (~12%) car `createVegetationShadowEvaluator` est lui-même peu coûteux (pré-filtrage de tiles O(N) avec N≤10 + allocation d'une closure légère). Reste positif, et le code gagne en symétrie.
 
+### Niveau 3 — skip de 62 500 appels async par tuile (commit `7c9b9eb`)
+
+Suite logique de Phase F. Le Niveau 2 (early-return dans `buildPointEvaluationContext` sans supprimer l'appel async) n'a donné aucun gain mesurable — l'overhead des 62 500 microtasks `await` (~5µs/call) dominait le travail évité dans la fonction. Le Niveau 2 a été revert (commit `914e9c0`).
+
+Niveau 3 remplace la boucle `await buildPointEvaluationContext(...)` par un tight sync loop dans `sunlight-tile-service.ts` quand `gridMetadata + vegetationShadowHandledByBackend` sont disponibles. Les method strings (`terrainMethod`, `buildingsMethod`, `vegetationMethod`) sont résolues via UN seul appel async sur le premier point outdoor, puis les 62 499 suivants sont inlinés sans async. La boucle originale est préservée dans un `else` pour les chemins `gpu-raster`, `webgpu-compute`, et les tuiles sans gridMetadata.
+
+Mesure sur le poste `points` (181 tuiles, 06:00-21:00) :
+- Phase F : 0.457s avg/tuile (82.7s total)
+- Niveau 3 : 0.308s avg/tuile (55.8s total) — **-33% sur le poste prepare-points**
+
+Le gain wall-time net (~27s sur 181 tuiles) est partiellement masqué par la variance GPU eval entre runs successifs.
+
 ### 4. Pas de multi-view rendering (Batching C) — investigué et abandonné
 
 Une seconde tentative, après avoir constaté que les tuiles denses (suburbs Lausanne, 56K triangles vs 12K pour le centre) rendent le shadow-map render dominant :
