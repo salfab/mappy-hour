@@ -54,26 +54,53 @@ Si le bucket exact n'est pas précomputé → fallback nearest-neighbor, ou comp
 
 ### Résolution des buckets
 
-**Point clé à décider** : quelle granularité d'arrondi pour `az` et `alt` ?
+**Point clé** : quelle granularité d'arrondi pour `az` et `alt` ?
 
 Le chiffre "1°" mentionné plus tôt est **l'arrondi d'idempotence du backend `gpu-raster`** (évite de re-render le même shadow map à moins d'1° près). Ce **n'est pas** la précision actuelle des masques stockés — les masques sont calculés avec l'angle exact de SunCalc.
 
-Pour ce nouveau cache, plusieurs options :
+#### Mesures (bench `sun-bucket-resolution-bench.ts`, commit `1a390fa`)
 
-| Résolution | Nb buckets annuels (Lausanne) | Taille atlas (par tuile estimée) | Erreur max |
-|---|---|---|---|
-| 0.25° × 0.25° | ~25 000 | ~200 MB | ~0.13° |
-| 0.5° × 0.5° | ~6 000 | ~50 MB | ~0.25° |
-| 1° × 1° | ~1 500 | ~12 MB | ~0.5° |
-| 2° × 2° | ~400 | ~3 MB | ~1° |
-| **Adaptatif** : 0.25° pour alt < 5°, 1° ailleurs | ~4 500 | ~35 MB | 0.13° (horizon) / 0.5° (haut) |
+Divergence mesurée sur une tuile Lausanne centre (`e2538000_n1152250_s250`), 2026-04-13, fenêtre 06:00-21:00 (60 frames), 32186 points outdoor → 1.93M bits/masque comparés par résolution, via le backend Rust/wgpu Vulkan :
 
-**Considérations** :
-- Près de l'horizon (alt < 5°), une erreur de 0.5° peut faire passer "soleil visible" → "sous l'horizon" instantanément. Besoin de résolution fine.
-- En journée (alt = 30-60°), les ombres varient lentement avec l'angle ; 1° ou même 2° est acceptable.
-- Les azimuts bas (matin/soir) sont plus sensibles à l'azimut que les azimuts hauts (midi).
+| Résolution | sunMask div | sunMaskNoVeg div |
+|---|---|---|
+| 0.25° | **0.268%** | 0.318% |
+| 0.5° | **0.368%** | 0.444% |
+| 1° | **0.570%** | 0.666% |
+| 2° | 0.992% | 1.172% |
 
-**Reco initiale** : résolution adaptative 0.25°/1° selon l'altitude. À valider empiriquement en comparant les bits divergents entre le cache actuel (angle exact) et un atlas de test.
+**Breakdown par bande d'altitude (sunMask)** :
+
+| Bande | 0.25° | 0.5° | 1° | 2° |
+|---|---|---|---|---|
+| alt < 5° | 0.16% | 0.33% | 0.33% | 1.05% |
+| alt 5-15° | 0.16% | 0.29% | 0.71% | 1.25% |
+| alt 15-30° | 0.30% | 0.43% | 0.81% | 1.35% |
+| alt ≥ 30° | 0.36% | 0.45% | 0.61% | 1.01% |
+
+**Observations** :
+
+1. L'hypothèse initiale "il faut de la résolution fine près de l'horizon" n'est **pas validée** par les mesures. À 1°, `alt<5°` diverge à 0.33%, tandis que `alt≥30°` diverge à 0.61%. L'altitude haute est en fait plus sensible parce que le soleil y bouge plus vite en azimut (360° d'azimut traversés en 12h à midi vs quelques degrés au lever/coucher) et les ombres portées sont plus nombreuses.
+2. Près de l'horizon, peu de cellules sont ensoleillées (ombres des bâtiments couvrent l'essentiel) → peu de bits à "flipper" au bucketing.
+3. La **résolution adaptative n'est pas nécessaire** — un bucketing uniforme suffit.
+
+#### Reco révisée
+
+**1° est largement acceptable** :
+- 0.57% de divergence au niveau bit
+- À comparer avec la divergence **Vulkan vs gpu-raster** documentée dans ADR-0011 : **1.2-1.3% sur sunMask final**
+- Le bucketing à 1° introduit **deux fois moins d'erreur que le choix de backend lui-même**. Architecturalement c'est du bruit.
+
+**0.5° comme sweet spot si on veut être prudent** :
+- 0.37% de divergence
+- ~4× plus de buckets que 1° (~6 000 vs ~1 500)
+- Marge supplémentaire confortable sous le seuil de perception UX
+
+**0.25° probablement overkill** :
+- 0.27% de divergence (-30% par rapport à 0.5°)
+- 4× plus de buckets que 0.5° (~25 000), pour un gain de précision marginal invisible à l'œil
+
+Décision pragmatique : **démarrer à 1°**, réévaluer à 0.5° si un cas d'usage révèle des artefacts visibles (ombres qui clignotent, terrasses qui basculent sunny/shadow entre deux frames adjacentes). L'atlas étant sparse, on peut "densifier" un angle problématique à 0.5° à la demande sans tout recalculer.
 
 ### Enumération des buckets à précomputer
 
@@ -164,8 +191,9 @@ Tant que la couverture reste "2026 pour Lausanne centre" et que le cache existan
 
 ## Questions ouvertes
 
-1. **Résolution définitive des buckets** : faire un bench divergence sur plusieurs résolutions avant de figer
+1. ~~**Résolution définitive des buckets** : faire un bench divergence sur plusieurs résolutions avant de figer~~ → **Fait** (commit `1a390fa`). Reco : 1° uniforme, 0.5° si prudent.
 2. **Faut-il stocker `utcTime`/`localTime` dans l'atlas ?** Non — c'est dérivable depuis l'angle + lat/lon du lieu + date demandée. L'atlas devient purement géométrique.
 3. **Que faire de `sunnyCount` / `sunnyCountNoVeg` ?** Ce sont des comptes sur la grille 2D de la tuile, valides par frame, donc par bucket aussi. À stocker dans le bucket.
 4. **Partage entre dates avec léger décalage** : 2026-04-15 12:00 et 2027-04-15 12:00 diffèrent de 0.1-0.2°. À résolution 1°, même bucket. À 0.25°, potentiellement bucket voisin. Tolérance acceptable.
-5. **Nearest-neighbor vs interpolation** : pour les bits binaires, nearest-neighbor est OK ; pour les compteurs (`sunnyCount`), on peut interpoler (moyenne pondérée). À trancher.
+5. **Nearest-neighbor vs interpolation** : pour les bits binaires, nearest-neighbor est OK (les mesures ci-dessus sont justement obtenues par nearest-neighbor via `Math.round(x/step)*step`) ; pour les compteurs (`sunnyCount`), on peut interpoler (moyenne pondérée). À trancher à l'implémentation.
+6. **Validation multi-tuiles** : le bench actuel tourne sur UNE tuile (`e2538000_n1152250_s250`). Répéter sur 3-5 tuiles avec topologies différentes (centre urbain dense, bord de lac, colline) avant de figer la résolution définitive.
