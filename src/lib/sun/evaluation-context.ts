@@ -269,6 +269,15 @@ async function getOrCreateRustWgpuVulkanBackend(
   const margin = getRustWgpuVulkanFocusMarginMeters();
   const newFocusKey = focusBounds ? `${focusKeyFromBounds(focusBounds)}|m${margin}` : "all";
 
+  // Cache hit, same focus zone — just return the existing backend. Without
+  // this, every call after the first with a matching focus was falling
+  // through to the "create from scratch" path below, respawning the Rust
+  // server and reloading the full mesh on every single call (observed: 194
+  // recreations for one /api/places/windows request).
+  if (rustWgpuVulkanBackendCache && newFocusKey === rustWgpuVulkanBackendFocusKey) {
+    return rustWgpuVulkanBackendCache;
+  }
+
   if (
     rustWgpuVulkanBackendCache &&
     newFocusKey !== rustWgpuVulkanBackendFocusKey &&
