@@ -6,6 +6,18 @@ import { z } from "zod";
 import { loadAllPlaces } from "@/lib/places/lausanne-places";
 import { wgs84ToLv95 } from "@/lib/geo/projection";
 import {
+  findCachedModelVersionHash,
+  type PrecomputedRegionName,
+} from "@/lib/precompute/sunlight-cache";
+import {
+  loadPrecomputedSunlightTileBinary,
+  getFrameMask,
+  MASK_KIND_SUN,
+  MASK_KIND_SUN_NO_VEG,
+  type BinaryTileArtifact,
+} from "@/lib/precompute/sunlight-cache-binary";
+import { resolveRegionForBbox } from "@/lib/precompute/sunlight-tile-service";
+import {
   buildPointEvaluationContext,
   buildSharedPointEvaluationSources,
 } from "@/lib/sun/evaluation-context";
@@ -506,17 +518,142 @@ export async function POST(request: Request) {
           )
         : null;
 
-    const timings = { pickPoint: 0, evalSamples: 0, placesProcessed: 0, shared: 0 };
+    const timings = {
+      pickPoint: 0,
+      evalSamples: 0,
+      placesProcessed: 0,
+      shared: 0,
+      tileHits: 0,
+      tileMiss: 0,
+      tileLookup: 0,
+    };
     const routeT0 = performance.now();
-    const tShared0 = performance.now();
-    // Build the shared evaluation sources ONCE for the whole request so each
-    // per-place buildPointEvaluationContext call reuses the same horizon mask,
-    // buildings index, GPU backend, AND vegetation tiles (which would otherwise
-    // be re-loaded per point via loadVegetationSurfaceTilesForPoint).
-    // Compute the LV95 bbox covering all places so sharedSources pre-loads
-    // every vegetation/terrain tile the per-place evaluator might need.
-    let sharedLv95Bounds: { minX: number; minY: number; maxX: number; maxY: number } | undefined;
-    if (places.length > 0) {
+
+    // ── Fast path: read precomputed sun masks from the tile cache ─────
+    // For daily mode at g=1m / sample=15min, every place at a grid-aligned
+    // cell already has its sunny/not-sunny bit per frame stored on disk.
+    // This skips the per-place GPU evaluate loop (which is O(places × samples)
+    // at ~30ms each on ANGLE) entirely.
+    const CACHE_GRID_STEP = 1;
+    const tileSizeMeters = 250;
+    // Cache stores the Promise, not the resolved value, so concurrent
+    // lookups for the same tile share one disk+decode pass.
+    const tilePointCache = new Map<string, Promise<BinaryTileArtifact | null>>();
+    const regionInfoCache = new Map<
+      PrecomputedRegionName,
+      { modelVersionHash: string; tw: { startLocalTime: string; endLocalTime: string } } | null
+    >();
+    const canUseTileLookup =
+      mode === "daily" && parsed.data.sampleEveryMinutes === 15;
+    const resolveRegionInfo = async (region: PrecomputedRegionName) => {
+      const cached = regionInfoCache.get(region);
+      if (cached !== undefined) return cached;
+      const hit = await findCachedModelVersionHash({
+        region,
+        date: parsed.data.date,
+        gridStepMeters: CACHE_GRID_STEP,
+        sampleEveryMinutes: 15,
+        startLocalTime: parsed.data.startLocalTime,
+        endLocalTime: parsed.data.endLocalTime,
+      });
+      if (!hit) {
+        regionInfoCache.set(region, null);
+        return null;
+      }
+      const clientStart = localTimeToMinutes(parsed.data.startLocalTime);
+      const clientEnd = localTimeToMinutes(parsed.data.endLocalTime);
+      const covering = hit.timeWindows.find((tw) => {
+        const twStart = localTimeToMinutes(tw.startLocalTime);
+        const twEnd = localTimeToMinutes(tw.endLocalTime);
+        return twStart <= clientStart && twEnd >= clientEnd;
+      });
+      if (!covering) {
+        regionInfoCache.set(region, null);
+        return null;
+      }
+      const info = { modelVersionHash: hit.modelVersionHash, tw: covering };
+      regionInfoCache.set(region, info);
+      return info;
+    };
+    const loadTileForPoint = async (
+      lat: number,
+      lon: number,
+    ): Promise<{
+      tile: BinaryTileArtifact;
+      region: PrecomputedRegionName;
+      ix: number;
+      iy: number;
+    } | null> => {
+      const region = resolveRegionForBbox({
+        minLon: lon,
+        maxLon: lon,
+        minLat: lat,
+        maxLat: lat,
+      });
+      if (!region) return null;
+      const info = await resolveRegionInfo(region);
+      if (!info) return null;
+      const lv95 = wgs84ToLv95(lon, lat);
+      const ix = Math.floor(lv95.easting);
+      const iy = Math.floor(lv95.northing);
+      const tileMinE = Math.floor(ix / tileSizeMeters) * tileSizeMeters;
+      const tileMinN = Math.floor(iy / tileSizeMeters) * tileSizeMeters;
+      const tileId = `e${tileMinE}_n${tileMinN}_s${tileSizeMeters}`;
+      const cacheKey = `${region}:${info.modelVersionHash}:${parsed.data.date}:${info.tw.startLocalTime}-${info.tw.endLocalTime}:${tileId}`;
+      let tilePromise = tilePointCache.get(cacheKey);
+      if (!tilePromise) {
+        tilePromise = loadPrecomputedSunlightTileBinary({
+          region,
+          modelVersionHash: info.modelVersionHash,
+          date: parsed.data.date,
+          gridStepMeters: CACHE_GRID_STEP,
+          sampleEveryMinutes: 15,
+          startLocalTime: info.tw.startLocalTime,
+          endLocalTime: info.tw.endLocalTime,
+          tileId,
+        });
+        tilePointCache.set(cacheKey, tilePromise);
+      }
+      const tile = await tilePromise;
+      if (!tile) return null;
+      return { tile, region, ix, iy };
+    };
+
+    // Look up the grid cell for (ix, iy) in a tile. Points are laid out
+    // row-major in buildTilePoints (iy outer, ix inner) so we can compute
+    // the index directly without a linear scan. The check at the end
+    // guards against precompute layouts that skip edge cells.
+    const lookupPointInTile = (
+      tile: BinaryTileArtifact,
+      ix: number,
+      iy: number,
+    ): number | null => {
+      const tileMinE = tile.meta.tile.minEasting;
+      const tileMinN = tile.meta.tile.minNorthing;
+      const widthCells = Math.round(
+        (tile.meta.tile.maxEasting - tileMinE) / CACHE_GRID_STEP,
+      );
+      const col = ix - Math.floor(tileMinE / CACHE_GRID_STEP);
+      const row = iy - Math.floor(tileMinN / CACHE_GRID_STEP);
+      if (col < 0 || col >= widthCells || row < 0) return null;
+      const pointIdx = row * widthCells + col;
+      if (pointIdx < 0 || pointIdx >= tile.pointCount) return null;
+      if (tile.pointIx[pointIdx] !== ix || tile.pointIy[pointIdx] !== iy) {
+        // Layout mismatch — fall back to scan
+        for (let i = 0; i < tile.pointCount; i++) {
+          if (tile.pointIx[i] === ix && tile.pointIy[i] === iy) return i;
+        }
+        return null;
+      }
+      return pointIdx;
+    };
+
+    // Build GPU-backed shared sources lazily — only if at least one place
+    // falls through to the GPU fallback path. For fully-cached bboxes, this
+    // avoids the 1-2s GPU backend setup entirely.
+    let sharedSources: Awaited<ReturnType<typeof buildSharedPointEvaluationSources>> | null = null;
+    const sharedLv95Bounds = (() => {
+      if (places.length === 0) return undefined;
       let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
       for (const p of places) {
         if (p.lon < minLon) minLon = p.lon;
@@ -526,22 +663,177 @@ export async function POST(request: Request) {
       }
       const sw = wgs84ToLv95(minLon, minLat);
       const ne = wgs84ToLv95(maxLon, maxLat);
-      sharedLv95Bounds = {
+      return {
         minX: Math.min(sw.easting, ne.easting),
         minY: Math.min(sw.northing, ne.northing),
         maxX: Math.max(sw.easting, ne.easting),
         maxY: Math.max(sw.northing, ne.northing),
       };
+    })();
+    const ensureSharedSources = async () => {
+      if (sharedSources) return sharedSources;
+      const tShared0 = performance.now();
+      sharedSources = await buildSharedPointEvaluationSources({
+        lv95Bounds: sharedLv95Bounds,
+      });
+      timings.shared += performance.now() - tShared0;
+      return sharedSources;
+    };
+    // Try to pick a terrace point via tile lookup alone (no GPU). Returns
+    // null when the tile is not cached or the place is wholly indoor across
+    // all terrace candidates.
+    const pickViaTile = async (place: typeof places[number]) => {
+      if (!canUseTileLookup) return null;
+      const candidates = place.hasOutdoorSeating
+        ? buildTerraceCandidates(place.lat, place.lon)
+        : [{ lat: place.lat, lon: place.lon, offsetMeters: 0 }];
+      let fallback: {
+        cand: typeof candidates[number];
+        hit: NonNullable<Awaited<ReturnType<typeof loadTileForPoint>>>;
+        pointIdx: number;
+        outdoorIndex: number;
+        insideBuilding: boolean;
+      } | null = null;
+      for (const cand of candidates) {
+        const hit = await loadTileForPoint(cand.lat, cand.lon);
+        if (!hit) return null; // any candidate misses tile → GPU fallback
+        const pointIdx = lookupPointInTile(hit.tile, hit.ix, hit.iy);
+        if (pointIdx === null) return null;
+        const flags = hit.tile.pointFlags[pointIdx];
+        const outdoorIndex = hit.tile.pointOutdoorIndex[pointIdx];
+        const insideBuilding = (flags & 1) !== 0 || outdoorIndex < 0;
+        if (!fallback) {
+          fallback = { cand, hit, pointIdx, outdoorIndex, insideBuilding };
+        }
+        if (!insideBuilding) {
+          return {
+            ...cand,
+            hit,
+            pointIdx,
+            outdoorIndex,
+            insideBuilding,
+            selectionStrategy: cand.offsetMeters === 0 ? "original" : "terrace_offset",
+          } as const;
+        }
+      }
+      if (!fallback) return null;
+      return {
+        ...fallback.cand,
+        hit: fallback.hit,
+        pointIdx: fallback.pointIdx,
+        outdoorIndex: fallback.outdoorIndex,
+        insideBuilding: fallback.insideBuilding,
+        selectionStrategy: "indoor_fallback",
+      } as const;
+    };
+
+    // Pre-warm the tile cache with bounded concurrency. Same-tile requests
+    // share a single disk+decode via the Promise cache; different-tile
+    // requests load in parallel up to CONCURRENCY at a time.
+    let tilePicks: Array<Awaited<ReturnType<typeof pickViaTile>>> = [];
+    if (canUseTileLookup && mode === "daily") {
+      const tWarm0 = performance.now();
+      tilePicks = new Array(places.length);
+      const CONCURRENCY = 8;
+      let cursor = 0;
+      const runWorker = async () => {
+        while (true) {
+          const i = cursor++;
+          if (i >= places.length) return;
+          tilePicks[i] = await pickViaTile(places[i]);
+        }
+      };
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => runWorker()));
+      timings.tileLookup += performance.now() - tWarm0;
     }
-    const sharedSources = await buildSharedPointEvaluationSources({
-      lv95Bounds: sharedLv95Bounds,
-    });
-    timings.shared = performance.now() - tShared0;
-    for (const place of places) {
+
+    for (let placeIdx = 0; placeIdx < places.length; placeIdx++) {
+      const place = places[placeIdx];
+      timings.placesProcessed += 1;
+      const venueType = classifyVenueType(place);
+
+      // ── Fast path: resolve the place entirely from tile data ─────────
+      if (canUseTileLookup && mode === "daily") {
+        const tilePick = tilePicks[placeIdx];
+        if (tilePick) {
+          const { hit, pointIdx, outdoorIndex, insideBuilding, lat, lon, offsetMeters, selectionStrategy } = tilePick;
+          const clientStart = localTimeToMinutes(parsed.data.startLocalTime);
+          const clientEnd = localTimeToMinutes(parsed.data.endLocalTime);
+          let sunnyWindows: SunnyWindow[];
+          if (insideBuilding) {
+            sunnyWindows = [];
+          } else {
+            const byteIdx = outdoorIndex >> 3;
+            const bitMask = 1 << (outdoorIndex & 7);
+            const tileSamples: Array<{ isSunny: boolean; localTime: string; utcTime: string }> = [];
+            for (let f = 0; f < hit.tile.frameCount; f++) {
+              const fm = hit.tile.meta.framesMeta[f];
+              const m = localTimeToMinutes(fm.localTime);
+              if (m < clientStart || m >= clientEnd) continue;
+              const mask = parsed.data.ignoreVegetation
+                ? getFrameMask(hit.tile, f, MASK_KIND_SUN_NO_VEG)
+                : getFrameMask(hit.tile, f, MASK_KIND_SUN);
+              tileSamples.push({
+                isSunny: (mask[byteIdx] & bitMask) !== 0,
+                localTime: fm.localTime,
+                utcTime: fm.utcTime,
+              });
+            }
+            sunnyWindows = buildSunnyWindows(
+              tileSamples,
+              parsed.data.sampleEveryMinutes,
+              parsed.data.timezone,
+            );
+          }
+          const sunnyMinutes = sunnyWindows.reduce(
+            (total, w) => total + w.durationMinutes,
+            0,
+          );
+          if (!parsed.data.includeNonSunny && sunnyMinutes <= 0) {
+            timings.tileHits += 1;
+            continue;
+          }
+          const elev = hit.tile.meta.pointElevationMeters?.[pointIdx] ?? null;
+          placesWithWindows.push({
+            id: place.id,
+            name: place.name,
+            category: place.category,
+            subcategory: place.subcategory,
+            venueType,
+            hasOutdoorSeating: place.hasOutdoorSeating,
+            lat: place.lat,
+            lon: place.lon,
+            evaluationLat: Math.round(lat * 1_000_000) / 1_000_000,
+            evaluationLon: Math.round(lon * 1_000_000) / 1_000_000,
+            selectionStrategy,
+            selectionOffsetMeters: offsetMeters,
+            pointElevationMeters: elev,
+            insideBuilding,
+            isSunnyNow: null,
+            sunnyMinutes,
+            sunnyWindows,
+            sunlightStartLocalTime:
+              sunnyWindows.length > 0 ? extractClock(sunnyWindows[0].startLocalTime) : null,
+            sunlightEndLocalTime:
+              sunnyWindows.length > 0 ? extractClock(sunnyWindows[sunnyWindows.length - 1].endLocalTime) : null,
+            warnings: [],
+          });
+          timings.tileHits += 1;
+          // Record methods once (precomputed = rust-wgpu-vulkan)
+          if (terrainMethod === "none") terrainMethod = "precomputed";
+          if (buildingsMethod === "none") buildingsMethod = "precomputed";
+          if (vegetationMethod === "none") vegetationMethod = "precomputed";
+          continue;
+        }
+        timings.tileMiss += 1;
+      }
+
+      // ── Slow path: GPU fallback (lazily initialised) ─────────────────
+      const gpuShared = await ensureSharedSources();
       const tPick0 = performance.now();
       const selectedPoint = await pickOutdoorEvaluationPoint(place, {
         shadowCalibration,
-        sharedSources,
+        sharedSources: gpuShared,
       });
       timings.pickPoint += performance.now() - tPick0;
       const context = selectedPoint.context;
@@ -549,9 +841,7 @@ export async function POST(request: Request) {
       buildingsMethod = context.buildingsShadowMethod;
       vegetationMethod = context.vegetationShadowMethod ?? "none";
       warnings.push(...context.warnings);
-      timings.placesProcessed += 1;
 
-      const venueType = classifyVenueType(place);
       if (mode === "instant" && instantUtcDate) {
         const sample = evaluateInstantSunlight({
           lat: selectedPoint.lat,
@@ -665,7 +955,7 @@ export async function POST(request: Request) {
       const total = performance.now() - routeT0;
       const n = timings.placesProcessed;
       process.stderr.write(
-        `[places/windows] mode=${mode} places=${n}/${places.length} samples=${dailySamples.length} total=${total.toFixed(0)}ms shared=${timings.shared.toFixed(0)}ms avg pickPoint=${(timings.pickPoint / n).toFixed(1)}ms evalSamples=${(timings.evalSamples / n).toFixed(1)}ms\n`,
+        `[places/windows] mode=${mode} places=${n}/${places.length} samples=${dailySamples.length} total=${total.toFixed(0)}ms shared=${timings.shared.toFixed(0)}ms avg pickPoint=${(timings.pickPoint / n).toFixed(1)}ms evalSamples=${(timings.evalSamples / n).toFixed(1)}ms tileLookup=${(timings.tileLookup / n).toFixed(1)}ms (tileHits=${timings.tileHits} tileMiss=${timings.tileMiss})\n`,
       );
     }
 
