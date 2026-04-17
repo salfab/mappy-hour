@@ -95,7 +95,13 @@ function parseTileBoundsFromFilename(
   filePath: string,
 ): Pick<VegetationSurfaceTileMetadata, "minX" | "minY" | "maxX" | "maxY"> | null {
   const fileName = path.basename(filePath);
-  const match = /_(\d+)-(\d+)_0(?:\.0|\.5)?_2056_5728\.tif$/i.exec(fileName);
+  // Match either the original SwissSURFACE3D naming
+  //   swisssurface3d-raster_2019_2502-1141_0.5_2056_5728.tif
+  // or the VHM pre-composed naming
+  //   swisssurface3d-raster_vhm_2502-1141.tif
+  const match =
+    /_(\d+)-(\d+)_0(?:\.0|\.5)?_2056_5728\.tif$/i.exec(fileName) ??
+    /_vhm_(\d+)-(\d+)\.tif$/i.exec(fileName);
   if (!match) {
     return null;
   }
@@ -114,6 +120,10 @@ function parseTileBoundsFromFilename(
     maxX: minX + VEGETATION_TILE_SIZE_METERS,
     maxY: minY + VEGETATION_TILE_SIZE_METERS,
   };
+}
+
+function isVhmTile(filePath: string): boolean {
+  return /_vhm_/i.test(path.basename(filePath));
 }
 
 async function listTifsRecursively(rootDirectory: string): Promise<string[]> {
@@ -193,7 +203,20 @@ async function loadVegetationTileMetadata(): Promise<
       }
     }
 
-    return metadata;
+    // Deduplicate by tile key (minX-minY in km). When both the legacy DSM and
+    // the pre-composed VHM are present for the same tile, prefer the VHM: it
+    // has buildings masked out, giving a cleaner vegetation-only ray-march.
+    const byKey = new Map<string, VegetationSurfaceTileMetadata>();
+    for (const entry of metadata) {
+      const key = `${Math.round(entry.minX / 1000)}-${Math.round(entry.minY / 1000)}`;
+      const existing = byKey.get(key);
+      if (!existing) {
+        byKey.set(key, entry);
+      } else if (isVhmTile(entry.filePath) && !isVhmTile(existing.filePath)) {
+        byKey.set(key, entry); // VHM wins over DSM
+      }
+    }
+    return Array.from(byKey.values());
   })();
   vegetationTileMetadataCachePromise = loadPromise;
 
