@@ -193,11 +193,18 @@ async function main() {
     if (!artifact) { console.warn(`  skip ${date} (unreadable)`); continue; }
 
     for (const frame of artifact.frames) {
-      const sunnyMask = decodeMask(frame.sunMaskBase64, pointCount);
-      const sunnyNoVegMask = decodeMask(frame.sunMaskNoVegetationBase64, pointCount);
+      // CRITICAL: the masks are indexed by OUTDOOR index (0..outdoorCount-1),
+      // NOT by grid index (0..pointCount-1). Indoor points have outdoorIndex=null
+      // and must be skipped — otherwise every outdoor point AFTER the first
+      // indoor pixel reads the wrong bit, causing progressive index drift that
+      // looks like horizontal streak artifacts.
+      const sunnyMask = decodeMask(frame.sunMaskBase64, outdoorCount);
+      const sunnyNoVegMask = decodeMask(frame.sunMaskNoVegetationBase64, outdoorCount);
       for (let i = 0; i < pointCount; i++) {
-        if (isBitSet(sunnyMask, i)) sunnyMinutes[i] += SAMPLE_EVERY;
-        if (isBitSet(sunnyNoVegMask, i)) sunnyNoVegMinutes[i] += SAMPLE_EVERY;
+        const oi = artifact.points[i].outdoorIndex;
+        if (oi === null) continue; // indoor — no mask bit
+        if (isBitSet(sunnyMask, oi)) sunnyMinutes[i] += SAMPLE_EVERY;
+        if (isBitSet(sunnyNoVegMask, oi)) sunnyNoVegMinutes[i] += SAMPLE_EVERY;
       }
     }
 
