@@ -14,10 +14,42 @@ Le cache actuel stocke les masques d'ombrage par `(région, modelHash, gridStepM
 
 ## Pourquoi c'est pertinent maintenant
 
-1. **Reuse multi-années gratuit** (voir discussion du 2026-04-17) : entre deux années consécutives sur la même date calendaire, la position du soleil varie de ~0.1-0.2° (dérive du cycle bissextile). Avec un cache keyé par angle, 2026-04-15 12:00 et 2027-04-15 12:00 sont le même bucket → zéro re-précompute entre années.
-2. **Déduplication intra-saison** : à Lausanne 46.5°N, sur un an à 15min de sample, il y a ~21900 couples `(az, alt)` dans le cache, mais seulement ~1500-2000 buckets uniques à 1° de résolution. Dédup ~10-15×.
-3. **Agnostic aux fuseaux horaires / DST** : la position solaire ne dépend pas du fuseau. Le cache actuel doit gérer `timezone` et `localTime` partout — simplification architecturale.
-4. **Précompute coût constant** : aujourd'hui, précomputer 200 jours = 200× le coût d'un jour. Avec `(az, alt)`, précomputer "toutes les positions visitées dans une année" = un coût fini, valable pour toutes les dates passées/futures.
+Un cache keyé par angle dédoublonne sur **trois échelles physiques distinctes**, exploitées simultanément :
+
+### 1. Reuse multi-années (même date civile)
+
+Entre deux années consécutives sur la même date, la position du soleil varie de ~0.1-0.2° (dérive du cycle bissextile). Avec un bucketing à 1°, `2026-04-15 12:00` et `2027-04-15 12:00` tombent **systématiquement dans le même bucket**. Dedup ~4× sur un horizon 4 ans (plus si on réutilise sur plus longtemps).
+
+### 2. Reuse jour-à-jour (même heure civile)
+
+Entre deux jours consécutifs à la même heure horloge, la déclinaison varie de ~0.1°/jour (près des solstices) à ~0.4°/jour (près des équinoxes). À 1° de bucket, un même bucket est donc partagé par **2-10 jours consécutifs selon la saison**.
+
+**Mesure** (bench `sun-bucket-consecutive-days.ts`, Lausanne 2026) — longueur moyenne du run de jours consécutifs partageant le même bucket à 1° :
+
+| Résolution | Run moyen | Médiane | Min | Max |
+|---|---|---|---|---|
+| 2° | 4.5 | 4 | 1 | 24 |
+| 1° | 2.7 | 2 | 1 | 10 |
+| 0.5° | 1.7 | 1 | 1 | 8 |
+| 0.25° | 1.2 | 1 | 1 | 5 |
+
+Variation saisonnière à 1° / 12:00 :
+- Équinoxes (mars, septembre, octobre) : **1 jour seulement** — la déclinaison bouge vite (~0.4°/jour)
+- Solstice d'été (juillet) : **6 jours consécutifs** — la déclinaison est quasi-stable (~0.1°/jour)
+- Solstice d'hiver (juin) : 4 jours
+
+Le partage jour-à-jour est donc un mécanisme de dedup **modeste mais réel à 1°** (~2.7× en moyenne), et **négligeable à 0.5°**. C'est un argument en faveur de garder 1° comme résolution cible.
+
+### 3. Déduplication intra-saison (configurations croisées)
+
+Au-delà des deux mécanismes ci-dessus, deux `(date, heure)` éloignés peuvent accidentellement produire le même `(az, alt)` — par exemple "matin d'un jour" vs "soir d'un autre jour" symétrique. Ces recouvrements occasionnels contribuent aussi au total.
+
+**Résultat agrégé** : à Lausanne 46.5°N, sur un an à 15min de sample, il y a ~21 900 couples `(az, alt)` dans le cache, mais seulement **~1 500-2 000 buckets uniques à 1°**. Dedup global ~10-15×.
+
+### 4. Autres avantages
+
+- **Agnostic aux fuseaux horaires / DST** : la position solaire ne dépend pas du fuseau. Le cache actuel doit gérer `timezone` et `localTime` partout — simplification architecturale.
+- **Précompute coût constant** : aujourd'hui, précomputer 200 jours = 200× le coût d'un jour. Avec `(az, alt)`, précomputer "toutes les positions visitées dans une année" = un coût fini, valable pour toutes les dates passées/futures.
 
 ## Proposition
 
