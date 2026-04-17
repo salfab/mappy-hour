@@ -61,40 +61,51 @@ async function walk(dir: string): Promise<string[]> {
 
 async function main() {
   const root = process.argv[2];
+  const concurrency = Number.parseInt(process.argv[3] ?? "4", 10);
   if (!root) {
-    console.error("Usage: migrate-tiles-to-binary.ts <dir>");
+    console.error("Usage: migrate-tiles-to-binary.ts <dir> [concurrency=4]");
     console.error("  Recursively converts all *.json.gz tile files under <dir>.");
     process.exit(1);
   }
   const t0 = performance.now();
   const files = await walk(root);
-  console.log(`Found ${files.length} .json.gz tile files under ${root}`);
+  console.log(`Found ${files.length} .json.gz tile files under ${root} (concurrency=${concurrency})`);
 
   let converted = 0, skipped = 0, failed = 0, totalJsonBytes = 0, totalBinBytes = 0;
   let lastLog = performance.now();
-  for (let i = 0; i < files.length; i++) {
-    const res = await migrateOne(files[i]);
-    if (res === "converted") {
-      converted += 1;
-      try {
-        const [jsonStat, binStat] = await Promise.all([
-          fs.stat(files[i]),
-          fs.stat(files[i].replace(/\.json\.gz$/, ".tile.bin.gz")),
-        ]);
-        totalJsonBytes += jsonStat.size;
-        totalBinBytes += binStat.size;
-      } catch { /* ignore */ }
-    } else if (res === "skipped") {
-      skipped += 1;
-    } else {
-      failed += 1;
+  let cursor = 0;
+
+  const worker = async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= files.length) return;
+      const res = await migrateOne(files[i]);
+      if (res === "converted") {
+        converted += 1;
+        try {
+          const [jsonStat, binStat] = await Promise.all([
+            fs.stat(files[i]),
+            fs.stat(files[i].replace(/\.json\.gz$/, ".tile.bin.gz")),
+          ]);
+          totalJsonBytes += jsonStat.size;
+          totalBinBytes += binStat.size;
+        } catch { /* ignore */ }
+      } else if (res === "skipped") {
+        skipped += 1;
+      } else {
+        failed += 1;
+      }
+      if (performance.now() - lastLog > 2000) {
+        const done = converted + skipped + failed;
+        const pct = (done / files.length * 100).toFixed(1);
+        console.log(`  [${done}/${files.length} ${pct}%] converted=${converted} skipped=${skipped} failed=${failed}`);
+        lastLog = performance.now();
+      }
     }
-    if (performance.now() - lastLog > 2000) {
-      const pct = ((i + 1) / files.length * 100).toFixed(1);
-      console.log(`  [${i + 1}/${files.length} ${pct}%] converted=${converted} skipped=${skipped} failed=${failed}`);
-      lastLog = performance.now();
-    }
-  }
+  };
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
   const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
   console.log(`\nDone in ${elapsed}s`);
   console.log(`  converted=${converted}  skipped=${skipped}  failed=${failed}`);

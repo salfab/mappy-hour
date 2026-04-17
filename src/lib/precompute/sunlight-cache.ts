@@ -327,7 +327,17 @@ export async function writePrecomputedSunlightTile(
     endLocalTime: artifact.endLocalTime,
     tileId: artifact.tile.tileId,
   });
-  await writeCompressedJson(targetPath, artifact);
+  // Dynamic import to avoid a module cycle (sunlight-cache-binary imports
+  // type PrecomputedSunlightTileArtifact from this file).
+  const { writePrecomputedSunlightTileBinary } = await import(
+    "./sunlight-cache-binary"
+  );
+  // Write both formats in parallel. JSON is kept for backward compat /
+  // fallback; readers prefer the binary form when available.
+  await Promise.all([
+    writeCompressedJson(targetPath, artifact),
+    writePrecomputedSunlightTileBinary(artifact),
+  ]);
 }
 
 export async function loadPrecomputedSunlightManifest(params: {
