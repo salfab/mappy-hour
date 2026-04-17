@@ -4,7 +4,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { loadAllPlaces } from "@/lib/places/lausanne-places";
-import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
+import { wgs84ToLv95 } from "@/lib/geo/projection";
+import {
+  buildPointEvaluationContext,
+  buildSharedPointEvaluationSources,
+} from "@/lib/sun/evaluation-context";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { evaluateInstantSunlight } from "@/lib/sun/solar";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
@@ -304,6 +308,7 @@ async function pickOutdoorEvaluationPoint(
     shadowCalibration: {
       buildingHeightBiasMeters: number;
     };
+    sharedSources: Awaited<ReturnType<typeof buildSharedPointEvaluationSources>>;
   },
 ) {
   const candidates = place.hasOutdoorSeating
@@ -322,6 +327,7 @@ async function pickOutdoorEvaluationPoint(
     const context = await buildPointEvaluationContext(candidate.lat, candidate.lon, {
       skipTerrainSamplingWhenIndoor: true,
       shadowCalibration: options.shadowCalibration,
+      sharedSources: options.sharedSources,
     });
     if (!fallback) {
       fallback = { ...candidate, context };
@@ -339,6 +345,7 @@ async function pickOutdoorEvaluationPoint(
     const context = await buildPointEvaluationContext(place.lat, place.lon, {
       skipTerrainSamplingWhenIndoor: true,
       shadowCalibration: options.shadowCalibration,
+      sharedSources: options.sharedSources,
     });
     return {
       lat: place.lat,
@@ -499,15 +506,50 @@ export async function POST(request: Request) {
           )
         : null;
 
+    const timings = { pickPoint: 0, evalSamples: 0, placesProcessed: 0, shared: 0 };
+    const routeT0 = performance.now();
+    const tShared0 = performance.now();
+    // Build the shared evaluation sources ONCE for the whole request so each
+    // per-place buildPointEvaluationContext call reuses the same horizon mask,
+    // buildings index, GPU backend, AND vegetation tiles (which would otherwise
+    // be re-loaded per point via loadVegetationSurfaceTilesForPoint).
+    // Compute the LV95 bbox covering all places so sharedSources pre-loads
+    // every vegetation/terrain tile the per-place evaluator might need.
+    let sharedLv95Bounds: { minX: number; minY: number; maxX: number; maxY: number } | undefined;
+    if (places.length > 0) {
+      let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+      for (const p of places) {
+        if (p.lon < minLon) minLon = p.lon;
+        if (p.lat < minLat) minLat = p.lat;
+        if (p.lon > maxLon) maxLon = p.lon;
+        if (p.lat > maxLat) maxLat = p.lat;
+      }
+      const sw = wgs84ToLv95(minLon, minLat);
+      const ne = wgs84ToLv95(maxLon, maxLat);
+      sharedLv95Bounds = {
+        minX: Math.min(sw.easting, ne.easting),
+        minY: Math.min(sw.northing, ne.northing),
+        maxX: Math.max(sw.easting, ne.easting),
+        maxY: Math.max(sw.northing, ne.northing),
+      };
+    }
+    const sharedSources = await buildSharedPointEvaluationSources({
+      lv95Bounds: sharedLv95Bounds,
+    });
+    timings.shared = performance.now() - tShared0;
     for (const place of places) {
+      const tPick0 = performance.now();
       const selectedPoint = await pickOutdoorEvaluationPoint(place, {
         shadowCalibration,
+        sharedSources,
       });
+      timings.pickPoint += performance.now() - tPick0;
       const context = selectedPoint.context;
       terrainMethod = context.terrainHorizonMethod;
       buildingsMethod = context.buildingsShadowMethod;
       vegetationMethod = context.vegetationShadowMethod ?? "none";
       warnings.push(...context.warnings);
+      timings.placesProcessed += 1;
 
       const venueType = classifyVenueType(place);
       if (mode === "instant" && instantUtcDate) {
@@ -559,6 +601,7 @@ export async function POST(request: Request) {
         continue;
       }
 
+      const tEval0 = performance.now();
       const samples = dailySamples.map((utcDate) =>
         evaluateInstantSunlight({
           lat: selectedPoint.lat,
@@ -570,6 +613,7 @@ export async function POST(request: Request) {
             vegetationShadowEvaluator: context.vegetationShadowEvaluator,
           }),
       );
+      timings.evalSamples += performance.now() - tEval0;
       const sunnyWindows = buildSunnyWindows(
         samples.map((sample) => ({
           isSunny: isSampleSunny(sample, parsed.data.ignoreVegetation),
@@ -615,6 +659,14 @@ export async function POST(request: Request) {
             : null,
         warnings: context.warnings,
       });
+    }
+
+    if (timings.placesProcessed > 0) {
+      const total = performance.now() - routeT0;
+      const n = timings.placesProcessed;
+      process.stderr.write(
+        `[places/windows] mode=${mode} places=${n}/${places.length} samples=${dailySamples.length} total=${total.toFixed(0)}ms shared=${timings.shared.toFixed(0)}ms avg pickPoint=${(timings.pickPoint / n).toFixed(1)}ms evalSamples=${(timings.evalSamples / n).toFixed(1)}ms\n`,
+      );
     }
 
     placesWithWindows.sort((left, right) => {
