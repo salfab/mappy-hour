@@ -747,6 +747,14 @@ export async function POST(request: Request) {
       timings.tileLookup += performance.now() - tWarm0;
     }
 
+    type PickedPoint = Awaited<ReturnType<typeof pickOutdoorEvaluationPoint>>;
+    const gpuDailyPending: Array<{
+      place: typeof places[number];
+      venueType: VenueType;
+      selectedPoint: PickedPoint;
+      context: PickedPoint["context"];
+    }> = [];
+
     for (let placeIdx = 0; placeIdx < places.length; placeIdx++) {
       const place = places[placeIdx];
       timings.placesProcessed += 1;
@@ -891,64 +899,86 @@ export async function POST(request: Request) {
         continue;
       }
 
-      const tEval0 = performance.now();
-      const samples = dailySamples.map((utcDate) =>
-        evaluateInstantSunlight({
-          lat: selectedPoint.lat,
-          lon: selectedPoint.lon,
-          utcDate,
-          timeZone: parsed.data.timezone,
-            horizonMask: context.horizonMask,
-            buildingShadowEvaluator: context.buildingShadowEvaluator,
-            vegetationShadowEvaluator: context.vegetationShadowEvaluator,
-          }),
-      );
-      timings.evalSamples += performance.now() - tEval0;
-      const sunnyWindows = buildSunnyWindows(
-        samples.map((sample) => ({
-          isSunny: isSampleSunny(sample, parsed.data.ignoreVegetation),
-          localTime: sample.localTime,
-          utcTime: sample.utcTime,
-        })),
-        parsed.data.sampleEveryMinutes,
-        parsed.data.timezone,
-      );
-      const sunnyMinutes = sunnyWindows.reduce(
-        (total, window) => total + window.durationMinutes,
-        0,
-      );
-      if (!parsed.data.includeNonSunny && sunnyMinutes <= 0) {
-        continue;
-      }
-
-      placesWithWindows.push({
-        id: place.id,
-        name: place.name,
-        category: place.category,
-        subcategory: place.subcategory,
+      // Defer GPU daily evaluation so we can batch it sample-outer,
+      // place-inner. prepareSunPosition (the expensive 30 ms shadow-map
+      // render + readPixels on ANGLE) is idempotent for a given sun
+      // angle: sweeping places-outer re-renders 60× per place, while
+      // sweeping sample-outer renders 60× total for the whole batch.
+      gpuDailyPending.push({
+        place,
         venueType,
-        hasOutdoorSeating: place.hasOutdoorSeating,
-        lat: place.lat,
-        lon: place.lon,
-        evaluationLat: Math.round(selectedPoint.lat * 1_000_000) / 1_000_000,
-        evaluationLon: Math.round(selectedPoint.lon * 1_000_000) / 1_000_000,
-        selectionStrategy: selectedPoint.selectionStrategy,
-        selectionOffsetMeters: selectedPoint.offsetMeters,
-        pointElevationMeters: context.pointElevationMeters,
-        insideBuilding: context.insideBuilding,
-        isSunnyNow: null,
-        sunnyMinutes,
-        sunnyWindows,
-        sunlightStartLocalTime:
-          sunnyWindows.length > 0
-            ? extractClock(sunnyWindows[0].startLocalTime)
-            : null,
-        sunlightEndLocalTime:
-          sunnyWindows.length > 0
-            ? extractClock(sunnyWindows[sunnyWindows.length - 1].endLocalTime)
-            : null,
-        warnings: context.warnings,
+        selectedPoint,
+        context,
       });
+    }
+
+    // ── Batch GPU daily evaluation: sample-outer, place-inner ──────────
+    if (gpuDailyPending.length > 0) {
+      const tBatch0 = performance.now();
+      const perPlaceSamples: Array<Array<{
+        isSunny: boolean;
+        localTime: string;
+        utcTime: string;
+      }>> = gpuDailyPending.map(() => []);
+      for (const utcDate of dailySamples) {
+        for (let i = 0; i < gpuDailyPending.length; i++) {
+          const entry = gpuDailyPending[i];
+          const sample = evaluateInstantSunlight({
+            lat: entry.selectedPoint.lat,
+            lon: entry.selectedPoint.lon,
+            utcDate,
+            timeZone: parsed.data.timezone,
+            horizonMask: entry.context.horizonMask,
+            buildingShadowEvaluator: entry.context.buildingShadowEvaluator,
+            vegetationShadowEvaluator: entry.context.vegetationShadowEvaluator,
+          });
+          perPlaceSamples[i].push({
+            isSunny: isSampleSunny(sample, parsed.data.ignoreVegetation),
+            localTime: sample.localTime,
+            utcTime: sample.utcTime,
+          });
+        }
+      }
+      timings.evalSamples += performance.now() - tBatch0;
+      for (let i = 0; i < gpuDailyPending.length; i++) {
+        const entry = gpuDailyPending[i];
+        const sunnyWindows = buildSunnyWindows(
+          perPlaceSamples[i],
+          parsed.data.sampleEveryMinutes,
+          parsed.data.timezone,
+        );
+        const sunnyMinutes = sunnyWindows.reduce(
+          (total, window) => total + window.durationMinutes,
+          0,
+        );
+        if (!parsed.data.includeNonSunny && sunnyMinutes <= 0) {
+          continue;
+        }
+        placesWithWindows.push({
+          id: entry.place.id,
+          name: entry.place.name,
+          category: entry.place.category,
+          subcategory: entry.place.subcategory,
+          venueType: entry.venueType,
+          hasOutdoorSeating: entry.place.hasOutdoorSeating,
+          lat: entry.place.lat,
+          lon: entry.place.lon,
+          evaluationLat: Math.round(entry.selectedPoint.lat * 1_000_000) / 1_000_000,
+          evaluationLon: Math.round(entry.selectedPoint.lon * 1_000_000) / 1_000_000,
+          selectionStrategy: entry.selectedPoint.selectionStrategy,
+          selectionOffsetMeters: entry.selectedPoint.offsetMeters,
+          pointElevationMeters: entry.context.pointElevationMeters,
+          insideBuilding: entry.context.insideBuilding,
+          isSunnyNow: null,
+          sunnyMinutes,
+          sunnyWindows,
+          sunlightStartLocalTime:
+            sunnyWindows.length > 0 ? extractClock(sunnyWindows[0].startLocalTime) : null,
+          sunlightEndLocalTime:
+            sunnyWindows.length > 0 ? extractClock(sunnyWindows[sunnyWindows.length - 1].endLocalTime) : null,
+          warnings: entry.context.warnings,
+        });
+      }
     }
 
     if (timings.placesProcessed > 0) {
