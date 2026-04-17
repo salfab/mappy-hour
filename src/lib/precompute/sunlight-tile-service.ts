@@ -1114,6 +1114,15 @@ export async function computeSunlightTileArtifact(params: {
     altitudeDeg: number;
     azimuthDeg: number;
   };
+  // Optional: round sun positions to the nearest `step` degrees before
+  // dispatch. Used by the `sun-bucket-resolution-bench` script to measure
+  // how much the shadow masks diverge when we key the cache on quantised
+  // (az, alt) buckets instead of exact SunCalc values. Unset (default)
+  // uses the exact angles. ADR-0013 discusses the trade-offs.
+  const sunRoundEnv = process.env.MAPPY_SUN_POSITION_ROUND_DEG;
+  const sunRoundStep = sunRoundEnv ? Number(sunRoundEnv) : 0;
+  const roundToStep = (x: number): number =>
+    sunRoundStep > 0 ? Math.round(x / sunRoundStep) * sunRoundStep : x;
   const perFrame: PerFrameSun[] = new Array(samples.length);
   for (let i = 0; i < samples.length; i++) {
     const d = samples[i];
@@ -1125,8 +1134,8 @@ export async function computeSunlightTileArtifact(params: {
       sampleIndex: i,
       sampleDate: d,
       frameLocalDateTime: ft,
-      altitudeDeg: pos.altitude * RAD_TO_DEG,
-      azimuthDeg: az,
+      altitudeDeg: roundToStep(pos.altitude * RAD_TO_DEG),
+      azimuthDeg: roundToStep(az),
     };
   }
 
