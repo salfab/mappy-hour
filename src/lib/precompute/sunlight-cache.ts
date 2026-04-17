@@ -422,7 +422,11 @@ export async function listCachedTileIds(params: {
     const entries = await fs.readdir(tilesDir);
     const tileIds = new Set<string>();
     for (const entry of entries) {
-      if (entry.endsWith(".json.gz")) {
+      // Precompute now writes .tile.bin.gz; legacy cache still has .json.gz.
+      // Both count as "already computed" for skip-existing.
+      if (entry.endsWith(".tile.bin.gz")) {
+        tileIds.add(entry.slice(0, -".tile.bin.gz".length));
+      } else if (entry.endsWith(".json.gz")) {
         tileIds.add(entry.slice(0, -".json.gz".length));
       }
     }
