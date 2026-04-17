@@ -353,9 +353,18 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     this.evaluationId += 1;
     const azimuthsDeg = frames.map((f) => f.azimuthDeg);
     const altitudesDeg = frames.map((f) => f.altitudeDeg);
-    const result = await this.server.evaluateBatch(this.evaluationId, azimuthsDeg, altitudesDeg, {
-      includeMask: true,
-    });
+    let result;
+    try {
+      result = await this.server.evaluateBatch(this.evaluationId, azimuthsDeg, altitudesDeg, {
+        includeMask: true,
+      });
+    } catch (error) {
+      // Server timed out or crashed — kill it so ensureServer recreates it next time
+      console.error(`[rust-wgpu-vulkan] evaluateBatch failed, killing server: ${error instanceof Error ? error.message : error}`);
+      try { await this.server.forceKill(); } catch { /* best effort */ }
+      this.server = null;
+      throw error;
+    }
     if (result.pointCount !== pointCount) {
       throw new Error(
         `Rust/wgpu Vulkan batch point count mismatch: server=${result.pointCount}, expected=${pointCount}`,
@@ -413,9 +422,17 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       throw new Error("Rust/wgpu Vulkan server is not running.");
     }
     this.evaluationId += 1;
-    const result = await this.server.evaluate(this.evaluationId, azimuthDeg, altitudeDeg, {
-      includeMask: true,
-    });
+    let result;
+    try {
+      result = await this.server.evaluate(this.evaluationId, azimuthDeg, altitudeDeg, {
+        includeMask: true,
+      });
+    } catch (error) {
+      console.error(`[rust-wgpu-vulkan] evaluate failed, killing server: ${error instanceof Error ? error.message : error}`);
+      try { await this.server.forceKill(); } catch { /* best effort */ }
+      this.server = null;
+      throw error;
+    }
     if (result.pointCount !== pointCount) {
       throw new Error(
         `Rust/wgpu Vulkan point count mismatch: server=${result.pointCount}, expected=${pointCount}`,
@@ -678,7 +695,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       resolution: this.resolution,
       env: makeRustWgpuVulkanEnv(),
       startupTimeoutMs: 30_000,
-      evaluationTimeoutMs: 60_000,
+      evaluationTimeoutMs: 180_000,
     });
     if (started.ready.pointCount !== pointCount) {
       await started.server.shutdown();
