@@ -270,17 +270,157 @@ L'implémentation de cet ADR devient intéressante quand :
 
 Tant que la couverture reste "2026 pour Lausanne centre" et que le cache existant suffit pour l'usage, le gain est théorique.
 
-## Étapes d'implémentation (si retenu)
+## Plan d'implémentation
 
-1. **Design format atlas** : header + index + bit-packed data, extension `.atlas.bin.gz`
-2. **Atlas writer** : `encodeTileAtlasToBinary(buckets: Map<BucketKey, FrameMasks>)` 
-3. **Atlas reader** : `decodeTileAtlasFromBinary(raw)` + `lookupShadowByAngle`
-4. **Bucket enumeration** : script qui génère la liste des buckets à précomputer pour une région donnée (dense ou empirique selon config)
-5. **Précompute route** : nouvelle commande `pnpm precompute:atlas --region=lausanne --resolution=adaptive`, réutilise le backend Vulkan avec angles directs
-6. **Runtime wiring** : fallback dans `loadPrecomputedSunlightTileBinary` — si l'atlas existe pour la tuile, utiliser l'atlas ; sinon utiliser l'ancien cache date-keyed
-7. **Migration optionnelle** : script qui relit les caches date-keyed existants et les convertit en atlas (attention : c'est juste un re-keying, pas une re-compute)
-8. **Tests** : bench divergence atlas vs date-keyed sur 3-5 tuiles, mesurer l'erreur au niveau bit (attendu <1% sauf près de l'horizon)
-9. **Déprécation** : une fois l'atlas stable, arrêter d'écrire le cache date-keyed et supprimer les anciens fichiers (regain disque énorme)
+Deux chantiers distincts qui peuvent se faire séquentiellement : **(A) génération atlas** puis **(B) utilisation runtime**. La coexistence date-keyed + atlas est préservée via fallback pendant toute la migration.
+
+### Phase 0 : Baselines (préalable, fait dans la session 2026-04-17)
+
+- [x] Format binaire date-keyed (commits `066fa89`, `2da1fea`) — baseline de performance et stockage
+- [x] Bench divergence single-tile (commit `1a390fa`) — confirme 1° comme résolution cible
+- [x] Bench consecutive-day sharing (commit `143a8aa`) — confirme l'intérêt multi-échelles
+- [x] Bench scripts prêts (commit `b01017e`) — `atlas-divergence-from-dataset.ts` et `atlas-wallclock-estimate.ts` à lancer quand la précompute date-keyed 200 jours est finie
+- [ ] **Lancer les bench scripts après complétion précompute date-keyed** — obtenir les chiffres de divergence à grande échelle et la projection wallclock atlas avant de coder
+
+### Phase A — Génération atlas (~1.5j)
+
+**Module `src/lib/precompute/sunlight-cache-atlas.ts`** (~400 LOC)
+
+Mirror de `sunlight-cache-binary.ts` adapté au format atlas. API :
+
+```ts
+export interface BinaryTileAtlas {
+  meta: BinaryTileAtlasMetadata;  // region, modelHash, tile, model, stats, resolutionDeg
+  pointCount: number;
+  // Points (typed arrays, identique à BinaryTileArtifact)
+  pointLon, pointLat, pointIx, pointIy, pointOutdoorIndex, pointFlags;
+  // Buckets triés par (altBucket, azBucket)
+  bucketCount: number;
+  bucketAz: Int16Array;
+  bucketAlt: Int16Array;
+  bucketOffsets: Uint32Array;
+  bucketSunnyCounts: Uint32Array;
+  bucketSunnyNoVegCounts: Uint32Array;
+  maskBuffer: Uint8Array;  // 5 masks × bucketCount, concaténés
+}
+
+export function encodeTileAtlasToBinary(atlas: BinaryTileAtlas): Buffer;
+export function decodeTileAtlasFromBinary(raw: Uint8Array): BinaryTileAtlas;
+export async function writePrecomputedTileAtlas(...);
+export async function loadPrecomputedTileAtlas(...);
+export function lookupAtlasBucket(atlas, azBucket, altBucket): AtlasBucketEntry | null;
+```
+
+**Script `scripts/precompute/precompute-region-atlas.ts`** (~300 LOC)
+
+```bash
+pnpm tsx scripts/precompute/precompute-region-atlas.ts \
+  --region=lausanne \
+  --coverage-start-date=2026-01-01 --coverage-days=366 \
+  --sample-every-minutes=15 \
+  --resolution-deg=1
+```
+
+Logique par tuile :
+1. Enumérer les (az, alt) uniques que le soleil visite sur la période coverage
+2. Générer ~3 500 "synthetic frames" avec chacune un utcDate représentatif qui retombe dans ce bucket
+3. Appeler l'infrastructure Vulkan existante (`evaluateBatchFramesWithShadows`) avec ces frames dédoublonnées
+4. Collecter les masks par bucket, écrire `.atlas.bin.gz`
+
+Le backend Rust/Vulkan prend déjà `(az, alt)` en entrée — **zéro modification côté shader**. La déduplication se fait dans l'orchestration TS.
+
+**Tests** :
+- Round-trip encoder/décoder (bitwise exact)
+- Lookup par bucket valide / bucket absent
+- Cohérence : un atlas régénéré deux fois doit être bit-identique
+
+### Phase B — Utilisation runtime (~1j)
+
+**Adaptation `sunlight-tile-service.ts`**
+
+Dans `loadTileBinaryDiskOnly`, ajouter une tentative atlas avant le fallback date-keyed :
+
+```ts
+async function loadTileBinaryDiskOnly(params) {
+  // 1. Try atlas (year-independent, covers all dates)
+  const atlas = await loadPrecomputedTileAtlas({
+    region, modelHash, gridStep, tileId
+  });
+  if (atlas) return { kind: "atlas", atlas };
+
+  // 2. Fallback: legacy date-keyed
+  const binary = await loadPrecomputedSunlightTileBinary({...});
+  if (binary) return { kind: "date-keyed", binary };
+  return null;
+}
+```
+
+**Adaptation `/api/sunlight/timeline/stream`**
+
+La boucle actuelle lit 60 frames séquentielles du `.tile.bin.gz`. Avec atlas :
+
+```ts
+// Pour chaque frame requise du client :
+const utcDate = getFrameUtcDate(frameIndex);
+const pos = SunCalc.getPosition(utcDate, tileCenterLat, tileCenterLon);
+const azB = Math.floor(pos.az / atlas.resolutionDegAz);
+const altB = Math.floor(pos.alt / atlas.resolutionDegAlt);
+const bucket = lookupAtlasBucket(atlas, azB, altB);
+// Le reste du pipeline (remap outdoorIndex → grid cell, encode masks,
+// send SSE) est IDENTIQUE.
+```
+
+Le streaming / prefetch restent — on lit 1 atlas par tuile au lieu de 1 bin-gz par tuile.
+
+**Adaptation `/api/places/windows` (fast path, ADR-0012)**
+
+`lookupPointInTile` reste identique. Dans la boucle samples, au lieu d'itérer `binary.meta.framesMeta`, on itère les utcDates du client et on lookup par angle dans l'atlas :
+
+```ts
+for (const utcDate of dailySamples) {
+  const {az, alt} = sunPositionAt(utcDate, tileCenter);
+  const bucket = lookupAtlasBucket(hit.atlas, azB, altB);
+  samples.push({
+    isSunny: readBit(bucket.sunMask, outdoorIndex),
+    localTime: formatLocalTime(utcDate, timezone),
+    utcTime: utcDate.toISOString(),
+  });
+}
+```
+
+### Phase C — Validation (~0.5j)
+
+1. Re-précomputer 3-5 tuiles représentatives en atlas (centre urbain dense, périphérie, bord de lac, colline)
+2. Lancer un bench end-to-end : `/api/sunlight/timeline/stream` sur bbox couvrant ces tuiles, comparer atlas vs date-keyed
+3. Lancer `/api/places/windows` sur 50-100 places dans les tuiles migrées, comparer résultats
+4. Divergence attendue : ≤1% sunnyMinutes par place vs baseline date-keyed
+
+### Phase D — Rollout (~1j sur un week-end)
+
+1. Précompute atlas complet pour Lausanne (wallclock estimé ~8-15h selon résolution — tournant la nuit)
+2. Vérifier divergence agrégée via `atlas-divergence-from-dataset.ts`
+3. Activer le reader atlas sans toucher les anciens caches (coexistence via fallback)
+4. Monitorer les métriques UX pendant quelques jours
+5. Si stable : supprimer les `.tile.bin.gz` de Lausanne (gain disque ~15 GB pour 200 jours, ~55 GB pour année complète)
+6. Répéter pour Nyon, Morges, Genève
+
+### Migration des caches existants
+
+**Pas de migration automatique possible** : l'atlas a besoin de masks à des angles **précis** (centre de bucket), pas aux angles exacts des dates précomputées. Les bits ne sont pas interchangeables — il faut re-précomputer.
+
+Mais c'est fait **une fois** et ça dure éternellement. Une fois l'atlas de Lausanne fait, il couvre 2026, 2027, 2028, ... sans coût supplémentaire.
+
+### Ordre d'exécution recommandé
+
+1. ⏳ Fin du précompute date-keyed 200 jours (en cours, ETA ~3h)
+2. ▶ Lancer les deux bench scripts (Phase 0 restante)
+3. ▶ Phase A (génération atlas)
+4. ▶ Re-précomputer 3-5 tuiles pilote en atlas
+5. ▶ Phase B (runtime)
+6. ▶ Phase C (validation sur tuiles pilote)
+7. ▶ Phase D (rollout complet si validation OK)
+
+**Le chemin critique est 2-3j de dev concentrés + une nuit de compute atlas. Aucune interruption de service** grâce au fallback date-keyed.
 
 ## Sécurités
 
