@@ -58,6 +58,10 @@ import {
   type RegionBbox,
   type RegionTileSpec,
 } from "./sunlight-cache";
+import {
+  loadPrecomputedSunlightTileBinary,
+  type BinaryTileArtifact,
+} from "./sunlight-cache-binary";
 
 export async function disposeSunlightTileEvaluationBackends(): Promise<void> {
   // Sync dispose on this branch; kept async-signed to match cache-admin expectations
@@ -72,6 +76,7 @@ const BUILDING_TILE_ALLOWLIST_VERSION = "tile-allowlist-v1";
 const PRECOMPUTED_REGIONS: PrecomputedRegionName[] = ["lausanne", "nyon", "morges", "geneve"];
 const manifestMemoryCache = new TtlCache<PrecomputedSunlightManifest | null>(60_000, 64);
 const tileMemoryCache = new TtlCache<PrecomputedSunlightTileArtifact | null>(60_000, 128);
+const tileBinaryMemoryCache = new TtlCache<BinaryTileArtifact | null>(60_000, 128);
 
 type BuildingsIndex = NonNullable<
   Awaited<ReturnType<typeof buildSharedPointEvaluationSources>>["buildingsIndex"]
@@ -508,6 +513,34 @@ function stripArtifactDiagnostics(
   };
 }
 
+async function loadTileBinaryDiskOnly(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  date: string;
+  gridStepMeters: number;
+  sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
+  tileId: string;
+}): Promise<BinaryTileArtifact | null> {
+  const cacheKey = JSON.stringify({
+    kind: "bin",
+    region: params.region,
+    modelVersionHash: params.modelVersionHash,
+    date: params.date,
+    gridStepMeters: params.gridStepMeters,
+    sampleEveryMinutes: params.sampleEveryMinutes,
+    startLocalTime: params.startLocalTime,
+    endLocalTime: params.endLocalTime,
+    tileId: params.tileId,
+  });
+  const cached = tileBinaryMemoryCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const loaded = await loadPrecomputedSunlightTileBinary(params);
+  tileBinaryMemoryCache.set(cacheKey, loaded);
+  return loaded;
+}
+
 async function loadTileDiskOnly(params: {
   region: PrecomputedRegionName;
   modelVersionHash: string;
@@ -519,14 +552,35 @@ async function loadTileDiskOnly(params: {
   tileId: string;
   stripDiagnostics?: boolean;
 }) {
-  const loaded = await loadPrecomputedSunlightTile(params);
-  const artifact = loaded && params.stripDiagnostics
-    ? stripArtifactDiagnostics(loaded)
-    : loaded;
-  return {
-    artifact,
-    layer: loaded ? ("L2" as const) : ("MISS" as const),
-  };
+  // Use the shared memory cache to avoid re-parsing large JSON artifacts on
+  // repeated requests — the 60s TTL covers a user clicking around the UI.
+  //
+  // IMPORTANT: the cache stores the stripped artifact (no per-frame
+  // diagnostics arrays) — a full artifact is ~60 MB due to diagnostics
+  // (62500 points × 60 frames × multiple typed arrays per frame) and 128
+  // cached tiles would blow past the Node heap. We only need diagnostics
+  // for precompute callers, never for cache-only reads.
+  const cacheKey = JSON.stringify({
+    region: params.region,
+    modelVersionHash: params.modelVersionHash,
+    date: params.date,
+    gridStepMeters: params.gridStepMeters,
+    sampleEveryMinutes: params.sampleEveryMinutes,
+    startLocalTime: params.startLocalTime,
+    endLocalTime: params.endLocalTime,
+    tileId: params.tileId,
+  });
+  let stripped = tileMemoryCache.get(cacheKey);
+  let layer: "L1" | "L2" | "MISS";
+  if (stripped !== undefined) {
+    layer = stripped ? "L1" : "MISS";
+  } else {
+    const raw = await loadPrecomputedSunlightTile(params);
+    stripped = raw ? stripArtifactDiagnostics(raw) : null;
+    tileMemoryCache.set(cacheKey, stripped);
+    layer = stripped ? "L2" : "MISS";
+  }
+  return { artifact: stripped, layer };
 }
 
 async function upsertManifest(params: {
@@ -1677,7 +1731,11 @@ export interface StreamTileResult {
   tileId: string;
   tileIndex: number;
   totalTiles: number;
-  artifact: PrecomputedSunlightTileArtifact;
+  /** Legacy JSON artifact. Absent when the tile was loaded from the binary
+   * format (cache-only fast path) — consumers must then read `binary`. */
+  artifact?: PrecomputedSunlightTileArtifact;
+  /** Fast binary artifact with points and masks as typed arrays. */
+  binary?: BinaryTileArtifact;
   layer: "L1" | "L2" | "MISS";
 }
 
@@ -1752,9 +1810,41 @@ export async function* streamTilesForBbox(params: {
     tileSizeMeters,
     bbox: params.bbox,
   });
-  const requiredTiles = requiredTileIds
+  let requiredTiles = requiredTileIds
     .map((tileId) => tileById.get(tileId) ?? null)
     .filter((tile): tile is RegionTileSpec => tile !== null);
+
+  // Cache-only optimization: scan the cache directory ONCE to find which
+  // tiles actually have an artifact, instead of probing the filesystem for
+  // each intersecting tile × each time window (on a Lausanne-wide bbox this
+  // was ~700 wasted ENOENT's).
+  if (params.cacheOnly) {
+    const dataPaths = await import("@/lib/storage/data-paths");
+    const fsMod = await import("node:fs/promises");
+    const pathMod = await import("node:path");
+    const cachedTileIds = new Set<string>();
+    for (const tw of cachedTimeWindows) {
+      const tilesDir = pathMod.join(
+        dataPaths.CACHE_SUNLIGHT_DIR,
+        region, modelVersionHash, `g${params.gridStepMeters}`, `m${params.sampleEveryMinutes}`,
+        params.date, `t${tw.startLocalTime.replace(":", "")}-${tw.endLocalTime.replace(":", "")}`, "tiles",
+      );
+      try {
+        for (const f of await fsMod.readdir(tilesDir)) {
+          if (f.endsWith(".tile.bin.gz")) {
+            cachedTileIds.add(f.slice(0, -".tile.bin.gz".length));
+          } else if (f.endsWith(".json.gz")) {
+            cachedTileIds.add(f.slice(0, -".json.gz".length));
+          }
+        }
+      } catch { /* no tiles for this time window */ }
+    }
+    const before = requiredTiles.length;
+    requiredTiles = requiredTiles.filter((t) => cachedTileIds.has(t.tileId));
+    process.stderr.write(
+      `[stream:cache-only] bbox intersects ${before} tiles, ${requiredTiles.length} in cache (skipping ${before - requiredTiles.length} misses)\n`,
+    );
+  }
 
   const samples = createUtcSamples(
     params.date,
@@ -1767,33 +1857,91 @@ export async function* streamTilesForBbox(params: {
   const resolveStartedAt = performance.now();
   let maxPercent = 0;
 
+  // Prefetch window for cache-only reads: load the next N tiles from disk
+  // in parallel while the consumer processes the current one. Each tile
+  // artifact is 1-2MB (gzip-decompressed + JSON.parse ~200-400ms), so
+  // sequential loading makes tiles arrive visibly "drop by drop". Prefetching
+  // overlaps the disk + parse work with the SSE dispatch of the previous tile.
+  const CACHE_PREFETCH = 16;
+  type CachedTileLoad = {
+    artifact: PrecomputedSunlightTileArtifact | null;
+    binary?: BinaryTileArtifact;
+    layer: "L1" | "L2" | "MISS";
+  };
+  const loadOneCached = async (tile: RegionTileSpec): Promise<CachedTileLoad> => {
+    for (const tw of cachedTimeWindows) {
+      // Prefer the compact binary format when available — ~9x faster than
+      // gunzip + JSON.parse on the hot path.
+      const binary = await loadTileBinaryDiskOnly({
+        region,
+        modelVersionHash,
+        date: params.date,
+        gridStepMeters: params.gridStepMeters,
+        sampleEveryMinutes: params.sampleEveryMinutes,
+        startLocalTime: tw.startLocalTime,
+        endLocalTime: tw.endLocalTime,
+        tileId: tile.tileId,
+      });
+      if (binary) {
+        return {
+          artifact: null,
+          binary,
+          layer: "L2" as const,
+        };
+      }
+      const loaded = await loadTileDiskOnly({
+        region,
+        modelVersionHash,
+        date: params.date,
+        gridStepMeters: params.gridStepMeters,
+        sampleEveryMinutes: params.sampleEveryMinutes,
+        startLocalTime: tw.startLocalTime,
+        endLocalTime: tw.endLocalTime,
+        tileId: tile.tileId,
+        stripDiagnostics: true,
+      });
+      if (loaded.artifact) {
+        return { artifact: loaded.artifact, layer: loaded.layer };
+      }
+    }
+    return { artifact: null, layer: "MISS" as const };
+  };
+  const inflight: Array<Promise<CachedTileLoad>> = [];
+  const cacheStreamStarted = params.cacheOnly ? performance.now() : 0;
+  let firstTileAt = 0;
+  let cacheTilesYielded = 0;
+  let cacheTilesMissed = 0;
+
   for (let tileIdx = 0; tileIdx < requiredTiles.length; tileIdx++) {
     const tile = requiredTiles[tileIdx];
 
     if (params.cacheOnly) {
-      // Try all cached time windows until we find this tile
-      for (const tw of cachedTimeWindows) {
-        const loaded = await loadTileDiskOnly({
-          region,
-          modelVersionHash,
-          date: params.date,
-          gridStepMeters: params.gridStepMeters,
-          sampleEveryMinutes: params.sampleEveryMinutes,
-          startLocalTime: tw.startLocalTime,
-          endLocalTime: tw.endLocalTime,
+      // Top up the prefetch queue to CACHE_PREFETCH in-flight reads.
+      while (inflight.length < CACHE_PREFETCH && tileIdx + inflight.length < requiredTiles.length) {
+        inflight.push(loadOneCached(requiredTiles[tileIdx + inflight.length]));
+      }
+      const loaded = await inflight.shift()!;
+      if (loaded.binary || loaded.artifact) {
+        if (firstTileAt === 0) firstTileAt = performance.now() - cacheStreamStarted;
+        cacheTilesYielded += 1;
+        yield {
           tileId: tile.tileId,
-          stripDiagnostics: true,
-        });
-        if (loaded.artifact) {
-          yield {
-            tileId: tile.tileId,
-            tileIndex: tileIdx,
-            totalTiles: requiredTiles.length,
-            artifact: loaded.artifact,
-            layer: loaded.layer,
-          };
-          break;
-        }
+          tileIndex: tileIdx,
+          totalTiles: requiredTiles.length,
+          artifact: loaded.artifact ?? undefined,
+          binary: loaded.binary,
+          layer: loaded.layer,
+        };
+      } else {
+        cacheTilesMissed += 1;
+      }
+      if (tileIdx === requiredTiles.length - 1) {
+        const total = performance.now() - cacheStreamStarted;
+        process.stderr.write(
+          `[stream:cache-only] ${cacheTilesYielded}/${requiredTiles.length} tiles ` +
+          `(${cacheTilesMissed} miss) in ${total.toFixed(0)}ms ` +
+          `(first tile at ${firstTileAt.toFixed(0)}ms, prefetch=${CACHE_PREFETCH})\n`,
+        );
       }
       continue;
     }

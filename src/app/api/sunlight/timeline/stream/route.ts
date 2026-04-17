@@ -16,6 +16,13 @@ import {
   pointInBbox,
   setMaskBit,
 } from "@/lib/precompute/sunlight-cache";
+import {
+  getFrameMask,
+  MASK_KIND_SUN,
+  MASK_KIND_SUN_NO_VEG,
+  type BinaryTileArtifact,
+} from "@/lib/precompute/sunlight-cache-binary";
+import type { PrecomputedSunlightTileArtifact } from "@/lib/precompute/sunlight-cache";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext, buildSharedPointEvaluationSources } from "@/lib/sun/evaluation-context";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
@@ -285,10 +292,19 @@ export async function GET(request: Request) {
           let globalMinCol = Infinity, globalMaxCol = -Infinity;
           let globalMinRow = Infinity, globalMaxRow = -Infinity;
 
+          const perTileTiming = { parse: 0, remap: 0, encode: 0, indoor: 0, send: 0, streamNext: 0, totalYielded: 0 };
+          const tStreamNext0 = performance.now();
           let result = await tileStream.next();
+          perTileTiming.streamNext += performance.now() - tStreamNext0;
           while (!result.done) {
             if (streamAborted) return;
-            const { tileId, tileIndex, totalTiles, artifact, layer } = result.value;
+            const tileT0 = performance.now();
+            const { tileId, tileIndex, totalTiles, artifact, binary, layer } = result.value;
+
+            const viewPointCount = binary ? binary.pointCount : artifact!.points.length;
+            const viewFrameCount = binary ? binary.frameCount : artifact!.frames.length;
+            const viewModel = binary ? binary.meta.model : artifact!.model;
+            const viewWarnings = binary ? binary.meta.warnings : artifact!.warnings;
 
             if (!sentStart) {
               sendEvent("start", {
@@ -299,12 +315,12 @@ export async function GET(request: Request) {
                 sampleEveryMinutes: query.sampleEveryMinutes,
                 gridStepMeters: query.gridStepMeters,
                 totalTiles,
-                frameCount: artifact.frames.length,
-                model: artifact.model,
+                frameCount: viewFrameCount,
+                model: viewModel,
               });
               await yieldToEventLoop();
               sentStart = true;
-              frameCount = artifact.frames.length;
+              frameCount = viewFrameCount;
             }
 
             if (layer === "L1" || layer === "L2") {
@@ -321,25 +337,43 @@ export async function GET(request: Request) {
             let tileOutdoorCount = 0;
             let tileMinIx = Infinity, tileMaxIx = -Infinity;
             let tileMinIy = Infinity, tileMaxIy = -Infinity;
-            for (const p of artifact.points) {
-              if (!pointInBbox(p.lon, p.lat, bbox)) continue;
-              tileGridCount += 1;
-              if (p.insideBuilding || p.outdoorIndex === null) {
-                tileIndoorExcluded += 1;
-              } else {
-                tileOutdoorCount += 1;
+            if (binary) {
+              const { pointLon, pointLat, pointIx, pointIy, pointOutdoorIndex, pointFlags } = binary;
+              for (let i = 0; i < viewPointCount; i++) {
+                if (!pointInBbox(pointLon[i], pointLat[i], bbox)) continue;
+                tileGridCount += 1;
+                if ((pointFlags[i] & 1) !== 0 || pointOutdoorIndex[i] < 0) {
+                  tileIndoorExcluded += 1;
+                } else {
+                  tileOutdoorCount += 1;
+                }
+                const ix = pointIx[i], iy = pointIy[i];
+                if (ix < tileMinIx) tileMinIx = ix;
+                if (ix > tileMaxIx) tileMaxIx = ix;
+                if (iy < tileMinIy) tileMinIy = iy;
+                if (iy > tileMaxIy) tileMaxIy = iy;
               }
-              if (p.ix < tileMinIx) tileMinIx = p.ix;
-              if (p.ix > tileMaxIx) tileMaxIx = p.ix;
-              if (p.iy < tileMinIy) tileMinIy = p.iy;
-              if (p.iy > tileMaxIy) tileMaxIy = p.iy;
+            } else {
+              for (const p of artifact!.points) {
+                if (!pointInBbox(p.lon, p.lat, bbox)) continue;
+                tileGridCount += 1;
+                if (p.insideBuilding || p.outdoorIndex === null) {
+                  tileIndoorExcluded += 1;
+                } else {
+                  tileOutdoorCount += 1;
+                }
+                if (p.ix < tileMinIx) tileMinIx = p.ix;
+                if (p.ix > tileMaxIx) tileMaxIx = p.ix;
+                if (p.iy < tileMinIy) tileMinIy = p.iy;
+                if (p.iy > tileMaxIy) tileMaxIy = p.iy;
+              }
             }
 
             totalPointCount += tileOutdoorCount;
             totalGridPointCount += tileGridCount;
             totalIndoorExcluded += tileIndoorExcluded;
-            tileStreamTotalEvaluations += tileOutdoorCount * artifact.frames.length;
-            for (const w of artifact.warnings) allWarnings.add(w);
+            tileStreamTotalEvaluations += tileOutdoorCount * viewFrameCount;
+            for (const w of viewWarnings) allWarnings.add(w);
 
             if (!query.cacheOnly && layer === "MISS" && tilesComputed > query.maxComputeTiles) {
               sendEvent("error", {
@@ -361,6 +395,8 @@ export async function GET(request: Request) {
               continue;
             }
 
+            const tRemapStart = performance.now();
+            perTileTiming.parse += tRemapStart - tileT0;
             // Build grid cell → artifact outdoorIndex mapping.
             // Indoor/outdoor comes from zenith grid metadata (independent
             // of date), not from the cached tile's insideBuilding flags.
@@ -385,60 +421,119 @@ export async function GET(request: Request) {
               region, gmModelVersion.modelVersionHash, query.gridStepMeters, gmTileId,
             ) : null;
 
-            for (const p of artifact.points) {
-              if (!pointInBbox(p.lon, p.lat, bbox)) continue;
-              // Use zenith grid metadata for indoor check if available
-              let isIndoor: boolean;
-              if (gridMetadata) {
-                const gmIx = p.ix - tileMinE;
-                const gmIy = p.iy - tileMinN;
-                const gmW = Math.ceil(tileSizeMeters);
-                const gmIdx = gmIy * gmW + gmIx;
-                isIndoor = gridMetadata.indoor[gmIdx] ?? false;
-              } else {
-                isIndoor = p.insideBuilding;
+            if (binary) {
+              const { pointLon, pointLat, pointIx, pointIy, pointOutdoorIndex, pointFlags } = binary;
+              const gmW = Math.ceil(tileSizeMeters);
+              for (let i = 0; i < viewPointCount; i++) {
+                const lon = pointLon[i], lat = pointLat[i];
+                if (!pointInBbox(lon, lat, bbox)) continue;
+                const ix = pointIx[i], iy = pointIy[i];
+                let isIndoor: boolean;
+                if (gridMetadata) {
+                  const gmIx = ix - tileMinE;
+                  const gmIy = iy - tileMinN;
+                  const gmIdx = gmIy * gmW + gmIx;
+                  isIndoor = gridMetadata.indoor[gmIdx] ?? false;
+                } else {
+                  isIndoor = (pointFlags[i] & 1) !== 0;
+                }
+                const oi = pointOutdoorIndex[i];
+                if (isIndoor || oi < 0) continue;
+                const cellIdx = (iy - tileMinIy) * tileW + (ix - tileMinIx);
+                setMaskBit(outdoorMask, cellIdx);
+                cellToOutdoor[cellIdx] = oi;
               }
-              if (isIndoor || p.outdoorIndex === null) continue;
-              const cellIdx = (p.iy - tileMinIy) * tileW + (p.ix - tileMinIx);
-              setMaskBit(outdoorMask, cellIdx);
-              cellToOutdoor[cellIdx] = p.outdoorIndex;
+            } else {
+              for (const p of artifact!.points) {
+                if (!pointInBbox(p.lon, p.lat, bbox)) continue;
+                let isIndoor: boolean;
+                if (gridMetadata) {
+                  const gmIx = p.ix - tileMinE;
+                  const gmIy = p.iy - tileMinN;
+                  const gmW = Math.ceil(tileSizeMeters);
+                  const gmIdx = gmIy * gmW + gmIx;
+                  isIndoor = gridMetadata.indoor[gmIdx] ?? false;
+                } else {
+                  isIndoor = p.insideBuilding;
+                }
+                if (isIndoor || p.outdoorIndex === null) continue;
+                const cellIdx = (p.iy - tileMinIy) * tileW + (p.ix - tileMinIx);
+                setMaskBit(outdoorMask, cellIdx);
+                cellToOutdoor[cellIdx] = p.outdoorIndex;
+              }
             }
 
             // Build grid-indexed frame masks and collect raw buffers for blob encoding
             const frameMaskBuffers: Array<{ sun: Uint8Array; sunNoVeg: Uint8Array }> = [];
             const tileFrameMeta: Array<{ index: number; localTime: string; sunnyCount: number; sunnyCountNoVegetation: number }> = [];
-            for (const frame of artifact.frames) {
-              const srcMask = decodeBase64Bytes(frame.sunMaskBase64);
-              const dstMask = new Uint8Array(Math.ceil(gridCellCount / 8));
-              let sunnyCount = 0;
-              for (let i = 0; i < gridCellCount; i++) {
-                const oi = cellToOutdoor[i];
-                if (oi >= 0 && isMaskBitSet(srcMask, oi)) {
-                  setMaskBit(dstMask, i);
-                  sunnyCount += 1;
+            if (binary) {
+              for (let f = 0; f < viewFrameCount; f++) {
+                const srcMask = getFrameMask(binary, f, MASK_KIND_SUN);
+                const dstMask = new Uint8Array(Math.ceil(gridCellCount / 8));
+                let sunnyCount = 0;
+                for (let i = 0; i < gridCellCount; i++) {
+                  const oi = cellToOutdoor[i];
+                  if (oi >= 0 && isMaskBitSet(srcMask, oi)) {
+                    setMaskBit(dstMask, i);
+                    sunnyCount += 1;
+                  }
                 }
-              }
-              const srcNoVeg = decodeBase64Bytes(frame.sunMaskNoVegetationBase64);
-              const dstNoVeg = new Uint8Array(Math.ceil(gridCellCount / 8));
-              let sunnyNoVeg = 0;
-              for (let i = 0; i < gridCellCount; i++) {
-                const oi = cellToOutdoor[i];
-                if (oi >= 0 && isMaskBitSet(srcNoVeg, oi)) {
-                  setMaskBit(dstNoVeg, i);
-                  sunnyNoVeg += 1;
+                const srcNoVeg = getFrameMask(binary, f, MASK_KIND_SUN_NO_VEG);
+                const dstNoVeg = new Uint8Array(Math.ceil(gridCellCount / 8));
+                let sunnyNoVeg = 0;
+                for (let i = 0; i < gridCellCount; i++) {
+                  const oi = cellToOutdoor[i];
+                  if (oi >= 0 && isMaskBitSet(srcNoVeg, oi)) {
+                    setMaskBit(dstNoVeg, i);
+                    sunnyNoVeg += 1;
+                  }
                 }
+                frameMaskBuffers.push({ sun: dstMask, sunNoVeg: dstNoVeg });
+                const fm = binary.meta.framesMeta[f];
+                tileFrameMeta.push({
+                  index: fm.index,
+                  localTime: fm.localTime,
+                  sunnyCount,
+                  sunnyCountNoVegetation: sunnyNoVeg,
+                });
               }
-              frameMaskBuffers.push({ sun: dstMask, sunNoVeg: dstNoVeg });
-              tileFrameMeta.push({
-                index: frame.index,
-                localTime: frame.localTime,
-                sunnyCount,
-                sunnyCountNoVegetation: sunnyNoVeg,
-              });
+            } else {
+              for (const frame of artifact!.frames) {
+                const srcMask = decodeBase64Bytes(frame.sunMaskBase64);
+                const dstMask = new Uint8Array(Math.ceil(gridCellCount / 8));
+                let sunnyCount = 0;
+                for (let i = 0; i < gridCellCount; i++) {
+                  const oi = cellToOutdoor[i];
+                  if (oi >= 0 && isMaskBitSet(srcMask, oi)) {
+                    setMaskBit(dstMask, i);
+                    sunnyCount += 1;
+                  }
+                }
+                const srcNoVeg = decodeBase64Bytes(frame.sunMaskNoVegetationBase64);
+                const dstNoVeg = new Uint8Array(Math.ceil(gridCellCount / 8));
+                let sunnyNoVeg = 0;
+                for (let i = 0; i < gridCellCount; i++) {
+                  const oi = cellToOutdoor[i];
+                  if (oi >= 0 && isMaskBitSet(srcNoVeg, oi)) {
+                    setMaskBit(dstNoVeg, i);
+                    sunnyNoVeg += 1;
+                  }
+                }
+                frameMaskBuffers.push({ sun: dstMask, sunNoVeg: dstNoVeg });
+                tileFrameMeta.push({
+                  index: frame.index,
+                  localTime: frame.localTime,
+                  sunnyCount,
+                  sunnyCountNoVegetation: sunnyNoVeg,
+                });
+              }
             }
 
+            const tEncodeStart = performance.now();
+            perTileTiming.remap += tEncodeStart - tRemapStart;
             // Concatenate + gzip all masks into a single compressed blob
             const masksBase64 = encodeTileMasksBlob(outdoorMask, frameMaskBuffers);
+            perTileTiming.encode += performance.now() - tEncodeStart;
 
             // Per-tile corners via lv95ToWgs84 for affine transform positioning.
             const gs = query.gridStepMeters;
@@ -447,6 +542,7 @@ export async function GET(request: Request) {
             const tileNW = lv95ToWgs84(tileMinIx * gs, (tileMaxIy + 1) * gs);
             const tileSE = lv95ToWgs84((tileMaxIx + 1) * gs, tileMinIy * gs);
 
+            const tSendStart = performance.now();
             sendEvent("tile", {
               tileId,
               tileIndex,
@@ -467,8 +563,19 @@ export async function GET(request: Request) {
               frames: tileFrameMeta,
             });
             await yieldToEventLoop();
+            perTileTiming.send += performance.now() - tSendStart;
+            perTileTiming.totalYielded += 1;
 
+            const tNext0 = performance.now();
             result = await tileStream.next();
+            perTileTiming.streamNext += performance.now() - tNext0;
+          }
+
+          if (perTileTiming.totalYielded > 0) {
+            const n = perTileTiming.totalYielded;
+            process.stderr.write(
+              `[stream:per-tile-timing] ${n} tiles avg parse=${(perTileTiming.parse / n).toFixed(1)}ms remap=${(perTileTiming.remap / n).toFixed(1)}ms encode=${(perTileTiming.encode / n).toFixed(1)}ms send=${(perTileTiming.send / n).toFixed(1)}ms streamNext=${(perTileTiming.streamNext / n).toFixed(1)}ms | totals parse=${perTileTiming.parse.toFixed(0)} remap=${perTileTiming.remap.toFixed(0)} encode=${perTileTiming.encode.toFixed(0)} send=${perTileTiming.send.toFixed(0)} streamNext=${perTileTiming.streamNext.toFixed(0)}\n`,
+            );
           }
 
           // Generator returned init metadata (or null if region not found)
