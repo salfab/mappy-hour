@@ -539,7 +539,7 @@ export class RustWgpuVulkanShadowServer {
     });
   }
 
-  private async forceKill(): Promise<void> {
+  async forceKill(): Promise<void> {
     if (!this.hasExited()) {
       try {
         this.child.kill();

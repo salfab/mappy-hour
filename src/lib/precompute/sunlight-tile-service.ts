@@ -391,17 +391,34 @@ function collectTileWindowBuildingAllowlist(params: {
 }
 
 export function resolveRegionForBbox(bbox: RegionBbox): PrecomputedRegionName | null {
-  return (
-    PRECOMPUTED_REGIONS.find((region) => {
-      const regionBbox = getPrecomputedRegionBbox(region);
-      return (
-        regionBbox.minLon <= bbox.minLon &&
-        regionBbox.minLat <= bbox.minLat &&
-        regionBbox.maxLon >= bbox.maxLon &&
-        regionBbox.maxLat >= bbox.maxLat
-      );
-    }) ?? null
-  );
+  // Prefer a region that fully contains the bbox (unambiguous match).
+  const fullyContaining = PRECOMPUTED_REGIONS.find((region) => {
+    const rb = getPrecomputedRegionBbox(region);
+    return (
+      rb.minLon <= bbox.minLon &&
+      rb.minLat <= bbox.minLat &&
+      rb.maxLon >= bbox.maxLon &&
+      rb.maxLat >= bbox.maxLat
+    );
+  });
+  if (fullyContaining) return fullyContaining;
+
+  // Fallback: pick the region with the largest intersection area with the
+  // requested bbox. This lets cache-only reads succeed when the user's bbox
+  // slightly overhangs a region (e.g., a few hundred meters south of the
+  // configured Lausanne bounds) — we serve whatever cached tiles fall in
+  // the intersection instead of failing hard with "No tiles found".
+  let best: { region: PrecomputedRegionName; area: number } | null = null;
+  for (const region of PRECOMPUTED_REGIONS) {
+    const rb = getPrecomputedRegionBbox(region);
+    const lonOverlap = Math.max(0, Math.min(rb.maxLon, bbox.maxLon) - Math.max(rb.minLon, bbox.minLon));
+    const latOverlap = Math.max(0, Math.min(rb.maxLat, bbox.maxLat) - Math.max(rb.minLat, bbox.minLat));
+    const area = lonOverlap * latOverlap;
+    if (area > 0 && (!best || area > best.area)) {
+      best = { region, area };
+    }
+  }
+  return best?.region ?? null;
 }
 
 export function createUtcSamples(
