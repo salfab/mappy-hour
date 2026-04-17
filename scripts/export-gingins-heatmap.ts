@@ -91,7 +91,11 @@ async function readArtifact(filePath: string): Promise<SunlightArtifact | null> 
 }
 
 function decodeMask(base64: string, pointCount: number): Uint8Array {
-  return new Uint8Array(Buffer.from(base64, "base64").buffer).slice(0, Math.ceil(pointCount / 8));
+  const buf = Buffer.from(base64, "base64");
+  // Buffer.from() may return a Buffer backed by a SHARED pool ArrayBuffer.
+  // Ignoring buf.byteOffset/byteLength would read random pool data instead
+  // of the actual decoded bytes. Use the 3-arg Uint8Array ctor or copy.
+  return new Uint8Array(buf.buffer, buf.byteOffset, Math.min(buf.byteLength, Math.ceil(pointCount / 8)));
 }
 
 function isBitSet(mask: Uint8Array, index: number): boolean {
