@@ -1495,11 +1495,7 @@ export async function precomputeCacheRuns(
     }
 
     if (!usedWorkerPool) {
-      try {
-        await runSequentialTiles();
-      } finally {
-        await disposeSunlightTileEvaluationBackends();
-      }
+      await runSequentialTiles();
     }
 
     const manifest: PrecomputedSunlightManifest = {
@@ -1554,6 +1550,11 @@ export async function precomputeCacheRuns(
         elapsedMs: Math.round((performance.now() - startedAt) * 1000) / 1000,
     });
   }
+
+  // Dispose once after all days are processed (keeps the Vulkan server alive
+  // across the entire precompute run — avoids repeated spawn/destroy which
+  // triggers Intel Arc driver hangs)
+  await disposeSunlightTileEvaluationBackends();
 
   return {
     generatedAt: new Date().toISOString(),
