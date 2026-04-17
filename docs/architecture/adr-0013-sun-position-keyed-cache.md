@@ -53,20 +53,87 @@ Au-delà des deux mécanismes ci-dessus, deux `(date, heure)` éloignés peuvent
 
 ## Proposition
 
-### Structure de cache
+### Structure de cache : un atlas par tuile
 
-Par tuile, un seul **atlas** sparse :
+Chemin :
 
 ```
-data/cache/sunlight/{region}/{modelHash}/g{grid}/angles/{tileId}.atlas.bin.gz
+data/cache/sunlight/{region}/{modelHash}/g{grid}/atlas/{tileId}.atlas.bin.gz
 ```
 
-L'atlas contient :
-- Header : magic, version, nombre de buckets, grille de résolution
-- Index : tableau `(az_bucket, alt_bucket) → offset` (ou map triée)
-- Données : pour chaque bucket, les 5 masques (`sunMask`, `sunMaskNoVeg`, `terrainBlocked`, `buildingsBlocked`, `vegetationBlocked`) bit-packed
+**Pourquoi un atlas par tuile et pas autre chose** :
+
+| Layout alternatif | Pourquoi pas |
+|---|---|
+| Un fichier par bucket par tuile (sparse total) | 181 tuiles × ~3 500 buckets = **~630 000 fichiers par région**. NTFS se traîne à cet ordre de grandeur d'inodes, gzip est peu efficace sur des fichiers de ~36 KB, et chaque requête UI devrait ouvrir 60 fichiers par tuile. |
+| Un fichier par bucket × toutes les tuiles (sheet) | Lire une seule tuile à un angle donné nécessite d'ouvrir un fichier qui contient les 181 tuiles — beaucoup de data jetée pour chaque query. |
+| **Un atlas par tuile** (recommandé) | Aligné sur les access patterns timeline (N tuiles × 60 buckets → N fichiers, lookup interne) et places/windows (1 tuile → 1 fichier). ~181 fichiers par région, très filesystem-friendly. |
+
+**Structure interne** (analogue à `sunlight-cache-binary.ts` actuel, avec keying modifié) :
+
+```
+Header (32 B fixes, little-endian) :
+  magic u32, version u16, flags u16,
+  pointCount u32, bucketCount u32,
+  maskBytesPerFrame u32,
+  resolutionDegAz f32, resolutionDegAlt f32,
+  pointStride u32, metaJsonLen u32,
+  bucketIndexOffset u32, bucketDataOffset u32
+
+Metadata JSON (~5 KB) :
+  { region, modelVersionHash, tile: RegionTileSpec, model, warnings, stats,
+    pointIds?, indoorBuildingIds?, pointElevationMeters?,
+    pointLv95Easting?, pointLv95Northing? }
+
+Points (pointCount × 32 B) :
+  inchangé vs format tuile actuel — on a toujours besoin de
+  ix/iy/outdoorIndex/flags pour résoudre (lat, lon) → cellule.
+
+Bucket Index (bucketCount × 8 B) trié par (altBucket, azBucket) :
+  { azBucket: u16, altBucket: u16, dataOffset: u32 }
+
+Bucket Data (bucketCount × entry) :
+  pour chaque bucket :
+    sunnyCount u32, sunnyNoVegCount u32,
+    sunMask, sunMaskNoVegMask, terrainMask, buildingsMask, vegetationMask
+    (5 × maskBytesPerFrame, bit-packed contigus)
+```
 
 Format bit-pack et taille mask identiques au format binaire tuile actuel (ADR-0011). Seul le keying change.
+
+### Tailles estimées (Lausanne, bucket 1°, ~3 500 buckets par tuile)
+
+Par atlas :
+- Points : 62 500 × 32 B = 2 MB
+- Bucket index : 3 500 × 8 B = 28 KB
+- Bucket data : 3 500 × 5 × 7 812 B ≈ 135 MB raw
+- **Total raw : ~137 MB** → gzippé à ~50 MB (les masks bit-packed compriment moyennement)
+
+× 181 tuiles = **~9 GB pour tout Lausanne**.
+
+**Comparaison stockage** :
+
+| Config | Taille disque | Couverture temps |
+|---|---|---|
+| Cache actuel (date-keyed, 200 jours) | ~15 GB | 200 jours fixes |
+| Cache actuel (date-keyed, année complète) | ~55 GB | 1 an fixe |
+| **Atlas 1°** | **~9 GB** | **Tous les ans** |
+| Atlas 0.5° | ~18 GB | Tous les ans |
+
+L'atlas à 1° prend **moins de disque que le cache actuel pour une seule année**, et couvre toutes les années futures.
+
+### Lookup : structure de l'index bucket
+
+Deux options pour le bucket index à l'intérieur de l'atlas :
+
+1. **Index trié + binary search** (O(log n) en ~12 comparaisons pour 3 500 buckets)
+   - Taille : `bucketCount × 8 B` → ~28 KB par tuile
+   - Simple, sparse, efficace
+2. **Grid dense 2D** (O(1) lookup direct par `azBucket * gridH + altBucket`)
+   - Taille : `360 × 90 × 4 B` = 130 KB par tuile à 1° — plus de surcoût, mais constant et pas de search
+   - × 181 tuiles = 23 MB de surcoût total pour Lausanne, probablement acceptable pour la simplicité
+
+**À trancher à l'implémentation**. Le dense grid est sans doute plus simple à débugger et le surcoût négligeable comparé aux 9 GB totaux. Mais l'index trié reste plus naturel pour une structure vraiment sparse.
 
 ### Lookup runtime
 
