@@ -317,27 +317,12 @@ export async function writePrecomputedSunlightManifest(
 export async function writePrecomputedSunlightTile(
   artifact: PrecomputedSunlightTileArtifact,
 ): Promise<void> {
-  const targetPath = getPrecomputedSunlightTilePath({
-    region: artifact.region,
-    modelVersionHash: artifact.modelVersionHash,
-    date: artifact.date,
-    gridStepMeters: artifact.gridStepMeters,
-    sampleEveryMinutes: artifact.sampleEveryMinutes,
-    startLocalTime: artifact.startLocalTime,
-    endLocalTime: artifact.endLocalTime,
-    tileId: artifact.tile.tileId,
-  });
   // Dynamic import to avoid a module cycle (sunlight-cache-binary imports
   // type PrecomputedSunlightTileArtifact from this file).
   const { writePrecomputedSunlightTileBinary } = await import(
     "./sunlight-cache-binary"
   );
-  // Write both formats in parallel. JSON is kept for backward compat /
-  // fallback; readers prefer the binary form when available.
-  await Promise.all([
-    writeCompressedJson(targetPath, artifact),
-    writePrecomputedSunlightTileBinary(artifact),
-  ]);
+  await writePrecomputedSunlightTileBinary(artifact);
 }
 
 export async function loadPrecomputedSunlightManifest(params: {
@@ -379,6 +364,27 @@ export async function loadPrecomputedSunlightTile(params: {
   endLocalTime: string;
   tileId: string;
 }): Promise<PrecomputedSunlightTileArtifact | null> {
+  // Prefer the binary format when available; reconstruct the legacy shape
+  // for callers that still expect object-graph points/frames (admin tools,
+  // tests, non-cache-only precompute flow). The cache-only stream reads
+  // binary directly and never comes through this function.
+  const {
+    loadPrecomputedSunlightTileBinary,
+    binaryTileToLegacyArtifact,
+  } = await import("./sunlight-cache-binary");
+  const binary = await loadPrecomputedSunlightTileBinary(params);
+  if (binary) {
+    if (
+      binary.meta.artifactFormatVersion !== SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION
+    ) {
+      return null;
+    }
+    if (binary.meta.modelVersionHash !== params.modelVersionHash) {
+      return null;
+    }
+    return binaryTileToLegacyArtifact(binary);
+  }
+
   const targetPath = getPrecomputedSunlightTilePath(params);
   try {
     const parsed = await readCompressedJson<PrecomputedSunlightTileArtifact>(targetPath);

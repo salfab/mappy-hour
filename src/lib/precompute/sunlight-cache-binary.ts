@@ -313,6 +313,85 @@ export function getFrameMask(
   return maskBuffer.subarray(offset, offset + maskBytesPerFrame);
 }
 
+/** Reconstruct the legacy JSON-shaped artifact from a binary one.
+ *  Used only by legacy callers that still expect the object-graph form
+ *  (tests, admin tools, non-cache-only precompute). The cache-only hot
+ *  path reads binary directly. */
+export function binaryTileToLegacyArtifact(
+  bin: BinaryTileArtifact,
+): PrecomputedSunlightTileArtifact {
+  const m = bin.meta;
+  const points: PrecomputedSunlightTileArtifact["points"] = new Array(bin.pointCount);
+  const ids = m.pointIds ?? [];
+  const indoorIds = m.indoorBuildingIds ?? [];
+  const elev = m.pointElevationMeters ?? [];
+  const easting = m.pointLv95Easting ?? [];
+  const northing = m.pointLv95Northing ?? [];
+  for (let i = 0; i < bin.pointCount; i++) {
+    const oi = bin.pointOutdoorIndex[i];
+    points[i] = {
+      id: ids[i] ?? `i${i}`,
+      lat: bin.pointLat[i],
+      lon: bin.pointLon[i],
+      lv95Easting: (easting as number[])[i] ?? 0,
+      lv95Northing: (northing as number[])[i] ?? 0,
+      ix: bin.pointIx[i],
+      iy: bin.pointIy[i],
+      insideBuilding: (bin.pointFlags[i] & 1) !== 0,
+      indoorBuildingId: indoorIds[i] ?? null,
+      outdoorIndex: oi < 0 ? null : oi,
+      pointElevationMeters: elev[i] ?? null,
+    };
+  }
+  const frames: PrecomputedSunlightTileArtifact["frames"] = m.framesMeta.map(
+    (fm, f) => ({
+      index: fm.index,
+      localTime: fm.localTime,
+      utcTime: fm.utcTime,
+      sunnyCount: fm.sunnyCount,
+      sunnyCountNoVegetation: fm.sunnyCountNoVegetation,
+      sunMaskBase64: Buffer.from(getFrameMask(bin, f, MASK_KIND_SUN)).toString("base64"),
+      sunMaskNoVegetationBase64: Buffer.from(
+        getFrameMask(bin, f, MASK_KIND_SUN_NO_VEG),
+      ).toString("base64"),
+      terrainBlockedMaskBase64: Buffer.from(
+        getFrameMask(bin, f, MASK_KIND_TERRAIN_BLOCKED),
+      ).toString("base64"),
+      buildingsBlockedMaskBase64: Buffer.from(
+        getFrameMask(bin, f, MASK_KIND_BUILDINGS_BLOCKED),
+      ).toString("base64"),
+      vegetationBlockedMaskBase64: Buffer.from(
+        getFrameMask(bin, f, MASK_KIND_VEGETATION_BLOCKED),
+      ).toString("base64"),
+      // Diagnostics are not persisted in the binary format — callers that
+      // need them must hold onto the live artifact produced at compute time.
+      diagnostics: {
+        horizonAngleDegByPoint: [],
+        buildingBlockerIdByPoint: [],
+        buildingBlockerDistanceMetersByPoint: [],
+        vegetationBlockerDistanceMetersByPoint: [],
+      },
+    }),
+  );
+  return {
+    artifactFormatVersion: m.artifactFormatVersion,
+    region: m.region,
+    modelVersionHash: m.modelVersionHash,
+    date: m.date,
+    timezone: m.timezone,
+    gridStepMeters: m.gridStepMeters,
+    sampleEveryMinutes: m.sampleEveryMinutes,
+    startLocalTime: m.startLocalTime,
+    endLocalTime: m.endLocalTime,
+    tile: m.tile,
+    points,
+    frames,
+    model: m.model,
+    warnings: m.warnings,
+    stats: m.stats,
+  };
+}
+
 function createCacheRunKeyForBinary(params: {
   region: PrecomputedRegionName;
   modelVersionHash: string;
