@@ -205,15 +205,6 @@ export async function findCachedModelVersionHash(params: {
         }
       }
       if (timeWindows.length > 0) {
-        // Sort so the exact match comes first — avoids accidentally preferring
-        // a wider window (e.g. t0000-2359) over the requested one (t0600-2100).
-        timeWindows.sort((a, b) => {
-          const aExact = a.startLocalTime === params.startLocalTime && a.endLocalTime === params.endLocalTime;
-          const bExact = b.startLocalTime === params.startLocalTime && b.endLocalTime === params.endLocalTime;
-          if (aExact && !bExact) return -1;
-          if (!aExact && bExact) return 1;
-          return 0;
-        });
         return { modelVersionHash: hash, timeWindows };
       }
     } catch {
