@@ -63,7 +63,9 @@ import {
   type BinaryTileArtifact,
 } from "./sunlight-cache-binary";
 import {
+  ATLAS_READ_FALLBACK_RESOLUTIONS_DEG,
   loadPrecomputedTileAtlas,
+  loadPrecomputedTileAtlasWithFallback,
   lookupAtlasByAngle,
   type BinaryTileAtlas,
 } from "./sunlight-cache-atlas";
@@ -107,7 +109,7 @@ interface PreparedOutdoorPoint {
   vegetationShadowEvaluator: Awaited<ReturnType<typeof buildPointEvaluationContext>>["vegetationShadowEvaluator"];
 }
 
-interface SunlightTileComputeProgress {
+export interface SunlightTileComputeProgress {
   stage: "prepare-points" | "evaluate-frames";
   completed: number;
   total: number;
@@ -315,11 +317,11 @@ function collectTileSampleCandidateObstacleIndices(params: {
 
 function collectTileWindowBuildingAllowlist(params: {
   tile: RegionTileSpec;
-  samples: Date[];
+  sunPositions: Array<{ azimuthDeg: number; altitudeDeg: number }>;
   buildingsIndex: BuildingsIndex | null;
   maxDistanceMeters?: number;
 }): ReadonlySet<string> | undefined {
-  if (!params.buildingsIndex || params.samples.length === 0) {
+  if (!params.buildingsIndex || params.sunPositions.length === 0) {
     return undefined;
   }
 
@@ -335,7 +337,6 @@ function collectTileWindowBuildingAllowlist(params: {
       params.tile.maxEasting - params.tile.minEasting,
       params.tile.maxNorthing - params.tile.minNorthing,
     ) / 2;
-  const centerWgs84 = lv95ToWgs84(centerX, centerY);
   const maxDistanceMeters = params.maxDistanceMeters ?? BUILDING_SHADOW_MAX_DISTANCE_METERS;
   const maxObstacleHalfDiagonalMeters = obstacles.reduce(
     (maxValue, obstacle) => Math.max(maxValue, obstacle.halfDiagonal),
@@ -345,14 +346,13 @@ function collectTileWindowBuildingAllowlist(params: {
   const allowedBlockerIds = new Set<string>();
   let aboveHorizonSamples = 0;
 
-  for (const sampleDate of params.samples) {
-    const solarGeometry = computeSolarGeometry(centerWgs84.lat, centerWgs84.lon, sampleDate);
-    if (solarGeometry.altitudeDeg <= 0) {
+  for (const sunPosition of params.sunPositions) {
+    if (sunPosition.altitudeDeg <= 0) {
       continue;
     }
 
     aboveHorizonSamples += 1;
-    const azimuthRad = (solarGeometry.azimuthDeg * Math.PI) / 180;
+    const azimuthRad = (sunPosition.azimuthDeg * Math.PI) / 180;
     const dirX = Math.sin(azimuthRad);
     const dirY = Math.cos(azimuthRad);
     const candidateIndices = spatialGrid
@@ -559,7 +559,9 @@ async function loadAtlasDiskOnly(params: {
   const cacheKey = JSON.stringify({ kind: "atlas", ...params });
   const cached = tileAtlasMemoryCache.get(cacheKey);
   if (cached !== undefined) return cached;
-  const loaded = await loadPrecomputedTileAtlas(params);
+  const loaded = params.resolutionDeg != null
+    ? await loadPrecomputedTileAtlas(params)
+    : await loadPrecomputedTileAtlasWithFallback(params);
   tileAtlasMemoryCache.set(cacheKey, loaded);
   return loaded;
 }
@@ -687,6 +689,11 @@ export async function computeSunlightTileArtifact(params: {
   signal?: AbortSignal;
   /** Pre-computed grid metadata (indoor/outdoor + elevations). Skips per-point context building when provided. */
   gridMetadata?: TileGridMetadata | null;
+  /** Bucket-centered atlas mode (ADR-0013): replace SunCalc-derived per-sample sun positions with the
+   *  exact (az, alt) pairs supplied here. The number of entries defines the frame count; date / timezone /
+   *  sampleEveryMinutes / startLocalTime / endLocalTime are only used for downstream metadata strings.
+   *  Frame `localTime` / `utcTime` are tagged `bucket-az-alt` (not real clock times). */
+  sunOverride?: Array<{ azimuthDeg: number; altitudeDeg: number }>;
 }): Promise<PrecomputedSunlightTileArtifact> {
   const started = performance.now();
   const phaseMs = { adaptiveHorizon: 0, sharedSources: 0, pointContexts: 0, evaluations: 0 };
@@ -741,21 +748,42 @@ export async function computeSunlightTileArtifact(params: {
       maxY: params.tile.maxNorthing,
     },
   });
-  const samples = createUtcSamples(
-    params.date,
-    params.timezone,
-    params.sampleEveryMinutes,
-    params.startLocalTime,
-    params.endLocalTime,
-  );
+  // In atlas mode (sunOverride set), samples[] is a placeholder array of synthetic dates —
+  // positions come from sunOverride directly. Length = sunOverride.length.
+  const atlasMode = params.sunOverride != null;
+  const samples = atlasMode
+    ? params.sunOverride!.map((_, i) => new Date(Date.UTC(1970, 0, 1, 0, i, 0)))
+    : createUtcSamples(
+        params.date,
+        params.timezone,
+        params.sampleEveryMinutes,
+        params.startLocalTime,
+        params.endLocalTime,
+      );
   if (samples.length === 0) {
     throw new Error(
-      `No samples produced for ${params.date} ${params.startLocalTime}-${params.endLocalTime}.`,
+      atlasMode
+        ? "sunOverride is empty — nothing to compute."
+        : `No samples produced for ${params.date} ${params.startLocalTime}-${params.endLocalTime}.`,
     );
   }
+  const allowlistTileCenterWgs84 = lv95ToWgs84(
+    (params.tile.minEasting + params.tile.maxEasting) / 2,
+    (params.tile.minNorthing + params.tile.maxNorthing) / 2,
+  );
+  // Sun positions used by the building allowlist heuristic — real SunCalc values for date mode,
+  // bucket-center values for atlas mode.
+  const allowlistSunPositions = atlasMode
+    ? params.sunOverride!
+    : samples.map((d) => {
+        const p = SunCalc.getPosition(d, allowlistTileCenterWgs84.lat, allowlistTileCenterWgs84.lon);
+        let az = (p.azimuth * RAD_TO_DEG + 180) % 360;
+        if (az < 0) az += 360;
+        return { azimuthDeg: az, altitudeDeg: p.altitude * RAD_TO_DEG };
+      });
   const tileBuildingAllowlist = collectTileWindowBuildingAllowlist({
     tile: params.tile,
-    samples,
+    sunPositions: allowlistSunPositions,
     buildingsIndex: sharedSources.buildingsIndex,
   });
   const buildingMethodSuffix = tileBuildingAllowlist
@@ -1147,19 +1175,35 @@ export async function computeSunlightTileArtifact(params: {
   const roundToStep = (x: number): number =>
     sunRoundStep > 0 ? Math.round(x / sunRoundStep) * sunRoundStep : x;
   const perFrame: PerFrameSun[] = new Array(samples.length);
-  for (let i = 0; i < samples.length; i++) {
-    const d = samples[i];
-    const ft = formatDateTimeLocal(d, params.timezone);
-    const pos = SunCalc.getPosition(d, tileCenterWgs84.lat, tileCenterWgs84.lon);
-    let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
-    if (az < 0) az += 360;
-    perFrame[i] = {
-      sampleIndex: i,
-      sampleDate: d,
-      frameLocalDateTime: ft,
-      altitudeDeg: roundToStep(pos.altitude * RAD_TO_DEG),
-      azimuthDeg: roundToStep(az),
-    };
+  if (atlasMode) {
+    // Bucket-centered atlas mode: positions come from the caller. samples[] is a
+    // placeholder synthetic date array; frameLocalDateTime is tagged as bucket coords.
+    for (let i = 0; i < samples.length; i++) {
+      const p = params.sunOverride![i];
+      const az = ((p.azimuthDeg % 360) + 360) % 360;
+      perFrame[i] = {
+        sampleIndex: i,
+        sampleDate: samples[i],
+        frameLocalDateTime: `bucket-az${az.toFixed(3)}-alt${p.altitudeDeg.toFixed(3)}`,
+        altitudeDeg: p.altitudeDeg,
+        azimuthDeg: az,
+      };
+    }
+  } else {
+    for (let i = 0; i < samples.length; i++) {
+      const d = samples[i];
+      const ft = formatDateTimeLocal(d, params.timezone);
+      const pos = SunCalc.getPosition(d, tileCenterWgs84.lat, tileCenterWgs84.lon);
+      let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
+      if (az < 0) az += 360;
+      perFrame[i] = {
+        sampleIndex: i,
+        sampleDate: d,
+        frameLocalDateTime: ft,
+        altitudeDeg: roundToStep(pos.altitude * RAD_TO_DEG),
+        azimuthDeg: roundToStep(az),
+      };
+    }
   }
 
   const useBatchFrames =
@@ -1216,15 +1260,11 @@ export async function computeSunlightTileArtifact(params: {
   for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
     throwIfAborted(params.signal);
     const sampleDate = samples[sampleIndex];
-    const frameLocalDateTime = formatDateTimeLocal(sampleDate, params.timezone);
-    const frameSunPosition = SunCalc.getPosition(sampleDate, tileCenterWgs84.lat, tileCenterWgs84.lon);
+    const frameLocalDateTime = perFrame[sampleIndex]!.frameLocalDateTime;
     const frameSolarPosition = {
-      altitudeDeg: frameSunPosition.altitude * RAD_TO_DEG,
-      azimuthDeg: ((frameSunPosition.azimuth * RAD_TO_DEG) + 180) % 360,
+      altitudeDeg: perFrame[sampleIndex]!.altitudeDeg,
+      azimuthDeg: perFrame[sampleIndex]!.azimuthDeg,
     };
-    if (frameSolarPosition.azimuthDeg < 0) {
-      frameSolarPosition.azimuthDeg += 360;
-    }
     const localTime = frameLocalDateTime.slice(11, 16);
     const maskByteLen = Math.ceil(preparedOutdoorPoints.length / 8);
 
@@ -1874,6 +1914,24 @@ export async function* streamTilesForBbox(params: {
         }
       } catch { /* no tiles for this time window */ }
     }
+    // Also include tiles covered by the atlas (ADR-0013): atlas is date-agnostic,
+    // so tiles not in the date-keyed dirs may still be served via atlas fallback.
+    // Probe every resolution in the read fallback chain (r0.5 → r0.75 → r1) — otherwise
+    // tiles cached only at r0.75 would be filtered out before loadOneCached's fallback runs.
+    for (const res of ATLAS_READ_FALLBACK_RESOLUTIONS_DEG) {
+      const atlasDir = pathMod.join(
+        dataPaths.CACHE_SUNLIGHT_DIR,
+        region, modelVersionHash, `g${params.gridStepMeters}`, "atlas", `r${res}`,
+      );
+      try {
+        for (const f of await fsMod.readdir(atlasDir)) {
+          if (f.endsWith(".atlas.bin.gz")) {
+            cachedTileIds.add(f.slice(0, -".atlas.bin.gz".length));
+          }
+        }
+      } catch { /* no atlas at this resolution */ }
+    }
+
     const before = requiredTiles.length;
     requiredTiles = requiredTiles.filter((t) => cachedTileIds.has(t.tileId));
     process.stderr.write(
@@ -1989,6 +2047,34 @@ export async function* streamTilesForBbox(params: {
         );
       }
       continue;
+    }
+
+    // Non-cache-only path: probe the atlas first (ADR-0013, fallback r0.5 → r0.75 → r1).
+    // Without this, every tile missing from the per-date cache would fall through to
+    // computeSunlightTileArtifact even when the atlas already covers the requested (az, alt).
+    const atlasHit = await loadAtlasDiskOnly({
+      region,
+      modelVersionHash,
+      gridStepMeters: params.gridStepMeters,
+      tileId: tile.tileId,
+    });
+    if (atlasHit) {
+      yield {
+        tileId: tile.tileId,
+        tileIndex: tileIdx,
+        totalTiles: requiredTiles.length,
+        atlas: atlasHit,
+        layer: "L2" as const,
+      };
+      continue;
+    }
+    if (tileIdx < 3 || tileIdx % 25 === 0) {
+      const mem = process.memoryUsage();
+      process.stderr.write(
+        `[stream:compute] tile=${tile.tileId} idx=${tileIdx}/${requiredTiles.length} ` +
+        `heap=${(mem.heapUsed / 1024 / 1024).toFixed(0)}MB/${(mem.heapTotal / 1024 / 1024).toFixed(0)}MB ` +
+        `rss=${(mem.rss / 1024 / 1024).toFixed(0)}MB external=${(mem.external / 1024 / 1024).toFixed(0)}MB\n`,
+      );
     }
 
     const onProgress = params.onTileComputeProgress
