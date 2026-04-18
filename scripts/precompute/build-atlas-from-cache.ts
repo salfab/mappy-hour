@@ -257,6 +257,10 @@ async function buildAtlasForTile(
       let az = (pos.azimuth * 180 / Math.PI + 180) % 360;
       if (az < 0) az += 360;
 
+      // Skip frames that look like corrupt/zero precomputes (all-zero sunMask despite sun being up).
+      // Seen in old test runs (1999-04-08, 2018-06-08) that were stored with zero counts.
+      if (alt > 2 && fm.sunnyCount === 0) continue;
+
       const azB = Math.floor(az / res);
       const altB = Math.floor(alt / res);
       const key = `${altB}:${azB}`;

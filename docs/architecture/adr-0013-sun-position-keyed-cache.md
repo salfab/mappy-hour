@@ -436,11 +436,11 @@ Mais c'est fait **une fois** et ça dure éternellement. Une fois l'atlas de Lau
 
 1. [x] Fin du précompute date-keyed 200 jours (complété 2026-04-17, 179 tuiles, 33 559 tiles)
 2. [x] Bench scripts Phase 0 (complétés 2026-04-17) — divergence 1°=0.457%, 3.19× dedup
-3. ▶ Phase A (génération atlas) — en cours
-4. ▶ Re-précomputer 3-5 tuiles pilote en atlas
-5. ▶ Phase B (runtime)
-6. ▶ Phase C (validation sur tuiles pilote)
-7. ▶ Phase D (rollout complet si validation OK)
+3. [x] Phase A (génération atlas depuis cache) — complété 2026-04-17 (179 tuiles, ~1.2 GB)
+   - **Bug trouvé 2026-04-17** : dates `1999-04-08` et `2018-06-08` sont des precomputes corrompus (sunnyCount=0 pour tous les frames malgré sun > horizon). Le build script choisissait ces frames comme représentants → 98% des buckets avaient un masque tout-à-zéro. Fix : ignorer les frames avec `sunnyCount=0 && alt>2°`. Atlas rebuild lancé avec `--skip-existing=false`.
+4. [x] Phase B (runtime — wiring atlas dans les 3 routes API) — complété 2026-04-17
+5. ▶ Phase C (validation quantitative sur 5 tuiles) — en cours (script `validate-atlas-vs-datekey.ts`)
+6. ▶ Phase D (rollout complet si validation OK)
 
 **Le chemin critique est 2-3j de dev concentrés + une nuit de compute atlas. Aucune interruption de service** grâce au fallback date-keyed.
 
