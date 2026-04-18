@@ -114,14 +114,16 @@ export function encodeTileArtifactToBinary(
   const pointCount = artifact.points.length;
   const frameCount = artifact.frames.length;
 
-  // Determine outdoorPointCount from the first frame's mask (all 5 masks share size).
-  let outdoorPointCount = 0;
-  let maskBytesPerFrame = 0;
-  if (frameCount > 0) {
-    const firstMask = decodeBase64ToUint8Array(artifact.frames[0].sunMaskBase64);
-    maskBytesPerFrame = firstMask.length;
-    outdoorPointCount = maskBytesPerFrame * 8;
-  }
+  // The mask buffer length is always ceil(outdoor/8), so the buffer-implied count
+  // rounds UP to the next byte boundary — which introduces up to 7 "phantom bits"
+  // (e.g. 28818 real outdoor points → 3603 bytes → 28824 implied bits, 6 phantom).
+  // Use the authoritative count from artifact.stats.pointCount, which matches
+  // max(pointOutdoorIndex)+1 and count(pointOutdoorIndex != -1).
+  const outdoorPointCount = artifact.stats.pointCount;
+  const maskBytesPerFrame =
+    frameCount > 0
+      ? decodeBase64ToUint8Array(artifact.frames[0].sunMaskBase64).length
+      : 0;
 
   const pointIds: string[] = new Array(pointCount);
   const indoorBuildingIds: Array<string | null> = new Array(pointCount);

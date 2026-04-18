@@ -1,13 +1,11 @@
 import {
-  computeSunlightTileArtifact,
-  disposeSunlightTileEvaluationBackends,
-} from "../../src/lib/precompute/sunlight-tile-service";
-import {
-  loadPrecomputedSunlightTile,
-  writePrecomputedSunlightTile,
-  type RegionTileSpec,
+  computeAndMergeAtlasForTile,
+} from "../../src/lib/precompute/atlas-tile-service";
+import { disposeSunlightTileEvaluationBackends } from "../../src/lib/precompute/sunlight-tile-service";
+import type {
+  PrecomputedRegionName,
+  RegionTileSpec,
 } from "../../src/lib/precompute/sunlight-cache";
-import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 import type { ShadowCalibration } from "../../src/lib/sun/shadow-calibration";
 
 type WorkerTask = {
@@ -26,19 +24,9 @@ type WorkerTask = {
   skipExisting: boolean;
 };
 
-type WorkerRunMessage = {
-  type: "run";
-  task: WorkerTask;
-};
-
-type WorkerCancelMessage = {
-  type: "cancel";
-};
-
-type WorkerShutdownMessage = {
-  type: "shutdown";
-};
-
+type WorkerRunMessage = { type: "run"; task: WorkerTask };
+type WorkerCancelMessage = { type: "cancel" };
+type WorkerShutdownMessage = { type: "shutdown" };
 type WorkerInboundMessage = WorkerRunMessage | WorkerCancelMessage | WorkerShutdownMessage;
 
 type WorkerProgressMessage = {
@@ -75,11 +63,8 @@ function postMessage(message: WorkerProgressMessage | WorkerDoneMessage): void {
 }
 
 async function shutdownWorker(): Promise<void> {
-  if (shutdownStarted) {
-    return;
-  }
+  if (shutdownStarted) return;
   shutdownStarted = true;
-
   try {
     await disposeSunlightTileEvaluationBackends();
   } catch (error) {
@@ -88,9 +73,7 @@ async function shutdownWorker(): Promise<void> {
     );
     process.exitCode = 1;
   } finally {
-    if (process.connected) {
-      process.disconnect();
-    }
+    if (process.connected) process.disconnect();
     process.exit();
   }
 }
@@ -98,9 +81,7 @@ async function shutdownWorker(): Promise<void> {
 function requestShutdown(): void {
   shutdownRequested = true;
   activeAbortController?.abort();
-  if (!activeTaskId) {
-    void shutdownWorker();
-  }
+  if (!activeTaskId) void shutdownWorker();
 }
 
 async function runTask(task: WorkerTask): Promise<void> {
@@ -124,31 +105,7 @@ async function runTask(task: WorkerTask): Promise<void> {
   let lastProgressStage: WorkerProgressMessage["stage"] | null = null;
 
   try {
-    if (task.skipExisting) {
-      const existing = await loadPrecomputedSunlightTile({
-        region: task.region,
-        modelVersionHash: task.modelVersionHash,
-        date: task.date,
-        gridStepMeters: task.gridStepMeters,
-        sampleEveryMinutes: task.sampleEveryMinutes,
-        startLocalTime: task.startLocalTime,
-        endLocalTime: task.endLocalTime,
-        tileId: task.tile.tileId,
-      });
-      if (existing) {
-        postMessage({
-          type: "done",
-          taskId: task.taskId,
-          state: "skipped",
-          pointCountTotal: existing.stats.gridPointCount,
-          pointCountOutdoor: existing.stats.pointCount,
-          frameCountTotal: existing.frames.length,
-        });
-        return;
-      }
-    }
-
-    const artifact = await computeSunlightTileArtifact({
+    const result = await computeAndMergeAtlasForTile({
       region: task.region,
       modelVersionHash: task.modelVersionHash,
       algorithmVersion: task.algorithmVersion,
@@ -168,9 +125,7 @@ async function runTask(task: WorkerTask): Promise<void> {
           progress.completed === progress.total ||
           progress.stage !== lastProgressStage ||
           now - lastProgressSentAt >= 250;
-        if (!shouldEmit) {
-          return;
-        }
+        if (!shouldEmit) return;
         lastProgressSentAt = now;
         lastProgressStage = progress.stage;
         postMessage({
@@ -187,14 +142,13 @@ async function runTask(task: WorkerTask): Promise<void> {
       },
     });
 
-    await writePrecomputedSunlightTile(artifact);
     postMessage({
       type: "done",
       taskId: task.taskId,
-      state: "computed",
-      pointCountTotal: artifact.stats.gridPointCount,
-      pointCountOutdoor: artifact.stats.pointCount,
-      frameCountTotal: artifact.frames.length,
+      state: result.state,
+      pointCountTotal: result.pointCountTotal,
+      pointCountOutdoor: result.pointCountOutdoor,
+      frameCountTotal: result.bucketCountTotal,
     });
   } catch (error) {
     if (abortController.signal.aborted) {
@@ -223,9 +177,7 @@ async function runTask(task: WorkerTask): Promise<void> {
       activeAbortController = null;
       activeTaskId = null;
     }
-    if (shutdownRequested) {
-      void shutdownWorker();
-    }
+    if (shutdownRequested) void shutdownWorker();
   }
 }
 

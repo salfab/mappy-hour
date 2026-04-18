@@ -59,7 +59,7 @@ function parseArgs(): Args {
     region: "lausanne",
     gridStepMeters: 1,
     sampleEveryMinutes: 15,
-    resolutionDeg: 1,
+    resolutionDeg: 0.75,
     maxTiles: null,
     skipExisting: true,
     tileId: null,

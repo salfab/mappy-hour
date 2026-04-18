@@ -18,6 +18,7 @@ interface ParsedArgs {
   bbox: [number, number, number, number] | null;
   tileSelectionFile: string | null;
   buildingsShadowMode: ExperimentalBuildingsShadowMode | null;
+  atlasResolutionDeg: number;
 }
 
 const DEFAULT_ARGS: ParsedArgs = {
@@ -34,6 +35,7 @@ const DEFAULT_ARGS: ParsedArgs = {
   bbox: null,
   tileSelectionFile: null,
   buildingsShadowMode: null,
+  atlasResolutionDeg: 0.75,
 };
 
 function parseBoolean(value: string): boolean | null {
@@ -144,6 +146,17 @@ function parseArgs(argv: string[]): ParsedArgs {
       );
       continue;
     }
+    if (arg.startsWith("--atlas-resolution-deg=")) {
+      const parsed = Number(arg.slice("--atlas-resolution-deg=".length));
+      if (Number.isFinite(parsed) && parsed > 0 && parsed <= 10) {
+        result.atlasResolutionDeg = parsed;
+      } else {
+        throw new Error(
+          `Invalid --atlas-resolution-deg=${arg.slice("--atlas-resolution-deg=".length)}. Expected a positive number <= 10.`,
+        );
+      }
+      continue;
+    }
   }
   return result;
 }
@@ -243,7 +256,7 @@ async function main() {
 
   const shadowMode = process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "(unset, default cpu)";
   console.log(
-    `[precompute] engine=cache-admin shadowMode=${shadowMode} workers=${workers} region=${args.region} startDate=${args.startDate} days=${args.days} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} skipExisting=${args.skipExisting} tiles=${tileCount}`,
+    `[precompute] engine=cache-admin shadowMode=${shadowMode} workers=${workers} region=${args.region} startDate=${args.startDate} days=${args.days} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} atlasRes=${args.atlasResolutionDeg}° skipExisting=${args.skipExisting} tiles=${tileCount}`,
   );
   if (shadowMode === "rust-wgpu-vulkan") {
     console.warn(
@@ -337,6 +350,7 @@ async function main() {
       endLocalTime: args.endLocalTime,
       skipExisting: args.skipExisting,
       buildingHeightBiasMeters: args.buildingHeightBiasMeters,
+      atlasResolutionDeg: args.atlasResolutionDeg,
       tileIds,
     },
     {

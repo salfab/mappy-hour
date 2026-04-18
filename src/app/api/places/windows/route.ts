@@ -17,7 +17,7 @@ import {
   type BinaryTileArtifact,
 } from "@/lib/precompute/sunlight-cache-binary";
 import {
-  loadPrecomputedTileAtlas,
+  loadPrecomputedTileAtlasWithFallback,
   lookupAtlasByAngle,
   type BinaryTileAtlas,
 } from "@/lib/precompute/sunlight-cache-atlas";
@@ -610,7 +610,7 @@ export async function POST(request: Request) {
       const atlasKey = `atlas:${region}:${info.modelVersionHash}:${tileId}`;
       let atlasPromise = tileAtlasCache.get(atlasKey);
       if (!atlasPromise) {
-        atlasPromise = loadPrecomputedTileAtlas({
+        atlasPromise = loadPrecomputedTileAtlasWithFallback({
           region,
           modelVersionHash: info.modelVersionHash,
           gridStepMeters: CACHE_GRID_STEP,

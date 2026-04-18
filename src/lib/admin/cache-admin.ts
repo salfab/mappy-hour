@@ -10,14 +10,12 @@ import {
   loadPrecomputedSunlightManifest,
   loadPrecomputedSunlightTile,
   writePrecomputedSunlightManifest,
-  writePrecomputedSunlightTile,
   type PrecomputedRegionName,
   type PrecomputedSunlightManifest,
   type RegionTileSpec,
 } from "@/lib/precompute/sunlight-cache";
 import { getSunlightModelVersion, SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "@/lib/precompute/model-version";
 import {
-  computeSunlightTileArtifact,
   disposeSunlightTileEvaluationBackends,
 } from "@/lib/precompute/sunlight-tile-service";
 import { getSunlightCacheStorage } from "@/lib/precompute/sunlight-cache-storage";
@@ -139,6 +137,8 @@ export interface CachePrecomputeRequest {
   tileIds?: string[];
   skipExisting?: boolean;
   buildingHeightBiasMeters?: number;
+  /** Angular bucket size in degrees for the atlas (ADR-0013). Defaults to 0.75°. */
+  atlasResolutionDeg?: number;
 }
 
 export interface CachePrecomputeResult {
@@ -1233,6 +1233,40 @@ export async function precomputeCacheRuns(
     throw new Error("No tiles selected for precompute.");
   }
 
+  // Fail fast if any selected tile is missing grid-metadata. The per-tile compute
+  // would otherwise throw deep in buildSharedPointEvaluationSources after paying
+  // startup cost on every failing tile. We surface the exact command to regenerate.
+  {
+    const { getTileGridMetadataPath } = await import("@/lib/precompute/tile-grid-metadata");
+    const missing: string[] = [];
+    for (const tile of tiles) {
+      const p = getTileGridMetadataPath(
+        request.region,
+        modelVersion.modelVersionHash,
+        request.gridStepMeters,
+        tile.tileId,
+      );
+      try {
+        await fs.access(p);
+      } catch {
+        missing.push(tile.tileId);
+      }
+    }
+    if (missing.length > 0) {
+      const preview = missing.slice(0, 5).join(", ");
+      const more = missing.length > 5 ? ` (+${missing.length - 5} more)` : "";
+      const selectionArg = request.tileIds && request.tileIds.length > 0
+        ? " --tile-selection-file=<your-selection-file>"
+        : "";
+      throw new Error(
+        `Missing tile grid metadata for ${missing.length}/${tiles.length} tile(s) in region ${request.region} ` +
+          `(model ${modelVersion.modelVersionHash}, grid ${request.gridStepMeters}m): ${preview}${more}. ` +
+          `Run:\n  cross-env MAPPY_BUILDINGS_SHADOW_MODE=gpu-raster pnpm tsx scripts/precompute/precompute-tile-grid-metadata.ts ` +
+          `--region=${request.region} --grid-step-meters=${request.gridStepMeters}${selectionArg}`,
+      );
+    }
+  }
+
   // Sort tiles by spatial focus zone (1km grid) to minimize GPU backend
   // recreations. Tiles in the same zone share the same shadow-map mesh,
   // so grouping them avoids costly dispose+rebuild cycles.
@@ -1338,7 +1372,10 @@ export async function precomputeCacheRuns(
             // grid metadata not available — proceed without
           }
 
-          const artifact = await computeSunlightTileArtifact({
+          const { computeAndMergeAtlasForTile } = await import(
+            "@/lib/precompute/atlas-tile-service"
+          );
+          const atlasResult = await computeAndMergeAtlasForTile({
             region: request.region,
             modelVersionHash: modelVersion.modelVersionHash,
             algorithmVersion: modelVersion.algorithmVersion,
@@ -1350,6 +1387,7 @@ export async function precomputeCacheRuns(
             endLocalTime: request.endLocalTime,
             tile,
             shadowCalibration,
+            resolutionDeg: request.atlasResolutionDeg,
             cooperativeYieldEveryPoints: 5000,
             signal: options.signal,
             gridMetadata,
@@ -1385,7 +1423,9 @@ export async function precomputeCacheRuns(
               });
             },
           });
-          await writePrecomputedSunlightTile(artifact);
+          if (atlasResult.state === "skipped") {
+            skippedTileIds.push(tile.tileId);
+          }
           succeededTileIds.push(tile.tileId);
           completedTiles += 1;
           options.onProgress?.({
@@ -1401,13 +1441,13 @@ export async function precomputeCacheRuns(
               totalTiles === 0
                 ? 100
                 : Math.round((completedTiles / totalTiles) * 1000) / 10,
-            currentTileState: "computed",
+            currentTileState: atlasResult.state === "skipped" ? "skipped" : "computed",
             currentTilePhase: null,
             currentTileProgressPercent: 100,
-            currentTilePointCountTotal: artifact.stats.gridPointCount,
-            currentTilePointCountOutdoor: artifact.stats.pointCount,
-            currentTileFrameCountTotal: artifact.frames.length,
-            currentTileFrameIndex: artifact.frames.length,
+            currentTilePointCountTotal: atlasResult.pointCountTotal,
+            currentTilePointCountOutdoor: atlasResult.pointCountOutdoor,
+            currentTileFrameCountTotal: atlasResult.bucketCountTotal,
+            currentTileFrameIndex: atlasResult.bucketCountTotal,
           });
         } catch (error) {
           if (options.signal?.aborted) {

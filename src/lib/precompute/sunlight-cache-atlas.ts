@@ -311,7 +311,7 @@ export function getAtlasPath(params: {
   tileId: string;
   resolutionDeg?: number;
 }): string {
-  const resSuffix = params.resolutionDeg != null ? `r${params.resolutionDeg}` : "r1";
+  const resSuffix = params.resolutionDeg != null ? `r${params.resolutionDeg}` : "r0.75";
   return path.join(
     CACHE_SUNLIGHT_DIR,
     params.region,
@@ -357,4 +357,164 @@ export async function loadPrecomputedTileAtlas(params: {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
+}
+
+/**
+ * Resolution fallback order for read-side atlas lookups.
+ * r0.5 is the highest precision (rare, expensive to compute); r0.75 is the current default;
+ * r1 is the legacy corpus that predates angle-keyed caching. Read the first one that exists.
+ */
+export const ATLAS_READ_FALLBACK_RESOLUTIONS_DEG = [0.5, 0.75, 1] as const;
+
+/**
+ * Loads an atlas for the given tile, probing resolutions in precision-first order:
+ * r0.5 → r0.75 → r1. Returns the first hit (including its native `resolutionDegAz/Alt`
+ * which the lookup uses to map angles back to bucket indices), or null if none exists.
+ */
+export async function loadPrecomputedTileAtlasWithFallback(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  tileId: string;
+}): Promise<BinaryTileAtlas | null> {
+  for (const resolutionDeg of ATLAS_READ_FALLBACK_RESOLUTIONS_DEG) {
+    const atlas = await loadPrecomputedTileAtlas({ ...params, resolutionDeg });
+    if (atlas) return atlas;
+  }
+  return null;
+}
+
+/** Returns a Set of packed bucket keys (altBucket << 16 | azBucket) for fast membership tests. */
+export function getAtlasBucketKeySet(atlas: BinaryTileAtlas): Set<number> {
+  const s = new Set<number>();
+  for (let i = 0; i < atlas.bucketCount; i++) {
+    s.add((atlas.bucketAlt[i] << 16) | atlas.bucketAz[i]);
+  }
+  return s;
+}
+
+/** Pack an (az, alt) bucket pair into the same key format as getAtlasBucketKeySet. */
+export function packBucketKey(azBucket: number, altBucket: number): number {
+  return (altBucket << 16) | azBucket;
+}
+
+/**
+ * Merges a set of new (az, alt) buckets into an existing atlas (or creates a fresh atlas if
+ * existing is null). Duplicate buckets from newBuckets are skipped — existing entries win.
+ * Returns a fresh BinaryTileAtlas with all buckets sorted by (altBucket asc, azBucket asc).
+ *
+ * Tile points are copied from the existing atlas when present; otherwise taken from the
+ * params (they are assumed identical per tile geometry).
+ */
+export function mergeBucketsIntoAtlas(params: {
+  existing: BinaryTileAtlas | null;
+  meta: TileAtlasMetadata;
+  pointCount: number;
+  outdoorPointCount: number;
+  maskBytesPerBucket: number;
+  resolutionDegAz: number;
+  resolutionDegAlt: number;
+  pointLon: Float64Array;
+  pointLat: Float64Array;
+  pointIx: Int32Array;
+  pointIy: Int32Array;
+  pointOutdoorIndex: Int32Array;
+  pointFlags: Uint32Array;
+  newBuckets: AtlasBucketEntry[];
+}): BinaryTileAtlas {
+  const { existing, newBuckets, maskBytesPerBucket } = params;
+  const perBucketBytes = ATLAS_MASK_KINDS * maskBytesPerBucket;
+
+  if (existing != null && existing.maskBytesPerBucket !== maskBytesPerBucket) {
+    throw new Error(
+      `Cannot merge atlas: maskBytesPerBucket mismatch (existing=${existing.maskBytesPerBucket}, new=${maskBytesPerBucket})`,
+    );
+  }
+
+  type Slot = { azBucket: number; altBucket: number; maskSource: Uint8Array; maskSourceOffset: number };
+  const slots: Slot[] = [];
+  const seen = new Set<number>();
+
+  if (existing != null) {
+    for (let i = 0; i < existing.bucketCount; i++) {
+      const azB = existing.bucketAz[i];
+      const altB = existing.bucketAlt[i];
+      seen.add(packBucketKey(azB, altB));
+      const dataIndex = existing.bucketDataIndex[i];
+      slots.push({
+        azBucket: azB,
+        altBucket: altB,
+        maskSource: existing.maskBuffer,
+        maskSourceOffset: dataIndex * perBucketBytes,
+      });
+    }
+  }
+
+  for (const b of newBuckets) {
+    const key = packBucketKey(b.azBucket, b.altBucket);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const block = new Uint8Array(perBucketBytes);
+    block.set(b.sunMask, 0 * maskBytesPerBucket);
+    block.set(b.sunNoVegMask, 1 * maskBytesPerBucket);
+    block.set(b.terrainMask, 2 * maskBytesPerBucket);
+    block.set(b.buildingsMask, 3 * maskBytesPerBucket);
+    block.set(b.vegetationMask, 4 * maskBytesPerBucket);
+    slots.push({
+      azBucket: b.azBucket,
+      altBucket: b.altBucket,
+      maskSource: block,
+      maskSourceOffset: 0,
+    });
+  }
+
+  slots.sort((a, b) => {
+    if (a.altBucket !== b.altBucket) return a.altBucket - b.altBucket;
+    return a.azBucket - b.azBucket;
+  });
+
+  const bucketCount = slots.length;
+  const bucketAz = new Uint16Array(bucketCount);
+  const bucketAlt = new Uint16Array(bucketCount);
+  const bucketDataIndex = new Uint32Array(bucketCount);
+  const maskBuffer = new Uint8Array(bucketCount * perBucketBytes);
+
+  for (let i = 0; i < bucketCount; i++) {
+    const s = slots[i];
+    bucketAz[i] = s.azBucket;
+    bucketAlt[i] = s.altBucket;
+    bucketDataIndex[i] = i;
+    maskBuffer.set(
+      s.maskSource.subarray(s.maskSourceOffset, s.maskSourceOffset + perBucketBytes),
+      i * perBucketBytes,
+    );
+  }
+
+  const meta: TileAtlasMetadata = {
+    ...params.meta,
+    stats: {
+      ...params.meta.stats,
+      bucketCount,
+    },
+  };
+
+  return {
+    meta,
+    pointCount: params.pointCount,
+    bucketCount,
+    outdoorPointCount: params.outdoorPointCount,
+    maskBytesPerBucket,
+    resolutionDegAz: params.resolutionDegAz,
+    resolutionDegAlt: params.resolutionDegAlt,
+    pointLon: existing?.pointLon ?? params.pointLon,
+    pointLat: existing?.pointLat ?? params.pointLat,
+    pointIx: existing?.pointIx ?? params.pointIx,
+    pointIy: existing?.pointIy ?? params.pointIy,
+    pointOutdoorIndex: existing?.pointOutdoorIndex ?? params.pointOutdoorIndex,
+    pointFlags: existing?.pointFlags ?? params.pointFlags,
+    bucketAz,
+    bucketAlt,
+    bucketDataIndex,
+    maskBuffer,
+  };
 }
