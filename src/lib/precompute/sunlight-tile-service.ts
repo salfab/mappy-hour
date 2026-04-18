@@ -1931,15 +1931,7 @@ export async function* streamTilesForBbox(params: {
         tileId: tile.tileId,
       });
       if (binary) {
-        // Guard against corrupted precompute runs where all frames have sunnyCount=0
-        // despite the sun being above the horizon (seen in t0000-2359 test runs).
-        // Only flag as corrupted when outdoorPointCount > 0 (tiles with zero outdoor
-        // points legitimately have sunnyCount=0 for all frames).
-        const totalSunny = binary.meta.framesMeta.reduce((s, f) => s + f.sunnyCount, 0);
-        const looksCorrupted = binary.frameCount > 5 && binary.outdoorPointCount > 0 && totalSunny === 0;
-        if (!looksCorrupted) {
-          return { artifact: null, binary, layer: "L2" as const };
-        }
+        return { artifact: null, binary, layer: "L2" as const };
       }
       const loaded = await loadTileDiskOnly({
         region,
@@ -1953,13 +1945,7 @@ export async function* streamTilesForBbox(params: {
         stripDiagnostics: true,
       });
       if (loaded.artifact) {
-        const frames = loaded.artifact.frames ?? [];
-        const outdoorPoints = loaded.artifact.points?.filter(p => !p.insideBuilding).length ?? 0;
-        const totalSunny = frames.reduce((s, f) => s + (f.sunnyCount ?? 0), 0);
-        const looksCorrupted = frames.length > 5 && outdoorPoints > 0 && totalSunny === 0;
-        if (!looksCorrupted) {
-          return { artifact: loaded.artifact, layer: loaded.layer };
-        }
+        return { artifact: loaded.artifact, layer: loaded.layer };
       }
     }
     return { artifact: null, layer: "MISS" as const };
