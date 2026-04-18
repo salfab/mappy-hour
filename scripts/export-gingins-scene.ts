@@ -53,11 +53,35 @@ const TERRAIN_TIFS = [
   path.join(RAW_SWISSTOPO, "swissalti3d_2m", "swissalti3d_2019_2503-1140", "swissalti3d_2019_2503-1140_2_2056_5728.tif"),
 ];
 
+/**
+ * Vegetation surface tiles. Prefer VHM composed tiles (`terrain + VHM = canopy`,
+ * buildings already masked out — see `scripts/ingest/compose-vhm-canopy.py`)
+ * over raw DSM SwissSURFACE3D (which mixes buildings and trees).
+ *
+ * Both variants share the same output format (absolute elevation per pixel),
+ * so the Three.js scene code is unchanged.
+ */
+function resolveSurfaceTif(eKm: number, nKm: number): string {
+  const tileKey = `${eKm}-${nKm}`;
+  const vhmDir = path.join(RAW_SWISSTOPO, "swisssurface3d_raster", `swisssurface3d-raster_vhm_${tileKey}`);
+  const vhmTif = path.join(vhmDir, `swisssurface3d-raster_vhm_${tileKey}.tif`);
+  if (fs.existsSync(vhmTif)) return vhmTif;
+  // Fallback: legacy DSM (year varies). Pick the latest matching tile directory.
+  const parent = path.join(RAW_SWISSTOPO, "swisssurface3d_raster");
+  const dirs = fs.readdirSync(parent).filter((d) => /^swisssurface3d-raster_\d{4}_/.test(d) && d.endsWith(`_${tileKey}`));
+  dirs.sort().reverse();
+  for (const d of dirs) {
+    const matches = fs.readdirSync(path.join(parent, d)).filter((f) => f.endsWith(".tif"));
+    if (matches.length > 0) return path.join(parent, d, matches[0]);
+  }
+  throw new Error(`No DSM or VHM tile found for km cell ${tileKey}`);
+}
+
 const SURFACE_TIFS = [
-  path.join(RAW_SWISSTOPO, "swisssurface3d_raster", "swisssurface3d-raster_2018_2502-1141", "swisssurface3d-raster_2018_2502-1141_0.5_2056_5728.tif"),
-  path.join(RAW_SWISSTOPO, "swisssurface3d_raster", "swisssurface3d-raster_2019_2503-1141", "swisssurface3d-raster_2019_2503-1141_0.5_2056_5728.tif"),
-  path.join(RAW_SWISSTOPO, "swisssurface3d_raster", "swisssurface3d-raster_2018_2502-1140", "swisssurface3d-raster_2018_2502-1140_0.5_2056_5728.tif"),
-  path.join(RAW_SWISSTOPO, "swisssurface3d_raster", "swisssurface3d-raster_2019_2503-1140", "swisssurface3d-raster_2019_2503-1140_0.5_2056_5728.tif"),
+  resolveSurfaceTif(2502, 1141),
+  resolveSurfaceTif(2503, 1141),
+  resolveSurfaceTif(2502, 1140),
+  resolveSurfaceTif(2503, 1140),
 ];
 
 const BUILDINGS_DIR = path.join(RAW_SWISSTOPO, "swissbuildings3d_2");
@@ -410,8 +434,8 @@ async function main() {
   }
   console.log();
 
-  // ── 2. Vegetation surface ─────────────────────────────────────────────
-  console.log("[2/3] Vegetation surface (SwissSURFACE3D 0.5m) — 4 tiles...");
+  // ── 2. Vegetation canopy (absolute elevation = terrain + VHM) ─────────
+  console.log("[2/3] Vegetation canopy (VHM-composed when available, DSM fallback) — 4 tiles...");
   const surface = await readMultiTileGeoTiff(SURFACE_TIFS, BBOX);
   const surfaceJson = {
     width: surface.width,
@@ -422,7 +446,7 @@ async function main() {
     maxY: surface.maxY,
     surface: surface.values,
   };
-  const surfacePath = path.join(OUTPUT_DIR, "gingins-surface.json");
+  const surfacePath = path.join(OUTPUT_DIR, "gingins-vegetation.json");
   await fsPromises.writeFile(surfacePath, JSON.stringify(surfaceJson), "utf8");
   console.log(`  => ${surfacePath} (${surface.width}x${surface.height} = ${surface.values.length} samples)`);
 
@@ -540,8 +564,8 @@ async function main() {
   const surfaceSize = (await fsPromises.stat(surfacePath)).size;
   const buildingsSize = (await fsPromises.stat(buildingsPath)).size;
   console.log("=== Done ===");
-  console.log(`  Terrain:   ${(terrainSize / 1024).toFixed(0)} KB (${terrain.width}x${terrain.height}, ${terrain.resolution}m res)`);
-  console.log(`  Surface:   ${(surfaceSize / 1024).toFixed(0)} KB (${surface.width}x${surface.height}, ${surface.resolution}m res)`);
+  console.log(`  Terrain:    ${(terrainSize / 1024).toFixed(0)} KB (${terrain.width}x${terrain.height}, ${terrain.resolution}m res)`);
+  console.log(`  Vegetation: ${(surfaceSize / 1024).toFixed(0)} KB (${surface.width}x${surface.height}, ${surface.resolution}m res)`);
   console.log(`  Buildings: ${(buildingsSize / 1024).toFixed(0)} KB (${totalPolyfaces} buildings, ${totalTriangles} triangles)`);
 }
 
