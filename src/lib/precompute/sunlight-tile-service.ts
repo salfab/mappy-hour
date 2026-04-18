@@ -1931,11 +1931,14 @@ export async function* streamTilesForBbox(params: {
         tileId: tile.tileId,
       });
       if (binary) {
-        return {
-          artifact: null,
-          binary,
-          layer: "L2" as const,
-        };
+        // Guard against corrupted precompute runs where all frames have sunnyCount=0
+        // despite the sun being above the horizon (seen in t0000-2359 test runs).
+        const totalSunny = binary.meta.framesMeta.reduce((s, f) => s + f.sunnyCount, 0);
+        if (binary.frameCount > 5 && totalSunny === 0) {
+          // Skip — treat as MISS so caller falls back to live compute.
+        } else {
+          return { artifact: null, binary, layer: "L2" as const };
+        }
       }
       const loaded = await loadTileDiskOnly({
         region,
@@ -1949,7 +1952,13 @@ export async function* streamTilesForBbox(params: {
         stripDiagnostics: true,
       });
       if (loaded.artifact) {
-        return { artifact: loaded.artifact, layer: loaded.layer };
+        const frames = loaded.artifact.frames ?? [];
+        const totalSunny = frames.reduce((s, f) => s + (f.sunnyCount ?? 0), 0);
+        if (frames.length > 5 && totalSunny === 0) {
+          // Skip corrupted artifact.
+        } else {
+          return { artifact: loaded.artifact, layer: loaded.layer };
+        }
       }
     }
     return { artifact: null, layer: "MISS" as const };
