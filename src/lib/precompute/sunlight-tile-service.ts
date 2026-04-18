@@ -62,6 +62,13 @@ import {
   loadPrecomputedSunlightTileBinary,
   type BinaryTileArtifact,
 } from "./sunlight-cache-binary";
+import {
+  loadPrecomputedTileAtlas,
+  lookupAtlasByAngle,
+  type BinaryTileAtlas,
+} from "./sunlight-cache-atlas";
+export type { BinaryTileAtlas } from "./sunlight-cache-atlas";
+export { lookupAtlasByAngle } from "./sunlight-cache-atlas";
 
 export async function disposeSunlightTileEvaluationBackends(): Promise<void> {
   // Sync dispose on this branch; kept async-signed to match cache-admin expectations
@@ -77,6 +84,7 @@ const PRECOMPUTED_REGIONS: PrecomputedRegionName[] = ["lausanne", "nyon", "morge
 const manifestMemoryCache = new TtlCache<PrecomputedSunlightManifest | null>(60_000, 64);
 const tileMemoryCache = new TtlCache<PrecomputedSunlightTileArtifact | null>(60_000, 128);
 const tileBinaryMemoryCache = new TtlCache<BinaryTileArtifact | null>(60_000, 128);
+const tileAtlasMemoryCache = new TtlCache<BinaryTileAtlas | null>(300_000, 64);
 
 type BuildingsIndex = NonNullable<
   Awaited<ReturnType<typeof buildSharedPointEvaluationSources>>["buildingsIndex"]
@@ -538,6 +546,21 @@ async function loadTileBinaryDiskOnly(params: {
   if (cached !== undefined) return cached;
   const loaded = await loadPrecomputedSunlightTileBinary(params);
   tileBinaryMemoryCache.set(cacheKey, loaded);
+  return loaded;
+}
+
+async function loadAtlasDiskOnly(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  tileId: string;
+  resolutionDeg?: number;
+}): Promise<BinaryTileAtlas | null> {
+  const cacheKey = JSON.stringify({ kind: "atlas", ...params });
+  const cached = tileAtlasMemoryCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const loaded = await loadPrecomputedTileAtlas(params);
+  tileAtlasMemoryCache.set(cacheKey, loaded);
   return loaded;
 }
 
@@ -1745,6 +1768,9 @@ export interface StreamTileResult {
   artifact?: PrecomputedSunlightTileArtifact;
   /** Fast binary artifact with points and masks as typed arrays. */
   binary?: BinaryTileArtifact;
+  /** Angle-keyed atlas (ADR-0013). When present, lookup by (az,alt) instead of
+   * sequential frame iteration. Supersedes `binary` when available. */
+  atlas?: BinaryTileAtlas;
   layer: "L1" | "L2" | "MISS";
 }
 
@@ -1875,9 +1901,22 @@ export async function* streamTilesForBbox(params: {
   type CachedTileLoad = {
     artifact: PrecomputedSunlightTileArtifact | null;
     binary?: BinaryTileArtifact;
+    atlas?: BinaryTileAtlas;
     layer: "L1" | "L2" | "MISS";
   };
   const loadOneCached = async (tile: RegionTileSpec): Promise<CachedTileLoad> => {
+    // Atlas (ADR-0013): year-independent, angle-keyed. Try first — if the atlas covers
+    // the requested (az, alt) bucket, it's date-agnostic and avoids per-date I/O.
+    const atlas = await loadAtlasDiskOnly({
+      region,
+      modelVersionHash,
+      gridStepMeters: params.gridStepMeters,
+      tileId: tile.tileId,
+    });
+    if (atlas) {
+      return { artifact: null, atlas, layer: "L2" as const };
+    }
+
     for (const tw of cachedTimeWindows) {
       // Prefer the compact binary format when available — ~9x faster than
       // gunzip + JSON.parse on the hot path.
@@ -1930,7 +1969,7 @@ export async function* streamTilesForBbox(params: {
         inflight.push(loadOneCached(requiredTiles[tileIdx + inflight.length]));
       }
       const loaded = await inflight.shift()!;
-      if (loaded.binary || loaded.artifact) {
+      if (loaded.atlas || loaded.binary || loaded.artifact) {
         if (firstTileAt === 0) firstTileAt = performance.now() - cacheStreamStarted;
         cacheTilesYielded += 1;
         yield {
@@ -1939,6 +1978,7 @@ export async function* streamTilesForBbox(params: {
           totalTiles: requiredTiles.length,
           artifact: loaded.artifact ?? undefined,
           binary: loaded.binary,
+          atlas: loaded.atlas,
           layer: loaded.layer,
         };
       } else {

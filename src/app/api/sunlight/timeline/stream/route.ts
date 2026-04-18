@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 
 import { NextResponse } from "next/server";
+import SunCalc from "suncalc";
 import { z } from "zod";
 
 import { MAX_OUTDOOR_POINTS, DEFAULT_MAX_OUTDOOR_POINTS } from "@/lib/config/grid-limits";
@@ -9,6 +10,7 @@ import { buildGridFromBbox } from "@/lib/geo/grid";
 import {
   streamTilesForBbox,
   resolveRegionForBbox,
+  lookupAtlasByAngle,
 } from "@/lib/precompute/sunlight-tile-service";
 import {
   decodeBase64Bytes,
@@ -22,6 +24,8 @@ import {
   MASK_KIND_SUN_NO_VEG,
   type BinaryTileArtifact,
 } from "@/lib/precompute/sunlight-cache-binary";
+import type { BinaryTileAtlas } from "@/lib/precompute/sunlight-cache-atlas";
+import { getAtlasBucketMasks } from "@/lib/precompute/sunlight-cache-atlas";
 import type { PrecomputedSunlightTileArtifact } from "@/lib/precompute/sunlight-cache";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext, buildSharedPointEvaluationSources } from "@/lib/sun/evaluation-context";
@@ -299,12 +303,17 @@ export async function GET(request: Request) {
           while (!result.done) {
             if (streamAborted) return;
             const tileT0 = performance.now();
-            const { tileId, tileIndex, totalTiles, artifact, binary, layer } = result.value;
+            const { tileId, tileIndex, totalTiles, artifact, binary, atlas, layer } = result.value;
 
-            const viewPointCount = binary ? binary.pointCount : artifact!.points.length;
-            const viewFrameCount = binary ? binary.frameCount : artifact!.frames.length;
-            const viewModel = binary ? binary.meta.model : artifact!.model;
-            const viewWarnings = binary ? binary.meta.warnings : artifact!.warnings;
+            // For atlas: enumerate time samples from query params (date-agnostic format).
+            const atlasUtcSamples = atlas
+              ? createUtcSamples(query.date, query.timezone, query.sampleEveryMinutes, query.startLocalTime, query.endLocalTime)
+              : null;
+
+            const viewPointCount = atlas ? atlas.pointCount : (binary ? binary.pointCount : artifact!.points.length);
+            const viewFrameCount = atlas ? (atlasUtcSamples?.length ?? 0) : (binary ? binary.frameCount : artifact!.frames.length);
+            const viewModel = atlas ? (atlas.meta.model ?? {}) : (binary ? binary.meta.model : artifact!.model);
+            const viewWarnings = atlas ? atlas.meta.warnings : (binary ? binary.meta.warnings : artifact!.warnings);
 
             if (!sentStart) {
               sendEvent("start", {
@@ -337,8 +346,10 @@ export async function GET(request: Request) {
             let tileOutdoorCount = 0;
             let tileMinIx = Infinity, tileMaxIx = -Infinity;
             let tileMinIy = Infinity, tileMaxIy = -Infinity;
-            if (binary) {
-              const { pointLon, pointLat, pointIx, pointIy, pointOutdoorIndex, pointFlags } = binary;
+            // Atlas and binary both use the same typed-array point layout.
+            const binaryLikePoints = atlas ?? binary;
+            if (binaryLikePoints) {
+              const { pointLon, pointLat, pointIx, pointIy, pointOutdoorIndex, pointFlags } = binaryLikePoints;
               for (let i = 0; i < viewPointCount; i++) {
                 if (!pointInBbox(pointLon[i], pointLat[i], bbox)) continue;
                 tileGridCount += 1;
@@ -421,8 +432,8 @@ export async function GET(request: Request) {
               region, gmModelVersion.modelVersionHash, query.gridStepMeters, gmTileId,
             ) : null;
 
-            if (binary) {
-              const { pointLon, pointLat, pointIx, pointIy, pointOutdoorIndex, pointFlags } = binary;
+            if (atlas ?? binary) {
+              const { pointLon, pointLat, pointIx, pointIy, pointOutdoorIndex, pointFlags } = (atlas ?? binary)!;
               const gmW = Math.ceil(tileSizeMeters);
               for (let i = 0; i < viewPointCount; i++) {
                 const lon = pointLon[i], lat = pointLat[i];
@@ -466,7 +477,43 @@ export async function GET(request: Request) {
             // Build grid-indexed frame masks and collect raw buffers for blob encoding
             const frameMaskBuffers: Array<{ sun: Uint8Array; sunNoVeg: Uint8Array }> = [];
             const tileFrameMeta: Array<{ index: number; localTime: string; sunnyCount: number; sunnyCountNoVegetation: number }> = [];
-            if (binary) {
+            if (atlas && atlasUtcSamples) {
+              // Tile center for sun position computation
+              const tileCenterLv95E = (tileMinIx + (tileMaxIx + 1)) / 2 * query.gridStepMeters;
+              const tileCenterLv95N = (tileMinIy + (tileMaxIy + 1)) / 2 * query.gridStepMeters;
+              const { lat: tileLat, lon: tileLon } = lv95ToWgs84(tileCenterLv95E, tileCenterLv95N);
+              const RAD_TO_DEG = 180 / Math.PI;
+              for (let f = 0; f < atlasUtcSamples.length; f++) {
+                const utcDate = atlasUtcSamples[f];
+                const pos = SunCalc.getPosition(utcDate, tileLat, tileLon);
+                const alt = pos.altitude * RAD_TO_DEG;
+                const localTime = utcDate.toLocaleTimeString("fr-CH", { timeZone: query.timezone, hour: "2-digit", minute: "2-digit", hour12: false });
+                const dstMask = new Uint8Array(Math.ceil(gridCellCount / 8));
+                const dstNoVeg = new Uint8Array(Math.ceil(gridCellCount / 8));
+                let sunnyCount = 0, sunnyNoVeg = 0;
+                if (alt > 0) {
+                  let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
+                  if (az < 0) az += 360;
+                  const bucket = lookupAtlasByAngle(atlas, az, alt);
+                  if (bucket) {
+                    const { sunMask, sunNoVegMask } = bucket;
+                    for (let i = 0; i < gridCellCount; i++) {
+                      const oi = cellToOutdoor[i];
+                      if (oi >= 0 && isMaskBitSet(sunMask, oi)) {
+                        setMaskBit(dstMask, i);
+                        sunnyCount += 1;
+                      }
+                      if (oi >= 0 && isMaskBitSet(sunNoVegMask, oi)) {
+                        setMaskBit(dstNoVeg, i);
+                        sunnyNoVeg += 1;
+                      }
+                    }
+                  }
+                }
+                frameMaskBuffers.push({ sun: dstMask, sunNoVeg: dstNoVeg });
+                tileFrameMeta.push({ index: f, localTime, sunnyCount, sunnyCountNoVegetation: sunnyNoVeg });
+              }
+            } else if (binary) {
               for (let f = 0; f < viewFrameCount; f++) {
                 const srcMask = getFrameMask(binary, f, MASK_KIND_SUN);
                 const dstMask = new Uint8Array(Math.ceil(gridCellCount / 8));

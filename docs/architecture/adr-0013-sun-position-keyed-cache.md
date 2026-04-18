@@ -183,12 +183,34 @@ Divergence mesurée sur une tuile Lausanne centre (`e2538000_n1152250_s250`), 20
 2. Près de l'horizon, peu de cellules sont ensoleillées (ombres des bâtiments couvrent l'essentiel) → peu de bits à "flipper" au bucketing.
 3. La **résolution adaptative n'est pas nécessaire** — un bucketing uniforme suffit.
 
+#### Mesures sur le dataset complet — 200 jours, 179 tuiles (bench `atlas-divergence-from-dataset.ts`, 2026-04-17)
+
+Divergence réelle calculée sur les bits stockés dans le cache date-keyed de Lausanne (200 jours, fenêtre 00:00-23:59, 96 frames/jour, 20 tuiles sondées ~19 800 frames chacune) :
+
+| Résolution | Overall | alt<5° | alt 5-15° | alt 15-30° | alt≥30° | Dedup |
+|---|---|---|---|---|---|---|
+| 0.25° | **0.000%** | 0.000% | 0.000% | 0.000% | 0.000% | 1.22× |
+| 0.5° | **0.126%** | 0.100% | 0.221% | 0.271% | 0.195% | 1.76× |
+| 1° | **0.457%** | 0.102% | 0.616% | 0.647% | 0.955% | 3.19× |
+| 2° | **1.070%** | 0.461% | 1.498% | 1.726% | 2.127% | 6.86× |
+
+Confirmation et raffinement des chiffres single-tile (bench 2026-04-15) :
+- La divergence à 1° sur l'ensemble du dataset (0.457%) est **légèrement inférieure** à celle mesurée sur une seule tuile (0.570%) — les 200 jours avec fenêtre complète produisent en réalité moins de collision problématique qu'une journée de printemps seule.
+- À 0.25°, la divergence est **exactement 0.000%** sur tous les buckets multi-frames : les frames dans un même bucket 0.25° ont des masques d'ombrage bit-identiques. Ce résultat n'était pas attendu avec cette certitude.
+- À 0.5°, la divergence est < 0.3% sur toutes les bandes d'altitude.
+
+Wallclock estimate sur le dataset complet (`atlas-wallclock-estimate.ts`, 179 tuiles, 1 839 221 frames lit) :
+- 1° : 577 138 frames atlas = 31.4% du date-keyed → **3.19× moins de compute**
+- 0.5° : 1 044 482 frames atlas = 56.8% → 1.76× moins de compute
+- 0.25° : 1 507 061 frames atlas = 81.9% → 1.22× moins de compute
+- 2° : 268 150 frames atlas = 14.6% → 6.86× moins de compute
+
 #### Reco révisée
 
 **1° est largement acceptable** :
-- 0.57% de divergence au niveau bit
+- 0.457% de divergence au niveau bit (dataset réel, 200 jours)
 - À comparer avec la divergence **Vulkan vs gpu-raster** documentée dans ADR-0011 : **1.2-1.3% sur sunMask final**
-- Le bucketing à 1° introduit **deux fois moins d'erreur que le choix de backend lui-même**. Architecturalement c'est du bruit.
+- Le bucketing à 1° introduit **3× moins d'erreur que le choix de backend lui-même**. Architecturalement c'est du bruit.
 
 **0.5° comme sweet spot si on veut être prudent** :
 - 0.37% de divergence
@@ -280,7 +302,7 @@ Deux chantiers distincts qui peuvent se faire séquentiellement : **(A) généra
 - [x] Bench divergence single-tile (commit `1a390fa`) — confirme 1° comme résolution cible
 - [x] Bench consecutive-day sharing (commit `143a8aa`) — confirme l'intérêt multi-échelles
 - [x] Bench scripts prêts (commit `b01017e`) — `atlas-divergence-from-dataset.ts` et `atlas-wallclock-estimate.ts` à lancer quand la précompute date-keyed 200 jours est finie
-- [ ] **Lancer les bench scripts après complétion précompute date-keyed** — obtenir les chiffres de divergence à grande échelle et la projection wallclock atlas avant de coder
+- [x] **Bench scripts lancés sur le dataset 200 jours (2026-04-17)** — divergence à 1° = 0.457% réel, 3.19× dedup, 0.25° = 0.000% (voir section Mesures ci-dessus)
 
 ### Phase A — Génération atlas (~1.5j)
 
@@ -412,9 +434,9 @@ Mais c'est fait **une fois** et ça dure éternellement. Une fois l'atlas de Lau
 
 ### Ordre d'exécution recommandé
 
-1. ⏳ Fin du précompute date-keyed 200 jours (en cours, ETA ~3h)
-2. ▶ Lancer les deux bench scripts (Phase 0 restante)
-3. ▶ Phase A (génération atlas)
+1. [x] Fin du précompute date-keyed 200 jours (complété 2026-04-17, 179 tuiles, 33 559 tiles)
+2. [x] Bench scripts Phase 0 (complétés 2026-04-17) — divergence 1°=0.457%, 3.19× dedup
+3. ▶ Phase A (génération atlas) — en cours
 4. ▶ Re-précomputer 3-5 tuiles pilote en atlas
 5. ▶ Phase B (runtime)
 6. ▶ Phase C (validation sur tuiles pilote)
