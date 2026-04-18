@@ -1933,10 +1933,11 @@ export async function* streamTilesForBbox(params: {
       if (binary) {
         // Guard against corrupted precompute runs where all frames have sunnyCount=0
         // despite the sun being above the horizon (seen in t0000-2359 test runs).
+        // Only flag as corrupted when outdoorPointCount > 0 (tiles with zero outdoor
+        // points legitimately have sunnyCount=0 for all frames).
         const totalSunny = binary.meta.framesMeta.reduce((s, f) => s + f.sunnyCount, 0);
-        if (binary.frameCount > 5 && totalSunny === 0) {
-          // Skip — treat as MISS so caller falls back to live compute.
-        } else {
+        const looksCorrupted = binary.frameCount > 5 && binary.outdoorPointCount > 0 && totalSunny === 0;
+        if (!looksCorrupted) {
           return { artifact: null, binary, layer: "L2" as const };
         }
       }
@@ -1953,10 +1954,10 @@ export async function* streamTilesForBbox(params: {
       });
       if (loaded.artifact) {
         const frames = loaded.artifact.frames ?? [];
+        const outdoorPoints = loaded.artifact.points?.filter(p => !p.insideBuilding).length ?? 0;
         const totalSunny = frames.reduce((s, f) => s + (f.sunnyCount ?? 0), 0);
-        if (frames.length > 5 && totalSunny === 0) {
-          // Skip corrupted artifact.
-        } else {
+        const looksCorrupted = frames.length > 5 && outdoorPoints > 0 && totalSunny === 0;
+        if (!looksCorrupted) {
           return { artifact: loaded.artifact, layer: loaded.layer };
         }
       }
