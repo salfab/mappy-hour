@@ -1,6 +1,7 @@
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 import { buildRegionTiles, getIntersectingTileIds } from "../../src/lib/precompute/sunlight-cache";
 import { loadTileSelectionForRegion } from "../../src/lib/precompute/tile-selection-file";
+import { getHorizonCacheStats } from "../../src/lib/sun/adaptive-horizon-sharing";
 
 type ExperimentalBuildingsShadowMode = "gpu-raster" | "rust-wgpu-vulkan";
 
@@ -278,6 +279,7 @@ async function main() {
   // ETA tracking: only count time spent actually computing tiles
   let computedTileCount = 0;
   let computedTileMs = 0;
+  let firstTileStartMs = 0;
   let currentComputeTileIndex = -1;
   let currentTileStartMs = 0;
 
@@ -364,6 +366,7 @@ async function main() {
           if (progress.tileIndex !== currentComputeTileIndex) {
             currentComputeTileIndex = progress.tileIndex;
             currentTileStartMs = now;
+            if (firstTileStartMs === 0) firstTileStartMs = now;
           }
           currentTileRunningFrac =
             typeof progress.currentTileProgressPercent === "number"
@@ -388,6 +391,51 @@ async function main() {
         });
         const etaStr = eta != null ? formatDuration(eta) : "--";
         const globalBar = progressBar(progress.percent, 24);
+
+        // ── warming (préchargement parallèle des sidecars .atlas.idx) ─────
+        if (progress.currentTileState === "warming") {
+          eraseLiveZone();
+          const loaded = progress.warmLoaded ?? 0;
+          const total = progress.warmTotal ?? progress.tilesTotal;
+          const migrated = progress.warmMigrated ?? 0;
+          const pct = total === 0 ? 100 : (loaded / total) * 100;
+          const bar = progressBar(pct, 24);
+          const migSuffix = migrated > 0 ? `  (${migrated} migré${migrated > 1 ? "s" : ""})` : "";
+          process.stdout.write(
+            `  ⚡ Warm-up cache atlas  [${bar}] ${pct.toFixed(1).padStart(5)}%  ${loaded}/${total}${migSuffix}\x1b[K\n`,
+          );
+          liveLineCount = 1;
+          return;
+        }
+        if (progress.currentTileState === "warming-done") {
+          eraseLiveZone();
+          const loaded = progress.warmLoaded ?? 0;
+          const total = progress.warmTotal ?? progress.tilesTotal;
+          const migrated = progress.warmMigrated ?? 0;
+          const elapsedStr = progress.warmElapsedMs != null
+            ? (progress.warmElapsedMs < 1000
+                ? `${progress.warmElapsedMs}ms`
+                : formatDuration(progress.warmElapsedMs / 1000))
+            : "";
+          const migSuffix = migrated > 0 ? `, ${migrated} migré${migrated > 1 ? "s" : ""}` : "";
+          printPermanent(
+            `  ⚡ Warm-up cache atlas terminé  ${loaded}/${total} tuile(s)${migSuffix}  (${elapsedStr})`,
+          );
+          return;
+        }
+
+        // ── day-skipped (toutes les tuiles du jour déjà en cache) ─────────
+        if (progress.currentTileState === "day-skipped") {
+          flushSkips();
+          runningSlots.clear();
+          eraseLiveZone();
+          printPermanent(
+            `  ⏭  Jour ${progress.dayIndex}/${progress.daysTotal}  ${progress.date}  déjà précalculé (${progress.tilesTotal} tuiles)  [${globalBar}] ${progress.percent.toFixed(1).padStart(5)}%  ETA ${etaStr}`,
+          );
+          lastDayIndex = progress.dayIndex;
+          renderLiveZone(globalBar, progress.percent, etaStr);
+          return;
+        }
 
         // ── new day header ────────────────────────────────────────────────
         if (progress.dayIndex !== lastDayIndex) {
@@ -452,6 +500,31 @@ async function main() {
   console.log(
     `\n[precompute] ✓ terminé  region=${result.region}  model=${result.modelVersionHash}  totalDates=${result.totalDates}  totalTiles=${result.totalTiles}  durée=${formatDuration(elapsedMs / 1000)}`,
   );
+
+  // ── Diagnostic summary: cold-start, inter-tile gap, horizon cache ────
+  // Turns "somme des logs [tile]" vs "wall-time script" into an explicit
+  // breakdown so we can see where optim headroom lives.
+  const coldStartMs = firstTileStartMs > 0 ? firstTileStartMs - startedAt : 0;
+  const sumTileMs = computedTileMs;
+  const gapMs = Math.max(0, elapsedMs - coldStartMs - sumTileMs);
+  const coldPct = elapsedMs > 0 ? (coldStartMs / elapsedMs) * 100 : 0;
+  const tilePct = elapsedMs > 0 ? (sumTileMs / elapsedMs) * 100 : 0;
+  const gapPct = elapsedMs > 0 ? (gapMs / elapsedMs) * 100 : 0;
+  console.log(
+    `[precompute] breakdown  cold-start ${formatDuration(coldStartMs / 1000)} (${coldPct.toFixed(0)}%)` +
+      `  tiles ${formatDuration(sumTileMs / 1000)} (${tilePct.toFixed(0)}%)` +
+      `  gap ${formatDuration(gapMs / 1000)} (${gapPct.toFixed(0)}%)`,
+  );
+  const hs = getHorizonCacheStats();
+  const hsTotal = hs.hits + hs.misses;
+  if (hsTotal > 0) {
+    console.log(
+      `[precompute] horizon-cache  ${hs.hits}/${hsTotal} hits (${(hs.hitRatio * 100).toFixed(0)}%)` +
+        `  builds=${hs.misses} (${formatDuration(hs.totalBuildMs / 1000)})` +
+        `  lookup=${formatDuration(hs.totalHitLookupMs / 1000)}`,
+    );
+  }
+
   for (const day of result.dates) {
     const icon = day.complete ? "✓" : day.failedTiles > 0 ? "✗" : "~";
     console.log(
