@@ -54,6 +54,7 @@ import {
   writePrecomputedSunlightTile,
   type PrecomputedRegionName,
   type PrecomputedSunlightManifest,
+  type PrecomputedSunlightPoint,
   type PrecomputedSunlightTileArtifact,
   type RegionBbox,
   type RegionTileSpec,
@@ -700,6 +701,7 @@ export async function computeSunlightTileArtifact(params: {
   sunOverride?: Array<{ azimuthDeg: number; altitudeDeg: number }>;
 }): Promise<PrecomputedSunlightTileArtifact> {
   const started = performance.now();
+  const cpuT0 = process.cpuUsage();
   const phaseMs = {
     adaptiveHorizon: 0,
     sharedSources: 0,
@@ -824,24 +826,36 @@ export async function computeSunlightTileArtifact(params: {
   // Method strings are resolved via ONE async call on the first outdoor
   // point; all subsequent points reuse them.
   const batchSkipsAllEvaluators = gm && sharedSources.vegetationShadowHandledByBackend === true;
+  let pointsContextCallMs = 0;
+  let pointsIndoorCount = 0;
+  let pointsOutdoorCount = 0;
   if (batchSkipsAllEvaluators) {
     const horizonMask = sharedSources.horizonMask;
     let methodsResolved = false;
-    for (let rawPointIndex = 0; rawPointIndex < rawTilePoints.length; rawPointIndex += 1) {
-      const point = rawTilePoints[rawPointIndex];
+    // Niveau 4 fast path: mutate rawTilePoints[i] in place (eliminating the
+    // {...point, ...} spread) and pre-size `points`/`preparedOutdoorPoints`
+    // so V8 doesn't grow-and-rehash. Saves ~50% of the loop body cost by
+    // dropping ~62500 object allocations per tile. rawTilePoints is local
+    // to this function — safe to mutate.
+    const n = rawTilePoints.length;
+    points.length = n;
+    preparedOutdoorPoints.length = n; // over-sized, trimmed below
+    let outdoorCursor = 0;
+    for (let rawPointIndex = 0; rawPointIndex < n; rawPointIndex += 1) {
+      const point = rawTilePoints[rawPointIndex] as PrecomputedSunlightPoint;
       if (gm.indoor[rawPointIndex]) {
         indoorPointsExcluded += 1;
-        points.push({
-          ...point,
-          insideBuilding: true,
-          indoorBuildingId: null,
-          outdoorIndex: null,
-          pointElevationMeters: null,
-        });
+        pointsIndoorCount += 1;
+        point.insideBuilding = true;
+        point.indoorBuildingId = null;
+        point.outdoorIndex = null;
+        point.pointElevationMeters = null;
+        points[rawPointIndex] = point;
         continue;
       }
       // Resolve method strings once from the first outdoor point
       if (!methodsResolved) {
+        const ctxT0 = performance.now();
         const context = await buildPointEvaluationContext(point.lat, point.lon, {
           skipTerrainSamplingWhenIndoor: true,
           terrainHorizonOverride: terrainHorizonOverride ?? undefined,
@@ -851,31 +865,32 @@ export async function computeSunlightTileArtifact(params: {
           overrideElevation: gm.elevations[rawPointIndex],
           skipIndoorCheck: true,
         });
+        pointsContextCallMs = performance.now() - ctxT0;
         terrainMethod = context.terrainHorizonMethod;
         buildingsMethod = `${context.buildingsShadowMethod}${buildingMethodSuffix}`;
         vegetationMethod = context.vegetationShadowMethod ?? "none";
         warnings.push(...context.warnings);
         methodsResolved = true;
       }
-      const outdoorIndex = preparedOutdoorPoints.length;
-      if (gm.elevations[rawPointIndex] !== null) pointsWithElevation += 1;
-      preparedOutdoorPoints.push({
+      pointsOutdoorCount += 1;
+      const elev = gm.elevations[rawPointIndex];
+      if (elev !== null) pointsWithElevation += 1;
+      const outdoorIndex = outdoorCursor;
+      preparedOutdoorPoints[outdoorCursor++] = {
         lat: point.lat,
         lon: point.lon,
         lv95Easting: point.lv95Easting,
         lv95Northing: point.lv95Northing,
-        pointElevationMeters: gm.elevations[rawPointIndex],
+        pointElevationMeters: elev,
         horizonMask,
         buildingShadowEvaluator: undefined,
         vegetationShadowEvaluator: undefined,
-      });
-      points.push({
-        ...point,
-        insideBuilding: false,
-        indoorBuildingId: null,
-        outdoorIndex,
-        pointElevationMeters: gm.elevations[rawPointIndex],
-      });
+      };
+      point.insideBuilding = false;
+      point.indoorBuildingId = null;
+      point.outdoorIndex = outdoorIndex;
+      point.pointElevationMeters = elev;
+      points[rawPointIndex] = point;
       if (
         params.cooperativeYieldEveryPoints &&
         params.cooperativeYieldEveryPoints > 0 &&
@@ -885,9 +900,9 @@ export async function computeSunlightTileArtifact(params: {
         params.onProgress?.({
           stage: "prepare-points",
           completed: rawPointIndex + 1,
-          total: rawTilePoints.length,
-          pointCountTotal: rawTilePoints.length,
-          pointCountOutdoor: preparedOutdoorPoints.length,
+          total: n,
+          pointCountTotal: n,
+          pointCountOutdoor: outdoorCursor,
           frameCountTotal: 0,
           frameIndex: null,
           elapsedMs: performance.now() - started,
@@ -896,6 +911,8 @@ export async function computeSunlightTileArtifact(params: {
         throwIfAborted(params.signal);
       }
     }
+    // Trim over-allocated preparedOutdoorPoints to actual outdoor count.
+    preparedOutdoorPoints.length = outdoorCursor;
   } else {
     // ── Original loop: full buildPointEvaluationContext per point ────
     for (let rawPointIndex = 0; rawPointIndex < rawTilePoints.length; rawPointIndex += 1) {
@@ -1665,16 +1682,22 @@ export async function computeSunlightTileArtifact(params: {
   phaseMs.evalFrameLoop = frameLoopEnd - frameLoopT0;
   phaseMs.evaluations = frameLoopEnd - evalsT0;
   const totalMs = performance.now() - started;
+  const cpuDelta = process.cpuUsage(cpuT0);
+  const cpuMs = (cpuDelta.user + cpuDelta.system) / 1000;
+  const cpuPct = totalMs > 0 ? (cpuMs / totalMs) * 100 : 0;
   phaseMs.postEvals = totalMs - (frameLoopEnd - started);
   const phaseSum =
     phaseMs.adaptiveHorizon + phaseMs.sharedSources + phaseMs.pointContexts + phaseMs.evaluations;
   const otherMs = Math.max(0, totalMs - phaseSum);
   const evals = preparedOutdoorPoints.length * frames.length;
   console.log(
-    `[tile ${params.tile.tileId}] ${(totalMs / 1000).toFixed(1)}s total` +
+    `[tile ${params.tile.tileId}] ${(totalMs / 1000).toFixed(1)}s total (cpu ${cpuPct.toFixed(0)}%)` +
       ` \u2014 horizon ${(phaseMs.adaptiveHorizon / 1000).toFixed(1)}s` +
       `, sources ${(phaseMs.sharedSources / 1000).toFixed(1)}s` +
       `, points ${(phaseMs.pointContexts / 1000).toFixed(1)}s` +
+      ` [ctx ${pointsContextCallMs.toFixed(0)}ms` +
+      `, loop ${(phaseMs.pointContexts - pointsContextCallMs).toFixed(0)}ms` +
+      ` for ${pointsOutdoorCount + pointsIndoorCount} pts (${pointsIndoorCount} in, ${pointsOutdoorCount} out)]` +
       `, eval ${(phaseMs.evaluations / 1000).toFixed(1)}s` +
       ` [setup ${(phaseMs.evalSetup / 1000).toFixed(2)}s` +
       `, dispatch ${(phaseMs.evalBatchDispatch / 1000).toFixed(2)}s` +
