@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import { gzip as gzipCb, gunzip as gunzipCb } from "node:zlib";
 import path from "node:path";
@@ -8,6 +9,27 @@ import type { PrecomputedRegionName, RegionTileSpec } from "./sunlight-cache";
 
 const gzip = promisify(gzipCb);
 const gunzip = promisify(gunzipCb);
+
+/**
+ * Atomic write: writes to a temporary file then renames into place. On POSIX
+ * rename is atomic. On Windows, `fs.rename` uses MoveFileEx with
+ * MOVEFILE_REPLACE_EXISTING so the target is replaced atomically too.
+ *
+ * Guarantees that readers never observe a half-written file — either the old
+ * content or the new content, never a truncated/corrupted payload. This is the
+ * crash-consistency foundation the atlas + sidecar pair relies on.
+ */
+async function writeFileAtomic(targetPath: string, data: Buffer): Promise<void> {
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, data);
+    await fs.rename(tmpPath, targetPath);
+  } catch (error) {
+    await fs.unlink(tmpPath).catch(() => {});
+    throw error;
+  }
+}
 
 // Binary atlas format (angle-keyed cache, ADR-0013).
 // One file per tile, all (az, alt) buckets inside.
@@ -41,6 +63,34 @@ export const ATLAS_HEADER_BYTES = 48;
 export const ATLAS_POINT_STRIDE = 32;
 export const ATLAS_MASK_KINDS = 5;
 export const ATLAS_BUCKET_INDEX_ENTRY_BYTES = 8;
+
+// Atlas sidecar index — lightweight, uncompressed companion file holding
+// just the bucket presence info needed for precompute skip-checks. Avoids
+// gunzipping ~350KB of masks when we only need ~2KB of (az,alt) pairs.
+// Layout (little-endian):
+//   [0..4)   magic u32 = 0x49445841 ('IDXA')
+//   [4..6)   version u16 = 1
+//   [6..8)   flags u16 (reserved)
+//   [8..12)  pointCount u32
+//   [12..16) outdoorPointCount u32
+//   [16..20) bucketCount u32
+//   [20..24) resolutionDegAz f32
+//   [24..28) resolutionDegAlt f32
+//   [28..)   bucketCount × { azBucket u16, altBucket u16 }
+export const ATLAS_IDX_MAGIC = 0x49445841;
+export const ATLAS_IDX_VERSION = 1;
+export const ATLAS_IDX_HEADER_BYTES = 28;
+export const ATLAS_IDX_ENTRY_BYTES = 4;
+
+export interface TileAtlasIndex {
+  pointCount: number;
+  outdoorPointCount: number;
+  bucketCount: number;
+  resolutionDegAz: number;
+  resolutionDegAlt: number;
+  bucketAz: Uint16Array;
+  bucketAlt: Uint16Array;
+}
 
 export const ATLAS_MASK_KIND_SUN = 0;
 export const ATLAS_MASK_KIND_SUN_NO_VEG = 1;
@@ -323,6 +373,134 @@ export function getAtlasPath(params: {
   );
 }
 
+export function getAtlasIndexPath(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  tileId: string;
+  resolutionDeg?: number;
+}): string {
+  const resSuffix = params.resolutionDeg != null ? `r${params.resolutionDeg}` : "r0.75";
+  return path.join(
+    CACHE_SUNLIGHT_DIR,
+    params.region,
+    params.modelVersionHash,
+    `g${params.gridStepMeters}`,
+    "atlas",
+    resSuffix,
+    `${params.tileId}.atlas.idx`,
+  );
+}
+
+export function encodeTileAtlasIndex(index: TileAtlasIndex): Buffer {
+  const total = ATLAS_IDX_HEADER_BYTES + index.bucketCount * ATLAS_IDX_ENTRY_BYTES;
+  const buf = Buffer.alloc(total);
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  view.setUint32(0, ATLAS_IDX_MAGIC, true);
+  view.setUint16(4, ATLAS_IDX_VERSION, true);
+  view.setUint16(6, 0, true);
+  view.setUint32(8, index.pointCount, true);
+  view.setUint32(12, index.outdoorPointCount, true);
+  view.setUint32(16, index.bucketCount, true);
+  view.setFloat32(20, index.resolutionDegAz, true);
+  view.setFloat32(24, index.resolutionDegAlt, true);
+  for (let i = 0; i < index.bucketCount; i++) {
+    const base = ATLAS_IDX_HEADER_BYTES + i * ATLAS_IDX_ENTRY_BYTES;
+    view.setUint16(base + 0, index.bucketAz[i], true);
+    view.setUint16(base + 2, index.bucketAlt[i], true);
+  }
+  return buf;
+}
+
+export function decodeTileAtlasIndex(raw: Uint8Array): TileAtlasIndex {
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  const magic = view.getUint32(0, true);
+  if (magic !== ATLAS_IDX_MAGIC) {
+    throw new Error(`Bad magic in atlas index sidecar: 0x${magic.toString(16)}`);
+  }
+  const version = view.getUint16(4, true);
+  if (version !== ATLAS_IDX_VERSION) {
+    throw new Error(`Unsupported atlas index version: ${version}`);
+  }
+  const pointCount = view.getUint32(8, true);
+  const outdoorPointCount = view.getUint32(12, true);
+  const bucketCount = view.getUint32(16, true);
+  const resolutionDegAz = view.getFloat32(20, true);
+  const resolutionDegAlt = view.getFloat32(24, true);
+  const bucketAz = new Uint16Array(bucketCount);
+  const bucketAlt = new Uint16Array(bucketCount);
+  for (let i = 0; i < bucketCount; i++) {
+    const base = ATLAS_IDX_HEADER_BYTES + i * ATLAS_IDX_ENTRY_BYTES;
+    bucketAz[i] = view.getUint16(base + 0, true);
+    bucketAlt[i] = view.getUint16(base + 2, true);
+  }
+  return {
+    pointCount,
+    outdoorPointCount,
+    bucketCount,
+    resolutionDegAz,
+    resolutionDegAlt,
+    bucketAz,
+    bucketAlt,
+  };
+}
+
+export function atlasToIndex(atlas: BinaryTileAtlas): TileAtlasIndex {
+  return {
+    pointCount: atlas.pointCount,
+    outdoorPointCount: atlas.outdoorPointCount,
+    bucketCount: atlas.bucketCount,
+    resolutionDegAz: atlas.resolutionDegAz,
+    resolutionDegAlt: atlas.resolutionDegAlt,
+    bucketAz: atlas.bucketAz,
+    bucketAlt: atlas.bucketAlt,
+  };
+}
+
+export async function writeTileAtlasIndex(
+  index: TileAtlasIndex,
+  params: {
+    region: PrecomputedRegionName;
+    modelVersionHash: string;
+    gridStepMeters: number;
+    tileId: string;
+    resolutionDeg?: number;
+  },
+): Promise<void> {
+  const targetPath = getAtlasIndexPath(params);
+  const buf = encodeTileAtlasIndex(index);
+  await writeFileAtomic(targetPath, buf);
+}
+
+export async function loadTileAtlasIndex(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  tileId: string;
+  resolutionDeg?: number;
+}): Promise<TileAtlasIndex | null> {
+  const storage = getSunlightCacheStorage();
+  const targetPath = getAtlasIndexPath(params);
+  let raw: Buffer;
+  try {
+    raw = await storage.readBuffer(targetPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  // Tolerate a corrupt/partially-written sidecar (e.g. from a pre-atomic-write
+  // crash, or a writer crash on another platform). Caller falls back to the
+  // full-atlas load, which rewrites a fresh sidecar.
+  try {
+    return decodeTileAtlasIndex(raw);
+  } catch (error) {
+    console.warn(
+      `[atlas-idx] corrupt sidecar ignored at ${targetPath}: ${(error as Error).message}`,
+    );
+    return null;
+  }
+}
+
 export async function writePrecomputedTileAtlas(
   atlas: BinaryTileAtlas,
   params: {
@@ -333,14 +511,18 @@ export async function writePrecomputedTileAtlas(
     resolutionDeg?: number;
   },
 ): Promise<void> {
-  const storage = getSunlightCacheStorage();
   const targetPath = getAtlasPath(params);
   const bin = encodeTileAtlasToBinary(atlas);
   // level 1: bench (scripts/diag/bench-atlas-compression.ts) shows 89ms vs
   // 359ms for level 6 on ~130MB raw atlas. A/B on Geneva 4-tile run: 80ms
   // vs 130ms median [atlas-write], file grows 780KB→1.3MB. CPU>>disk here.
   const compressed = (await gzip(bin, { level: 1 })) as Buffer;
-  await storage.writeBuffer(targetPath, compressed);
+  // Atlas first, then sidecar. Order matters for crash consistency: a stale
+  // sidecar under-reports coverage → safe fallback to full atlas load. The
+  // inverse (sidecar claiming buckets missing from atlas) would silently
+  // corrupt skip decisions.
+  await writeFileAtomic(targetPath, compressed);
+  await writeTileAtlasIndex(atlasToIndex(atlas), params);
 }
 
 export async function loadPrecomputedTileAtlas(params: {
