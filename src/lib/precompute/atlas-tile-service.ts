@@ -10,17 +10,267 @@ import {
 import type { TileGridMetadata } from "./tile-grid-metadata";
 import type { PrecomputedRegionName, RegionTileSpec } from "./sunlight-cache";
 import {
+  atlasToIndex,
   getAtlasBucketKeySet,
   loadPrecomputedTileAtlas,
+  loadTileAtlasIndex,
   mergeBucketsIntoAtlas,
   packBucketKey,
   writePrecomputedTileAtlas,
+  writeTileAtlasIndex,
   type AtlasBucketEntry,
+  type TileAtlasIndex,
   type TileAtlasMetadata,
 } from "./sunlight-cache-atlas";
 
 const DEFAULT_ATLAS_RESOLUTION_DEG = 0.75;
 const RAD_TO_DEG = 180 / Math.PI;
+
+// In-memory cache of atlas bucket-key sets + stats, keyed by tile+resolution.
+// Loading an atlas from disk costs ~500-2000ms per tile (gunzip + decode +
+// Set construction). On multi-day precompute runs, the same tile's atlas is
+// queried up to N_days times. This cache loads each atlas once and reuses the
+// key set for subsequent days, turning 301 tiles × 200 days of disk I/O into
+// 301 loads total. Populated on first skip-check; refreshed in place after
+// merge. Process-local — cleared on process exit.
+interface CachedAtlasSkipInfo {
+  keys: Set<number>;
+  pointCount: number;
+  outdoorPointCount: number;
+  bucketCount: number;
+}
+const atlasSkipCache = new Map<string, CachedAtlasSkipInfo>();
+function atlasSkipCacheKey(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  tileId: string;
+  resolutionDeg: number;
+}): string {
+  return `${params.region}|${params.modelVersionHash}|${params.gridStepMeters}|${params.tileId}|${params.resolutionDeg}`;
+}
+
+export function clearAtlasSkipCache(): void {
+  atlasSkipCache.clear();
+}
+
+function indexToCachedSkipInfo(index: TileAtlasIndex): CachedAtlasSkipInfo {
+  const keys = new Set<number>();
+  for (let i = 0; i < index.bucketCount; i++) {
+    keys.add(packBucketKey(index.bucketAz[i], index.bucketAlt[i]));
+  }
+  return {
+    keys,
+    pointCount: index.pointCount,
+    outdoorPointCount: index.outdoorPointCount,
+    bucketCount: index.bucketCount,
+  };
+}
+
+/**
+ * Parallel warm-up: populates `atlasSkipCache` for every tile so that
+ * `canSkipAllTilesForDay` can fire on day 1 of a run (cold cache otherwise).
+ *
+ * Fast path: reads each tile's `.atlas.idx` sidecar (~2 KB uncompressed,
+ * bucket indices only). Typical cost < 1 ms per tile.
+ *
+ * Migration path: if a sidecar is missing (atlas predates the sidecar format),
+ * loads the full `.atlas.bin.gz` (~800 KB + gunzip, ~1 s per tile), extracts
+ * the index, and writes a sidecar so subsequent runs are fast. Bounded
+ * concurrency keeps libuv I/O and zlib threads saturated during migration.
+ */
+export async function warmAtlasSkipCache(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  tiles: ReadonlyArray<RegionTileSpec>;
+  resolutionDeg?: number;
+  concurrency?: number;
+  onProgress?: (loaded: number, total: number, migrated: number) => void;
+}): Promise<{ loaded: number; migrated: number; missing: number }> {
+  const resolutionDeg = params.resolutionDeg ?? DEFAULT_ATLAS_RESOLUTION_DEG;
+  const concurrency = params.concurrency ?? 16;
+  const toLoad: RegionTileSpec[] = [];
+  for (const tile of params.tiles) {
+    const key = atlasSkipCacheKey({
+      region: params.region,
+      modelVersionHash: params.modelVersionHash,
+      gridStepMeters: params.gridStepMeters,
+      tileId: tile.tileId,
+      resolutionDeg,
+    });
+    if (!atlasSkipCache.has(key)) toLoad.push(tile);
+  }
+  if (toLoad.length === 0) {
+    return { loaded: 0, migrated: 0, missing: 0 };
+  }
+  let idx = 0;
+  let loaded = 0;
+  let migrated = 0;
+  let missing = 0;
+  const total = toLoad.length;
+  const worker = async () => {
+    while (true) {
+      const i = idx++;
+      if (i >= total) return;
+      const tile = toLoad[i];
+      const locator = {
+        region: params.region,
+        modelVersionHash: params.modelVersionHash,
+        gridStepMeters: params.gridStepMeters,
+        tileId: tile.tileId,
+        resolutionDeg,
+      };
+      const cacheKey = atlasSkipCacheKey(locator);
+      const index = await loadTileAtlasIndex(locator);
+      if (index) {
+        if (index.resolutionDegAz === resolutionDeg && index.resolutionDegAlt === resolutionDeg) {
+          atlasSkipCache.set(cacheKey, indexToCachedSkipInfo(index));
+        }
+        loaded++;
+        params.onProgress?.(loaded, total, migrated);
+        continue;
+      }
+      const atlas = await loadPrecomputedTileAtlas(locator);
+      loaded++;
+      if (!atlas) {
+        missing++;
+        params.onProgress?.(loaded, total, migrated);
+        continue;
+      }
+      atlasSkipCache.set(cacheKey, {
+        keys: getAtlasBucketKeySet(atlas),
+        pointCount: atlas.pointCount,
+        outdoorPointCount: atlas.outdoorPointCount,
+        bucketCount: atlas.bucketCount,
+      });
+      // Migrate: write the sidecar so the next run skips the full-atlas load.
+      try {
+        await writeTileAtlasIndex(atlasToIndex(atlas), locator);
+        migrated++;
+      } catch {
+        // Non-fatal — next run will retry migration.
+      }
+      params.onProgress?.(loaded, total, migrated);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, total) }, () => worker()),
+  );
+  return { loaded, migrated, missing };
+}
+
+/**
+ * Pre-flight check used by the precompute orchestrator: returns true iff
+ * every supplied tile has a cached atlas bucket-key set that fully covers
+ * the target buckets for this date/window. Relies on `atlasSkipCache` being
+ * populated — on day 1 of a run the cache is cold and this returns false,
+ * which is the correct fallback (per-tile flow will warm the cache).
+ *
+ * Performance note: SunCalc.getPosition(date, lat, lng) internally computes
+ * the sun's geocentric coords (dec/ra) from the date only, then applies lat/
+ * lng. For a single day × 301 tiles × 96 samples = 29k calls, but only 96
+ * unique (date-dependent) geocentric coords. This helper hoists the shared
+ * computation out of the tile loop, turning ~3s into ~30ms on typical runs.
+ */
+export function canSkipAllTilesForDay(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  date: string;
+  timezone: string;
+  sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
+  tiles: ReadonlyArray<RegionTileSpec>;
+  resolutionDeg?: number;
+}): boolean {
+  const resolutionDeg = params.resolutionDeg ?? DEFAULT_ATLAS_RESOLUTION_DEG;
+
+  // Early exit: if any tile has no cache entry we can't prove coverage.
+  const cachedPerTile: CachedAtlasSkipInfo[] = new Array(params.tiles.length);
+  for (let i = 0; i < params.tiles.length; i++) {
+    const tile = params.tiles[i];
+    const cacheKey = atlasSkipCacheKey({
+      region: params.region,
+      modelVersionHash: params.modelVersionHash,
+      gridStepMeters: params.gridStepMeters,
+      tileId: tile.tileId,
+      resolutionDeg,
+    });
+    const cached = atlasSkipCache.get(cacheKey);
+    if (!cached) return false;
+    cachedPerTile[i] = cached;
+  }
+
+  // Precompute date-dependent sun coordinates once per sample (96 samples
+  // for a 24h × 15min window). These are independent of observer lat/lng.
+  const samples = createUtcSamples(
+    params.date,
+    params.timezone,
+    params.sampleEveryMinutes,
+    params.startLocalTime,
+    params.endLocalTime,
+  );
+  const RAD = Math.PI / 180;
+  const DAY_MS = 1000 * 60 * 60 * 24;
+  // toDays(date) = date/dayMs - 0.5 + J1970 - J2000 = date/dayMs - 10957.5
+  const J_OFFSET = -10957.5;
+  const OBLIQUITY = RAD * 23.4397;
+  const sinObliq = Math.sin(OBLIQUITY);
+  const cosObliq = Math.cos(OBLIQUITY);
+  const sampleCount = samples.length;
+  const decArr = new Float64Array(sampleCount);
+  const raArr = new Float64Array(sampleCount);
+  const sidBaseArr = new Float64Array(sampleCount);
+  for (let s = 0; s < sampleCount; s++) {
+    const d = samples[s].valueOf() / DAY_MS + J_OFFSET;
+    const M = RAD * (357.5291 + 0.98560028 * d);
+    const C = RAD * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M));
+    const L = M + C + RAD * 102.9372 + Math.PI;
+    const sinL = Math.sin(L);
+    const cosL = Math.cos(L);
+    decArr[s] = Math.asin(sinObliq * sinL);
+    raArr[s] = Math.atan2(sinL * cosObliq, cosL);
+    sidBaseArr[s] = RAD * (280.16 + 360.9856235 * d);
+  }
+
+  // Per-tile: compute bucket for each above-horizon sample using precomputed
+  // dec/ra and check membership in cached keys.
+  for (let i = 0; i < params.tiles.length; i++) {
+    const tile = params.tiles[i];
+    const cached = cachedPerTile[i];
+    const centerE = (tile.minEasting + tile.maxEasting) / 2;
+    const centerN = (tile.minNorthing + tile.maxNorthing) / 2;
+    const tileCenter = lv95ToWgs84(centerE, centerN);
+    const phi = RAD * tileCenter.lat;
+    const sinPhi = Math.sin(phi);
+    const cosPhi = Math.cos(phi);
+    const lw = RAD * -tileCenter.lon;
+    const seen = new Set<number>();
+    for (let s = 0; s < sampleCount; s++) {
+      const dec = decArr[s];
+      const ra = raArr[s];
+      const H = sidBaseArr[s] - lw - ra;
+      const sinDec = Math.sin(dec);
+      const cosDec = Math.cos(dec);
+      const cosH = Math.cos(H);
+      const altRad = Math.asin(sinPhi * sinDec + cosPhi * cosDec * cosH);
+      const altDeg = altRad * RAD_TO_DEG;
+      if (altDeg <= 0) continue;
+      const azRad = Math.atan2(Math.sin(H), cosH * sinPhi - (sinDec / cosDec) * cosPhi);
+      let azDeg = (azRad * RAD_TO_DEG + 180) % 360;
+      if (azDeg < 0) azDeg += 360;
+      const azB = Math.floor(azDeg / resolutionDeg);
+      const altB = Math.floor(altDeg / resolutionDeg);
+      const key = packBucketKey(azB, altB);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (!cached.keys.has(key)) return false;
+    }
+  }
+  return true;
+}
 
 export type AtlasComputeState = "computed" | "skipped";
 
@@ -109,6 +359,31 @@ export async function computeAndMergeAtlasForTile(
     resolutionDeg,
   );
 
+  // Fast skip-check: if we have a cached bucket-key set for this tile, use it
+  // to decide skip WITHOUT loading the atlas from disk. Only load when we
+  // actually need to merge new buckets.
+  const skipKey = atlasSkipCacheKey({
+    region: params.region,
+    modelVersionHash: params.modelVersionHash,
+    gridStepMeters: params.gridStepMeters,
+    tileId: params.tile.tileId,
+    resolutionDeg,
+  });
+  const cachedSkipInfo = atlasSkipCache.get(skipKey);
+  if (cachedSkipInfo) {
+    const allCovered = targetBuckets.every((b) =>
+      cachedSkipInfo.keys.has(packBucketKey(b.azBucket, b.altBucket)),
+    );
+    if (allCovered) {
+      return {
+        state: "skipped",
+        pointCountTotal: cachedSkipInfo.pointCount,
+        pointCountOutdoor: cachedSkipInfo.outdoorPointCount,
+        bucketCountTotal: cachedSkipInfo.bucketCount,
+      };
+    }
+  }
+
   const existingAtlas = await loadPrecomputedTileAtlas({
     region: params.region,
     modelVersionHash: params.modelVersionHash,
@@ -123,6 +398,30 @@ export async function computeAndMergeAtlasForTile(
   );
 
   if (missing.length === 0) {
+    // Populate cache so subsequent days skip the disk load entirely.
+    atlasSkipCache.set(skipKey, {
+      keys: existingKeys,
+      pointCount: existingAtlas?.pointCount ?? 0,
+      outdoorPointCount: existingAtlas?.outdoorPointCount ?? 0,
+      bucketCount: existingAtlas?.bucketCount ?? 0,
+    });
+    // Reaching this branch means the atlas covers all targets but the sidecar
+    // didn't (cache was cold or under-reported coverage). That mismatch
+    // happens after a crash between atlas write and sidecar write. Refresh
+    // the sidecar so the next process avoids this full-atlas reload entirely.
+    if (existingAtlas) {
+      try {
+        await writeTileAtlasIndex(atlasToIndex(existingAtlas), {
+          region: params.region,
+          modelVersionHash: params.modelVersionHash,
+          gridStepMeters: params.gridStepMeters,
+          tileId: params.tile.tileId,
+          resolutionDeg,
+        });
+      } catch {
+        // Non-fatal — next run will retry.
+      }
+    }
     return {
       state: "skipped",
       pointCountTotal: existingAtlas?.pointCount ?? null,
@@ -240,12 +539,24 @@ export async function computeAndMergeAtlasForTile(
     newBuckets,
   });
 
+  const atlasWriteT0 = performance.now();
   await writePrecomputedTileAtlas(merged, {
     region: params.region,
     modelVersionHash: params.modelVersionHash,
     gridStepMeters: params.gridStepMeters,
     tileId: params.tile.tileId,
     resolutionDeg,
+  });
+  const atlasWriteMs = performance.now() - atlasWriteT0;
+  console.log(
+    `[atlas-write] ${params.tile.tileId}  ${atlasWriteMs.toFixed(0)}ms  buckets=${merged.bucketCount}`,
+  );
+
+  atlasSkipCache.set(skipKey, {
+    keys: getAtlasBucketKeySet(merged),
+    pointCount,
+    outdoorPointCount,
+    bucketCount: merged.bucketCount,
   });
 
   return {
