@@ -7,7 +7,7 @@ import { LAUSANNE_CONFIG } from "@/lib/config/lausanne";
 import { NYON_CONFIG } from "@/lib/config/nyon";
 import { MORGES_CONFIG } from "@/lib/config/morges";
 import { GENEVE_CONFIG } from "@/lib/config/geneve";
-import { lv95ToWgs84, wgs84ToLv95 } from "@/lib/geo/projection";
+import { lv95ToWgs84, lv95ToWgs84Fast, wgs84ToLv95 } from "@/lib/geo/projection";
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 import { getSunlightCacheStorage } from "./sunlight-cache-storage";
 import { SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "./model-version";
@@ -532,10 +532,10 @@ export function buildTilePoints(tile: RegionTileSpec, gridStepMeters: number) {
         continue;
       }
 
+      // Swisstopo polynomial approx: ~1m delta vs proj4, 195x faster.
+      // See ADR-0014 and scripts/diag/validate-lv95-fast-vs-proj4.ts.
       // LV95 bounds check above is sufficient — no WGS84 bbox filter needed.
-      // The WGS84 bbox doesn't perfectly align with the LV95 grid due to
-      // projection differences, which caused missing points at tile edges.
-      const wgs84 = lv95ToWgs84(easting, northing);
+      const wgs84 = lv95ToWgs84Fast(easting, northing);
 
       points.push({
         id: `ix${ix}-iy${iy}`,

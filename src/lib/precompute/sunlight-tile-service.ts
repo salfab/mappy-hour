@@ -19,7 +19,7 @@ interface TileGridMetadata {
   indoor: boolean[];
 }
 import { isBatchBackend } from "@/lib/sun/building-shadow-backend";
-import { lv95ToWgs84, wgs84ToLv95 } from "@/lib/geo/projection";
+import { lv95ToWgs84 } from "@/lib/geo/projection";
 import {
   adaptiveHorizonSharingConfig,
   resolveAdaptiveTerrainHorizonForTile,
@@ -103,6 +103,10 @@ function yieldToEventLoop(): Promise<void> {
 interface PreparedOutdoorPoint {
   lat: number;
   lon: number;
+  // Carry LV95 through to the GPU batch upload so we don't round-trip via
+  // wgs84ToLv95. See ADR-0014.
+  lv95Easting: number;
+  lv95Northing: number;
   pointElevationMeters: number | null;
   horizonMask: Awaited<ReturnType<typeof buildPointEvaluationContext>>["horizonMask"];
   buildingShadowEvaluator: Awaited<ReturnType<typeof buildPointEvaluationContext>>["buildingShadowEvaluator"];
@@ -696,7 +700,21 @@ export async function computeSunlightTileArtifact(params: {
   sunOverride?: Array<{ azimuthDeg: number; altitudeDeg: number }>;
 }): Promise<PrecomputedSunlightTileArtifact> {
   const started = performance.now();
-  const phaseMs = { adaptiveHorizon: 0, sharedSources: 0, pointContexts: 0, evaluations: 0 };
+  const phaseMs = {
+    adaptiveHorizon: 0,
+    sharedSources: 0,
+    pointContexts: 0,
+    evaluations: 0,
+    evalSetup: 0,
+    evalBatchDispatch: 0,
+    evalFrameLoop: 0,
+    // sub-phases of 'other' (time not accounted by any main phase)
+    preHorizon: 0,
+    postHorizonPreSources: 0,
+    postSourcesPrePoints: 0,
+    postPointsPreEvals: 0,
+    postEvals: 0,
+  };
   throwIfAborted(params.signal);
   const rawTilePoints = buildTilePoints(params.tile, params.gridStepMeters);
   const warnings: string[] = [];
@@ -709,6 +727,7 @@ export async function computeSunlightTileArtifact(params: {
     | Awaited<ReturnType<typeof resolveAdaptiveTerrainHorizonForTile>>["horizonMask"]
     | undefined;
   const horizonT0 = performance.now();
+  phaseMs.preHorizon = horizonT0 - started;
   try {
     const adaptiveHorizon = await resolveAdaptiveTerrainHorizonForTile({
       region: params.region,
@@ -733,11 +752,13 @@ export async function computeSunlightTileArtifact(params: {
     );
   }
 
-  phaseMs.adaptiveHorizon = performance.now() - horizonT0;
+  const horizonEnd = performance.now();
+  phaseMs.adaptiveHorizon = horizonEnd - horizonT0;
 
   const points: PrecomputedSunlightTileArtifact["points"] = [];
   const preparedOutdoorPoints: PreparedOutdoorPoint[] = [];
   const sourcesT0 = performance.now();
+  phaseMs.postHorizonPreSources = sourcesT0 - horizonEnd;
   const sharedSources = await buildSharedPointEvaluationSources({
     terrainHorizonOverride: terrainHorizonOverride ?? undefined,
     region: params.region,
@@ -789,9 +810,11 @@ export async function computeSunlightTileArtifact(params: {
   const buildingMethodSuffix = tileBuildingAllowlist
     ? `|${BUILDING_TILE_ALLOWLIST_VERSION}`
     : "";
-  phaseMs.sharedSources = performance.now() - sourcesT0;
+  const sourcesEnd = performance.now();
+  phaseMs.sharedSources = sourcesEnd - sourcesT0;
 
   const pointsT0 = performance.now();
+  phaseMs.postSourcesPrePoints = pointsT0 - sourcesEnd;
   const gm = params.gridMetadata;
   // ── Niveau 3 fast path: skip buildPointEvaluationContext entirely ──
   // When the batch backend handles all evaluators on GPU and grid metadata
@@ -839,6 +862,8 @@ export async function computeSunlightTileArtifact(params: {
       preparedOutdoorPoints.push({
         lat: point.lat,
         lon: point.lon,
+        lv95Easting: point.lv95Easting,
+        lv95Northing: point.lv95Northing,
         pointElevationMeters: gm.elevations[rawPointIndex],
         horizonMask,
         buildingShadowEvaluator: undefined,
@@ -911,6 +936,8 @@ export async function computeSunlightTileArtifact(params: {
         preparedOutdoorPoints.push({
           lat: point.lat,
           lon: point.lon,
+          lv95Easting: point.lv95Easting,
+          lv95Northing: point.lv95Northing,
           pointElevationMeters: gm.elevations[rawPointIndex],
           horizonMask: context.horizonMask,
           buildingShadowEvaluator: context.buildingShadowEvaluator,
@@ -956,6 +983,8 @@ export async function computeSunlightTileArtifact(params: {
         preparedOutdoorPoints.push({
           lat: point.lat,
           lon: point.lon,
+          lv95Easting: point.lv95Easting,
+          lv95Northing: point.lv95Northing,
           pointElevationMeters: context.pointElevationMeters,
           horizonMask: context.horizonMask,
           buildingShadowEvaluator: context.buildingShadowEvaluator,
@@ -991,7 +1020,8 @@ export async function computeSunlightTileArtifact(params: {
       }
     }
   }
-  phaseMs.pointContexts = performance.now() - pointsT0;
+  const pointsEnd = performance.now();
+  phaseMs.pointContexts = pointsEnd - pointsT0;
 
   // Abort if terrain data is missing — producing tiles without elevation
   // creates invalid cache entries (building shadows skipped, wrong results).
@@ -1014,6 +1044,7 @@ export async function computeSunlightTileArtifact(params: {
   });
 
   const evalsT0 = performance.now();
+  phaseMs.postPointsPreEvals = evalsT0 - pointsEnd;
   const frames: PrecomputedSunlightTileArtifact["frames"] = [];
   const totalFrameEvaluations = preparedOutdoorPoints.length * samples.length;
   let completedFrameEvaluations = 0;
@@ -1031,11 +1062,11 @@ export async function computeSunlightTileArtifact(params: {
     batchPointsF32 = new Float32Array(preparedOutdoorPoints.length * 4);
     for (let i = 0; i < preparedOutdoorPoints.length; i++) {
       const pt = preparedOutdoorPoints[i];
-      const lv95 = wgs84ToLv95(pt.lon, pt.lat);
+      // Use exact LV95 from the grid, not a round-trip via wgs84ToLv95 — see ADR-0014.
       // Backend expects centered coords: x = easting - originX, y = elevation, z = northing - originY
-      batchPointsF32[i * 4 + 0] = lv95.easting - origin.x;
+      batchPointsF32[i * 4 + 0] = pt.lv95Easting - origin.x;
       batchPointsF32[i * 4 + 1] = pt.pointElevationMeters ?? 0;
-      batchPointsF32[i * 4 + 2] = lv95.northing - origin.y;
+      batchPointsF32[i * 4 + 2] = pt.lv95Northing - origin.y;
       batchPointsF32[i * 4 + 3] = 0; // padding for vec4f alignment
     }
   }
@@ -1232,6 +1263,7 @@ export async function computeSunlightTileArtifact(params: {
       }
     }
     if (litFrames.length > 0) {
+      const dispatchT0 = performance.now();
       const litResults = await (webgpuBackend as {
         evaluateBatchFramesWithShadows: (
           frames: Array<{ azimuthDeg: number; altitudeDeg: number }>,
@@ -1251,12 +1283,15 @@ export async function computeSunlightTileArtifact(params: {
           vegetation: vegetationPayload ?? undefined,
         },
       );
+      phaseMs.evalBatchDispatch += performance.now() - dispatchT0;
       for (let k = 0; k < litResults.length; k++) {
         batchFrameResults[litIndices[k]] = litResults[k];
       }
     }
   }
 
+  const frameLoopT0 = performance.now();
+  phaseMs.evalSetup = frameLoopT0 - evalsT0;
   for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
     throwIfAborted(params.signal);
     const sampleDate = samples[sampleIndex];
@@ -1626,8 +1661,14 @@ export async function computeSunlightTileArtifact(params: {
     });
   }
 
-  phaseMs.evaluations = performance.now() - evalsT0;
+  const frameLoopEnd = performance.now();
+  phaseMs.evalFrameLoop = frameLoopEnd - frameLoopT0;
+  phaseMs.evaluations = frameLoopEnd - evalsT0;
   const totalMs = performance.now() - started;
+  phaseMs.postEvals = totalMs - (frameLoopEnd - started);
+  const phaseSum =
+    phaseMs.adaptiveHorizon + phaseMs.sharedSources + phaseMs.pointContexts + phaseMs.evaluations;
+  const otherMs = Math.max(0, totalMs - phaseSum);
   const evals = preparedOutdoorPoints.length * frames.length;
   console.log(
     `[tile ${params.tile.tileId}] ${(totalMs / 1000).toFixed(1)}s total` +
@@ -1635,6 +1676,15 @@ export async function computeSunlightTileArtifact(params: {
       `, sources ${(phaseMs.sharedSources / 1000).toFixed(1)}s` +
       `, points ${(phaseMs.pointContexts / 1000).toFixed(1)}s` +
       `, eval ${(phaseMs.evaluations / 1000).toFixed(1)}s` +
+      ` [setup ${(phaseMs.evalSetup / 1000).toFixed(2)}s` +
+      `, dispatch ${(phaseMs.evalBatchDispatch / 1000).toFixed(2)}s` +
+      `, frameLoop ${(phaseMs.evalFrameLoop / 1000).toFixed(2)}s]` +
+      `, other ${(otherMs / 1000).toFixed(2)}s` +
+      ` [pre ${(phaseMs.preHorizon / 1000).toFixed(2)}s` +
+      `, post-horizon ${(phaseMs.postHorizonPreSources / 1000).toFixed(2)}s` +
+      `, post-sources ${(phaseMs.postSourcesPrePoints / 1000).toFixed(2)}s` +
+      `, post-points ${(phaseMs.postPointsPreEvals / 1000).toFixed(2)}s` +
+      `, post-eval ${(phaseMs.postEvals / 1000).toFixed(2)}s]` +
       ` (${evals} evals, ${evals > 0 ? Math.round((phaseMs.evaluations * 1000) / evals) : 0} \u00b5s/eval)` +
       ` — ${rawTilePoints.length} grid pts, ${preparedOutdoorPoints.length} outdoor, ${indoorPointsExcluded} indoor`,
   );
