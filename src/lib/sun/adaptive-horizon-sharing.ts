@@ -253,12 +253,43 @@ function buildMaskCacheKey(lat: number, lon: number): string {
   return `${round6(lat)}:${round6(lon)}`;
 }
 
+// Horizon cache stats — quantifies how often shared/local masks are reused.
+// Reset at process start; queried once at end of run to estimate the
+// headroom a smarter sharing policy would unlock.
+const horizonCacheStats = {
+  hits: 0,
+  misses: 0,
+  totalBuildMs: 0,
+  totalHitLookupMs: 0,
+};
+
+export function getHorizonCacheStats(): {
+  hits: number;
+  misses: number;
+  totalBuildMs: number;
+  totalHitLookupMs: number;
+  hitRatio: number;
+} {
+  const total = horizonCacheStats.hits + horizonCacheStats.misses;
+  return {
+    ...horizonCacheStats,
+    hitRatio: total === 0 ? 0 : horizonCacheStats.hits / total,
+  };
+}
+
 async function buildMaskCached(lat: number, lon: number): Promise<HorizonMask | null> {
   const key = buildMaskCacheKey(lat, lon);
   if (maskCache.has(key)) {
-    return maskCache.get(key) ?? null;
+    const t0 = performance.now();
+    const cached = maskCache.get(key) ?? null;
+    horizonCacheStats.hits++;
+    horizonCacheStats.totalHitLookupMs += performance.now() - t0;
+    return cached;
   }
+  const t0 = performance.now();
   const mask = await buildDynamicHorizonMask({ lat, lon });
+  horizonCacheStats.misses++;
+  horizonCacheStats.totalBuildMs += performance.now() - t0;
   maskCache.set(key, mask);
   return mask;
 }
