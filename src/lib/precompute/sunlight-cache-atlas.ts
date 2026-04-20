@@ -336,7 +336,10 @@ export async function writePrecomputedTileAtlas(
   const storage = getSunlightCacheStorage();
   const targetPath = getAtlasPath(params);
   const bin = encodeTileAtlasToBinary(atlas);
-  const compressed = (await gzip(bin)) as Buffer;
+  // level 1: bench (scripts/diag/bench-atlas-compression.ts) shows 89ms vs
+  // 359ms for level 6 on ~130MB raw atlas. A/B on Geneva 4-tile run: 80ms
+  // vs 130ms median [atlas-write], file grows 780KB→1.3MB. CPU>>disk here.
+  const compressed = (await gzip(bin, { level: 1 })) as Buffer;
   await storage.writeBuffer(targetPath, compressed);
 }
 

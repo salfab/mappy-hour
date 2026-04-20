@@ -446,7 +446,7 @@ export async function writePrecomputedSunlightTileBinary(
     tileId: artifact.tile.tileId,
   });
   const bin = encodeTileArtifactToBinary(artifact);
-  const compressed = (await gzip(bin)) as Buffer;
+  const compressed = (await gzip(bin, { level: 1 })) as Buffer;
   await storage.writeBuffer(targetPath, compressed);
 }
 
