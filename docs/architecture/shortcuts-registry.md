@@ -18,6 +18,11 @@ Légende statut : **A** = actif, **R** = reverté, **D** = désactivé condition
 | 1.4 | Grille 1m comme résolution plancher | Seuil "sub-pixel" à 500mm sur les masques | Précision cible utilisateur ≥ 1m | Exigence précision < 0.5m (ex. études thermiques fines) | choix historique | A |
 | 1.5 | Tuiles 250m × 250m | Valide 1.1, limite la RAM GPU | Variation angulaire solaire sur 250m < résolution masque | Tuiles > 250m (re-valider 1.1) | ADR-0002 | A |
 | 1.6 | Ombre "deux niveaux" bâtiments | Skip bâtiments trop bas pour bloquer le soleil | `height_threshold = tan(alt) · distance` | Soleil très bas où tous les bâtiments comptent | ADR-0005 | A |
+| 1.7 | Translation **Swisstopo 3-paramètres** (Helmert simplifié) CH1903+ → WGS84 (`DX=674.374, DY=15.056, DZ=405.346`) | Suffisant pour grille 1m | Précision ~1-3m absolue, relative sub-mm | Exigence géoréférencement absolu sub-métrique | `projection.ts:67-70`, commentaire "simplified 3-parameter" | A |
+| 1.8 | Arrondi **`lat/lon` à 6 décimales** (~11cm) sur `PrecomputedSunlightPoint` | Réduit taille cache/SSE | Jamais reconverti en `(E, N)` pour usage précis | Si un nouveau code refait `wgs84ToLv95(point.lat, point.lon)` → dérive 11cm (cf. bug corrigé ADR-0014) | `sunlight-cache.ts:542-543`, `grid.ts:33-34` | A |
+| 1.9 | Arrondi **`lv95Easting/Northing` à 3 décimales** (1mm) | Compacité | Précision 1mm largement sous la grille 1m | Grille sub-millimétrique (impossible) | `sunlight-cache.ts:544-545` | A |
+| 1.10 | Quantification **angles horizon à 3 décimales** (milli-degré ≈ 17 µrad) | Compacité masques, déduplication cache | Erreur angulaire sub-pixel sur grille 1m | Exigence précision angulaire < 0.001° | `buildings-shadow.ts:304,1469`, `dynamic-horizon-mask.ts:49` | A |
+| 1.11 | Sun-position quantization optionnelle `MAPPY_SUN_POSITION_ROUND_DEG` | Active les atlas buckets ADR-0013 | Divergence masque acceptable aux résolutions ≥ 0.15° | Atlas avec résolution > 0.5° (trop grossier) | ADR-0013, `sunlight-tile-service.ts:1221` | A (sur atlas) |
 
 ## 2. Hot loop précompute
 
@@ -32,6 +37,21 @@ Légende statut : **A** = actif, **R** = reverté, **D** = désactivé condition
 | 2.7 | Niveau 2 — early-return dans `buildPointEvaluationContext` | Tenté, **0 gain** (microtasks await dominaient) | — | — | commit `914e9c0` (revert), ADR-0011 | R |
 | 2.8 | Cache horizon partagé par masque unique | 89% hit ratio, ~0s lookup | Masques horizon stables sur tuiles voisines | Régions à relief très chaotique | commit `cache-horizon`, instrumentation 2026-04-20 | A |
 | 2.9 | Tri spatial des tuiles avant précompute | 21× speedup | Localité d'accès aux rasters | Ordre imposé par tiers | commit `21x speedup` | A |
+
+## 2bis. Évaluateurs d'ombre — raffinement et portée
+
+| # | Raccourci | Gain mesuré | Hypothèse implicite | Condition d'invalidité | Référence | Statut |
+|---|---|---|---|---|---|---|
+| 2b.1 | Ray-march végétation — **portée max 120m** (`DEFAULT_MAX_DISTANCE_METERS`) | Circonscrit le bbox de candidats végétation par point | Les arbres au-delà de 120m ne créent d'ombre significative qu'à grazing extrême | Région avec arbres > 120m (impossible en CH) ou exigence de masques au grazing < 5° | `vegetation-shadow.ts:44` | A |
+| 2b.2 | Ray-march végétation — **pas 2m** (`DEFAULT_STEP_METERS`) | Divise par 2 le nombre de samples vs pas 1m | Canopées denses > 2m de largeur ne sont jamais franchies sans samples | Troncs fins isolés < 2m de largeur (peut slip-through) | `vegetation-shadow.ts:45` | A |
+| 2b.3 | **Clearance minimale 4m** végétation (`DEFAULT_MIN_CLEARANCE_METERS`) | Ignore sous-bois bas | Points < 4m au-dessus du sol pas représentatifs (plutôt sous canopée) | Usages à hauteur 0-4m | `vegetation-shadow.ts:46` | A |
+| 2b.4 | Végétation **V1 — clearance = canopy_elev − point_elevation** | Simple, 1 soustraction | Point au sol, pas en altitude (balcon, toit) | Extension aux toits-terrasses, balcons | `vegetation-shadow.ts:469` (commentaire "V1 approximation") | A |
+| 2b.5 | Two-level raffinement — **seuil de near 2°** et **max 3 étapes** (`BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES`, `BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS`) | Raffinement bornée quand le sample est proche du seuil bloqué | Ambiguïté < 2° est raffinée suffisamment en 3 étapes | Bâtiments avec silhouettes très complexes au grazing | `evaluation-context.ts:137-138`, ADR-0005 | A |
+| 2b.6 | Detailed mode — **max 32 étapes** (`BUILDINGS_DETAILED_MAX_REFINEMENT_STEPS`) | Plafond pour cas pathologiques | 32 étapes suffisent à converger pour silhouettes standard | Scène avec géométrie bâtiment extrême (non observée) | `evaluation-context.ts:139` | A |
+| 2b.7 | **Focus margin GPU raster 5km** (`GPU_FOCUS_MARGIN_METERS`) | Backend rechargé par zone ≈ 5km radius (ADR-0008 VBO filtering) | Bâtiments > 5km négligeables à l'échelle grille 1m (pas angulairement mais par distance et grazing) | Vues panoramiques avec skyline lointain (montagne, silhouette urbaine > 5km) | `evaluation-context.ts:145` | A |
+| 2b.8 | **Focus margin Vulkan 500m** (`MAPPY_RUST_WGPU_FOCUS_MARGIN_METERS`) | Frustum focus réduit le nombre de triangles uploadés | Ombres portées depuis > 500m hors frustum ignorées (complément du DSM/horizon partagé qui capture les obstacles lointains) | Extension à précompute de bâtiments très hauts dans ville voisine | `evaluation-context.ts:151`, ADR-0011 | A |
+| 2b.9 | Horizon partagé — **tolérance 2 min/jour** (`MAX_POINT_MINUTES_MISMATCH_PER_DAY`) et **0.5% points divergents** (`MAX_MISMATCH_POINTS_RATIO`) | Permet de partager le même masque horizon sur macro-cell 2000m × 500m | Divergence statistique ≤ 0.5% × 2min ≈ invisible sur masque annuel | Région avec relief micro-varié (Lavaux, falaises) — fallback automatique sur local | `adaptive-horizon-sharing.ts:18-19`, `docs/architecture/lausanne-horizon-global-vs-tile-benchmark.md` | A |
+| 2b.10 | **Footprint spike removal 72%** (`DEFAULT_SPIKE_AREA_RATIO_THRESHOLD`) | Simplifie les géométries de bâtiments avec artefacts | Pics étroits < 72% area ratio = artefact de vectorisation, pas bâti réel | Bâtiments réels à pics fins (antennes, cheminées) | `building-footprint.ts:11` | A |
 
 ## 3. Cache et I/O
 
