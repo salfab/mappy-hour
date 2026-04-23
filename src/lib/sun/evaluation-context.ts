@@ -167,6 +167,27 @@ function focusKeyFromBounds(bounds: { minX: number; minY: number; maxX: number; 
   return `${cx},${cy}`;
 }
 
+/**
+ * Return the 1km-aligned bbox of the focus bucket that owns the given tile
+ * bounds. Used for obstacle filtering: we need the mesh to cover the whole
+ * 1km focus (all tiles sharing the same cached backend), not just the tile
+ * bounds of the FIRST tile that triggered updateMesh — otherwise obstacles
+ * located on the east side of the focus are missed when the first tile sat
+ * on the west side (the infamous "62 Vulkan tiles still at bBlk=0%" pattern).
+ */
+function focusBucketBounds(
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  const cx = Math.round((bounds.minX + bounds.maxX) / 2 / 1000);
+  const cy = Math.round((bounds.minY + bounds.maxY) / 2 / 1000);
+  return {
+    minX: cx * 1000 - 500,
+    minY: cy * 1000 - 500,
+    maxX: cx * 1000 + 500,
+    maxY: cy * 1000 + 500,
+  };
+}
+
 async function getOrCreateGpuBackend(
   obstacles: Array<{ centerX: number; centerY: number; height: number; minX: number; maxX: number; minY: number; maxY: number; [key: string]: unknown }>,
   focusBounds?: { minX: number; minY: number; maxX: number; maxY: number },
@@ -324,10 +345,14 @@ async function getOrCreateRustWgpuVulkanBackend(
     };
     let filtered = obstacles;
     if (focusBounds) {
+      // Filter around the WHOLE 1km focus bucket, not just the tile bounds of
+      // this first tile — otherwise tiles on the opposite side of the bucket
+      // get a mesh missing their relevant obstacles (62-tiles-KO regression).
+      const bucket = focusBucketBounds(focusBounds);
       filtered = obstacles.filter(
         (o) =>
-          o.maxX > focusBounds.minX - margin && o.minX < focusBounds.maxX + margin &&
-          o.maxY > focusBounds.minY - margin && o.minY < focusBounds.maxY + margin,
+          o.maxX > bucket.minX - margin && o.minX < bucket.maxX + margin &&
+          o.maxY > bucket.minY - margin && o.minY < bucket.maxY + margin,
       );
     }
     if (filtered.length === 0) {
@@ -398,11 +423,15 @@ async function getOrCreateRustWgpuVulkanBackend(
     try {
       let filtered = obstacles;
       if (focusBounds) {
+        // Same rationale as updateMesh path (see focusBucketBounds): filter
+        // around the 1km focus bucket so every tile in the bucket has its
+        // relevant obstacles available after the single initial upload.
+        const bucket = focusBucketBounds(focusBounds);
         filtered = obstacles.filter(o =>
-          o.maxX > focusBounds.minX - margin && o.minX < focusBounds.maxX + margin &&
-          o.maxY > focusBounds.minY - margin && o.minY < focusBounds.maxY + margin,
+          o.maxX > bucket.minX - margin && o.minX < bucket.maxX + margin &&
+          o.maxY > bucket.minY - margin && o.minY < bucket.maxY + margin,
         );
-        console.log(`[evaluation-context] Rust/wgpu Vulkan spatial filter: ${filtered.length}/${obstacles.length} obstacles within ${margin}m of focus`);
+        console.log(`[evaluation-context] Rust/wgpu Vulkan spatial filter: ${filtered.length}/${obstacles.length} obstacles within ${margin}m of 1km focus bucket`);
       }
       if (filtered.length === 0) {
         return null;
