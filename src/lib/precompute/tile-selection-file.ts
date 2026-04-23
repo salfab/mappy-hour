@@ -6,7 +6,7 @@ import { z } from "zod";
 import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
 import type { PrecomputedRegionName } from "@/lib/precompute/sunlight-cache";
 
-const regionSchema = z.enum(["lausanne", "nyon", "morges", "geneve"]);
+const regionSchema = z.enum(["lausanne", "nyon", "morges", "geneve", "vevey"]);
 
 const tileSelectionEntrySchema = z
   .object({

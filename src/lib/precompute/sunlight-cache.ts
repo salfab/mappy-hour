@@ -7,6 +7,7 @@ import { LAUSANNE_CONFIG } from "@/lib/config/lausanne";
 import { NYON_CONFIG } from "@/lib/config/nyon";
 import { MORGES_CONFIG } from "@/lib/config/morges";
 import { GENEVE_CONFIG } from "@/lib/config/geneve";
+import { VEVEY_CONFIG } from "@/lib/config/vevey";
 import { lv95ToWgs84, lv95ToWgs84Precise, wgs84ToLv95 } from "@/lib/geo/projection";
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 import { getSunlightCacheStorage } from "./sunlight-cache-storage";
@@ -15,7 +16,7 @@ import { SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "./model-version";
 const gzip = promisify(gzipCallback);
 const gunzip = promisify(gunzipCallback);
 
-export type PrecomputedRegionName = "lausanne" | "nyon" | "morges" | "geneve";
+export type PrecomputedRegionName = "lausanne" | "nyon" | "morges" | "geneve" | "vevey";
 
 export interface RegionBbox {
   minLon: number;
@@ -145,6 +146,12 @@ const REGION_BBOXES: Record<PrecomputedRegionName, RegionBbox> = {
     minLat: GENEVE_CONFIG.localBbox[1],
     maxLon: GENEVE_CONFIG.localBbox[2],
     maxLat: GENEVE_CONFIG.localBbox[3],
+  },
+  vevey: {
+    minLon: VEVEY_CONFIG.localBbox[0],
+    minLat: VEVEY_CONFIG.localBbox[1],
+    maxLon: VEVEY_CONFIG.localBbox[2],
+    maxLat: VEVEY_CONFIG.localBbox[3],
   },
 };
 

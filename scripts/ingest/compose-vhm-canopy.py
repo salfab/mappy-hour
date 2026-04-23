@@ -30,6 +30,7 @@ REGIONS = {
     "lausanne": {"minE": 2531000, "minN": 1148000, "maxE": 2545000, "maxN": 1163000},
     "morges":   {"minE": 2524000, "minN": 1149000, "maxE": 2531000, "maxN": 1155000},
     "geneve":   {"minE": 2495000, "minN": 1113000, "maxE": 2508000, "maxN": 1125000},
+    "vevey":    {"minE": 2548000, "minN": 1141000, "maxE": 2558000, "maxN": 1149000},
 }
 
 

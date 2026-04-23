@@ -24,7 +24,7 @@ import path from "node:path";
 const DEFAULT_PYTHON =
   "C:\\Users\\fabio.salvalai\\AppData\\Local\\Programs\\Python\\Python312\\python.exe";
 
-const REGIONS = ["lausanne", "morges", "nyon", "geneve"] as const;
+const REGIONS = ["lausanne", "morges", "nyon", "geneve", "vevey"] as const;
 type Region = typeof REGIONS[number];
 
 function parseArgs(argv: string[]): { regions: Region[]; overwrite: boolean } {
