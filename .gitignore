@@ -45,6 +45,14 @@ next-env.d.ts
 /data/processed/
 /data/cache/
 /data/tmp/
+# Ad-hoc cache backups (e.g. data/_cache-*, data/_cache-gpu-raster-pre-terrain-HHMMSS/)
+/data/_*/
+# Diagnostic output renders (heatmaps, atlas-vs-tile diffs)
+/data/analysis/
+
+# Runtime outputs + temporary debug artifacts
+*.heapsnapshot
+/bench-*.log
 
 # Explicit heavy 3D/DEM dataset paths (kept out of git and ignored by dev file watchers)
 /data/raw/swisstopo/swissbuildings3d_2/
