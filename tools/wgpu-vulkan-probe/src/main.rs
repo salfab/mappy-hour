@@ -9,7 +9,7 @@ const SHADOW_WORKGROUP_SIZE: u32 = 256;
 // + 16 (azimuth/altitude/_pad/_pad)
 // + 32 (has_vegetation/num_veg_tiles/step/max_distance/min_clearance/nodata/origin_x/origin_y)
 // = 128 bytes
-const SHADOW_PARAMS_SIZE: u64 = 128;
+const SHADOW_PARAMS_SIZE: u64 = 160;
 const SHADOW_BIAS: f32 = 0.0002;
 const HORIZON_BINS: u32 = 360;
 // Size of each VegetationTileMeta struct in the storage buffer (8 × 4 bytes).
@@ -1123,6 +1123,12 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 shadow.veg_nodata,
                 shadow.origin_x,
                 shadow.origin_y,
+                shadow.has_local_terrain,
+                shadow.num_terrain_tiles,
+                shadow.terrain_step_meters,
+                shadow.terrain_max_distance_meters,
+                shadow.terrain_altitude_gate_deg,
+                shadow.terrain_nodata,
             );
             queue.write_buffer(&shadow.params_buffer, 0, &shadow_params);
         }
@@ -1382,6 +1388,8 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 &shadow.veg_result_buffer,
                 &shadow.sunny_result_buffer,
                 &shadow.sunny_no_veg_result_buffer,
+                &shadow.terrain_tiles_meta_buffer,
+                &shadow.terrain_data_buffer,
             );
             render_uniforms.push(render_uniform);
             render_bgs.push(render_bg);
@@ -1414,6 +1422,12 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 shadow.veg_nodata,
                 shadow.origin_x,
                 shadow.origin_y,
+                shadow.has_local_terrain,
+                shadow.num_terrain_tiles,
+                shadow.terrain_step_meters,
+                shadow.terrain_max_distance_meters,
+                shadow.terrain_altitude_gate_deg,
+                shadow.terrain_nodata,
             );
             queue.write_buffer(&compute_params[i], 0, &params);
         }
@@ -1795,6 +1809,8 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             &shadow.veg_result_buffer,
             &shadow.sunny_result_buffer,
             &shadow.sunny_no_veg_result_buffer,
+            &shadow.terrain_tiles_meta_buffer,
+            &shadow.terrain_data_buffer,
         );
 
         shadow.horizon_masks_buffer = masks_buffer;
@@ -1890,6 +1906,8 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             &shadow.veg_result_buffer,
             &shadow.sunny_result_buffer,
             &shadow.sunny_no_veg_result_buffer,
+            &shadow.terrain_tiles_meta_buffer,
+            &shadow.terrain_data_buffer,
         );
 
         shadow.veg_tiles_meta_buffer = meta_buffer;
@@ -1961,6 +1979,16 @@ struct ShadowComputeResources {
     veg_min_clearance: f32,
     origin_x: f32,
     origin_y: f32,
+    // Local terrain (DEM) ray-march inputs. Dummy until upload_terrain_rasters.
+    // Covers shortcut 2b.11 on the GPU side (was CPU-only before).
+    terrain_tiles_meta_buffer: wgpu::Buffer,
+    terrain_data_buffer: wgpu::Buffer,
+    has_local_terrain: bool,
+    num_terrain_tiles: u32,
+    terrain_nodata: f32,
+    terrain_step_meters: f32,
+    terrain_max_distance_meters: f32,
+    terrain_altitude_gate_deg: f32,
     // Phase E: final sunny bitmasks computed in the shader (derived from
     // terrain/buildings/vegetation locals, matching the artifact semantic
     // bit-for-bit so the JS hot loop can drop the per-point combining).
@@ -2114,6 +2142,21 @@ fn create_shadow_compute_resources(
         mapped_at_creation: false,
     });
 
+    // Dummy terrain buffers — replaced by upload_terrain_rasters when
+    // the TS caller ships the SwissALTI3D payload. Same pattern as veg.
+    let terrain_tiles_meta_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-terrain-tiles-meta-dummy"),
+        size: 32,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let terrain_data_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-terrain-data-dummy"),
+        size: 16,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-shader"),
         source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(
@@ -2136,9 +2179,29 @@ struct ShadowParams {
     veg_nodata: f32,
     origin_x: f32,
     origin_y: f32,
+    has_terrain: u32,
+    num_terrain_tiles: u32,
+    terrain_step_meters: f32,
+    terrain_max_distance_meters: f32,
+    terrain_altitude_gate_deg: f32,
+    terrain_nodata: f32,
+    _pad2: f32,
+    _pad3: f32,
 };
 
 struct VegTileMeta {
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+    width: u32,
+    height: u32,
+    data_offset: u32,
+    nodata: f32,
+};
+
+// Identical layout to VegTileMeta — kept as a separate struct for clarity.
+struct TerrainTileMeta {
     min_x: f32,
     min_y: f32,
     max_x: f32,
@@ -2161,6 +2224,32 @@ struct VegTileMeta {
 @group(0) @binding(9) var<storage, read_write> vegetation_results: array<atomic<u32>>;
 @group(0) @binding(10) var<storage, read_write> sunny_results: array<atomic<u32>>;
 @group(0) @binding(11) var<storage, read_write> sunny_no_veg_results: array<atomic<u32>>;
+@group(0) @binding(12) var<storage, read> terrain_tiles_meta: array<TerrainTileMeta>;
+@group(0) @binding(13) var<storage, read> terrain_data: array<f32>;
+
+// Local terrain DEM sampler — identical pattern to sample_veg_elevation but
+// reading from the terrain raster (SwissALTI3D). Covers the "hill casts
+// shadow on its own foot at low sun" gap that the horizon mask misses
+// (shortcut 2b.11). Returns -1e6 when no tile covers (sx,sy) or nodata.
+fn sample_terrain_elevation(sx: f32, sy: f32) -> f32 {
+    for (var i = 0u; i < params.num_terrain_tiles; i = i + 1u) {
+        let tm = terrain_tiles_meta[i];
+        if (sx < tm.min_x || sx > tm.max_x || sy < tm.min_y || sy > tm.max_y) {
+            continue;
+        }
+        let u = (sx - tm.min_x) / (tm.max_x - tm.min_x);
+        let v = (tm.max_y - sy) / (tm.max_y - tm.min_y);
+        let fx = clamp(floor(u * f32(tm.width)), 0.0, f32(tm.width - 1u));
+        let fy = clamp(floor(v * f32(tm.height)), 0.0, f32(tm.height - 1u));
+        let idx = u32(fy) * tm.width + u32(fx) + tm.data_offset;
+        let val = terrain_data[idx];
+        if (abs(val - tm.nodata) < 0.000001) {
+            return -1.0e6;
+        }
+        return val;
+    }
+    return -1.0e6;
+}
 
 fn sample_veg_elevation(sx: f32, sy: f32) -> f32 {
     // Linear scan — in practice only 2-10 tiles are loaded per region,
@@ -2209,6 +2298,44 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         let horizon_angle = horizon_masks[mask_idx * 360u + az_bin];
         if (params.altitude_deg <= horizon_angle) {
             terrain_blocked = true;
+        }
+    }
+
+    // ── Local DEM self-shadowing (swissalti3d-raster-step-ray-v1) ──────
+    // Complements the horizon mask (which only captures distant relief)
+    // by ray-marching the local terrain within ~500m. Gated by
+    // altitude < ~30° and !terrain_blocked (no need to reconfirm the block).
+    if (
+        params.has_terrain != 0u &&
+        !terrain_blocked &&
+        params.altitude_deg > 0.0 &&
+        params.altitude_deg < params.terrain_altitude_gate_deg
+    ) {
+        let t_az_rad = params.azimuth_deg * 3.14159265 / 180.0;
+        let t_dir_x = sin(t_az_rad);
+        let t_dir_y = cos(t_az_rad);
+        let t_tan_alt = tan(params.altitude_deg * 3.14159265 / 180.0);
+        let t_point_x_lv95 = point.x + params.origin_x;
+        let t_point_y_lv95 = point.z + params.origin_y;
+        let t_point_elev = point.y;
+
+        var t_dist = params.terrain_step_meters;
+        loop {
+            if (t_dist > params.terrain_max_distance_meters) { break; }
+            let sx = t_point_x_lv95 + t_dir_x * t_dist;
+            let sy = t_point_y_lv95 + t_dir_y * t_dist;
+            let surface_elev = sample_terrain_elevation(sx, sy);
+            if (surface_elev > -1.0e5) {
+                let clearance = surface_elev - t_point_elev;
+                if (clearance > 0.0) {
+                    let ray_h = t_dist * t_tan_alt;
+                    if (clearance > ray_h) {
+                        terrain_blocked = true;
+                        break;
+                    }
+                }
+            }
+            t_dist = t_dist + params.terrain_step_meters;
         }
     }
 
@@ -2423,6 +2550,28 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
                 },
                 count: None,
             },
+            // terrain_tiles_meta (read)
+            wgpu::BindGroupLayoutEntry {
+                binding: 12,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // terrain_data (read)
+            wgpu::BindGroupLayoutEntry {
+                binding: 13,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
     let bind_group = build_compute_bind_group(
@@ -2440,6 +2589,8 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         &veg_result_buffer,
         &sunny_result_buffer,
         &sunny_no_veg_result_buffer,
+        &terrain_tiles_meta_buffer,
+        &terrain_data_buffer,
     );
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-pipeline-layout"),
@@ -2485,6 +2636,14 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         sunny_readback_buffer,
         sunny_no_veg_result_buffer,
         sunny_no_veg_readback_buffer,
+        terrain_tiles_meta_buffer,
+        terrain_data_buffer,
+        has_local_terrain: false,
+        num_terrain_tiles: 0,
+        terrain_nodata: 0.0,
+        terrain_step_meters: 5.0,
+        terrain_max_distance_meters: 500.0,
+        terrain_altitude_gate_deg: 30.0,
         points_buffer,
         depth_view_ref: depth_view.clone(),
         bind_group,
@@ -2513,6 +2672,8 @@ fn build_compute_bind_group(
     vegetation_results: &wgpu::Buffer,
     sunny_results: &wgpu::Buffer,
     sunny_no_veg_results: &wgpu::Buffer,
+    terrain_tiles_meta: &wgpu::Buffer,
+    terrain_data: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-bg"),
@@ -2530,6 +2691,8 @@ fn build_compute_bind_group(
             wgpu::BindGroupEntry { binding: 9, resource: vegetation_results.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 10, resource: sunny_results.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 11, resource: sunny_no_veg_results.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 12, resource: terrain_tiles_meta.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 13, resource: terrain_data.as_entire_binding() },
         ],
     })
 }
@@ -2551,6 +2714,12 @@ fn encode_shadow_params(
     veg_nodata: f32,
     origin_x: f32,
     origin_y: f32,
+    has_terrain: bool,
+    num_terrain_tiles: u32,
+    terrain_step_meters: f32,
+    terrain_max_distance_meters: f32,
+    terrain_altitude_gate_deg: f32,
+    terrain_nodata: f32,
 ) -> [u8; SHADOW_PARAMS_SIZE as usize] {
     let mut bytes = [0; SHADOW_PARAMS_SIZE as usize];
     let mut offset = 0;
@@ -2597,6 +2766,26 @@ fn encode_shadow_params(
     // origin_x, origin_y
     for value in [origin_x, origin_y] {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        offset += 4;
+    }
+    // has_terrain, num_terrain_tiles
+    for value in [if has_terrain { 1u32 } else { 0 }, num_terrain_tiles] {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        offset += 4;
+    }
+    // terrain_step_meters, terrain_max_distance_meters, terrain_altitude_gate_deg, terrain_nodata
+    for value in [
+        terrain_step_meters,
+        terrain_max_distance_meters,
+        terrain_altitude_gate_deg,
+        terrain_nodata,
+    ] {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        offset += 4;
+    }
+    // _pad2, _pad3
+    for _ in 0..2 {
+        bytes[offset..offset + 4].copy_from_slice(&0.0_f32.to_le_bytes());
         offset += 4;
     }
 
