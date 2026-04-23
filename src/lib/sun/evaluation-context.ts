@@ -694,7 +694,14 @@ export async function buildSharedPointEvaluationSources(
   // Local terrain (DEM) ray-march is also handled by the GPU when the
   // backend exposes `uploadTerrainRasters`. When true, skip the per-point
   // CPU closure construction — the GPU OR's it into terrainBlockedWords.
+  //
+  // OPT-IN via MAPPY_VULKAN_TERRAIN_ON_GPU=1: the shader + IPC + TS
+  // wiring are shipped (commits e1b50b2, 9e39dfc, f0486be) and validated
+  // on isolated tiles, but a sequencing bug in multi-tile batch mode
+  // (Montriond W+E: first tile OK, second tile tBlk=0) is not yet
+  // resolved. CPU terrain path (shortcut 2b.11) remains the default.
   const terrainShadowHandledByBackend =
+    process.env.MAPPY_VULKAN_TERRAIN_ON_GPU === "1" &&
     webgpuComputeBackend != null &&
     typeof (webgpuComputeBackend as { uploadTerrainRasters?: unknown })
       .uploadTerrainRasters === "function" &&
