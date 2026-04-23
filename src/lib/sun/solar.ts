@@ -50,6 +50,16 @@ export interface PointSunlightInput {
     blockerClearanceMeters: number | null;
     checkedSamplesCount: number;
   };
+  terrainShadowEvaluator?: (sample: {
+    azimuthDeg: number;
+    altitudeDeg: number;
+  }) => {
+    blocked: boolean;
+    blockerDistanceMeters: number | null;
+    blockerAltitudeAngleDeg: number | null;
+    blockerSurfaceElevationMeters: number | null;
+    checkedSamplesCount: number;
+  };
 }
 
 export interface SunSample {
@@ -97,6 +107,7 @@ export interface InstantSunlightInput {
   horizonMask: HorizonMask | null;
   buildingShadowEvaluator?: PointSunlightInput["buildingShadowEvaluator"];
   vegetationShadowEvaluator?: PointSunlightInput["vegetationShadowEvaluator"];
+  terrainShadowEvaluator?: PointSunlightInput["terrainShadowEvaluator"];
   evaluateAllBlockers?: boolean;
   solarPositionOverride?: { altitudeDeg: number; azimuthDeg: number };
   profiler?: InstantSunlightProfiler;
@@ -239,10 +250,15 @@ export function evaluateInstantSunlight(
       input.horizonMask !== null &&
       altitudeDeg <=
         getMaxHorizonAngle(input.horizonMask) + TERRAIN_HORIZON_SKIP_MARGIN_DEG;
-    const terrainBlocked =
+    const horizonBlocked =
       terrainCheckNeeded &&
       input.horizonMask !== null &&
       isTerrainBlockedByHorizon(input.horizonMask, azimuthDeg, altitudeDeg);
+    const localTerrainBlocked =
+      !horizonBlocked && aboveAstronomicalHorizon && input.terrainShadowEvaluator
+        ? input.terrainShadowEvaluator({ azimuthDeg, altitudeDeg }).blocked
+        : false;
+    const terrainBlocked = horizonBlocked || localTerrainBlocked;
     const evaluateSecondaryBlockers =
       aboveAstronomicalHorizon &&
       (input.evaluateAllBlockers === true || !terrainBlocked);
@@ -330,12 +346,18 @@ export function evaluateInstantSunlight(
       getMaxHorizonAngle(input.horizonMask) + TERRAIN_HORIZON_SKIP_MARGIN_DEG
     );
   })();
-  const terrainBlocked = (() => {
-    if (!terrainCheckNeeded || input.horizonMask === null) {
-      return false;
-    }
-    return isTerrainBlockedByHorizon(input.horizonMask, azimuthDeg, altitudeDeg);
-  })();
+  const horizonBlocked =
+    terrainCheckNeeded && input.horizonMask !== null
+      ? isTerrainBlockedByHorizon(input.horizonMask, azimuthDeg, altitudeDeg)
+      : false;
+  // Local DEM self-shadowing (e.g. hillside casting shadow on its own foot at
+  // low sun angles). Complements the horizon mask which only sees distant
+  // relief. Evaluator is internally gated to altitudeDeg < 30°.
+  const localTerrainBlocked =
+    !horizonBlocked && aboveAstronomicalHorizon && input.terrainShadowEvaluator
+      ? input.terrainShadowEvaluator({ azimuthDeg, altitudeDeg }).blocked
+      : false;
+  const terrainBlocked = horizonBlocked || localTerrainBlocked;
   const terrainElapsedMs = performance.now() - terrainStarted;
   const evaluateSecondaryBlockers =
     aboveAstronomicalHorizon &&

@@ -66,7 +66,7 @@ import {
 import {
   ATLAS_READ_FALLBACK_RESOLUTIONS_DEG,
   loadPrecomputedTileAtlas,
-  loadPrecomputedTileAtlasWithFallback,
+  loadPrecomputedTileAtlasesInPrecisionOrder,
   lookupAtlasByAngle,
   type BinaryTileAtlas,
 } from "./sunlight-cache-atlas";
@@ -87,7 +87,7 @@ const PRECOMPUTED_REGIONS: PrecomputedRegionName[] = ["lausanne", "nyon", "morge
 const manifestMemoryCache = new TtlCache<PrecomputedSunlightManifest | null>(60_000, 64);
 const tileMemoryCache = new TtlCache<PrecomputedSunlightTileArtifact | null>(60_000, 128);
 const tileBinaryMemoryCache = new TtlCache<BinaryTileArtifact | null>(60_000, 128);
-const tileAtlasMemoryCache = new TtlCache<BinaryTileAtlas | null>(300_000, 64);
+const tileAtlasMemoryCache = new TtlCache<BinaryTileAtlas | BinaryTileAtlas[] | null>(300_000, 64);
 
 type BuildingsIndex = NonNullable<
   Awaited<ReturnType<typeof buildSharedPointEvaluationSources>>["buildingsIndex"]
@@ -112,6 +112,7 @@ interface PreparedOutdoorPoint {
   horizonMask: Awaited<ReturnType<typeof buildPointEvaluationContext>>["horizonMask"];
   buildingShadowEvaluator: Awaited<ReturnType<typeof buildPointEvaluationContext>>["buildingShadowEvaluator"];
   vegetationShadowEvaluator: Awaited<ReturnType<typeof buildPointEvaluationContext>>["vegetationShadowEvaluator"];
+  terrainShadowEvaluator: Awaited<ReturnType<typeof buildPointEvaluationContext>>["terrainShadowEvaluator"];
 }
 
 export interface SunlightTileComputeProgress {
@@ -559,14 +560,26 @@ async function loadAtlasDiskOnly(params: {
   modelVersionHash: string;
   gridStepMeters: number;
   tileId: string;
-  resolutionDeg?: number;
+  resolutionDeg: number;
 }): Promise<BinaryTileAtlas | null> {
   const cacheKey = JSON.stringify({ kind: "atlas", ...params });
   const cached = tileAtlasMemoryCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-  const loaded = params.resolutionDeg != null
-    ? await loadPrecomputedTileAtlas(params)
-    : await loadPrecomputedTileAtlasWithFallback(params);
+  if (cached !== undefined) return cached as BinaryTileAtlas | null;
+  const loaded = await loadPrecomputedTileAtlas(params);
+  tileAtlasMemoryCache.set(cacheKey, loaded);
+  return loaded;
+}
+
+async function loadAtlasesDiskOnly(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  tileId: string;
+}): Promise<BinaryTileAtlas[]> {
+  const cacheKey = JSON.stringify({ kind: "atlases", ...params });
+  const cached = tileAtlasMemoryCache.get(cacheKey);
+  if (cached !== undefined) return (cached as BinaryTileAtlas[]) ?? [];
+  const loaded = await loadPrecomputedTileAtlasesInPrecisionOrder(params);
   tileAtlasMemoryCache.set(cacheKey, loaded);
   return loaded;
 }
@@ -708,6 +721,10 @@ export async function computeSunlightTileArtifact(params: {
     pointContexts: 0,
     evaluations: 0,
     evalSetup: 0,
+    evalSetupPoints: 0,
+    evalSetupHorizon: 0,
+    evalSetupVegetation: 0,
+    evalSetupPerFrame: 0,
     evalBatchDispatch: 0,
     evalFrameLoop: 0,
     // sub-phases of 'other' (time not accounted by any main phase)
@@ -885,6 +902,7 @@ export async function computeSunlightTileArtifact(params: {
         horizonMask,
         buildingShadowEvaluator: undefined,
         vegetationShadowEvaluator: undefined,
+        terrainShadowEvaluator: undefined,
       };
       point.insideBuilding = false;
       point.indoorBuildingId = null;
@@ -959,6 +977,7 @@ export async function computeSunlightTileArtifact(params: {
           horizonMask: context.horizonMask,
           buildingShadowEvaluator: context.buildingShadowEvaluator,
           vegetationShadowEvaluator: context.vegetationShadowEvaluator,
+          terrainShadowEvaluator: context.terrainShadowEvaluator,
         });
         points.push({
           ...point,
@@ -1006,6 +1025,7 @@ export async function computeSunlightTileArtifact(params: {
           horizonMask: context.horizonMask,
           buildingShadowEvaluator: context.buildingShadowEvaluator,
           vegetationShadowEvaluator: context.vegetationShadowEvaluator,
+          terrainShadowEvaluator: context.terrainShadowEvaluator,
         });
         points.push({
           ...point,
@@ -1075,6 +1095,7 @@ export async function computeSunlightTileArtifact(params: {
   const useBatchPath = webgpuBackend != null && isBatchBackend(webgpuBackend);
   let batchPointsF32: Float32Array | null = null;
   if (useBatchPath) {
+    const setupPointsT0 = performance.now();
     const origin = webgpuBackend.getOrigin();
     batchPointsF32 = new Float32Array(preparedOutdoorPoints.length * 4);
     for (let i = 0; i < preparedOutdoorPoints.length; i++) {
@@ -1086,6 +1107,7 @@ export async function computeSunlightTileArtifact(params: {
       batchPointsF32[i * 4 + 2] = pt.lv95Northing - origin.y;
       batchPointsF32[i * 4 + 3] = 0; // padding for vec4f alignment
     }
+    phaseMs.evalSetupPoints += performance.now() - setupPointsT0;
   }
 
   // ── Phase B + C: build packed payloads for the GPU shadow compute ──
@@ -1145,6 +1167,7 @@ export async function computeSunlightTileArtifact(params: {
       .evaluateBatchWithShadows === "function";
   if (useBatchShadows) {
     // ── Horizon (build GPU payload from the deduped masks) ──────────
+    const setupHorizonT0 = performance.now();
     if (horizonMaskList && pointMaskIndices) {
       const masks = new Float32Array(horizonMaskList.length * 360);
       for (let i = 0; i < horizonMaskList.length; i++) {
@@ -1154,7 +1177,9 @@ export async function computeSunlightTileArtifact(params: {
       }
       horizonPayload = { masks, pointMaskIndices };
     }
+    phaseMs.evalSetupHorizon += performance.now() - setupHorizonT0;
     // ── Vegetation ──────────────────────────────────────────────────
+    const setupVegetationT0 = performance.now();
     const vegTiles = sharedSources.vegetationSurfaceTiles;
     if (vegTiles && vegTiles.length > 0 && webgpuBackend) {
       const origin = webgpuBackend.getOrigin();
@@ -1198,6 +1223,7 @@ export async function computeSunlightTileArtifact(params: {
         originY: origin.y,
       };
     }
+    phaseMs.evalSetupVegetation += performance.now() - setupVegetationT0;
   }
 
   // ── Phase D: batch-evaluate all lit frames in ONE GPU submission ────
@@ -1222,6 +1248,7 @@ export async function computeSunlightTileArtifact(params: {
   const sunRoundStep = sunRoundEnv ? Number(sunRoundEnv) : 0;
   const roundToStep = (x: number): number =>
     sunRoundStep > 0 ? Math.round(x / sunRoundStep) * sunRoundStep : x;
+  const setupPerFrameT0 = performance.now();
   const perFrame: PerFrameSun[] = new Array(samples.length);
   if (atlasMode) {
     // Bucket-centered atlas mode: positions come from the caller. samples[] is a
@@ -1253,6 +1280,7 @@ export async function computeSunlightTileArtifact(params: {
       };
     }
   }
+  phaseMs.evalSetupPerFrame += performance.now() - setupPerFrameT0;
 
   const useBatchFrames =
     useBatchShadows &&
@@ -1329,11 +1357,11 @@ export async function computeSunlightTileArtifact(params: {
         utcTime: sampleDate.toISOString(),
         sunnyCount: 0,
         sunnyCountNoVegetation: 0,
-        sunMaskBase64: Buffer.from(new Uint8Array(maskByteLen)).toString("base64"),
-        sunMaskNoVegetationBase64: Buffer.from(new Uint8Array(maskByteLen)).toString("base64"),
-        terrainBlockedMaskBase64: Buffer.from(new Uint8Array(maskByteLen)).toString("base64"),
-        buildingsBlockedMaskBase64: Buffer.from(new Uint8Array(maskByteLen)).toString("base64"),
-        vegetationBlockedMaskBase64: Buffer.from(new Uint8Array(maskByteLen)).toString("base64"),
+        sunMask: new Uint8Array(maskByteLen),
+        sunMaskNoVegetation: new Uint8Array(maskByteLen),
+        terrainBlockedMask: new Uint8Array(maskByteLen),
+        buildingsBlockedMask: new Uint8Array(maskByteLen),
+        vegetationBlockedMask: new Uint8Array(maskByteLen),
         diagnostics: {
           horizonAngleDegByPoint: [],
           buildingBlockerIdByPoint: [],
@@ -1421,11 +1449,11 @@ export async function computeSunlightTileArtifact(params: {
           utcTime: sampleDate.toISOString(),
           sunnyCount,
           sunnyCountNoVegetation,
-          sunMaskBase64: Buffer.from(sunnyMask).toString("base64"),
-          sunMaskNoVegetationBase64: Buffer.from(sunnyMaskNoVegetation).toString("base64"),
-          terrainBlockedMaskBase64: Buffer.from(terrainMask).toString("base64"),
-          buildingsBlockedMaskBase64: Buffer.from(buildingsMask).toString("base64"),
-          vegetationBlockedMaskBase64: Buffer.from(vegetationMask).toString("base64"),
+          sunMask: sunnyMask,
+          sunMaskNoVegetation: sunnyMaskNoVegetation,
+          terrainBlockedMask: terrainMask,
+          buildingsBlockedMask: buildingsMask,
+          vegetationBlockedMask: vegetationMask,
           diagnostics: {
             horizonAngleDegByPoint,
             buildingBlockerIdByPoint,
@@ -1563,6 +1591,13 @@ export async function computeSunlightTileArtifact(params: {
             terrainBlocked = isTerrainBlockedByHorizon(horizonMask, azimuthDeg, altitudeDeg);
           }
         }
+        // Local DEM self-shadowing (complements horizon mask, which only sees
+        // distant relief > ~500m). Gated internally to altitudeDeg < 30°.
+        if (!terrainBlocked && point.terrainShadowEvaluator !== undefined) {
+          if (point.terrainShadowEvaluator({ azimuthDeg, altitudeDeg }).blocked) {
+            terrainBlocked = true;
+          }
+        }
 
         // Vegetation: only when not terrain-blocked (matches evaluateInstantSunlight).
         // If the GPU computed a vegetation bitmask for this frame, read it
@@ -1653,11 +1688,11 @@ export async function computeSunlightTileArtifact(params: {
       utcTime: sampleDate.toISOString(),
       sunnyCount,
       sunnyCountNoVegetation,
-      sunMaskBase64: Buffer.from(sunnyMask).toString("base64"),
-      sunMaskNoVegetationBase64: Buffer.from(sunnyMaskNoVegetation).toString("base64"),
-      terrainBlockedMaskBase64: Buffer.from(terrainMask).toString("base64"),
-      buildingsBlockedMaskBase64: Buffer.from(buildingsMask).toString("base64"),
-      vegetationBlockedMaskBase64: Buffer.from(vegetationMask).toString("base64"),
+      sunMask: sunnyMask,
+      sunMaskNoVegetation: sunnyMaskNoVegetation,
+      terrainBlockedMask: terrainMask,
+      buildingsBlockedMask: buildingsMask,
+      vegetationBlockedMask: vegetationMask,
       diagnostics: {
         horizonAngleDegByPoint,
         buildingBlockerIdByPoint,
@@ -1700,6 +1735,10 @@ export async function computeSunlightTileArtifact(params: {
       ` for ${pointsOutdoorCount + pointsIndoorCount} pts (${pointsIndoorCount} in, ${pointsOutdoorCount} out)]` +
       `, eval ${(phaseMs.evaluations / 1000).toFixed(1)}s` +
       ` [setup ${(phaseMs.evalSetup / 1000).toFixed(2)}s` +
+      ` (pts ${phaseMs.evalSetupPoints.toFixed(0)}ms` +
+      `, horiz ${phaseMs.evalSetupHorizon.toFixed(0)}ms` +
+      `, veg ${phaseMs.evalSetupVegetation.toFixed(0)}ms` +
+      `, perFrame ${phaseMs.evalSetupPerFrame.toFixed(0)}ms)` +
       `, dispatch ${(phaseMs.evalBatchDispatch / 1000).toFixed(2)}s` +
       `, frameLoop ${(phaseMs.evalFrameLoop / 1000).toFixed(2)}s]` +
       `, other ${(otherMs / 1000).toFixed(2)}s` +
@@ -1881,9 +1920,11 @@ export interface StreamTileResult {
   artifact?: PrecomputedSunlightTileArtifact;
   /** Fast binary artifact with points and masks as typed arrays. */
   binary?: BinaryTileArtifact;
-  /** Angle-keyed atlas (ADR-0013). When present, lookup by (az,alt) instead of
-   * sequential frame iteration. Supersedes `binary` when available. */
-  atlas?: BinaryTileAtlas;
+  /** Angle-keyed atlases (ADR-0013), ordered by precision (r0.5 → r0.75 → r1).
+   * Consumers must cascade bucket lookup via `lookupAtlasByAngle` so coarser
+   * resolutions cover the (az, alt) positions a finer one is missing. When
+   * present, supersedes `binary`. */
+  atlases?: BinaryTileAtlas[];
   layer: "L1" | "L2" | "MISS";
 }
 
@@ -2032,20 +2073,44 @@ export async function* streamTilesForBbox(params: {
   type CachedTileLoad = {
     artifact: PrecomputedSunlightTileArtifact | null;
     binary?: BinaryTileArtifact;
-    atlas?: BinaryTileAtlas;
+    atlases?: BinaryTileAtlas[];
     layer: "L1" | "L2" | "MISS";
   };
   const loadOneCached = async (tile: RegionTileSpec): Promise<CachedTileLoad> => {
-    // Atlas (ADR-0013): year-independent, angle-keyed. Try first — if the atlas covers
-    // the requested (az, alt) bucket, it's date-agnostic and avoids per-date I/O.
-    const atlas = await loadAtlasDiskOnly({
+    // Atlas (ADR-0013): year-independent, angle-keyed. Load every available
+    // resolution (r0.5 → r0.75 → r1) so bucket lookup can cascade — otherwise
+    // a sparse r0.5 atlas (only some dates) shadowed a complete r0.75 corpus
+    // and tiles rendered as "all shadow" for any date outside r0.5's coverage.
+    const atlases = await loadAtlasesDiskOnly({
       region,
       modelVersionHash,
       gridStepMeters: params.gridStepMeters,
       tileId: tile.tileId,
     });
-    if (atlas) {
-      return { artifact: null, atlas, layer: "L2" as const };
+    if (atlases.length > 0) {
+      // Strict cache-hit predicate (user decision): every requested sample must
+      // resolve to a populated bucket across at least one resolution. If even
+      // one frame has no bucket anywhere, treat the tile as a miss rather than
+      // serving a timeline with silently-empty frames.
+      const tileCenterE = (tile.minEasting + tile.maxEasting) / 2;
+      const tileCenterN = (tile.minNorthing + tile.maxNorthing) / 2;
+      const { lat: tileLat, lon: tileLon } = lv95ToWgs84(tileCenterE, tileCenterN);
+      const RAD_TO_DEG = 180 / Math.PI;
+      let allFramesCovered = true;
+      for (const utc of samples) {
+        const pos = SunCalc.getPosition(utc, tileLat, tileLon);
+        const alt = pos.altitude * RAD_TO_DEG;
+        if (alt <= 0) continue; // night frames never need an atlas bucket
+        let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
+        if (az < 0) az += 360;
+        if (!lookupAtlasByAngle(atlases, az, alt)) {
+          allFramesCovered = false;
+          break;
+        }
+      }
+      if (allFramesCovered) {
+        return { artifact: null, atlases, layer: "L2" as const };
+      }
     }
 
     for (const tw of cachedTimeWindows) {
@@ -2096,7 +2161,7 @@ export async function* streamTilesForBbox(params: {
         inflight.push(loadOneCached(requiredTiles[tileIdx + inflight.length]));
       }
       const loaded = await inflight.shift()!;
-      if (loaded.atlas || loaded.binary || loaded.artifact) {
+      if (loaded.atlases || loaded.binary || loaded.artifact) {
         if (firstTileAt === 0) firstTileAt = performance.now() - cacheStreamStarted;
         cacheTilesYielded += 1;
         yield {
@@ -2105,7 +2170,7 @@ export async function* streamTilesForBbox(params: {
           totalTiles: requiredTiles.length,
           artifact: loaded.artifact ?? undefined,
           binary: loaded.binary,
-          atlas: loaded.atlas,
+          atlases: loaded.atlases,
           layer: loaded.layer,
         };
       } else {
@@ -2122,24 +2187,44 @@ export async function* streamTilesForBbox(params: {
       continue;
     }
 
-    // Non-cache-only path: probe the atlas first (ADR-0013, fallback r0.5 → r0.75 → r1).
+    // Non-cache-only path: probe the atlas first (ADR-0013, cascade r0.5 → r0.75 → r1).
     // Without this, every tile missing from the per-date cache would fall through to
     // computeSunlightTileArtifact even when the atlas already covers the requested (az, alt).
-    const atlasHit = await loadAtlasDiskOnly({
+    // Strict: every requested sample must resolve to a populated bucket across
+    // at least one resolution, else fall through to re-compute.
+    const atlasHits = await loadAtlasesDiskOnly({
       region,
       modelVersionHash,
       gridStepMeters: params.gridStepMeters,
       tileId: tile.tileId,
     });
-    if (atlasHit) {
-      yield {
-        tileId: tile.tileId,
-        tileIndex: tileIdx,
-        totalTiles: requiredTiles.length,
-        atlas: atlasHit,
-        layer: "L2" as const,
-      };
-      continue;
+    if (atlasHits.length > 0) {
+      const tileCenterE = (tile.minEasting + tile.maxEasting) / 2;
+      const tileCenterN = (tile.minNorthing + tile.maxNorthing) / 2;
+      const { lat: tileLat, lon: tileLon } = lv95ToWgs84(tileCenterE, tileCenterN);
+      const RAD_TO_DEG = 180 / Math.PI;
+      let allFramesCovered = true;
+      for (const utc of samples) {
+        const pos = SunCalc.getPosition(utc, tileLat, tileLon);
+        const alt = pos.altitude * RAD_TO_DEG;
+        if (alt <= 0) continue;
+        let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
+        if (az < 0) az += 360;
+        if (!lookupAtlasByAngle(atlasHits, az, alt)) {
+          allFramesCovered = false;
+          break;
+        }
+      }
+      if (allFramesCovered) {
+        yield {
+          tileId: tile.tileId,
+          tileIndex: tileIdx,
+          totalTiles: requiredTiles.length,
+          atlases: atlasHits,
+          layer: "L2" as const,
+        };
+        continue;
+      }
     }
     if (tileIdx < 3 || tileIdx % 25 === 0) {
       const mem = process.memoryUsage();
@@ -2380,11 +2465,11 @@ export function aggregateInstantAreaFromArtifacts(params: {
     if (!frame) {
       return null;
     }
-    const sunnyMask = decodeBase64Bytes(frame.sunMaskBase64);
-    const sunnyMaskNoVegetation = decodeBase64Bytes(frame.sunMaskNoVegetationBase64);
-    const terrainMask = decodeBase64Bytes(frame.terrainBlockedMaskBase64);
-    const buildingsMask = decodeBase64Bytes(frame.buildingsBlockedMaskBase64);
-    const vegetationMask = decodeBase64Bytes(frame.vegetationBlockedMaskBase64);
+    const sunnyMask = frame.sunMask;
+    const sunnyMaskNoVegetation = frame.sunMaskNoVegetation;
+    const terrainMask = frame.terrainBlockedMask;
+    const buildingsMask = frame.buildingsBlockedMask;
+    const vegetationMask = frame.vegetationBlockedMask;
 
     for (const point of artifact.points) {
       if (!pointInBbox(point.lon, point.lat, params.bbox)) {
@@ -2493,8 +2578,8 @@ export function aggregateDailyAreaFromArtifacts(params: {
 
   for (const artifact of params.artifacts) {
     const frameMasks = artifact.frames.map((frame) => ({
-      full: decodeBase64Bytes(frame.sunMaskBase64),
-      noVegetation: decodeBase64Bytes(frame.sunMaskNoVegetationBase64),
+      full: frame.sunMask,
+      noVegetation: frame.sunMaskNoVegetation,
       utcTime: frame.utcTime,
     }));
 
@@ -2621,8 +2706,8 @@ export function buildTimelineFromArtifacts(params: {
   const decodedFramesByArtifact = params.artifacts.map((artifact) =>
     artifact.frames.map((frame) => ({
       ...frame,
-      fullMask: decodeBase64Bytes(frame.sunMaskBase64),
-      noVegetationMask: decodeBase64Bytes(frame.sunMaskNoVegetationBase64),
+      fullMask: frame.sunMask,
+      noVegetationMask: frame.sunMaskNoVegetation,
     })),
   );
   const frameCount = params.artifacts[0]?.frames.length ?? 0;

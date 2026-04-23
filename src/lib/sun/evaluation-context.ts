@@ -17,6 +17,7 @@ import {
   loadVegetationSurfaceTilesForPoint,
   vegetationShadowMethod,
 } from "@/lib/sun/vegetation-shadow";
+import { buildLocalTerrainShadowEvaluator } from "@/lib/sun/terrain-shadow";
 import {
   loadTerrainTilesForBounds,
   sampleSwissTerrainElevationLv95,
@@ -109,6 +110,13 @@ export interface PointEvaluationContext {
     blockerAltitudeAngleDeg: number | null;
     blockerSurfaceElevationMeters: number | null;
     blockerClearanceMeters: number | null;
+    checkedSamplesCount: number;
+  };
+  terrainShadowEvaluator?: (sample: { azimuthDeg: number; altitudeDeg: number }) => {
+    blocked: boolean;
+    blockerDistanceMeters: number | null;
+    blockerAltitudeAngleDeg: number | null;
+    blockerSurfaceElevationMeters: number | null;
     checkedSamplesCount: number;
   };
 }
@@ -932,6 +940,23 @@ export async function buildPointEvaluationContext(
           })
         : undefined;
 
+  // Local terrain self-shadowing: complements the horizon mask (which only
+  // captures distant relief > ~500m) by ray-marching the local DEM out to
+  // 500m. Gated to altitudeDeg < 30° inside the evaluator. See ADR-0011 and
+  // shortcuts-registry 2b.X (terrain local ray-march).
+  const terrainShadowEvaluator =
+    sharedSources.terrainTiles &&
+    sharedSources.terrainTiles.length > 0 &&
+    pointElevationMeters !== null &&
+    !containment.insideBuilding
+      ? buildLocalTerrainShadowEvaluator({
+          pointLv95Easting: pointLv95.easting,
+          pointLv95Northing: pointLv95.northing,
+          pointElevationMeters,
+          terrainTiles: sharedSources.terrainTiles,
+        })
+      : undefined;
+
   const warnings: string[] = [];
   if (!horizonMask) {
     warnings.push(
@@ -985,5 +1010,6 @@ export async function buildPointEvaluationContext(
     horizonMask,
     buildingShadowEvaluator,
     vegetationShadowEvaluator,
+    terrainShadowEvaluator,
   };
 }

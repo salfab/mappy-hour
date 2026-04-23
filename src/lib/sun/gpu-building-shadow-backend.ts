@@ -436,8 +436,25 @@ export class GpuBuildingShadowBackend implements BuildingShadowBackend {
     bounds: { minX: number; minY: number; maxX: number; maxY: number },
     maxBuildingHeight: number,
   ): void {
+    // Detect whether the focus zone actually moved. If so, invalidate the
+    // shadow-map cache key: prepareSunPosition's early-return uses (az, alt)
+    // only — without this, a second tile in the same focus key that happens
+    // to be evaluated at the same sun position reuses the PREVIOUS tile's
+    // shadow map (rendered with a different frustum), projecting points of
+    // the new tile outside the NDC range and silently returning blocked=false
+    // for every building → the infamous "bBlk=0% on half the tiles" pattern.
+    const prev = this.frustumFocus;
+    const changed =
+      prev === null ||
+      prev.minX !== bounds.minX || prev.minY !== bounds.minY ||
+      prev.maxX !== bounds.maxX || prev.maxY !== bounds.maxY ||
+      this.frustumMaxBuildingHeight !== maxBuildingHeight;
     this.frustumFocus = { ...bounds };
     this.frustumMaxBuildingHeight = maxBuildingHeight;
+    if (changed) {
+      this.lastPreparedAz = NaN;
+      this.lastPreparedAlt = NaN;
+    }
   }
 
   private frustumFocus: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
