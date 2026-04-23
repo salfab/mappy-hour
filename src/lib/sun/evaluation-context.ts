@@ -590,139 +590,42 @@ export async function buildSharedPointEvaluationSources(
           return metadata.indoor[idx] ?? false;
         };
         console.error(`[indoor-check] Loaded zenith indoor mask for ${tileId} (${metadata.indoorCount} indoor)`);
-      } else if (gpuShadowBackend || (webgpuComputeBackend && BUILDINGS_SHADOW_MODE === "rust-wgpu-vulkan")) {
-        // No cached metadata — render a zenith shadow map and derive the
-        // indoor mask: blocked = under a roof = indoor.
-        const tileMinE_ = tileMinE;
-        const tileMinN_ = tileMinN;
-        const gridW = Math.ceil(tileSizeMeters);
-        const gridH = gridW;
-        const gridCount = gridW * gridH;
-        const indoorMask = new Uint8Array(Math.ceil(gridCount / 8));
-        const maxH = buildingsIndex ? buildingsIndex.obstacles.reduce((m, o) => Math.max(m, o.height), 0) : 100;
-        // Approximate ground elevation — zenith ray is straight down so
-        // the exact elevation barely matters (just needs to be below the roof).
-        const approxElevation = 500;
-        let indoorCount = 0;
-
-        if (gpuShadowBackend) {
-          console.error(`[indoor-check] No grid metadata for ${tileId}, computing zenith via gpu-raster...`);
-          if ("setFrustumFocus" in gpuShadowBackend) {
-            (gpuShadowBackend as { setFrustumFocus: (b: { minX: number; minY: number; maxX: number; maxY: number }, h: number) => void }).setFrustumFocus(
-              { minX: tileMinE_, minY: tileMinN_, maxX: tileMinE_ + tileSizeMeters, maxY: tileMinN_ + tileSizeMeters },
-              maxH,
-            );
-          }
-          // Use unique azimuth to bust the render cache
-          gpuShadowBackend.prepareSunPosition(Math.floor(Math.random() * 360), 90);
-
-          for (let iy = 0; iy < gridH; iy++) {
-            for (let ix = 0; ix < gridW; ix++) {
-              const result = gpuShadowBackend.evaluate({
-                pointX: tileMinE_ + ix + 0.5,
-                pointY: tileMinN_ + iy + 0.5,
-                pointElevation: approxElevation,
-                solarAzimuthDeg: 0,
-                solarAltitudeDeg: 90,
-              });
-              if (result.blocked) {
-                const idx = iy * gridW + ix;
-                indoorMask[idx >> 3] |= 1 << (idx & 7);
-                indoorCount++;
-              }
-            }
-          }
-        } else {
-          // Vulkan: one batch dispatch instead of 62500 single evaluate() calls.
-          console.error(`[indoor-check] No grid metadata for ${tileId}, computing zenith via Vulkan batch...`);
-          const batch = webgpuComputeBackend as import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend;
-          batch.setFrustumFocus(
-            { minX: tileMinE_, minY: tileMinN_, maxX: tileMinE_ + tileSizeMeters, maxY: tileMinN_ + tileSizeMeters },
-            maxH,
-          );
-          const origin = batch.getOrigin();
-          // vec4f layout: [x_centered, elevation, z_centered, 0]
-          const points = new Float32Array(gridCount * 4);
-          for (let iy = 0; iy < gridH; iy++) {
-            for (let ix = 0; ix < gridW; ix++) {
-              const i = iy * gridW + ix;
-              points[i * 4 + 0] = (tileMinE_ + ix + 0.5) - origin.x;
-              points[i * 4 + 1] = approxElevation;
-              points[i * 4 + 2] = (tileMinN_ + iy + 0.5) - origin.y;
-              points[i * 4 + 3] = 0;
-            }
-          }
-          const bitmask = await batch.evaluateBatch(points, gridCount, 0, 90);
-          for (let i = 0; i < gridCount; i++) {
-            if ((bitmask[i >> 5] >> (i & 31)) & 1) {
-              indoorMask[i >> 3] |= 1 << (i & 7);
-              indoorCount++;
-            }
-          }
-        }
-
-        // Save for next time
-        try {
-          const { getTileGridMetadataPath } = await import("@/lib/precompute/tile-grid-metadata");
-          const fs = await import("node:fs/promises");
-          const path = await import("node:path");
-          const zlib = await import("node:zlib");
-          const { promisify } = await import("node:util");
-          const gzip = promisify(zlib.gzip);
-          const indoor: boolean[] = new Array(gridCount);
-          const elevations: (number | null)[] = new Array(gridCount);
-          for (let i = 0; i < gridCount; i++) {
-            indoor[i] = ((indoorMask[i >> 3] >> (i & 7)) & 1) === 1;
-            elevations[i] = indoor[i] ? null : 0; // elevation filled later per-point
-          }
-          const gmData = {
-            tileId, modelVersionHash: modelVersion.modelVersionHash,
-            gridStepMeters: 1, totalPoints: gridCount,
-            outdoorCount: gridCount - indoorCount, indoorCount,
-            elevations, indoor,
-          };
-          const filePath = getTileGridMetadataPath(regionName, modelVersion.modelVersionHash, 1, tileId);
-          await fs.mkdir(path.dirname(filePath), { recursive: true });
-          const compressed = await gzip(JSON.stringify(gmData));
-          await fs.writeFile(filePath, compressed);
-          console.error(`[indoor-check] Computed and saved zenith mask for ${tileId} (${indoorCount} indoor)`);
-        } catch (saveErr) {
-          console.error(`[indoor-check] Failed to save zenith mask: ${saveErr}`);
-        }
-
-        const gridMinIx = tileMinE_;
-        const gridMinIy = tileMinN_;
-        zenithIndoorCheck = (easting: number, northing: number) => {
-          const ix = Math.floor(easting) - gridMinIx;
-          const iy = Math.floor(northing) - gridMinIy;
-          if (ix < 0 || ix >= gridW || iy < 0 || iy >= gridH) return false;
-          const idx = iy * gridW + ix;
-          return ((indoorMask[idx >> 3] >> (idx & 7)) & 1) === 1;
-        };
-      } else if (BUILDINGS_SHADOW_MODE === "rust-wgpu-vulkan" && buildingsIndex) {
-        // Vulkan backend declined to initialize. Most common reason: the focus
-        // zone (tile ± margin) contains zero building obstacles, so the native
-        // server won't bother loading an empty mesh. Verify by re-applying the
-        // same spatial filter here; if empty, no building can block the zenith
-        // ray → mark every point as outdoor.
-        const margin = getRustWgpuVulkanFocusMarginMeters();
+      } else if (buildingsIndex) {
+        // Grid-metadata is missing. Fast-path optim: if the focus zone of
+        // this tile contains zero building obstacles, no roof can ever
+        // block the zenith → entire tile is outdoor and we can skip the
+        // preflight requirement. Used by rural tiles (e.g. open fields
+        // north of Lausanne) where running the full zenith shadow render
+        // is wasted work.
+        //
+        // Otherwise: fail-fast. The previous runtime fallback hardcoded
+        // `approxElevation = 500` and silently mis-classified every
+        // building whose roof was below 500m absolute (≈80% of Lausanne's
+        // urban fabric). We now require the preflight to have run:
+        //   npm run precompute:grid-metadata -- --region=<region>
+        const margin =
+          BUILDINGS_SHADOW_MODE === "rust-wgpu-vulkan"
+            ? getRustWgpuVulkanFocusMarginMeters()
+            : GPU_FOCUS_MARGIN_METERS;
         const inFocus = buildingsIndex.obstacles.some((o) =>
           o.maxX > tileMinE - margin && o.minX < tileMinE + tileSizeMeters + margin &&
           o.maxY > tileMinN - margin && o.minY < tileMinN + tileSizeMeters + margin,
         );
-        if (inFocus) {
+        if (!inFocus) {
+          console.error(`[indoor-check] No obstacles in focus zone for ${tileId}, all points treated as outdoor.`);
+          zenithIndoorCheck = () => false;
+        } else {
           throw new Error(
-            `Indoor detection unavailable for tile ${tileId}: Vulkan backend failed despite obstacles present in focus zone. ` +
-            `Run 'npm run precompute:grid-metadata' to generate zenith indoor masks.`,
+            `Indoor detection unavailable for tile ${tileId}: grid metadata is missing and obstacles are present. ` +
+            `Run the preflight to generate the zenith indoor mask: ` +
+            `\`npm run precompute:grid-metadata -- --region=${regionName}\` ` +
+            `(or run the full \`precompute:all-regions\` which includes the preflight).`,
           );
         }
-        console.error(`[indoor-check] No obstacles in focus zone for ${tileId}, all points treated as outdoor.`);
-        zenithIndoorCheck = () => false;
       } else {
         throw new Error(
-          `Indoor detection unavailable for tile ${tileId}: no grid metadata and no GPU backend. ` +
-          `Run 'npm run precompute:grid-metadata' to generate zenith indoor masks, ` +
-          `or set MAPPY_BUILDINGS_SHADOW_MODE=gpu-raster|rust-wgpu-vulkan in .env.`
+          `Indoor detection unavailable for tile ${tileId}: no grid metadata and no buildings index. ` +
+          `Run the preflight: \`npm run precompute:grid-metadata -- --region=${regionName}\`.`,
         );
       }
     } catch (e) {
