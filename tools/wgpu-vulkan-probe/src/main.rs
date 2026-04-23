@@ -431,6 +431,20 @@ struct ServerRequest {
     veg_max_distance_meters: Option<f32>,
     #[serde(default, alias = "vegMinClearance")]
     veg_min_clearance: Option<f32>,
+    // upload_terrain_rasters: meta + data + march params (local DEM
+    // self-shadowing, cf. shortcut 2b.11)
+    #[serde(default, alias = "terrainMetaBin")]
+    terrain_meta_bin: Option<String>,
+    #[serde(default, alias = "terrainDataBin")]
+    terrain_data_bin: Option<String>,
+    #[serde(default, alias = "terrainNodata")]
+    terrain_nodata: Option<f32>,
+    #[serde(default, alias = "terrainStepMeters")]
+    terrain_step_meters: Option<f32>,
+    #[serde(default, alias = "terrainMaxDistanceMeters")]
+    terrain_max_distance_meters: Option<f32>,
+    #[serde(default, alias = "terrainAltitudeGateDeg")]
+    terrain_altitude_gate_deg: Option<f32>,
     #[serde(default, alias = "originX")]
     origin_x: Option<f32>,
     #[serde(default, alias = "originY")]
@@ -728,6 +742,57 @@ fn run_shadow_server(
                             "type": "error",
                             "id": id,
                             "message": format!("upload_vegetation_rasters failed: {error}"),
+                        }))?;
+                    }
+                }
+            }
+            "upload_terrain_rasters" => {
+                let meta_path = match request.terrain_meta_bin.as_deref() {
+                    Some(p) => PathBuf::from(p),
+                    None => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "upload_terrain_rasters requires terrainMetaBin",
+                        }))?;
+                        continue;
+                    }
+                };
+                let data_path = match request.terrain_data_bin.as_deref() {
+                    Some(p) => PathBuf::from(p),
+                    None => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "upload_terrain_rasters requires terrainDataBin",
+                        }))?;
+                        continue;
+                    }
+                };
+                let nodata = request.terrain_nodata.unwrap_or(f32::NAN);
+                let step = request.terrain_step_meters.unwrap_or(5.0);
+                let max_d = request.terrain_max_distance_meters.unwrap_or(500.0);
+                let alt_gate = request.terrain_altitude_gate_deg.unwrap_or(30.0);
+                let ox = request.origin_x.unwrap_or(0.0);
+                let oy = request.origin_y.unwrap_or(0.0);
+                let started = Instant::now();
+                match engine.upload_terrain_rasters(
+                    device, queue, &meta_path, &data_path, nodata, step, max_d, alt_gate, ox, oy,
+                ) {
+                    Ok((tile_count, data_bytes)) => {
+                        write_server_message(serde_json::json!({
+                            "type": "uploaded_terrain_rasters",
+                            "id": id,
+                            "tileCount": tile_count,
+                            "dataBytes": data_bytes,
+                            "elapsedMs": round2(started.elapsed().as_secs_f64() * 1000.0),
+                        }))?;
+                    }
+                    Err(error) => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": format!("upload_terrain_rasters failed: {error}"),
                         }))?;
                     }
                 }
@@ -1919,6 +1984,102 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         shadow.veg_step_meters = step_meters;
         shadow.veg_max_distance_meters = max_distance_meters;
         shadow.veg_min_clearance = min_clearance;
+        shadow.origin_x = origin_x;
+        shadow.origin_y = origin_y;
+        Ok((tile_count, data_bytes_len))
+    }
+
+    /// Replace the terrain (SwissALTI3D DEM) rasters used by the shader
+    /// ray-march. Same layout/format as upload_vegetation_rasters (meta =
+    /// packed TerrainTileMeta blob, data = concatenated f32 rasters).
+    /// Covers shortcut 2b.11 on GPU-side. Idempotent on the bind group
+    /// (new bind group built so the new buffers are live).
+    #[allow(clippy::too_many_arguments)]
+    fn upload_terrain_rasters(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        meta_bin: &Path,
+        data_bin: &Path,
+        nodata: f32,
+        step_meters: f32,
+        max_distance_meters: f32,
+        altitude_gate_deg: f32,
+        origin_x: f32,
+        origin_y: f32,
+    ) -> Result<(u32, u64), String> {
+        let shadow = self
+            .shadow_compute
+            .as_mut()
+            .ok_or_else(|| "upload_terrain_rasters: no active shadow compute".to_string())?;
+
+        let meta_bytes = std::fs::read(meta_bin)
+            .map_err(|e| format!("failed to read terrain meta {}: {e}", meta_bin.display()))?;
+        if meta_bytes.is_empty() || meta_bytes.len() % (VEG_TILE_META_SIZE as usize) != 0 {
+            return Err(format!(
+                "terrain meta file must be a multiple of {} bytes, got {} for {}",
+                VEG_TILE_META_SIZE,
+                meta_bytes.len(),
+                meta_bin.display(),
+            ));
+        }
+        let tile_count = (meta_bytes.len() / VEG_TILE_META_SIZE as usize) as u32;
+
+        let data_bytes = std::fs::read(data_bin)
+            .map_err(|e| format!("failed to read terrain data {}: {e}", data_bin.display()))?;
+        if data_bytes.len() % 4 != 0 {
+            return Err(format!(
+                "terrain data file must be f32-aligned, got {} for {}",
+                data_bytes.len(),
+                data_bin.display(),
+            ));
+        }
+        let data_bytes_len = data_bytes.len() as u64;
+
+        let meta_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgpu-vulkan-probe-terrain-tiles-meta"),
+            size: meta_bytes.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&meta_buffer, 0, &meta_bytes);
+
+        let data_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgpu-vulkan-probe-terrain-data"),
+            size: data_bytes.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&data_buffer, 0, &data_bytes);
+
+        let new_bind_group = build_compute_bind_group(
+            device,
+            &shadow.bind_group_layout,
+            &shadow.params_buffer,
+            &shadow.depth_view_ref,
+            &shadow.points_buffer,
+            &shadow.result_buffer,
+            &shadow.horizon_masks_buffer,
+            &shadow.horizon_indices_buffer,
+            &shadow.terrain_result_buffer,
+            &shadow.veg_tiles_meta_buffer,
+            &shadow.veg_data_buffer,
+            &shadow.veg_result_buffer,
+            &shadow.sunny_result_buffer,
+            &shadow.sunny_no_veg_result_buffer,
+            &meta_buffer,
+            &data_buffer,
+        );
+
+        shadow.terrain_tiles_meta_buffer = meta_buffer;
+        shadow.terrain_data_buffer = data_buffer;
+        shadow.bind_group = new_bind_group;
+        shadow.has_local_terrain = true;
+        shadow.num_terrain_tiles = tile_count;
+        shadow.terrain_nodata = nodata;
+        shadow.terrain_step_meters = step_meters;
+        shadow.terrain_max_distance_meters = max_distance_meters;
+        shadow.terrain_altitude_gate_deg = altitude_gate_deg;
         shadow.origin_x = origin_x;
         shadow.origin_y = origin_y;
         Ok((tile_count, data_bytes_len))
