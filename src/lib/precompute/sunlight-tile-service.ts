@@ -7,6 +7,7 @@ import {
   buildSharedPointEvaluationSources,
   disposeWebGpuBackend,
 } from "@/lib/sun/evaluation-context";
+import { buildLocalTerrainShadowEvaluator } from "@/lib/sun/terrain-shadow";
 /** Pre-computed grid metadata (indoor/outdoor + elevations). */
 interface TileGridMetadata {
   tileId: string;
@@ -893,6 +894,20 @@ export async function computeSunlightTileArtifact(params: {
       const elev = gm.elevations[rawPointIndex];
       if (elev !== null) pointsWithElevation += 1;
       const outdoorIndex = outdoorCursor;
+      // Build the local terrain ray-march evaluator inline (no async /
+      // buildPointEvaluationContext call needed — it only captures the
+      // point's LV95 coords + elevation + the already-loaded terrain
+      // tiles). Covers the "hill casts shadow on its own foot" gap that
+      // the batch backend's horizon mask misses (shortcut 2b.11).
+      const terrainEval =
+        elev !== null && sharedSources.terrainTiles && sharedSources.terrainTiles.length > 0
+          ? buildLocalTerrainShadowEvaluator({
+              pointLv95Easting: point.lv95Easting,
+              pointLv95Northing: point.lv95Northing,
+              pointElevationMeters: elev,
+              terrainTiles: sharedSources.terrainTiles,
+            })
+          : undefined;
       preparedOutdoorPoints[outdoorCursor++] = {
         lat: point.lat,
         lon: point.lon,
@@ -902,7 +917,7 @@ export async function computeSunlightTileArtifact(params: {
         horizonMask,
         buildingShadowEvaluator: undefined,
         vegetationShadowEvaluator: undefined,
-        terrainShadowEvaluator: undefined,
+        terrainShadowEvaluator: terrainEval,
       };
       point.insideBuilding = false;
       point.indoorBuildingId = null;
@@ -1401,7 +1416,16 @@ export async function computeSunlightTileArtifact(params: {
       // sunny computation + counts. The per-frame horizon angle
       // diagnostic is still filled via the precomputed per-unique-mask
       // cache (vectorized assignment).
+      // Phase E = GPU-assembled final masks (no per-point JS loop). But the
+      // GPU only handles horizon terrain + buildings + vegetation. If any
+      // prepared point has a CPU local terrain evaluator (shortcut 2b.11),
+      // we need the hot loop to run it and OR-combine into terrainMask.
+      // Disable Phase E in that case — falls through to the hot loop below.
+      const hasLocalTerrainEvaluator =
+        preparedOutdoorPoints.length > 0 &&
+        preparedOutdoorPoints[0].terrainShadowEvaluator !== undefined;
       const phaseE =
+        !hasLocalTerrainEvaluator &&
         preComputed.buildingsMask !== null &&
         preComputed.terrainMask !== null &&
         preComputed.vegetationMask !== null &&
