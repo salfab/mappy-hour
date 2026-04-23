@@ -61,6 +61,7 @@ export interface SharedPointEvaluationSources {
    * them. Saves ~400ms/tile of closure-allocation work for 62.5K grid points.
    */
   vegetationShadowHandledByBackend?: boolean;
+  terrainShadowHandledByBackend?: boolean;
 }
 
 export interface BuildPointEvaluationContextOptions {
@@ -690,6 +691,15 @@ export async function buildSharedPointEvaluationSources(
       .uploadVegetationRasters === "function" &&
     typeof (webgpuComputeBackend as { evaluateBatchFramesWithShadows?: unknown })
       .evaluateBatchFramesWithShadows === "function";
+  // Local terrain (DEM) ray-march is also handled by the GPU when the
+  // backend exposes `uploadTerrainRasters`. When true, skip the per-point
+  // CPU closure construction — the GPU OR's it into terrainBlockedWords.
+  const terrainShadowHandledByBackend =
+    webgpuComputeBackend != null &&
+    typeof (webgpuComputeBackend as { uploadTerrainRasters?: unknown })
+      .uploadTerrainRasters === "function" &&
+    typeof (webgpuComputeBackend as { evaluateBatchFramesWithShadows?: unknown })
+      .evaluateBatchFramesWithShadows === "function";
 
   return {
     horizonMask,
@@ -700,6 +710,7 @@ export async function buildSharedPointEvaluationSources(
     webgpuComputeBackend,
     zenithIndoorCheck,
     vegetationShadowHandledByBackend,
+    terrainShadowHandledByBackend,
   };
 }
 

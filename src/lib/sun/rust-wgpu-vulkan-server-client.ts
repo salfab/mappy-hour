@@ -391,6 +391,47 @@ export class RustWgpuVulkanShadowServer {
   }
 
   /**
+   * Upload the SwissALTI3D terrain rasters (LV95) so the shader can
+   * ray-march the local DEM — shortcut 2b.11 on GPU. Same layout as
+   * uploadVegetationRasters.
+   */
+  async uploadTerrainRasters(
+    id: number,
+    params: {
+      terrainMetaBin: string;
+      terrainDataBin: string;
+      terrainNodata: number;
+      terrainStepMeters: number;
+      terrainMaxDistanceMeters: number;
+      terrainAltitudeGateDeg: number;
+      originX: number;
+      originY: number;
+    },
+  ): Promise<{ tileCount: number; dataBytes: number; elapsedMs: number }> {
+    await this.writeJson({
+      id,
+      command: "upload_terrain_rasters",
+      terrainMetaBin: params.terrainMetaBin,
+      terrainDataBin: params.terrainDataBin,
+      terrainNodata: params.terrainNodata,
+      terrainStepMeters: params.terrainStepMeters,
+      terrainMaxDistanceMeters: params.terrainMaxDistanceMeters,
+      terrainAltitudeGateDeg: params.terrainAltitudeGateDeg,
+      originX: params.originX,
+      originY: params.originY,
+    });
+    const message = await this.nextJson(this.evaluationTimeoutMs);
+    if (message.type !== "uploaded_terrain_rasters") {
+      throw new Error(`Unexpected upload_terrain_rasters response: ${JSON.stringify(message)}`);
+    }
+    return {
+      tileCount: Number((message as { tileCount?: number }).tileCount ?? 0),
+      dataBytes: Number((message as { dataBytes?: number }).dataBytes ?? 0),
+      elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
+    };
+  }
+
+  /**
    * Replace the mesh (buildings geometry).
    * Recreates vertex buffer + raw_bounds. Render pipeline and
    * shadow-compute resources are kept.

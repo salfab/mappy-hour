@@ -899,7 +899,12 @@ export async function computeSunlightTileArtifact(params: {
       // point's LV95 coords + elevation + the already-loaded terrain
       // tiles). Covers the "hill casts shadow on its own foot" gap that
       // the batch backend's horizon mask misses (shortcut 2b.11).
+      //
+      // When the GPU backend exposes uploadTerrainRasters, the same
+      // ray-march runs on GPU and is OR'd into batchTerrainBlockedMask
+      // → skip the CPU closure construction (and the hot-loop call).
       const terrainEval =
+        !sharedSources.terrainShadowHandledByBackend &&
         elev !== null && sharedSources.terrainTiles && sharedSources.terrainTiles.length > 0
           ? buildLocalTerrainShadowEvaluator({
               pointLv95Easting: point.lv95Easting,
@@ -1140,6 +1145,16 @@ export async function computeSunlightTileArtifact(params: {
     originX: number;
     originY: number;
   } | null = null;
+  let terrainPayload: {
+    meta: Float32Array;
+    data: Float32Array;
+    nodata: number;
+    stepMeters: number;
+    maxDistanceMeters: number;
+    altitudeGateDeg: number;
+    originX: number;
+    originY: number;
+  } | null = null;
   // ── Horizon mask dedup (always, not only for GPU batch paths) ──────
   // Most points in a tile share the same HorizonMask reference thanks to
   // adaptive horizon sharing. Deduping here lets us (a) build the GPU
@@ -1239,6 +1254,48 @@ export async function computeSunlightTileArtifact(params: {
       };
     }
     phaseMs.evalSetupVegetation += performance.now() - setupVegetationT0;
+    // ── Local terrain DEM (SwissALTI3D) — same pack as vegetation ──────
+    // Shortcut 2b.11 on GPU. Shader ray-marches the terrain raster
+    // within 500m around each point, gated by altitudeDeg < 30°.
+    const terrainTiles = sharedSources.terrainTiles;
+    if (terrainTiles && terrainTiles.length > 0 && webgpuBackend) {
+      const origin = webgpuBackend.getOrigin();
+      const meta = new Float32Array(terrainTiles.length * 8);
+      const metaU32 = new Uint32Array(meta.buffer);
+      let totalFloats = 0;
+      for (const tile of terrainTiles) totalFloats += tile.width * tile.height;
+      const data = new Float32Array(totalFloats);
+      let offsetFloats = 0;
+      for (let i = 0; i < terrainTiles.length; i++) {
+        const t = terrainTiles[i];
+        const slot = i * 8;
+        meta[slot + 0] = t.minX;
+        meta[slot + 1] = t.minY;
+        meta[slot + 2] = t.maxX;
+        meta[slot + 3] = t.maxY;
+        metaU32[slot + 4] = t.width;
+        metaU32[slot + 5] = t.height;
+        metaU32[slot + 6] = offsetFloats;
+        meta[slot + 7] = t.nodata === null ? Number.NaN : t.nodata;
+        const n = t.width * t.height;
+        if (t.raster instanceof Float32Array) {
+          data.set(t.raster.subarray(0, n), offsetFloats);
+        } else {
+          for (let k = 0; k < n; k++) data[offsetFloats + k] = Number(t.raster[k]);
+        }
+        offsetFloats += n;
+      }
+      terrainPayload = {
+        meta,
+        data,
+        nodata: 0,
+        stepMeters: 5,
+        maxDistanceMeters: 500,
+        altitudeGateDeg: 30,
+        originX: origin.x,
+        originY: origin.y,
+      };
+    }
   }
 
   // ── Phase D: batch-evaluate all lit frames in ONE GPU submission ────
@@ -1332,6 +1389,7 @@ export async function computeSunlightTileArtifact(params: {
           options?: {
             horizon?: { masks: Float32Array; pointMaskIndices: Uint32Array };
             vegetation?: typeof vegetationPayload;
+            terrain?: typeof terrainPayload;
           },
         ) => Promise<Array<FrameMasks>>;
       }).evaluateBatchFramesWithShadows(
@@ -1341,6 +1399,7 @@ export async function computeSunlightTileArtifact(params: {
         {
           horizon: horizonPayload ?? undefined,
           vegetation: vegetationPayload ?? undefined,
+          terrain: terrainPayload ?? undefined,
         },
       );
       phaseMs.evalBatchDispatch += performance.now() - dispatchT0;
@@ -1501,7 +1560,7 @@ export async function computeSunlightTileArtifact(params: {
         continue;
       }
     } else if (useBatchPath && batchPointsF32) {
-      if (useBatchShadows && (horizonPayload || vegetationPayload)) {
+      if (useBatchShadows && (horizonPayload || vegetationPayload || terrainPayload)) {
         const out = await (webgpuBackend as {
           evaluateBatchWithShadows: (
             points: Float32Array,
@@ -1511,6 +1570,7 @@ export async function computeSunlightTileArtifact(params: {
             options?: {
               horizon?: { masks: Float32Array; pointMaskIndices: Uint32Array };
               vegetation?: typeof vegetationPayload;
+              terrain?: typeof terrainPayload;
             },
           ) => Promise<{
             buildingsMask: Uint32Array;
@@ -1525,6 +1585,7 @@ export async function computeSunlightTileArtifact(params: {
           {
             horizon: horizonPayload ?? undefined,
             vegetation: vegetationPayload ?? undefined,
+            terrain: terrainPayload ?? undefined,
           },
         );
         batchBuildingBlockedMask = out.buildingsMask;

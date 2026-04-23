@@ -98,6 +98,31 @@ function hashVegetationPayload(
   return `${meta.length / 8}t:${data.length}f:${hash.digest("hex")}`;
 }
 
+function hashTerrainPayload(
+  meta: Float32Array,
+  data: Float32Array,
+  nodata: number,
+  stepMeters: number,
+  maxDistanceMeters: number,
+  altitudeGateDeg: number,
+  originX: number,
+  originY: number,
+): string {
+  const hash = crypto.createHash("sha1");
+  hash.update(Buffer.from(meta.buffer, meta.byteOffset, meta.byteLength));
+  hash.update(Buffer.from(data.buffer, data.byteOffset, data.byteLength));
+  const params = new Float32Array([
+    nodata,
+    stepMeters,
+    maxDistanceMeters,
+    altitudeGateDeg,
+    originX,
+    originY,
+  ]);
+  hash.update(Buffer.from(params.buffer, params.byteOffset, params.byteLength));
+  return `${meta.length / 8}t:${data.length}f:${hash.digest("hex")}`;
+}
+
 export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   readonly name: string;
   // Mutable: reassigned on updateMesh when the focus zone (and therefore
@@ -130,6 +155,10 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   private serverVegetationHash: string | null = null;
   private vegetationMetaBinPath: string | null = null;
   private vegetationDataBinPath: string | null = null;
+  // Terrain (local DEM) upload state — same pattern as vegetation.
+  private serverTerrainHash: string | null = null;
+  private terrainMetaBinPath: string | null = null;
+  private terrainDataBinPath: string | null = null;
 
   private constructor(params: {
     originX: number;
@@ -270,6 +299,16 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         originX: number;
         originY: number;
       };
+      terrain?: {
+        meta: Float32Array;
+        data: Float32Array;
+        nodata: number;
+        stepMeters: number;
+        maxDistanceMeters: number;
+        altitudeGateDeg: number;
+        originX: number;
+        originY: number;
+      };
     },
   ): Promise<{
     buildingsMask: Uint32Array;
@@ -288,6 +327,9 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     }
     if (options?.vegetation) {
       await this.uploadVegetationRasters(options.vegetation);
+    }
+    if (options?.terrain) {
+      await this.uploadTerrainRasters(options.terrain);
     }
     return this.runEvaluate(pointCount, azimuthDeg, altitudeDeg);
   }
@@ -313,6 +355,16 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         stepMeters: number;
         maxDistanceMeters: number;
         minClearance: number;
+        originX: number;
+        originY: number;
+      };
+      terrain?: {
+        meta: Float32Array;
+        data: Float32Array;
+        nodata: number;
+        stepMeters: number;
+        maxDistanceMeters: number;
+        altitudeGateDeg: number;
         originX: number;
         originY: number;
       };
@@ -349,6 +401,9 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     }
     if (options?.vegetation) {
       await this.uploadVegetationRasters(options.vegetation);
+    }
+    if (options?.terrain) {
+      await this.uploadTerrainRasters(options.terrain);
     }
     this.evaluationId += 1;
     const azimuthsDeg = frames.map((f) => f.azimuthDeg);
@@ -582,6 +637,83 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     this.vegetationMetaBinPath = metaPath;
     this.vegetationDataBinPath = dataPath;
     this.serverVegetationHash = hash;
+    if (prevMeta) await this.deleteRuntimeFile(prevMeta);
+    if (prevData) await this.deleteRuntimeFile(prevData);
+  }
+
+  /**
+   * Upload local DEM terrain rasters to the Rust server. Memoized by
+   * hash. After this call, evaluate_batch will include the terrain
+   * ray-march in terrainBlockedWords (OR'd with the horizon-mask result).
+   */
+  async uploadTerrainRasters(params: {
+    meta: Float32Array;
+    data: Float32Array;
+    nodata: number;
+    stepMeters: number;
+    maxDistanceMeters: number;
+    altitudeGateDeg: number;
+    originX: number;
+    originY: number;
+  }): Promise<void> {
+    if (params.meta.length === 0 || params.data.length === 0) {
+      throw new Error("uploadTerrainRasters requires non-empty meta and data.");
+    }
+    if (params.meta.length % 8 !== 0) {
+      throw new Error(
+        `uploadTerrainRasters: meta length ${params.meta.length} is not a multiple of 8.`,
+      );
+    }
+    const hash = hashTerrainPayload(
+      params.meta,
+      params.data,
+      params.nodata,
+      params.stepMeters,
+      params.maxDistanceMeters,
+      params.altitudeGateDeg,
+      params.originX,
+      params.originY,
+    );
+    if (this.server && this.serverTerrainHash === hash) {
+      return;
+    }
+    if (!this.server) {
+      throw new Error(
+        "uploadTerrainRasters called before the Rust server is running. Call evaluateBatch first to spin it up.",
+      );
+    }
+    const outputDir = this.outputDir;
+    await fs.mkdir(outputDir, { recursive: true });
+    const runId = `${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
+    const metaPath = path.join(outputDir, `${runId}.terrain-meta.bin`);
+    const dataPath = path.join(outputDir, `${runId}.terrain-data.bin`);
+    await fs.writeFile(
+      metaPath,
+      Buffer.from(params.meta.buffer, params.meta.byteOffset, params.meta.byteLength),
+    );
+    await writeFloat32Bin(dataPath, params.data);
+    try {
+      this.evaluationId += 1;
+      await this.server.uploadTerrainRasters(this.evaluationId, {
+        terrainMetaBin: metaPath,
+        terrainDataBin: dataPath,
+        terrainNodata: params.nodata,
+        terrainStepMeters: params.stepMeters,
+        terrainMaxDistanceMeters: params.maxDistanceMeters,
+        terrainAltitudeGateDeg: params.altitudeGateDeg,
+        originX: params.originX,
+        originY: params.originY,
+      });
+    } catch (error) {
+      await this.deleteRuntimeFile(metaPath);
+      await this.deleteRuntimeFile(dataPath);
+      throw error;
+    }
+    const prevMeta = this.terrainMetaBinPath;
+    const prevData = this.terrainDataBinPath;
+    this.terrainMetaBinPath = metaPath;
+    this.terrainDataBinPath = dataPath;
+    this.serverTerrainHash = hash;
     if (prevMeta) await this.deleteRuntimeFile(prevMeta);
     if (prevData) await this.deleteRuntimeFile(prevData);
   }
