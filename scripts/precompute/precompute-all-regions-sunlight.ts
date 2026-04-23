@@ -20,7 +20,12 @@ const REGION_SCRIPT = path.resolve(
   "scripts/precompute/precompute-region-sunlight.ts",
 );
 
-const REGION_PRIORITY: string[] = ["lausanne", "morges", "nyon", "geneve"];
+const GRID_METADATA_SCRIPT = path.resolve(
+  process.cwd(),
+  "scripts/precompute/precompute-tile-grid-metadata.ts",
+);
+
+const REGION_PRIORITY: string[] = ["lausanne", "morges", "nyon", "geneve", "vevey"];
 type ExperimentalBuildingsShadowMode = "gpu-raster" | "rust-wgpu-vulkan";
 
 function readRegionsFromSelectionFile(filePath: string): string[] {
@@ -61,6 +66,57 @@ function parseBuildingsShadowModeArg(argv: string[]): ExperimentalBuildingsShado
   return null;
 }
 
+function parseGridStepMetersArg(argv: string[]): number {
+  for (const arg of argv) {
+    if (arg.startsWith("--grid-step-meters=")) {
+      const parsed = Number(arg.slice("--grid-step-meters=".length));
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+  }
+  return 1;
+}
+
+/**
+ * Preflight : garantit que la grid metadata est présente pour TOUTES les tuiles
+ * de TOUTES les régions du fichier de sélection, AVANT de commencer quelque
+ * précalcul que ce soit. Le script cible est idempotent : il saute les tuiles
+ * déjà cachées et ne régénère que les manquantes.
+ */
+function ensureGridMetadataForAllRegions(
+  regions: string[],
+  selectionFile: string,
+  gridStepMeters: number,
+  buildingsShadowMode: ExperimentalBuildingsShadowMode,
+): void {
+  console.log(
+    `\n[precompute-all] ▶ preflight grid-metadata : ${regions.length} région(s), grid=${gridStepMeters}m, fichier=${selectionFile}`,
+  );
+  const preflightStart = Date.now();
+
+  for (const region of regions) {
+    const args = [
+      GRID_METADATA_SCRIPT,
+      `--region=${region}`,
+      `--tile-selection-file=${selectionFile}`,
+      `--grid-step-meters=${gridStepMeters}`,
+    ];
+    console.log(`[precompute-all]   · grid-metadata région=${region}`);
+    const result = spawnSync("npx", ["tsx", ...args], {
+      stdio: "inherit",
+      shell: process.platform === "win32",
+      env: { ...process.env, MAPPY_BUILDINGS_SHADOW_MODE: buildingsShadowMode },
+    });
+    if (result.status !== 0) {
+      throw new Error(
+        `grid-metadata preflight failed for région=${region} (exit ${result.status ?? "signal"}). Aucune région n'a été précalculée.`,
+      );
+    }
+  }
+
+  const elapsed = ((Date.now() - preflightStart) / 1000).toFixed(1);
+  console.log(`[precompute-all] ✓ preflight grid-metadata terminé en ${elapsed}s\n`);
+}
+
 function main() {
   // pnpm passes a literal "--" separator when using `pnpm script -- args`, strip it
   const passthrough = process.argv
@@ -89,6 +145,16 @@ function main() {
     console.warn(
       "[precompute-all] EXPERIMENTAL cachePolicy=shared-contract : les caches gpu-raster compatibles peuvent être réutilisés/skippés.",
     );
+  }
+
+  const gridStepMeters = parseGridStepMetersArg(passthrough);
+
+  try {
+    ensureGridMetadataForAllRegions(regions, selectionFile, gridStepMeters, buildingsShadowMode);
+  } catch (err) {
+    console.error(`[precompute-all] ✗ ${(err as Error).message}`);
+    process.exitCode = 1;
+    return;
   }
 
   let anyFailed = false;
