@@ -282,7 +282,25 @@ async function getOrCreateRustWgpuVulkanBackend(
   // through to the "create from scratch" path below, respawning the Rust
   // server and reloading the full mesh on every single call (observed: 194
   // recreations for one /api/places/windows request).
+  //
+  // IMPORTANT: `newFocusKey` is rounded to a 1km grid — it is SAME for all
+  // 16 tiles inside one focus zone. But the 250m tile bounds passed as
+  // `focusBounds` DIFFER per tile. Without this refresh, the server kept
+  // rendering the shadow map with the FIRST tile's frustum; the rest of
+  // the 1km-focus tiles got points projected outside NDC → bBlk=0%. Same
+  // class of bug as the gpu-raster race fixed in commit 4baa755 — fixed
+  // here for Vulkan by always calling setFrustumFocus + letting
+  // ensureServer() reload the server focus on next evaluateBatch.
   if (rustWgpuVulkanBackendCache && newFocusKey === rustWgpuVulkanBackendFocusKey) {
+    if (focusBounds && "setFrustumFocus" in rustWgpuVulkanBackendCache) {
+      const maxH = obstacles.reduce((max, o) => Math.max(max, o.height), 0);
+      (rustWgpuVulkanBackendCache as {
+        setFrustumFocus: (
+          bounds: { minX: number; minY: number; maxX: number; maxY: number },
+          maxH: number,
+        ) => void;
+      }).setFrustumFocus(focusBounds, maxH);
+    }
     return rustWgpuVulkanBackendCache;
   }
 
