@@ -835,9 +835,13 @@ export async function buildPointEvaluationContext(
               };
             };
           }
-          if (useBatchBuildingBackend) {
-            return undefined;
-          }
+          // Batch backends (Vulkan / WebGPU compute) are preferred by the
+          // precompute hot loop via `evaluateBatch*`; the per-point evaluator
+          // below is ignored there (see sunlight-tile-service.ts useBatchMask
+          // branch). But live endpoints like /api/sunlight/instant/stream call
+          // evaluateInstantSunlight point-by-point and need this evaluator to
+          // be defined — returning undefined here made Vulkan-mode UI show 0%
+          // building shadows. Fall back to the CPU "detailed" evaluator.
 
           // ── CPU evaluator (existing logic) ───────────────────────
           const detailedVerifier =
