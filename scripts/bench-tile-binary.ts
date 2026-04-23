@@ -21,10 +21,46 @@ import {
   getFrameMask,
   MASK_KIND_SUN,
 } from "../src/lib/precompute/sunlight-cache-binary";
-import type { PrecomputedSunlightTileArtifact } from "../src/lib/precompute/sunlight-cache";
+import type {
+  PrecomputedSunlightFrame,
+  PrecomputedSunlightTileArtifact,
+} from "../src/lib/precompute/sunlight-cache";
 
 const gunzip = promisify(gunzipCb);
 const gzip = promisify(gzipCb);
+
+type LegacyJsonFrame = Omit<
+  PrecomputedSunlightFrame,
+  | "sunMask"
+  | "sunMaskNoVegetation"
+  | "terrainBlockedMask"
+  | "buildingsBlockedMask"
+  | "vegetationBlockedMask"
+> & {
+  sunMaskBase64: string;
+  sunMaskNoVegetationBase64: string;
+  terrainBlockedMaskBase64: string;
+  buildingsBlockedMaskBase64: string;
+  vegetationBlockedMaskBase64: string;
+};
+
+type LegacyJsonArtifact = Omit<PrecomputedSunlightTileArtifact, "frames"> & {
+  frames: LegacyJsonFrame[];
+};
+
+function decodeLegacyJsonArtifact(legacy: LegacyJsonArtifact): PrecomputedSunlightTileArtifact {
+  return {
+    ...legacy,
+    frames: legacy.frames.map((f) => ({
+      ...f,
+      sunMask: new Uint8Array(Buffer.from(f.sunMaskBase64, "base64")),
+      sunMaskNoVegetation: new Uint8Array(Buffer.from(f.sunMaskNoVegetationBase64, "base64")),
+      terrainBlockedMask: new Uint8Array(Buffer.from(f.terrainBlockedMaskBase64, "base64")),
+      buildingsBlockedMask: new Uint8Array(Buffer.from(f.buildingsBlockedMaskBase64, "base64")),
+      vegetationBlockedMask: new Uint8Array(Buffer.from(f.vegetationBlockedMaskBase64, "base64")),
+    })),
+  };
+}
 
 async function main() {
   const inputJsonGz = process.argv[2];
@@ -37,7 +73,9 @@ async function main() {
   console.log(`Loading ${inputJsonGz} …`);
   const jsonGzBuf = await fs.readFile(inputJsonGz);
   const jsonBuf = await gunzip(jsonGzBuf);
-  const artifact = JSON.parse(jsonBuf.toString("utf8")) as PrecomputedSunlightTileArtifact;
+  const legacy = JSON.parse(jsonBuf.toString("utf8")) as LegacyJsonArtifact;
+  const artifact = decodeLegacyJsonArtifact(legacy);
+  const f0Legacy = legacy.frames[0];
   console.log(
     `  pointCount=${artifact.points.length} frameCount=${artifact.frames.length}`,
   );
@@ -69,9 +107,8 @@ async function main() {
   }
 
   // Spot check first sun mask
-  if (artifact.frames.length > 0) {
-    const f0 = artifact.frames[0];
-    const expected = Buffer.from(f0.sunMaskBase64, "base64");
+  if (artifact.frames.length > 0 && f0Legacy) {
+    const expected = Buffer.from(f0Legacy.sunMaskBase64, "base64");
     const got = getFrameMask(decoded, 0, MASK_KIND_SUN);
     let match = expected.length === got.length;
     if (match) {
@@ -94,7 +131,7 @@ async function main() {
     const t0 = performance.now();
     const gz = await fs.readFile(inputJsonGz);
     const raw = await gunzip(gz);
-    const _art = JSON.parse(raw.toString("utf8")) as PrecomputedSunlightTileArtifact;
+    const _art = JSON.parse(raw.toString("utf8")) as LegacyJsonArtifact;
     jsonTimes.push(performance.now() - t0);
   }
   const jsonAvg = jsonTimes.reduce((a, b) => a + b, 0) / jsonTimes.length;

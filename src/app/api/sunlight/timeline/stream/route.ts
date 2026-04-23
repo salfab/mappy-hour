@@ -12,7 +12,6 @@ import {
   lookupAtlasByAngle,
 } from "@/lib/precompute/sunlight-tile-service";
 import {
-  decodeBase64Bytes,
   isMaskBitSet,
   pointInBbox,
   setMaskBit,
@@ -226,7 +225,10 @@ export async function GET(request: Request) {
           while (!result.done) {
             if (streamAborted) return;
             const tileT0 = performance.now();
-            const { tileId, tileIndex, totalTiles, artifact, binary, atlas, layer } = result.value;
+            const { tileId, tileIndex, totalTiles, artifact, binary, atlases, layer } = result.value;
+            // Meta (points, model, warnings) is identical across all resolutions
+            // of a tile's atlas, so the first one is a valid spokesperson.
+            const atlas = atlases?.[0];
 
             // For atlas: enumerate time samples from query params (date-agnostic format).
             const atlasUtcSamples = atlas
@@ -417,7 +419,7 @@ export async function GET(request: Request) {
                 if (alt > 0) {
                   let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
                   if (az < 0) az += 360;
-                  const bucket = lookupAtlasByAngle(atlas, az, alt);
+                  const bucket = lookupAtlasByAngle(atlases!, az, alt);
                   if (bucket) {
                     const { sunMask, sunNoVegMask } = bucket;
                     for (let i = 0; i < gridCellCount; i++) {
@@ -469,7 +471,7 @@ export async function GET(request: Request) {
               }
             } else {
               for (const frame of artifact!.frames) {
-                const srcMask = decodeBase64Bytes(frame.sunMaskBase64);
+                const srcMask = frame.sunMask;
                 const dstMask = new Uint8Array(Math.ceil(gridCellCount / 8));
                 let sunnyCount = 0;
                 for (let i = 0; i < gridCellCount; i++) {
@@ -479,7 +481,7 @@ export async function GET(request: Request) {
                     sunnyCount += 1;
                   }
                 }
-                const srcNoVeg = decodeBase64Bytes(frame.sunMaskNoVegetationBase64);
+                const srcNoVeg = frame.sunMaskNoVegetation;
                 const dstNoVeg = new Uint8Array(Math.ceil(gridCellCount / 8));
                 let sunnyNoVeg = 0;
                 for (let i = 0; i < gridCellCount; i++) {

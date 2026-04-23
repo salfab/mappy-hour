@@ -299,6 +299,12 @@ export interface AtlasComputeParams {
   onProgress?: (progress: SunlightTileComputeProgress) => void;
   signal?: AbortSignal;
   gridMetadata?: TileGridMetadata | null;
+  /**
+   * When `false`, bypasses both the bucket-coverage skip cache and the
+   * disk-level bucket match: every target bucket is recomputed and overwrites
+   * the existing entry via merge (new wins). Default: true.
+   */
+  skipExisting?: boolean;
 }
 
 /**
@@ -348,6 +354,7 @@ export async function computeAndMergeAtlasForTile(
   params: AtlasComputeParams,
 ): Promise<AtlasComputeResult> {
   const resolutionDeg = params.resolutionDeg ?? DEFAULT_ATLAS_RESOLUTION_DEG;
+  const skipExisting = params.skipExisting ?? true;
   const centerE = (params.tile.minEasting + params.tile.maxEasting) / 2;
   const centerN = (params.tile.minNorthing + params.tile.maxNorthing) / 2;
   const tileCenter = lv95ToWgs84(centerE, centerN);
@@ -361,7 +368,7 @@ export async function computeAndMergeAtlasForTile(
 
   // Fast skip-check: if we have a cached bucket-key set for this tile, use it
   // to decide skip WITHOUT loading the atlas from disk. Only load when we
-  // actually need to merge new buckets.
+  // actually need to merge new buckets. Bypassed when skipExisting=false.
   const skipKey = atlasSkipCacheKey({
     region: params.region,
     modelVersionHash: params.modelVersionHash,
@@ -369,19 +376,25 @@ export async function computeAndMergeAtlasForTile(
     tileId: params.tile.tileId,
     resolutionDeg,
   });
-  const cachedSkipInfo = atlasSkipCache.get(skipKey);
-  if (cachedSkipInfo) {
-    const allCovered = targetBuckets.every((b) =>
-      cachedSkipInfo.keys.has(packBucketKey(b.azBucket, b.altBucket)),
-    );
-    if (allCovered) {
-      return {
-        state: "skipped",
-        pointCountTotal: cachedSkipInfo.pointCount,
-        pointCountOutdoor: cachedSkipInfo.outdoorPointCount,
-        bucketCountTotal: cachedSkipInfo.bucketCount,
-      };
+  if (skipExisting) {
+    const cachedSkipInfo = atlasSkipCache.get(skipKey);
+    if (cachedSkipInfo) {
+      const allCovered = targetBuckets.every((b) =>
+        cachedSkipInfo.keys.has(packBucketKey(b.azBucket, b.altBucket)),
+      );
+      if (allCovered) {
+        return {
+          state: "skipped",
+          pointCountTotal: cachedSkipInfo.pointCount,
+          pointCountOutdoor: cachedSkipInfo.outdoorPointCount,
+          bucketCountTotal: cachedSkipInfo.bucketCount,
+        };
+      }
     }
+  } else {
+    // Force recompute: drop any stale in-memory coverage for this tile so the
+    // post-merge refresh starts from the newly-written atlas.
+    atlasSkipCache.delete(skipKey);
   }
 
   const existingAtlas = await loadPrecomputedTileAtlas({
@@ -392,7 +405,12 @@ export async function computeAndMergeAtlasForTile(
     resolutionDeg,
   });
 
-  const existingKeys = existingAtlas ? getAtlasBucketKeySet(existingAtlas) : new Set<number>();
+  // When skipExisting=false, treat the on-disk atlas as empty for skip/missing
+  // purposes: every target bucket is recomputed. The merge still runs with
+  // existingAtlas as base so untouched buckets (outside the date window)
+  // survive, and new buckets overwrite the old via merge priority.
+  const existingKeys =
+    skipExisting && existingAtlas ? getAtlasBucketKeySet(existingAtlas) : new Set<number>();
   const missing = targetBuckets.filter(
     (b) => !existingKeys.has(packBucketKey(b.azBucket, b.altBucket)),
   );
@@ -490,11 +508,11 @@ export async function computeAndMergeAtlasForTile(
     newBuckets.push({
       azBucket: bucket.azBucket,
       altBucket: bucket.altBucket,
-      sunMask: Buffer.from(frame.sunMaskBase64, "base64"),
-      sunNoVegMask: Buffer.from(frame.sunMaskNoVegetationBase64, "base64"),
-      terrainMask: Buffer.from(frame.terrainBlockedMaskBase64, "base64"),
-      buildingsMask: Buffer.from(frame.buildingsBlockedMaskBase64, "base64"),
-      vegetationMask: Buffer.from(frame.vegetationBlockedMaskBase64, "base64"),
+      sunMask: frame.sunMask,
+      sunNoVegMask: frame.sunMaskNoVegetation,
+      terrainMask: frame.terrainBlockedMask,
+      buildingsMask: frame.buildingsBlockedMask,
+      vegetationMask: frame.vegetationBlockedMask,
     });
   }
 

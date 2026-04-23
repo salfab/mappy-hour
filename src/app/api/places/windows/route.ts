@@ -17,7 +17,7 @@ import {
   type BinaryTileArtifact,
 } from "@/lib/precompute/sunlight-cache-binary";
 import {
-  loadPrecomputedTileAtlasWithFallback,
+  loadPrecomputedTileAtlasesInPrecisionOrder,
   lookupAtlasByAngle,
   type BinaryTileAtlas,
 } from "@/lib/precompute/sunlight-cache-atlas";
@@ -545,7 +545,7 @@ export async function POST(request: Request) {
     // Cache stores the Promise, not the resolved value, so concurrent
     // lookups for the same tile share one disk+decode pass.
     const tilePointCache = new Map<string, Promise<BinaryTileArtifact | null>>();
-    const tileAtlasCache = new Map<string, Promise<BinaryTileAtlas | null>>();
+    const tileAtlasCache = new Map<string, Promise<BinaryTileAtlas[]>>();
     const regionInfoCache = new Map<
       PrecomputedRegionName,
       { modelVersionHash: string; tw: { startLocalTime: string; endLocalTime: string } } | null
@@ -584,7 +584,36 @@ export async function POST(request: Request) {
     };
     type TileOrAtlas =
       | { kind: "tile"; tile: BinaryTileArtifact; region: PrecomputedRegionName; ix: number; iy: number }
-      | { kind: "atlas"; atlas: BinaryTileAtlas; region: PrecomputedRegionName; ix: number; iy: number };
+      | { kind: "atlas"; atlases: BinaryTileAtlas[]; region: PrecomputedRegionName; ix: number; iy: number };
+
+    // Hoist UTC samples once — independent of tile, reused for every strict
+    // coverage check below.
+    const coverageUtcSamples = createUtcSamples(
+      parsed.data.date,
+      parsed.data.timezone,
+      parsed.data.sampleEveryMinutes,
+      parsed.data.startLocalTime,
+      parsed.data.endLocalTime,
+    );
+
+    const atlasCoversAllFrames = (atlases: BinaryTileAtlas[]): boolean => {
+      if (atlases.length === 0 || coverageUtcSamples.length === 0) return false;
+      const meta = atlases[0].meta;
+      const tileCenterE = (meta.tile.minEasting + meta.tile.maxEasting) / 2;
+      const tileCenterN = (meta.tile.minNorthing + meta.tile.maxNorthing) / 2;
+      const { lat: tileLat, lon: tileLon } = lv95ToWgs84(tileCenterE, tileCenterN);
+      const RAD_TO_DEG = 180 / Math.PI;
+      for (const utcDate of coverageUtcSamples) {
+        const pos = SunCalc.getPosition(utcDate, tileLat, tileLon);
+        const alt = pos.altitude * RAD_TO_DEG;
+        if (alt <= 0) continue;
+        let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
+        if (az < 0) az += 360;
+        const bucket = lookupAtlasByAngle(atlases, az, alt);
+        if (!bucket) return false;
+      }
+      return true;
+    };
 
     const loadTileForPoint = async (
       lat: number,
@@ -607,19 +636,28 @@ export async function POST(request: Request) {
       const tileId = `e${tileMinE}_n${tileMinN}_s${tileSizeMeters}`;
 
       // Try atlas first (ADR-0013): year-independent, angle-keyed.
+      // Load every resolution available so lookup can cascade r0.5 → r0.75 → r1
+      // — a partial r0.5 alone must not mask a complete r0.75 corpus.
       const atlasKey = `atlas:${region}:${info.modelVersionHash}:${tileId}`;
-      let atlasPromise = tileAtlasCache.get(atlasKey);
-      if (!atlasPromise) {
-        atlasPromise = loadPrecomputedTileAtlasWithFallback({
+      let atlasesPromise = tileAtlasCache.get(atlasKey);
+      if (!atlasesPromise) {
+        atlasesPromise = loadPrecomputedTileAtlasesInPrecisionOrder({
           region,
           modelVersionHash: info.modelVersionHash,
           gridStepMeters: CACHE_GRID_STEP,
           tileId,
         });
-        tileAtlasCache.set(atlasKey, atlasPromise);
+        tileAtlasCache.set(atlasKey, atlasesPromise);
       }
-      const atlas = await atlasPromise;
-      if (atlas) return { kind: "atlas", atlas, region, ix, iy };
+      const atlases = await atlasesPromise;
+      // Strict coverage: the atlas is only usable if EVERY above-horizon frame
+      // in the client's requested window can be resolved to a bucket across
+      // the cascading resolutions. A partial atlas (e.g. r0.5 populated only
+      // for bench dates) must NOT silently return "0 shadow" — treat it as a
+      // cache miss so the caller falls through to the binary tile or the GPU.
+      if (atlases.length > 0 && atlasCoversAllFrames(atlases)) {
+        return { kind: "atlas", atlases, region, ix, iy };
+      }
 
       // Fallback: date-keyed binary tile.
       const cacheKey = `${region}:${info.modelVersionHash}:${parsed.data.date}:${info.tw.startLocalTime}-${info.tw.endLocalTime}:${tileId}`;
@@ -729,7 +767,7 @@ export async function POST(request: Request) {
       for (const cand of candidates) {
         const hit = await loadTileForPoint(cand.lat, cand.lon);
         if (!hit) return null; // any candidate misses tile/atlas → GPU fallback
-        const points = hit.kind === "atlas" ? hit.atlas : hit.tile;
+        const points = hit.kind === "atlas" ? hit.atlases[0] : hit.tile;
         const pointIdx = lookupPointInTile(points, hit.ix, hit.iy);
         if (pointIdx === null) return null;
         const flags = points.pointFlags[pointIdx];
@@ -808,10 +846,12 @@ export async function POST(request: Request) {
             const bitMask = 1 << (outdoorIndex & 7);
             const tileSamples: Array<{ isSunny: boolean; localTime: string; utcTime: string }> = [];
             if (hit.kind === "atlas") {
-              // Atlas path: lookup by (az, alt) bucket per time sample.
-              const { atlas } = hit;
-              const tileCenterLv95E = (atlas.meta.tile.minEasting + atlas.meta.tile.maxEasting) / 2;
-              const tileCenterLv95N = (atlas.meta.tile.minNorthing + atlas.meta.tile.maxNorthing) / 2;
+              // Atlas path: lookup by (az, alt) bucket per time sample, cascading
+              // through available resolutions (r0.5 → r0.75 → r1).
+              const { atlases } = hit;
+              const meta = atlases[0].meta;
+              const tileCenterLv95E = (meta.tile.minEasting + meta.tile.maxEasting) / 2;
+              const tileCenterLv95N = (meta.tile.minNorthing + meta.tile.maxNorthing) / 2;
               const { lat: tileLat, lon: tileLon } = lv95ToWgs84(tileCenterLv95E, tileCenterLv95N);
               const RAD_TO_DEG = 180 / Math.PI;
               const utcSamples = createUtcSamples(
@@ -828,7 +868,7 @@ export async function POST(request: Request) {
                 if (alt > 0) {
                   let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
                   if (az < 0) az += 360;
-                  const bucket = lookupAtlasByAngle(atlas, az, alt);
+                  const bucket = lookupAtlasByAngle(atlases, az, alt);
                   if (bucket) {
                     const mask = parsed.data.ignoreVegetation ? bucket.sunNoVegMask : bucket.sunMask;
                     isSunny = (mask[byteIdx] & bitMask) !== 0;
@@ -867,7 +907,7 @@ export async function POST(request: Request) {
             timings.tileHits += 1;
             continue;
           }
-          const elev = (hit.kind === "atlas" ? hit.atlas.meta : hit.tile.meta).pointElevationMeters?.[pointIdx] ?? null;
+          const elev = (hit.kind === "atlas" ? hit.atlases[0].meta : hit.tile.meta).pointElevationMeters?.[pointIdx] ?? null;
           placesWithWindows.push({
             id: place.id,
             name: place.name,

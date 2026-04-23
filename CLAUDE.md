@@ -23,3 +23,20 @@ Tout raccourci doit avoir un script reproductible dans `scripts/diag/bench-*`. L
 
 ## ADRs
 `docs/architecture/adr-NNNN-*.md`. Numérotation continue. Statut : Proposé / Accepté / Reverté.
+
+## Correction du pipeline de précompute — OBLIGATOIRE
+
+Dès qu'une modif touche la logique de **régénération / écriture / lecture d'une tuile atlas** (backend de shadow, merge de buckets, encode/decode binaire, ordre des masques, indexation outdoor, shader, pipeline d'évaluation), il faut **valider la cohérence du résultat** avant de considérer la tâche terminée. Historique : on a dérivé plusieurs fois en optimisant les perfs sans test comparatif, et la corruption n'est devenue visible qu'après coup.
+
+Deux niveaux de test, à utiliser selon le scope de la modif :
+
+1. **Test unitaire avec tuile de référence précalculée** (rapide, déterministe, doit tourner en CI) :
+   - `src/lib/precompute/sunlight-cache-atlas.test.ts` couvre déjà le merge (fresh write + overwrite + round-trip encode/decode).
+   - Si la modif change le format binaire ou la sémantique d'un mask, ajouter/mettre à jour un test unitaire avec vecteurs d'entrée/sortie fixés.
+
+2. **Test de cohérence vs CPU raytracing** (lent, empirique, à lancer manuellement après régénération) :
+   - `npx tsx scripts/diag/check-atlas-vs-cpu-multi.ts` compare l'atlas sur disque au golden CPU `evaluateInstantSunlight` sur plusieurs tuiles × dates.
+   - Seuil : `mism%` attendu ≤ 2% (gap intrinsèque Vulkan-vs-CPU mesuré). Au-dessus = régression.
+   - `scripts/diag/check-vulkan-vs-gpuraster.ts` pour valider le backend en isolation (shader + Phase E + full pipeline).
+
+**Règle** : toute PR qui touche ces fichiers doit mentionner dans la description quel test de cohérence a été exécuté et le résultat obtenu. Pas de merge sans ce contrôle.

@@ -16,10 +16,48 @@ import { performance } from "node:perf_hooks";
 import {
   encodeTileArtifactToBinary,
 } from "../src/lib/precompute/sunlight-cache-binary";
-import type { PrecomputedSunlightTileArtifact } from "../src/lib/precompute/sunlight-cache";
+import type {
+  PrecomputedSunlightFrame,
+  PrecomputedSunlightTileArtifact,
+} from "../src/lib/precompute/sunlight-cache";
 
 const gunzip = promisify(gunzipCb);
 const gzip = promisify(gzipCb);
+
+// On-disk legacy JSON has base64-encoded mask fields. The in-memory type now
+// uses Uint8Array masks, so we decode on load to obtain a valid artifact.
+type LegacyJsonFrame = Omit<
+  PrecomputedSunlightFrame,
+  | "sunMask"
+  | "sunMaskNoVegetation"
+  | "terrainBlockedMask"
+  | "buildingsBlockedMask"
+  | "vegetationBlockedMask"
+> & {
+  sunMaskBase64: string;
+  sunMaskNoVegetationBase64: string;
+  terrainBlockedMaskBase64: string;
+  buildingsBlockedMaskBase64: string;
+  vegetationBlockedMaskBase64: string;
+};
+
+type LegacyJsonArtifact = Omit<PrecomputedSunlightTileArtifact, "frames"> & {
+  frames: LegacyJsonFrame[];
+};
+
+function decodeLegacyJsonArtifact(legacy: LegacyJsonArtifact): PrecomputedSunlightTileArtifact {
+  return {
+    ...legacy,
+    frames: legacy.frames.map((f) => ({
+      ...f,
+      sunMask: new Uint8Array(Buffer.from(f.sunMaskBase64, "base64")),
+      sunMaskNoVegetation: new Uint8Array(Buffer.from(f.sunMaskNoVegetationBase64, "base64")),
+      terrainBlockedMask: new Uint8Array(Buffer.from(f.terrainBlockedMaskBase64, "base64")),
+      buildingsBlockedMask: new Uint8Array(Buffer.from(f.buildingsBlockedMaskBase64, "base64")),
+      vegetationBlockedMask: new Uint8Array(Buffer.from(f.vegetationBlockedMaskBase64, "base64")),
+    })),
+  };
+}
 
 async function migrateOne(jsonGzPath: string): Promise<"skipped" | "converted" | "failed"> {
   const binGzPath = jsonGzPath.replace(/\.json\.gz$/, ".tile.bin.gz");
@@ -30,7 +68,8 @@ async function migrateOne(jsonGzPath: string): Promise<"skipped" | "converted" |
   try {
     const jsonGz = await fs.readFile(jsonGzPath);
     const jsonBuf = await gunzip(jsonGz);
-    const artifact = JSON.parse(jsonBuf.toString("utf8")) as PrecomputedSunlightTileArtifact;
+    const legacy = JSON.parse(jsonBuf.toString("utf8")) as LegacyJsonArtifact;
+    const artifact = decodeLegacyJsonArtifact(legacy);
     const bin = encodeTileArtifactToBinary(artifact);
     const binGz = (await gzip(bin)) as Buffer;
     // Write atomically: write to .tmp then rename so a crash mid-write doesn't

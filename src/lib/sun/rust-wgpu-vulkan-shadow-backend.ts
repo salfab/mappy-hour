@@ -682,6 +682,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       maxX: this.sceneBounds.maxX,
       maxY: this.sceneBounds.maxY,
     };
+    const serverStartT0 = performance.now();
     const started = await RustWgpuVulkanShadowServer.start({
       meshBinPath: this.meshBinPath,
       pointsBinPath,
@@ -702,6 +703,10 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       await this.deleteRuntimeFile(pointsBinPath);
       throw new Error(`Rust/wgpu Vulkan ready point count mismatch: server=${started.ready.pointCount}, expected=${pointCount}.`);
     }
+    const serverStartMs = performance.now() - serverStartT0;
+    console.log(
+      `[rust-wgpu-vulkan] Native server started in ${serverStartMs.toFixed(0)}ms (pointCount=${pointCount}, triangles=${this.triangleCount})`,
+    );
     this.server = started.server;
     this.serverPointCount = pointCount;
     this.serverPointsHash = pointsHash;

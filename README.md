@@ -12,13 +12,13 @@ Application Next.js pour calculer l'ensoleillement d'une zone urbaine avec un mo
 - Ingestion automatisée d'un DEM transfrontalier (Copernicus DEM 30 m) pour l'horizon lointain
 - Ingestion automatisée des lieux OSM Lausanne/Nyon (parcs + terrasses candidates)
 - Prétraitement du DEM transfrontalier -> masque d'horizon réel (`copernicus-dem30-raycast-v1`)
-- Prétraitement des bâtiments DXF -> index d'obstacles footprint/prism (`dxf-footprint-prism-v1`)
+- Prétraitement des bâtiments DXF -> index d'obstacles (empreintes + meshes polyface, `dxf-footprint-prism-v1`)
 - API `POST /api/sunlight/point` pour un calcul d'ensoleillement journalier à un point
 - API `POST /api/sunlight/area` pour calculer une grille soleil/ombre sur bbox
 - API `GET /api/places` + `POST /api/places/windows` pour les fenêtres d'ensoleillement des lieux
 - Endpoint `GET /api/datasets` pour vérifier la présence des données
 
-Le calcul bâtiments utilise des empreintes polygonales 2D extrudées en prismes verticaux.
+Le calcul bâtiments consomme directement les maillages 3D polyface des DXF swissBUILDINGS3D sur le chemin GPU (`gpu-raster`, `rust-wgpu-vulkan`). Les empreintes extrudées en prismes verticaux restent un fallback CPU (mode `two-level` / `prism`) et servent au culling spatial. Voir ADR-0010.
 
 ## Prérequis
 

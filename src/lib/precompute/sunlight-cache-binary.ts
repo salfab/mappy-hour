@@ -95,19 +95,6 @@ export interface BinaryTileArtifact {
   maskBuffer: Uint8Array;
 }
 
-const BASE64_DECODE_TABLE = (() => {
-  const t = new Int8Array(256).fill(-1);
-  const alpha =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  for (let i = 0; i < alpha.length; i++) t[alpha.charCodeAt(i)] = i;
-  return t;
-})();
-
-function decodeBase64ToUint8Array(s: string): Uint8Array {
-  // Buffer.from(s, 'base64') is fast in Node; use it directly.
-  return new Uint8Array(Buffer.from(s, "base64"));
-}
-
 export function encodeTileArtifactToBinary(
   artifact: PrecomputedSunlightTileArtifact,
 ): Buffer {
@@ -121,9 +108,7 @@ export function encodeTileArtifactToBinary(
   // max(pointOutdoorIndex)+1 and count(pointOutdoorIndex != -1).
   const outdoorPointCount = artifact.stats.pointCount;
   const maskBytesPerFrame =
-    frameCount > 0
-      ? decodeBase64ToUint8Array(artifact.frames[0].sunMaskBase64).length
-      : 0;
+    frameCount > 0 ? artifact.frames[0].sunMask.length : 0;
 
   const pointIds: string[] = new Array(pointCount);
   const indoorBuildingIds: Array<string | null> = new Array(pointCount);
@@ -208,15 +193,14 @@ export function encodeTileArtifactToBinary(
   const masksOffset = pointsOffset + pointsBytes;
   let writeCursor = masksOffset;
   for (const f of artifact.frames) {
-    const masks = [
-      f.sunMaskBase64,
-      f.sunMaskNoVegetationBase64,
-      f.terrainBlockedMaskBase64,
-      f.buildingsBlockedMaskBase64,
-      f.vegetationBlockedMaskBase64,
+    const masks: Uint8Array[] = [
+      f.sunMask,
+      f.sunMaskNoVegetation,
+      f.terrainBlockedMask,
+      f.buildingsBlockedMask,
+      f.vegetationBlockedMask,
     ];
-    for (const b64 of masks) {
-      const bytes = decodeBase64ToUint8Array(b64);
+    for (const bytes of masks) {
       if (bytes.length !== maskBytesPerFrame) {
         throw new Error(
           `Mask size mismatch: expected ${maskBytesPerFrame}, got ${bytes.length} on frame ${f.index}`,
@@ -352,19 +336,11 @@ export function binaryTileToLegacyArtifact(
       utcTime: fm.utcTime,
       sunnyCount: fm.sunnyCount,
       sunnyCountNoVegetation: fm.sunnyCountNoVegetation,
-      sunMaskBase64: Buffer.from(getFrameMask(bin, f, MASK_KIND_SUN)).toString("base64"),
-      sunMaskNoVegetationBase64: Buffer.from(
-        getFrameMask(bin, f, MASK_KIND_SUN_NO_VEG),
-      ).toString("base64"),
-      terrainBlockedMaskBase64: Buffer.from(
-        getFrameMask(bin, f, MASK_KIND_TERRAIN_BLOCKED),
-      ).toString("base64"),
-      buildingsBlockedMaskBase64: Buffer.from(
-        getFrameMask(bin, f, MASK_KIND_BUILDINGS_BLOCKED),
-      ).toString("base64"),
-      vegetationBlockedMaskBase64: Buffer.from(
-        getFrameMask(bin, f, MASK_KIND_VEGETATION_BLOCKED),
-      ).toString("base64"),
+      sunMask: getFrameMask(bin, f, MASK_KIND_SUN),
+      sunMaskNoVegetation: getFrameMask(bin, f, MASK_KIND_SUN_NO_VEG),
+      terrainBlockedMask: getFrameMask(bin, f, MASK_KIND_TERRAIN_BLOCKED),
+      buildingsBlockedMask: getFrameMask(bin, f, MASK_KIND_BUILDINGS_BLOCKED),
+      vegetationBlockedMask: getFrameMask(bin, f, MASK_KIND_VEGETATION_BLOCKED),
       // Diagnostics are not persisted in the binary format — callers that
       // need them must hold onto the live artifact produced at compute time.
       diagnostics: {

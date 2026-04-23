@@ -559,14 +559,35 @@ async function main() {
   console.log(`  => ${buildingsPath}`);
   console.log();
 
+  // ── 4. Horizon mask (120km, copernicus DEM) ───────────────────────────
+  console.log("[4/4] Horizon mask (Jura silhouette)...");
+  const horizonSrc = path.join(PROJECT_ROOT, "data", "processed", "horizon-masks", "46.384_6.238_120_500_0.13.json");
+  const horizonSrcJson = JSON.parse(await fsPromises.readFile(horizonSrc, "utf8")) as {
+    center: { lat: number; lon: number };
+    radiusKm: number;
+    binsDeg: number[];
+  };
+  const horizonOut = {
+    center: horizonSrcJson.center,
+    radiusKm: horizonSrcJson.radiusKm,
+    // 360 altitudes (degrees), index = azimuth bin (0=N, clockwise)
+    binsDeg: horizonSrcJson.binsDeg.map((v) => Math.round(v * 100) / 100),
+  };
+  const horizonPath = path.join(OUTPUT_DIR, "gingins-horizon.json");
+  await fsPromises.writeFile(horizonPath, JSON.stringify(horizonOut), "utf8");
+  console.log(`  => ${horizonPath} (${horizonOut.binsDeg.length} bins, max ${Math.max(...horizonOut.binsDeg).toFixed(1)}° at bin ${horizonOut.binsDeg.indexOf(Math.max(...horizonOut.binsDeg))})`);
+  console.log();
+
   // Summary
   const terrainSize = (await fsPromises.stat(terrainPath)).size;
   const surfaceSize = (await fsPromises.stat(surfacePath)).size;
   const buildingsSize = (await fsPromises.stat(buildingsPath)).size;
+  const horizonSize = (await fsPromises.stat(horizonPath)).size;
   console.log("=== Done ===");
   console.log(`  Terrain:    ${(terrainSize / 1024).toFixed(0)} KB (${terrain.width}x${terrain.height}, ${terrain.resolution}m res)`);
   console.log(`  Vegetation: ${(surfaceSize / 1024).toFixed(0)} KB (${surface.width}x${surface.height}, ${surface.resolution}m res)`);
   console.log(`  Buildings: ${(buildingsSize / 1024).toFixed(0)} KB (${totalPolyfaces} buildings, ${totalTriangles} triangles)`);
+  console.log(`  Horizon:    ${(horizonSize / 1024).toFixed(1)} KB (${horizonOut.binsDeg.length} azimuth bins)`);
 }
 
 main().catch((err) => {

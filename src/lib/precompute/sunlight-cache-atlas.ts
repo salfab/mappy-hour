@@ -342,16 +342,26 @@ export function lookupAtlasBucket(
   return null;
 }
 
-/** Lookup by sun position (degrees). Falls back to nearest bucket if exact not found. */
+/**
+ * Lookup by sun position (degrees). Cascades through the provided atlases in
+ * order (typically r0.5 → r0.75 → r1 per `ATLAS_READ_FALLBACK_RESOLUTIONS_DEG`)
+ * and returns the first atlas that has an exact bucket match. Returns null if
+ * no atlas covers the requested (az, alt) — the caller must treat that as a
+ * cache miss rather than "no sun".
+ */
 export function lookupAtlasByAngle(
-  atlas: BinaryTileAtlas,
+  atlases: BinaryTileAtlas[],
   azimuthDeg: number,
   altitudeDeg: number,
 ): AtlasBucketEntry | null {
   if (altitudeDeg <= 0) return null;
-  const azB = Math.floor(azimuthDeg / atlas.resolutionDegAz);
-  const altB = Math.floor(altitudeDeg / atlas.resolutionDegAlt);
-  return lookupAtlasBucket(atlas, azB, altB);
+  for (const atlas of atlases) {
+    const azB = Math.floor(azimuthDeg / atlas.resolutionDegAz);
+    const altB = Math.floor(altitudeDeg / atlas.resolutionDegAlt);
+    const hit = lookupAtlasBucket(atlas, azB, altB);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 export function getAtlasPath(params: {
@@ -552,21 +562,24 @@ export async function loadPrecomputedTileAtlas(params: {
 export const ATLAS_READ_FALLBACK_RESOLUTIONS_DEG = [0.5, 0.75, 1] as const;
 
 /**
- * Loads an atlas for the given tile, probing resolutions in precision-first order:
- * r0.5 → r0.75 → r1. Returns the first hit (including its native `resolutionDegAz/Alt`
- * which the lookup uses to map angles back to bucket indices), or null if none exists.
+ * Loads every available atlas for a tile in precision order (r0.5 → r0.75 → r1).
+ * Returns an array — possibly empty — ordered so that bucket lookup can cascade:
+ * try the highest precision first, fall through to coarser resolutions when the
+ * exact (az, alt) bucket is missing. An r0.5 atlas that only covers a partial
+ * date range will no longer mask a complete r0.75 corpus.
  */
-export async function loadPrecomputedTileAtlasWithFallback(params: {
+export async function loadPrecomputedTileAtlasesInPrecisionOrder(params: {
   region: PrecomputedRegionName;
   modelVersionHash: string;
   gridStepMeters: number;
   tileId: string;
-}): Promise<BinaryTileAtlas | null> {
+}): Promise<BinaryTileAtlas[]> {
+  const atlases: BinaryTileAtlas[] = [];
   for (const resolutionDeg of ATLAS_READ_FALLBACK_RESOLUTIONS_DEG) {
     const atlas = await loadPrecomputedTileAtlas({ ...params, resolutionDeg });
-    if (atlas) return atlas;
+    if (atlas) atlases.push(atlas);
   }
-  return null;
+  return atlases;
 }
 
 /** Returns a Set of packed bucket keys (altBucket << 16 | azBucket) for fast membership tests. */
@@ -585,8 +598,10 @@ export function packBucketKey(azBucket: number, altBucket: number): number {
 
 /**
  * Merges a set of new (az, alt) buckets into an existing atlas (or creates a fresh atlas if
- * existing is null). Duplicate buckets from newBuckets are skipped — existing entries win.
- * Returns a fresh BinaryTileAtlas with all buckets sorted by (altBucket asc, azBucket asc).
+ * existing is null). When a bucket key (az, alt) exists in both, the NEW bucket wins —
+ * the existing stale value is overwritten. Duplicates within newBuckets itself keep the
+ * first occurrence. Returns a fresh BinaryTileAtlas with all buckets sorted by
+ * (altBucket asc, azBucket asc).
  *
  * Tile points are copied from the existing atlas when present; otherwise taken from the
  * params (they are assumed identical per tile geometry).
@@ -620,24 +635,15 @@ export function mergeBucketsIntoAtlas(params: {
   const slots: Slot[] = [];
   const seen = new Set<number>();
 
-  if (existing != null) {
-    for (let i = 0; i < existing.bucketCount; i++) {
-      const azB = existing.bucketAz[i];
-      const altB = existing.bucketAlt[i];
-      seen.add(packBucketKey(azB, altB));
-      const dataIndex = existing.bucketDataIndex[i];
-      slots.push({
-        azBucket: azB,
-        altBucket: altB,
-        maskSource: existing.maskBuffer,
-        maskSourceOffset: dataIndex * perBucketBytes,
-      });
-    }
-  }
-
+  // Priorité aux nouveaux buckets : s'ils existent dans l'existant avec la
+  // même clé (az, alt), les nouveaux écrasent les anciens. Si on précalcule,
+  // l'intention est d'écrire ; le skip silencieux masquait des bugs de
+  // régénération (les buckets corrompus d'un ancien run survivaient à
+  // l'éternité, seule la suppression manuelle du fichier pouvait forcer
+  // un recalcul). Voir diag/check-vulkan-vs-gpuraster.ts.
   for (const b of newBuckets) {
     const key = packBucketKey(b.azBucket, b.altBucket);
-    if (seen.has(key)) continue;
+    if (seen.has(key)) continue; // doublon au sein de newBuckets lui-même
     seen.add(key);
     const block = new Uint8Array(perBucketBytes);
     block.set(b.sunMask, 0 * maskBytesPerBucket);
@@ -651,6 +657,23 @@ export function mergeBucketsIntoAtlas(params: {
       maskSource: block,
       maskSourceOffset: 0,
     });
+  }
+
+  if (existing != null) {
+    for (let i = 0; i < existing.bucketCount; i++) {
+      const azB = existing.bucketAz[i];
+      const altB = existing.bucketAlt[i];
+      const key = packBucketKey(azB, altB);
+      if (seen.has(key)) continue; // un nouveau bucket a priorité
+      seen.add(key);
+      const dataIndex = existing.bucketDataIndex[i];
+      slots.push({
+        azBucket: azB,
+        altBucket: altB,
+        maskSource: existing.maskBuffer,
+        maskSourceOffset: dataIndex * perBucketBytes,
+      });
+    }
   }
 
   slots.sort((a, b) => {

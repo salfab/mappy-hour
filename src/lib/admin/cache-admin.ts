@@ -6,7 +6,6 @@ import { performance } from "node:perf_hooks";
 
 import {
   buildRegionTiles,
-  listCachedTileIds,
   loadPrecomputedSunlightManifest,
   loadPrecomputedSunlightTile,
   writePrecomputedSunlightManifest,
@@ -172,13 +171,24 @@ export interface CachePrecomputeProgress {
   completedTiles: number;
   totalTiles: number;
   percent: number;
-  currentTileState: "running" | "computed" | "skipped" | "failed";
+  currentTileState:
+    | "running"
+    | "computed"
+    | "skipped"
+    | "failed"
+    | "day-skipped"
+    | "warming"
+    | "warming-done";
   currentTilePhase?: "prepare-context" | "prepare-points" | "evaluate-frames" | null;
   currentTileProgressPercent?: number | null;
   currentTilePointCountTotal?: number | null;
   currentTilePointCountOutdoor?: number | null;
   currentTileFrameCountTotal?: number | null;
   currentTileFrameIndex?: number | null;
+  warmLoaded?: number;
+  warmTotal?: number;
+  warmMigrated?: number;
+  warmElapsedMs?: number;
 }
 
 interface WorkerPoolTileTask {
@@ -1100,17 +1110,17 @@ export async function verifyCacheRuns(
         }
 
         const expectedMaskSize = expectedMaskByteLength(outdoorPointCount);
-        const maskEntries: Array<{ name: string; base64: string }> = [
-          { name: "sunMaskBase64", base64: frame.sunMaskBase64 },
-          { name: "sunMaskNoVegetationBase64", base64: frame.sunMaskNoVegetationBase64 },
-          { name: "terrainBlockedMaskBase64", base64: frame.terrainBlockedMaskBase64 },
-          { name: "buildingsBlockedMaskBase64", base64: frame.buildingsBlockedMaskBase64 },
-          { name: "vegetationBlockedMaskBase64", base64: frame.vegetationBlockedMaskBase64 },
+        const maskEntries: Array<{ name: string; bytes: Uint8Array }> = [
+          { name: "sunMask", bytes: frame.sunMask },
+          { name: "sunMaskNoVegetation", bytes: frame.sunMaskNoVegetation },
+          { name: "terrainBlockedMask", bytes: frame.terrainBlockedMask },
+          { name: "buildingsBlockedMask", bytes: frame.buildingsBlockedMask },
+          { name: "vegetationBlockedMask", bytes: frame.vegetationBlockedMask },
         ];
 
         for (const maskEntry of maskEntries) {
           expectedMaskSizeChecks += 1;
-          const byteLength = Buffer.from(maskEntry.base64, "base64").length;
+          const byteLength = maskEntry.bytes.length;
           if (byteLength !== expectedMaskSize) {
             problems.push(
               `Tile ${tileId} frame ${frame.index} ${maskEntry.name} byteLength=${byteLength}, expected=${expectedMaskSize}.`,
@@ -1236,7 +1246,10 @@ export async function precomputeCacheRuns(
   // Fail fast if any selected tile is missing grid-metadata. The per-tile compute
   // would otherwise throw deep in buildSharedPointEvaluationSources after paying
   // startup cost on every failing tile. We surface the exact command to regenerate.
-  {
+  // Skipped in rust-wgpu-vulkan mode: the runtime now computes zenith masks on
+  // the fly via batch dispatch (or short-circuits to outdoor when the focus zone
+  // contains no obstacles), so missing metadata is no longer a hard error.
+  if ((process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "").trim().toLowerCase() !== "rust-wgpu-vulkan") {
     const { getTileGridMetadataPath } = await import("@/lib/precompute/tile-grid-metadata");
     const missing: string[] = [];
     for (const tile of tiles) {
@@ -1284,6 +1297,92 @@ export async function precomputeCacheRuns(
   const workerCount = resolvePrecomputeWorkerCount(tiles.length);
   const strictMultithread = process.env.MAPPY_PRECOMPUTE_WORKERS_STRICT === "1";
 
+  // Parallel warm-up of the atlas skip cache: reads each tile's
+  // `.atlas.idx` sidecar (~2 KB uncompressed) so `canSkipAllTilesForDay`
+  // can fire on day 1 of the run. On first run after upgrade, tiles
+  // without a sidecar fall back to loading the full atlas and writing
+  // a sidecar — one-time migration cost per tile.
+  if (skipExisting) {
+    const { warmAtlasSkipCache } = await import(
+      "@/lib/precompute/atlas-tile-service"
+    );
+    const warmStartedAt = performance.now();
+    options.onProgress?.({
+      stage: "running",
+      date: request.startDate,
+      dayIndex: 0,
+      daysTotal: request.days,
+      tileIndex: 0,
+      tilesTotal: tiles.length,
+      completedTiles: 0,
+      totalTiles,
+      percent: 0,
+      currentTileState: "warming",
+      currentTilePhase: null,
+      currentTileProgressPercent: 0,
+      currentTilePointCountTotal: null,
+      currentTilePointCountOutdoor: null,
+      currentTileFrameCountTotal: null,
+      currentTileFrameIndex: null,
+      warmLoaded: 0,
+      warmTotal: tiles.length,
+      warmMigrated: 0,
+    });
+    const warmResult = await warmAtlasSkipCache({
+      region: request.region,
+      modelVersionHash: modelVersion.modelVersionHash,
+      gridStepMeters: request.gridStepMeters,
+      tiles,
+      resolutionDeg: request.atlasResolutionDeg,
+      onProgress: (loaded, total, migrated) => {
+        options.onProgress?.({
+          stage: "running",
+          date: request.startDate,
+          dayIndex: 0,
+          daysTotal: request.days,
+          tileIndex: loaded,
+          tilesTotal: total,
+          completedTiles: 0,
+          totalTiles,
+          percent: 0,
+          currentTileState: "warming",
+          currentTilePhase: null,
+          currentTileProgressPercent: total === 0 ? 100 : Math.round((loaded / total) * 1000) / 10,
+          currentTilePointCountTotal: null,
+          currentTilePointCountOutdoor: null,
+          currentTileFrameCountTotal: null,
+          currentTileFrameIndex: null,
+          warmLoaded: loaded,
+          warmTotal: total,
+          warmMigrated: migrated,
+        });
+      },
+    });
+    const warmElapsedMs = Math.round(performance.now() - warmStartedAt);
+    options.onProgress?.({
+      stage: "running",
+      date: request.startDate,
+      dayIndex: 0,
+      daysTotal: request.days,
+      tileIndex: warmResult.loaded,
+      tilesTotal: tiles.length,
+      completedTiles: 0,
+      totalTiles,
+      percent: 0,
+      currentTileState: "warming-done",
+      currentTilePhase: null,
+      currentTileProgressPercent: 100,
+      currentTilePointCountTotal: null,
+      currentTilePointCountOutdoor: null,
+      currentTileFrameCountTotal: null,
+      currentTileFrameIndex: null,
+      warmLoaded: warmResult.loaded,
+      warmTotal: tiles.length,
+      warmMigrated: warmResult.migrated,
+      warmElapsedMs,
+    });
+  }
+
   for (let dayOffset = 0; dayOffset < request.days; dayOffset += 1) {
     throwIfAborted(options.signal);
     const date = addDays(request.startDate, dayOffset);
@@ -1292,51 +1391,70 @@ export async function precomputeCacheRuns(
     const failedTileIds: string[] = [];
     const skippedTileIds: string[] = [];
 
-    // Single readdir per day instead of per-tile gunzip+parse for skip checks
-    const cachedTileIds = skipExisting
-      ? await listCachedTileIds({
-          region: request.region,
-          modelVersionHash: modelVersion.modelVersionHash,
+    // Fast path: atlas bucket-key sets are cached in memory after the first
+    // day touches each tile. On subsequent days, we can prove all tiles are
+    // already covered without loading a single atlas from disk or emitting
+    // 301 per-tile progress events. If the cache is cold (day 1) or any tile
+    // has a coverage gap, this returns false and we fall through.
+    if (skipExisting) {
+      const { canSkipAllTilesForDay } = await import(
+        "@/lib/precompute/atlas-tile-service"
+      );
+      const canFastSkip = canSkipAllTilesForDay({
+        region: request.region,
+        modelVersionHash: modelVersion.modelVersionHash,
+        gridStepMeters: request.gridStepMeters,
+        date,
+        timezone: request.timezone,
+        sampleEveryMinutes: request.sampleEveryMinutes,
+        startLocalTime: request.startLocalTime,
+        endLocalTime: request.endLocalTime,
+        tiles,
+        resolutionDeg: request.atlasResolutionDeg,
+      });
+      if (canFastSkip) {
+        for (const tile of tiles) {
+          skippedTileIds.push(tile.tileId);
+          succeededTileIds.push(tile.tileId);
+        }
+        completedTiles += tiles.length;
+        options.onProgress?.({
+          stage: "running",
           date,
-          gridStepMeters: request.gridStepMeters,
-          sampleEveryMinutes: request.sampleEveryMinutes,
-          startLocalTime: request.startLocalTime,
-          endLocalTime: request.endLocalTime,
-        })
-      : new Set<string>();
+          dayIndex: dayOffset + 1,
+          daysTotal: request.days,
+          tileIndex: tiles.length,
+          tilesTotal: tiles.length,
+          completedTiles,
+          totalTiles,
+          percent:
+            totalTiles === 0
+              ? 100
+              : Math.round((completedTiles / totalTiles) * 1000) / 10,
+          currentTileState: "day-skipped",
+          currentTilePhase: null,
+          currentTileProgressPercent: 100,
+          currentTilePointCountTotal: null,
+          currentTilePointCountOutdoor: null,
+          currentTileFrameCountTotal: null,
+          currentTileFrameIndex: null,
+        });
+        dates.push({
+          date,
+          succeededTiles: succeededTileIds.length,
+          skippedTiles: skippedTileIds.length,
+          failedTiles: 0,
+          complete: true,
+          elapsedMs: Math.round((performance.now() - startedAt) * 1000) / 1000,
+        });
+        continue;
+      }
+    }
 
     const runSequentialTiles = async () => {
       for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
         throwIfAborted(options.signal);
         const tile = tiles[tileIndex];
-
-        if (skipExisting && cachedTileIds.has(tile.tileId)) {
-          skippedTileIds.push(tile.tileId);
-          succeededTileIds.push(tile.tileId);
-          completedTiles += 1;
-          options.onProgress?.({
-            stage: "running",
-            date,
-            dayIndex: dayOffset + 1,
-            daysTotal: request.days,
-            tileIndex: tileIndex + 1,
-            tilesTotal: tiles.length,
-            completedTiles,
-            totalTiles,
-            percent:
-              totalTiles === 0
-                ? 100
-                : Math.round((completedTiles / totalTiles) * 1000) / 10,
-            currentTileState: "skipped",
-            currentTilePhase: null,
-            currentTileProgressPercent: 100,
-            currentTilePointCountTotal: null,
-            currentTilePointCountOutdoor: null,
-            currentTileFrameCountTotal: null,
-            currentTileFrameIndex: null,
-          });
-          continue;
-        }
 
         options.onProgress?.({
           stage: "running",
@@ -1391,6 +1509,7 @@ export async function precomputeCacheRuns(
             cooperativeYieldEveryPoints: 5000,
             signal: options.signal,
             gridMetadata,
+            skipExisting,
             onProgress: (tileProgress) => {
               const tileFraction =
                 tileProgress.total <= 0

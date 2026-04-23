@@ -62,11 +62,11 @@ export interface PrecomputedSunlightFrame {
   utcTime: string;
   sunnyCount: number;
   sunnyCountNoVegetation: number;
-  sunMaskBase64: string;
-  sunMaskNoVegetationBase64: string;
-  terrainBlockedMaskBase64: string;
-  buildingsBlockedMaskBase64: string;
-  vegetationBlockedMaskBase64: string;
+  sunMask: Uint8Array;
+  sunMaskNoVegetation: Uint8Array;
+  terrainBlockedMask: Uint8Array;
+  buildingsBlockedMask: Uint8Array;
+  vegetationBlockedMask: Uint8Array;
   diagnostics: PrecomputedSunlightFrameDiagnostics;
 }
 
