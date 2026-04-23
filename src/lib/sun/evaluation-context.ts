@@ -305,25 +305,30 @@ async function getOrCreateRustWgpuVulkanBackend(
       );
     }
     if (filtered.length === 0) {
-      // No obstacles in the new focus zone — drop the backend to fall back to CPU.
-      console.log(`[evaluation-context] Rust/wgpu Vulkan new focus has 0 obstacles, dropping backend.`);
-      rustWgpuVulkanBackendCache.dispose();
-      rustWgpuVulkanBackendCache = null;
-      rustWgpuVulkanBackendFocusKey = newFocusKey;
+      // No obstacles in the new focus zone — return null so the caller falls
+      // back to "all outdoor" for this tile. Keep the backend alive; the next
+      // tile with obstacles will hit the updateMesh branch above. Disposing
+      // here has been observed to leave the backend in a broken state
+      // (cache=undefined but the Rust server never restarts for the next
+      // tile with obstacles), producing "Vulkan backend failed despite
+      // obstacles present in focus zone" errors during batch preflight.
+      console.log(`[evaluation-context] Rust/wgpu Vulkan new focus has 0 obstacles, backend kept alive (no update).`);
       return null;
     }
     try {
       console.log(
         `[evaluation-context] Rust/wgpu Vulkan focus changed (${rustWgpuVulkanBackendFocusKey} -> ${newFocusKey}), updating mesh in place (${filtered.length}/${obstacles.length} obstacles)...`,
       );
+      const zoneChangeT0 = performance.now();
       await backend.updateMesh(filtered);
       if (focusBounds) {
         const maxH = filtered.reduce((max, o) => Math.max(max, o.height), 0);
         backend.setFrustumFocus(focusBounds, maxH);
       }
+      const zoneChangeMs = performance.now() - zoneChangeT0;
       rustWgpuVulkanBackendFocusKey = newFocusKey;
       console.log(
-        `[evaluation-context] Rust/wgpu Vulkan mesh updated: ${backend.name}, ${backend.triangleCount} triangles`,
+        `[evaluation-context] Rust/wgpu Vulkan mesh updated: ${backend.name}, ${backend.triangleCount} triangles [zone-change=${zoneChangeMs.toFixed(0)}ms]`,
       );
       return rustWgpuVulkanBackendCache;
     } catch (error) {
@@ -577,46 +582,72 @@ export async function buildSharedPointEvaluationSources(
           return metadata.indoor[idx] ?? false;
         };
         console.error(`[indoor-check] Loaded zenith indoor mask for ${tileId} (${metadata.indoorCount} indoor)`);
-      } else if (gpuShadowBackend) {
-        // Grid metadata not pre-computed — generate zenith mask on the fly.
-        // Render sun straight down, blocked = under a roof = indoor.
-        console.error(`[indoor-check] No grid metadata for ${tileId}, computing zenith on the fly...`);
+      } else if (gpuShadowBackend || (webgpuComputeBackend && BUILDINGS_SHADOW_MODE === "rust-wgpu-vulkan")) {
+        // No cached metadata — render a zenith shadow map and derive the
+        // indoor mask: blocked = under a roof = indoor.
         const tileMinE_ = tileMinE;
         const tileMinN_ = tileMinN;
         const gridW = Math.ceil(tileSizeMeters);
         const gridH = gridW;
         const gridCount = gridW * gridH;
         const indoorMask = new Uint8Array(Math.ceil(gridCount / 8));
-
-        // Set frustum focus and render zenith shadow map
-        if ("setFrustumFocus" in gpuShadowBackend) {
-          (gpuShadowBackend as { setFrustumFocus: (b: { minX: number; minY: number; maxX: number; maxY: number }, h: number) => void }).setFrustumFocus(
-            { minX: tileMinE_, minY: tileMinN_, maxX: tileMinE_ + tileSizeMeters, maxY: tileMinN_ + tileSizeMeters },
-            buildingsIndex ? buildingsIndex.obstacles.reduce((m, o) => Math.max(m, o.height), 0) : 100,
-          );
-        }
-        // Use unique azimuth to bust the render cache
-        gpuShadowBackend.prepareSunPosition(Math.floor(Math.random() * 360), 90);
-
-        // Evaluate each grid cell
+        const maxH = buildingsIndex ? buildingsIndex.obstacles.reduce((m, o) => Math.max(m, o.height), 0) : 100;
+        // Approximate ground elevation — zenith ray is straight down so
+        // the exact elevation barely matters (just needs to be below the roof).
+        const approxElevation = 500;
         let indoorCount = 0;
-        for (let iy = 0; iy < gridH; iy++) {
-          for (let ix = 0; ix < gridW; ix++) {
-            const easting = tileMinE_ + ix + 0.5;
-            const northing = tileMinN_ + iy + 0.5;
-            // Approximate ground elevation — the zenith ray is straight down so
-            // the exact elevation barely matters (just needs to be below the roof).
-            const approxElevation = 500;
-            const result = gpuShadowBackend.evaluate({
-              pointX: easting,
-              pointY: northing,
-              pointElevation: approxElevation,
-              solarAzimuthDeg: 0,
-              solarAltitudeDeg: 90,
-            });
-            if (result.blocked) {
-              const idx = iy * gridW + ix;
-              indoorMask[idx >> 3] |= 1 << (idx & 7);
+
+        if (gpuShadowBackend) {
+          console.error(`[indoor-check] No grid metadata for ${tileId}, computing zenith via gpu-raster...`);
+          if ("setFrustumFocus" in gpuShadowBackend) {
+            (gpuShadowBackend as { setFrustumFocus: (b: { minX: number; minY: number; maxX: number; maxY: number }, h: number) => void }).setFrustumFocus(
+              { minX: tileMinE_, minY: tileMinN_, maxX: tileMinE_ + tileSizeMeters, maxY: tileMinN_ + tileSizeMeters },
+              maxH,
+            );
+          }
+          // Use unique azimuth to bust the render cache
+          gpuShadowBackend.prepareSunPosition(Math.floor(Math.random() * 360), 90);
+
+          for (let iy = 0; iy < gridH; iy++) {
+            for (let ix = 0; ix < gridW; ix++) {
+              const result = gpuShadowBackend.evaluate({
+                pointX: tileMinE_ + ix + 0.5,
+                pointY: tileMinN_ + iy + 0.5,
+                pointElevation: approxElevation,
+                solarAzimuthDeg: 0,
+                solarAltitudeDeg: 90,
+              });
+              if (result.blocked) {
+                const idx = iy * gridW + ix;
+                indoorMask[idx >> 3] |= 1 << (idx & 7);
+                indoorCount++;
+              }
+            }
+          }
+        } else {
+          // Vulkan: one batch dispatch instead of 62500 single evaluate() calls.
+          console.error(`[indoor-check] No grid metadata for ${tileId}, computing zenith via Vulkan batch...`);
+          const batch = webgpuComputeBackend as import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend;
+          batch.setFrustumFocus(
+            { minX: tileMinE_, minY: tileMinN_, maxX: tileMinE_ + tileSizeMeters, maxY: tileMinN_ + tileSizeMeters },
+            maxH,
+          );
+          const origin = batch.getOrigin();
+          // vec4f layout: [x_centered, elevation, z_centered, 0]
+          const points = new Float32Array(gridCount * 4);
+          for (let iy = 0; iy < gridH; iy++) {
+            for (let ix = 0; ix < gridW; ix++) {
+              const i = iy * gridW + ix;
+              points[i * 4 + 0] = (tileMinE_ + ix + 0.5) - origin.x;
+              points[i * 4 + 1] = approxElevation;
+              points[i * 4 + 2] = (tileMinN_ + iy + 0.5) - origin.y;
+              points[i * 4 + 3] = 0;
+            }
+          }
+          const bitmask = await batch.evaluateBatch(points, gridCount, 0, 90);
+          for (let i = 0; i < gridCount; i++) {
+            if ((bitmask[i >> 5] >> (i & 31)) & 1) {
+              indoorMask[i >> 3] |= 1 << (i & 7);
               indoorCount++;
             }
           }
@@ -660,11 +691,30 @@ export async function buildSharedPointEvaluationSources(
           const idx = iy * gridW + ix;
           return ((indoorMask[idx >> 3] >> (idx & 7)) & 1) === 1;
         };
+      } else if (BUILDINGS_SHADOW_MODE === "rust-wgpu-vulkan" && buildingsIndex) {
+        // Vulkan backend declined to initialize. Most common reason: the focus
+        // zone (tile ± margin) contains zero building obstacles, so the native
+        // server won't bother loading an empty mesh. Verify by re-applying the
+        // same spatial filter here; if empty, no building can block the zenith
+        // ray → mark every point as outdoor.
+        const margin = getRustWgpuVulkanFocusMarginMeters();
+        const inFocus = buildingsIndex.obstacles.some((o) =>
+          o.maxX > tileMinE - margin && o.minX < tileMinE + tileSizeMeters + margin &&
+          o.maxY > tileMinN - margin && o.minY < tileMinN + tileSizeMeters + margin,
+        );
+        if (inFocus) {
+          throw new Error(
+            `Indoor detection unavailable for tile ${tileId}: Vulkan backend failed despite obstacles present in focus zone. ` +
+            `Run 'npm run precompute:grid-metadata' to generate zenith indoor masks.`,
+          );
+        }
+        console.error(`[indoor-check] No obstacles in focus zone for ${tileId}, all points treated as outdoor.`);
+        zenithIndoorCheck = () => false;
       } else {
         throw new Error(
           `Indoor detection unavailable for tile ${tileId}: no grid metadata and no GPU backend. ` +
           `Run 'npm run precompute:grid-metadata' to generate zenith indoor masks, ` +
-          `or set MAPPY_BUILDINGS_SHADOW_MODE=gpu-raster in .env to enable GPU-based detection.`
+          `or set MAPPY_BUILDINGS_SHADOW_MODE=gpu-raster|rust-wgpu-vulkan in .env.`
         );
       }
     } catch (e) {
