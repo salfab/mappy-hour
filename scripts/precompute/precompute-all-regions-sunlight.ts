@@ -25,7 +25,7 @@ const GRID_METADATA_SCRIPT = path.resolve(
   "scripts/precompute/precompute-tile-grid-metadata.ts",
 );
 
-const REGION_PRIORITY: string[] = ["lausanne", "morges", "nyon", "geneve", "vevey"];
+const REGION_PRIORITY: string[] = ["lausanne", "morges", "nyon", "vevey", "geneve"];
 type ExperimentalBuildingsShadowMode = "gpu-raster" | "rust-wgpu-vulkan";
 
 function readRegionsFromSelectionFile(filePath: string): string[] {
@@ -46,6 +46,21 @@ function countTilesPerRegion(filePath: string): Record<string, number> {
   return counts;
 }
 
+function countTilesPerPassPerRegion(filePath: string): {
+  topPriority: Record<string, number>;
+  other: Record<string, number>;
+} {
+  const raw = fs.readFileSync(path.resolve(process.cwd(), filePath), "utf8");
+  const data = JSON.parse(raw) as { tiles: Array<{ region: string; group?: string }> };
+  const topPriority: Record<string, number> = {};
+  const other: Record<string, number> = {};
+  for (const t of data.tiles) {
+    const bucket = t.group === "top-priority" ? topPriority : other;
+    bucket[t.region] = (bucket[t.region] ?? 0) + 1;
+  }
+  return { topPriority, other };
+}
+
 function parseArgValue(argv: string[], prefix: string): string | null {
   for (const arg of argv) {
     if (arg.startsWith(prefix)) return arg.slice(prefix.length);
@@ -57,6 +72,7 @@ function printRunRecap(params: {
   selectionFile: string;
   regions: string[];
   tileCounts: Record<string, number>;
+  passBreakdown: { topPriority: Record<string, number>; other: Record<string, number> };
   buildingsShadowMode: string;
   gridStepMeters: number;
   passthrough: string[];
@@ -68,6 +84,8 @@ function printRunRecap(params: {
   const sampleEvery = parseArgValue(params.passthrough, "--sample-every-minutes=") ?? "15";
   const skipExisting = parseArgValue(params.passthrough, "--skip-existing=") ?? "true";
   const totalTiles = Object.values(params.tileCounts).reduce((a, b) => a + b, 0);
+  const topTotal = Object.values(params.passBreakdown.topPriority).reduce((a, b) => a + b, 0);
+  const otherTotal = Object.values(params.passBreakdown.other).reduce((a, b) => a + b, 0);
 
   const box = [
     "",
@@ -78,14 +96,23 @@ function printRunRecap(params: {
   console.log(box.join("\n"));
   console.log(`  Tile selection   : ${params.selectionFile}`);
   console.log(`  Total tiles      : ${totalTiles}`);
-  console.log(`  Regions (${params.regions.length})      : ${params.regions.join(", ")}`);
+  console.log(`  Regions (${params.regions.length})      : ${params.regions.join(" → ")}`);
+  console.log("");
+  console.log(`  Passe 1/2 — Top priority (${topTotal} tuiles) :`);
   for (const region of params.regions) {
-    const count = params.tileCounts[region] ?? 0;
-    const bar = "█".repeat(Math.max(1, Math.round((count / totalTiles) * 40)));
-    console.log(
-      `    • ${region.padEnd(10)} ${count.toString().padStart(5)} tiles  ${bar}`,
-    );
+    const count = params.passBreakdown.topPriority[region] ?? 0;
+    if (count === 0) continue;
+    const bar = "█".repeat(Math.max(1, Math.round((count / Math.max(topTotal, 1)) * 30)));
+    console.log(`    • ${region.padEnd(10)} ${count.toString().padStart(5)} tiles  ${bar}`);
   }
+  console.log(`  Passe 2/2 — Couverture étendue (${otherTotal} tuiles) :`);
+  for (const region of params.regions) {
+    const count = params.passBreakdown.other[region] ?? 0;
+    if (count === 0) continue;
+    const bar = "█".repeat(Math.max(1, Math.round((count / Math.max(otherTotal, 1)) * 30)));
+    console.log(`    • ${region.padEnd(10)} ${count.toString().padStart(5)} tiles  ${bar}`);
+  }
+  console.log("");
   console.log(`  Date range       : ${startDate} (+ ${days} day${days === "1" ? "" : "s"})`);
   console.log(`  Local time win.  : ${startLocalTime} → ${endLocalTime}, every ${sampleEvery} min`);
   console.log(`  Buildings mode   : ${params.buildingsShadowMode}`);
@@ -195,6 +222,7 @@ function main() {
 
   const regions = readRegionsFromSelectionFile(selectionFile);
   const tileCounts = countTilesPerRegion(selectionFile);
+  const passBreakdown = countTilesPerPassPerRegion(selectionFile);
   const cliBuildingsShadowMode = parseBuildingsShadowModeArg(passthrough);
   const buildingsShadowMode =
     cliBuildingsShadowMode ??
@@ -208,6 +236,7 @@ function main() {
     selectionFile,
     regions,
     tileCounts,
+    passBreakdown,
     buildingsShadowMode,
     gridStepMeters,
     passthrough,
@@ -229,29 +258,50 @@ function main() {
 
   let anyFailed = false;
 
-  for (const region of regions) {
-    const args = [...passthrough, `--region=${region}`];
-    console.log(`\n[precompute-all] ▶ région=${region}  tsx ${REGION_SCRIPT} ${args.join(" ")}`);
+  // Two-pass iteration: top-priority tiles across every region first, then
+  // the "other" group tiles (lausanne-west, lausanne-east, geneva, etc.)
+  // across every region. Inside each pass, regions follow REGION_PRIORITY.
+  const PASSES: Array<{ label: string; filter: "top-priority" | "other" }> = [
+    { label: "1/2 Top-priority (places-density)", filter: "top-priority" },
+    { label: "2/2 Couverture étendue",            filter: "other" },
+  ];
 
-    const result = spawnSync("npx", ["tsx", REGION_SCRIPT, ...args], {
-      stdio: "inherit",
-      shell: process.platform === "win32",
-      env: { ...process.env, MAPPY_BUILDINGS_SHADOW_MODE: buildingsShadowMode },
-    });
+  for (const pass of PASSES) {
+    console.log(`\n[precompute-all] ▶▶ Passe ${pass.label}`);
+    for (const region of regions) {
+      const args = [
+        ...passthrough,
+        `--region=${region}`,
+        `--group-filter=${pass.filter}`,
+      ];
+      console.log(
+        `\n[precompute-all] ▶ pass=${pass.filter} région=${region}  tsx ${REGION_SCRIPT} ${args.join(" ")}`,
+      );
 
-    if (result.status !== 0) {
-      console.error(`[precompute-all] ✗ région=${region} a échoué (exit ${result.status ?? "signal"})`);
-      anyFailed = true;
-    } else {
-      console.log(`[precompute-all] ✓ région=${region} terminée`);
+      const result = spawnSync("npx", ["tsx", REGION_SCRIPT, ...args], {
+        stdio: "inherit",
+        shell: process.platform === "win32",
+        env: { ...process.env, MAPPY_BUILDINGS_SHADOW_MODE: buildingsShadowMode },
+      });
+
+      if (result.status !== 0) {
+        console.error(
+          `[precompute-all] ✗ pass=${pass.filter} région=${region} a échoué (exit ${result.status ?? "signal"})`,
+        );
+        anyFailed = true;
+      } else {
+        console.log(`[precompute-all] ✓ pass=${pass.filter} région=${region} terminée`);
+      }
     }
   }
 
   if (anyFailed) {
-    console.error("\n[precompute-all] Une ou plusieurs régions ont échoué.");
+    console.error("\n[precompute-all] Une ou plusieurs passes/régions ont échoué.");
     process.exitCode = 1;
   } else {
-    console.log(`\n[precompute-all] Toutes les régions (${regions.join(", ")}) terminées avec succès.`);
+    console.log(
+      `\n[precompute-all] 2 passes × ${regions.length} régions (${regions.join(", ")}) terminées avec succès.`,
+    );
   }
 }
 

@@ -26,6 +26,7 @@ const tileSelectionEntrySchema = z
       .optional(),
     samplePlaceNames: z.array(z.string()).optional(),
     notes: z.array(z.string()).optional(),
+    group: z.string().optional(),
   })
   .passthrough();
 
@@ -55,9 +56,12 @@ export async function loadTileSelectionFile(filePath: string): Promise<TileSelec
   return tileSelectionFileSchema.parse(JSON.parse(raw));
 }
 
+export type GroupFilter = "top-priority" | "other" | "all";
+
 export async function loadTileSelectionForRegion(params: {
   filePath: string;
   region: PrecomputedRegionName;
+  groupFilter?: GroupFilter;
 }): Promise<RegionTileSelection> {
   const resolvedPath = path.resolve(process.cwd(), params.filePath);
   const parsed = await loadTileSelectionFile(resolvedPath);
@@ -68,7 +72,13 @@ export async function loadTileSelectionForRegion(params: {
     );
   }
 
-  const entries = parsed.tiles.filter((entry) => entry.region === params.region);
+  const filter = params.groupFilter ?? "all";
+  const entries = parsed.tiles.filter((entry) => {
+    if (entry.region !== params.region) return false;
+    if (filter === "top-priority") return entry.group === "top-priority";
+    if (filter === "other") return entry.group !== "top-priority";
+    return true;
+  });
   const tileIds = Array.from(new Set(entries.map((entry) => entry.tileId))).sort();
 
   return {

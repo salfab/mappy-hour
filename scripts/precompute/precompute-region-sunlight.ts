@@ -18,6 +18,7 @@ interface ParsedArgs {
   skipExisting: boolean;
   bbox: [number, number, number, number] | null;
   tileSelectionFile: string | null;
+  groupFilter: "top-priority" | "other" | "all";
   buildingsShadowMode: ExperimentalBuildingsShadowMode | null;
   atlasResolutionDeg: number;
 }
@@ -35,6 +36,7 @@ const DEFAULT_ARGS: ParsedArgs = {
   skipExisting: true,
   bbox: null,
   tileSelectionFile: null,
+  groupFilter: "all",
   buildingsShadowMode: null,
   atlasResolutionDeg: 0.75,
 };
@@ -141,6 +143,14 @@ function parseArgs(argv: string[]): ParsedArgs {
       result.tileSelectionFile = arg.slice("--tile-selection-file=".length);
       continue;
     }
+    if (arg.startsWith("--group-filter=")) {
+      const v = arg.slice("--group-filter=".length);
+      if (v !== "top-priority" && v !== "other" && v !== "all") {
+        throw new Error(`Invalid --group-filter=${v}. Expected top-priority|other|all.`);
+      }
+      result.groupFilter = v;
+      continue;
+    }
     if (arg.startsWith("--buildings-shadow-mode=")) {
       result.buildingsShadowMode = parseBuildingsShadowMode(
         arg.slice("--buildings-shadow-mode=".length),
@@ -226,10 +236,11 @@ async function main() {
     const selection = await loadTileSelectionForRegion({
       filePath: args.tileSelectionFile,
       region: args.region,
+      groupFilter: args.groupFilter,
     });
     tileIds = selection.tileIds;
     console.log(
-      `[precompute] tileSelectionFile=${selection.filePath} generatedAt=${selection.generatedAt} → ${selection.tileIds.length} tiles`,
+      `[precompute] tileSelectionFile=${selection.filePath} generatedAt=${selection.generatedAt} groupFilter=${args.groupFilter} → ${selection.tileIds.length} tiles`,
     );
   }
   if (args.bbox) {
