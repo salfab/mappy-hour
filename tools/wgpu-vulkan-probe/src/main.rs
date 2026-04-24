@@ -431,6 +431,8 @@ struct ServerRequest {
     veg_max_distance_meters: Option<f32>,
     #[serde(default, alias = "vegMinClearance")]
     veg_min_clearance: Option<f32>,
+    #[serde(default, alias = "vegetationIsRaw")]
+    vegetation_is_raw: Option<bool>,
     // upload_terrain_rasters: meta + data + march params (local DEM
     // self-shadowing, cf. shortcut 2b.11)
     #[serde(default, alias = "terrainMetaBin")]
@@ -722,11 +724,12 @@ fn run_shadow_server(
                 let step = request.veg_step_meters.unwrap_or(2.0);
                 let max_d = request.veg_max_distance_meters.unwrap_or(120.0);
                 let min_clear = request.veg_min_clearance.unwrap_or(4.0);
+                let is_raw = request.vegetation_is_raw.unwrap_or(false);
                 let ox = request.origin_x.unwrap_or(0.0);
                 let oy = request.origin_y.unwrap_or(0.0);
                 let started = Instant::now();
                 match engine.upload_vegetation_rasters(
-                    device, queue, &meta_path, &data_path, nodata, step, max_d, min_clear, ox, oy,
+                    device, queue, &meta_path, &data_path, nodata, step, max_d, min_clear, ox, oy, is_raw,
                 ) {
                     Ok((tile_count, data_bytes)) => {
                         write_server_message(serde_json::json!({
@@ -1194,6 +1197,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 shadow.terrain_max_distance_meters,
                 shadow.terrain_altitude_gate_deg,
                 shadow.terrain_nodata,
+                shadow.vegetation_is_raw,
             );
             queue.write_buffer(&shadow.params_buffer, 0, &shadow_params);
         }
@@ -1493,6 +1497,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 shadow.terrain_max_distance_meters,
                 shadow.terrain_altitude_gate_deg,
                 shadow.terrain_nodata,
+                shadow.vegetation_is_raw,
             );
             queue.write_buffer(&compute_params[i], 0, &params);
         }
@@ -1911,6 +1916,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         min_clearance: f32,
         origin_x: f32,
         origin_y: f32,
+        is_raw: bool,
     ) -> Result<(u32, u64), String> {
         let shadow = self
             .shadow_compute
@@ -1984,6 +1990,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         shadow.veg_step_meters = step_meters;
         shadow.veg_max_distance_meters = max_distance_meters;
         shadow.veg_min_clearance = min_clearance;
+        shadow.vegetation_is_raw = is_raw;
         shadow.origin_x = origin_x;
         shadow.origin_y = origin_y;
         Ok((tile_count, data_bytes_len))
@@ -2138,6 +2145,10 @@ struct ShadowComputeResources {
     veg_step_meters: f32,
     veg_max_distance_meters: f32,
     veg_min_clearance: f32,
+    // True when veg_data contains raw VHM heights (to be composed with
+    // terrain at sample time). False when veg_data is already an absolute
+    // canopy raster (current default).
+    vegetation_is_raw: bool,
     origin_x: f32,
     origin_y: f32,
     // Local terrain (DEM) ray-march inputs. Dummy until upload_terrain_rasters.
@@ -2346,7 +2357,11 @@ struct ShadowParams {
     terrain_max_distance_meters: f32,
     terrain_altitude_gate_deg: f32,
     terrain_nodata: f32,
-    _pad2: f32,
+    // When != 0, the veg_data raster is raw VHM (heights relative to
+    // terrain). sample_veg_elevation adds the terrain elevation at each
+    // sample to recover an absolute canopy altitude. When 0, veg_data is
+    // the pre-composed canopy_abs (current default).
+    vegetation_is_raw: u32,
     _pad3: f32,
 };
 
@@ -2416,6 +2431,12 @@ fn sample_veg_elevation(sx: f32, sy: f32) -> f32 {
     // Linear scan — in practice only 2-10 tiles are loaded per region,
     // so the cost is bounded. Returns -1e6 when no tile covers (sx,sy)
     // or when the sample is nodata.
+    //
+    // When params.vegetation_is_raw != 0, veg_data contains raw VHM
+    // (heights relative to terrain). We compose with the local DEM at
+    // sample time: absolute_canopy = terrain + max(0, raw_vhm).
+    // When vegetation_is_raw == 0, veg_data contains pre-composed
+    // canopy_abs and we return it as-is.
     for (var i = 0u; i < params.num_veg_tiles; i = i + 1u) {
         let tm = veg_tiles_meta[i];
         if (sx < tm.min_x || sx > tm.max_x || sy < tm.min_y || sy > tm.max_y) {
@@ -2429,6 +2450,13 @@ fn sample_veg_elevation(sx: f32, sy: f32) -> f32 {
         let val = veg_data[idx];
         if (abs(val - tm.nodata) < 0.000001) {
             return -1.0e6;
+        }
+        if (params.vegetation_is_raw != 0u) {
+            let terrain_elev = sample_terrain_elevation(sx, sy);
+            if (terrain_elev < -1.0e5) {
+                return -1.0e6;
+            }
+            return terrain_elev + max(0.0, val);
         }
         return val;
     }
@@ -2791,6 +2819,7 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         veg_step_meters: 2.0,
         veg_max_distance_meters: 120.0,
         veg_min_clearance: 4.0,
+        vegetation_is_raw: false,
         origin_x: 0.0,
         origin_y: 0.0,
         sunny_result_buffer,
@@ -2881,6 +2910,7 @@ fn encode_shadow_params(
     terrain_max_distance_meters: f32,
     terrain_altitude_gate_deg: f32,
     terrain_nodata: f32,
+    vegetation_is_raw: bool,
 ) -> [u8; SHADOW_PARAMS_SIZE as usize] {
     let mut bytes = [0; SHADOW_PARAMS_SIZE as usize];
     let mut offset = 0;
@@ -2944,11 +2974,11 @@ fn encode_shadow_params(
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         offset += 4;
     }
-    // _pad2, _pad3
-    for _ in 0..2 {
-        bytes[offset..offset + 4].copy_from_slice(&0.0_f32.to_le_bytes());
-        offset += 4;
-    }
+    // vegetation_is_raw, _pad3
+    bytes[offset..offset + 4].copy_from_slice(&(if vegetation_is_raw { 1u32 } else { 0 }).to_le_bytes());
+    offset += 4;
+    bytes[offset..offset + 4].copy_from_slice(&0.0_f32.to_le_bytes());
+    offset += 4;
 
     bytes
 }

@@ -82,6 +82,7 @@ function hashVegetationPayload(
   minClearance: number,
   originX: number,
   originY: number,
+  isRaw: boolean,
 ): string {
   const hash = crypto.createHash("sha1");
   hash.update(Buffer.from(meta.buffer, meta.byteOffset, meta.byteLength));
@@ -93,6 +94,7 @@ function hashVegetationPayload(
     minClearance,
     originX,
     originY,
+    isRaw ? 1 : 0,
   ]);
   hash.update(Buffer.from(params.buffer, params.byteOffset, params.byteLength));
   return `${meta.length / 8}t:${data.length}f:${hash.digest("hex")}`;
@@ -298,6 +300,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         minClearance: number;
         originX: number;
         originY: number;
+        isRaw?: boolean;
       };
       terrain?: {
         meta: Float32Array;
@@ -357,6 +360,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         minClearance: number;
         originX: number;
         originY: number;
+        isRaw?: boolean;
       };
       terrain?: {
         meta: Float32Array;
@@ -578,6 +582,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     minClearance: number;
     originX: number;
     originY: number;
+    isRaw?: boolean;
   }): Promise<void> {
     if (params.meta.length === 0 || params.data.length === 0) {
       throw new Error("uploadVegetationRasters requires non-empty meta and data.");
@@ -596,6 +601,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       params.minClearance,
       params.originX,
       params.originY,
+      params.isRaw ?? false,
     );
     if (this.server && this.serverVegetationHash === hash) {
       return;
@@ -624,6 +630,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         vegStepMeters: params.stepMeters,
         vegMaxDistanceMeters: params.maxDistanceMeters,
         vegMinClearance: params.minClearance,
+        vegetationIsRaw: params.isRaw ?? false,
         originX: params.originX,
         originY: params.originY,
       });

@@ -50,6 +50,17 @@ def main():
     parser.add_argument("--region", required=True)
     parser.add_argument("--tile", help="Single tile key e.g. 2502-1141")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--mode",
+        choices=["composed", "raw", "both"],
+        default="composed",
+        help=(
+            "composed: write canopy_abs = terrain + max(0, vhm) [current default, "
+            "shader reads absolute altitudes directly]. "
+            "raw: write max(0, vhm) (vegetation heights relative to terrain). "
+            "both: write both in separate dirs (vhm_* and vhm_raw_*)."
+        ),
+    )
     args = parser.parse_args()
 
     bbox = REGIONS.get(args.region)
@@ -86,33 +97,36 @@ def main():
     skipped = 0
     no_terrain = 0
 
+    write_composed = args.mode in ("composed", "both")
+    write_raw = args.mode in ("raw", "both")
+
     for e in range(bbox["minE"], bbox["maxE"], TILE_SIZE):
         for n in range(bbox["minN"], bbox["maxN"], TILE_SIZE):
             e_km = e // TILE_SIZE
             n_km = n // TILE_SIZE
             tile_key = f"{e_km}-{n_km}"
 
-            out_dir = OUTPUT_ROOT / f"swisssurface3d-raster_vhm_{tile_key}"
-            out_tif = out_dir / f"swisssurface3d-raster_vhm_{tile_key}.tif"
+            composed_dir = OUTPUT_ROOT / f"swisssurface3d-raster_vhm_{tile_key}"
+            composed_tif = composed_dir / f"swisssurface3d-raster_vhm_{tile_key}.tif"
+            raw_dir = OUTPUT_ROOT / f"swisssurface3d-raster_vhm_raw_{tile_key}"
+            raw_tif = raw_dir / f"swisssurface3d-raster_vhm_raw_{tile_key}.tif"
 
-            if out_tif.exists() and not args.overwrite:
+            composed_needed = write_composed and (args.overwrite or not composed_tif.exists())
+            raw_needed = write_raw and (args.overwrite or not raw_tif.exists())
+            if not composed_needed and not raw_needed:
                 skipped += 1
                 sys.stdout.write("s")
                 sys.stdout.flush()
                 continue
 
-            # Find terrain tile
-            terrain_path = find_terrain_tile(e_km, n_km)
-            if not terrain_path:
+            # Find terrain tile (needed for composed output only; raw VHM
+            # doesn't need terrain since heights are relative to ground)
+            terrain_path = find_terrain_tile(e_km, n_km) if composed_needed else None
+            if composed_needed and not terrain_path:
                 no_terrain += 1
                 sys.stdout.write("x")
                 sys.stdout.flush()
                 continue
-
-            # Read terrain
-            with rasterio.open(terrain_path) as t_src:
-                terrain = t_src.read(1)
-                t_h, t_w = terrain.shape
 
             # Slice VHM for this 1km tile
             col0 = round((e - bbox["minE"]) / region_w * vhm_w)
@@ -121,24 +135,38 @@ def main():
             row1 = round((bbox["maxN"] - n) / region_h * vhm_h)
             vhm_tile = vhm_data[row0:row1, col0:col1]
             vh, vw = vhm_tile.shape
-
-            # Compose: canopy = terrain + vhm (upsample terrain to VHM resolution)
-            canopy = np.zeros((vh, vw), dtype=np.float32)
-            for y in range(vh):
-                ty = min(int(y * t_h / vh), t_h - 1)
-                for x in range(vw):
-                    tx = min(int(x * t_w / vw), t_w - 1)
-                    canopy[y, x] = terrain[ty, tx] + vhm_tile[y, x]
-
-            # Write GeoTIFF
-            out_dir.mkdir(parents=True, exist_ok=True)
             transform = transform_from_bounds(e, n, e + TILE_SIZE, n + TILE_SIZE, vw, vh)
-            with rasterio.open(
-                out_tif, "w", driver="GTiff",
-                width=vw, height=vh, count=1, dtype="float32",
-                crs="EPSG:2056", transform=transform, compress="deflate",
-            ) as dst:
-                dst.write(canopy, 1)
+
+            if composed_needed:
+                # Read terrain + compose canopy = terrain + vhm
+                with rasterio.open(terrain_path) as t_src:
+                    terrain = t_src.read(1)
+                    t_h, t_w = terrain.shape
+                canopy = np.zeros((vh, vw), dtype=np.float32)
+                for y in range(vh):
+                    ty = min(int(y * t_h / vh), t_h - 1)
+                    for x in range(vw):
+                        tx = min(int(x * t_w / vw), t_w - 1)
+                        canopy[y, x] = terrain[ty, tx] + vhm_tile[y, x]
+                composed_dir.mkdir(parents=True, exist_ok=True)
+                with rasterio.open(
+                    composed_tif, "w", driver="GTiff",
+                    width=vw, height=vh, count=1, dtype="float32",
+                    crs="EPSG:2056", transform=transform, compress="deflate",
+                ) as dst:
+                    dst.write(canopy, 1)
+
+            if raw_needed:
+                # vhm_tile already has nodata→0 applied (line ~77-78) and
+                # is clamped to ≥0. Write it directly as the "raw VHM"
+                # raster — vegetation heights relative to the ground.
+                raw_dir.mkdir(parents=True, exist_ok=True)
+                with rasterio.open(
+                    raw_tif, "w", driver="GTiff",
+                    width=vw, height=vh, count=1, dtype="float32",
+                    crs="EPSG:2056", transform=transform, compress="deflate",
+                ) as dst:
+                    dst.write(vhm_tile.astype(np.float32), 1)
 
             composed += 1
             sys.stdout.write(".")

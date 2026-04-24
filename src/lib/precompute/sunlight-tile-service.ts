@@ -1144,6 +1144,7 @@ export async function computeSunlightTileArtifact(params: {
     minClearance: number;
     originX: number;
     originY: number;
+    isRaw?: boolean;
   } | null = null;
   let terrainPayload: {
     meta: Float32Array;
@@ -1242,6 +1243,13 @@ export async function computeSunlightTileArtifact(params: {
         }
         offsetFloats += n;
       }
+      // Option B (ADR-0016): when the selected tiles are raw VHM (relative
+      // heights), the shader composes canopy_abs = terrain + max(0, vhm)
+      // at sample time instead of reading pre-composed canopy from disk.
+      // We gate on tile kind rather than the env var directly: the
+      // `swissSurfaceFindTilesForBounds` already applied the env-var-gated
+      // priority selection, so kind=="vhm_raw" means raw was chosen.
+      const rawTilesPresent = vegTiles.some((t) => t.kind === "vhm_raw");
       vegetationPayload = {
         meta,
         data,
@@ -1251,6 +1259,7 @@ export async function computeSunlightTileArtifact(params: {
         minClearance: 4,
         originX: origin.x,
         originY: origin.y,
+        isRaw: rawTilesPresent,
       };
     }
     phaseMs.evalSetupVegetation += performance.now() - setupVegetationT0;

@@ -37,6 +37,8 @@ Option A est retenue parce qu'elle :
 
 Alternative "refacto shader" gardée en tête pour une future évolution si on veut économiser le stockage et avoir un VHM mis à jour sans re-composition — mais pas prioritaire aujourd'hui.
 
+**Update 2026-04-23 — Option B implémentée en parallèle (opt-in)** : le shader WGSL compose à la volée `canopy_abs = terrain + max(0, vhm_raw)` quand un nouvel uniforme `vegetation_is_raw: u32` vaut 1. La sélection de la source bascule via `MAPPY_VHM_SHADER_COMPOSE=1` : le loader `swissSurfaceFindTilesForBounds` préfère alors `vhm_raw > vhm_composed > dsm`. Les tuiles raw sont ingérées par le même script `compose-vhm-canopy.py --mode=raw` (210 tuiles Lausanne dans `swisssurface3d-raster_vhm_raw_*`). Validation bit-parité : 333 octets différents sur 7,5 MB (~0,005 %) entre atlas composé-disque et atlas composé-shader sur 2 tuiles Montriond (origine : alignement sous-pixel terrain 2m / VHM 1m). Option A reste la source par défaut (stabilité, compat CPU fallback).
+
 ### Implémentation
 
 1. `scripts/ingest/download-vegetation-vhm.ts` : wrapper Node qui appelle un script Python (rasterio requis pour le codec LERC que GDAL/Node ne supporte pas).

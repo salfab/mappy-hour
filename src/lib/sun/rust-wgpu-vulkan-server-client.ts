@@ -363,6 +363,7 @@ export class RustWgpuVulkanShadowServer {
       vegStepMeters: number;
       vegMaxDistanceMeters: number;
       vegMinClearance: number;
+      vegetationIsRaw?: boolean;
       originX: number;
       originY: number;
     },
@@ -376,6 +377,7 @@ export class RustWgpuVulkanShadowServer {
       vegStepMeters: params.vegStepMeters,
       vegMaxDistanceMeters: params.vegMaxDistanceMeters,
       vegMinClearance: params.vegMinClearance,
+      vegetationIsRaw: params.vegetationIsRaw ?? false,
       originX: params.originX,
       originY: params.originY,
     });

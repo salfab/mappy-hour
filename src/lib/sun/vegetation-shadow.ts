@@ -7,12 +7,15 @@ import { RAW_VEGETATION_SURFACE_DIR } from "@/lib/storage/data-paths";
 
 type TypedRaster = Float32Array | Int16Array | Uint16Array | Int32Array | Uint32Array;
 
+export type VegetationTileKind = "dsm" | "vhm_composed" | "vhm_raw";
+
 interface VegetationSurfaceTileMetadata {
   filePath: string;
   minX: number;
   minY: number;
   maxX: number;
   maxY: number;
+  kind: VegetationTileKind;
 }
 
 interface VegetationSurfaceTile extends VegetationSurfaceTileMetadata {
@@ -93,17 +96,31 @@ function boundsIntersect(
 
 function parseTileBoundsFromFilename(
   filePath: string,
-): Pick<VegetationSurfaceTileMetadata, "minX" | "minY" | "maxX" | "maxY"> | null {
+): Pick<VegetationSurfaceTileMetadata, "minX" | "minY" | "maxX" | "maxY" | "kind"> | null {
   const fileName = path.basename(filePath);
-  // Match either the original SwissSURFACE3D naming
-  //   swisssurface3d-raster_2019_2502-1141_0.5_2056_5728.tif
-  // or the VHM pre-composed naming
-  //   swisssurface3d-raster_vhm_2502-1141.tif
-  const match =
-    /_(\d+)-(\d+)_0(?:\.0|\.5)?_2056_5728\.tif$/i.exec(fileName) ??
-    /_vhm_(\d+)-(\d+)\.tif$/i.exec(fileName);
-  if (!match) {
-    return null;
+  // Match one of:
+  //   swisssurface3d-raster_2019_2502-1141_0.5_2056_5728.tif     (legacy DSM)
+  //   swisssurface3d-raster_vhm_2502-1141.tif                    (composed canopy_abs)
+  //   swisssurface3d-raster_vhm_raw_2502-1141.tif                (raw VHM heights)
+  // Check raw BEFORE composed — regex `_vhm_(\d+)-` would wrongly match
+  // `_vhm_raw_` if checked first (captures `raw` as tileEastingKm).
+  let match: RegExpExecArray | null;
+  let kind: VegetationTileKind;
+  match = /_vhm_raw_(\d+)-(\d+)\.tif$/i.exec(fileName);
+  if (match) {
+    kind = "vhm_raw";
+  } else {
+    match = /_vhm_(\d+)-(\d+)\.tif$/i.exec(fileName);
+    if (match) {
+      kind = "vhm_composed";
+    } else {
+      match = /_(\d+)-(\d+)_0(?:\.0|\.5)?_2056_5728\.tif$/i.exec(fileName);
+      if (match) {
+        kind = "dsm";
+      } else {
+        return null;
+      }
+    }
   }
 
   const tileEastingKm = Number(match[1]);
@@ -119,11 +136,16 @@ function parseTileBoundsFromFilename(
     minY,
     maxX: minX + VEGETATION_TILE_SIZE_METERS,
     maxY: minY + VEGETATION_TILE_SIZE_METERS,
+    kind,
   };
 }
 
 function isVhmTile(filePath: string): boolean {
   return /_vhm_/i.test(path.basename(filePath));
+}
+
+function vegetationUsesRawVhm(): boolean {
+  return process.env.MAPPY_VHM_SHADER_COMPOSE === "1";
 }
 
 async function listTifsRecursively(rootDirectory: string): Promise<string[]> {
@@ -197,26 +219,40 @@ async function loadVegetationTileMetadata(): Promise<
           minY: bbox[1],
           maxX: bbox[2],
           maxY: bbox[3],
+          kind: "dsm", // unknown; treat as DSM so composed VHM wins if co-located
         });
       } finally {
         await closeGeoTiff(tiff);
       }
     }
 
-    // Deduplicate by tile key (minX-minY in km). When both the legacy DSM and
-    // the pre-composed VHM are present for the same tile, prefer the VHM: it
-    // has buildings masked out, giving a cleaner vegetation-only ray-march.
+    // Deduplicate by tile key (minX-minY in km). Preference order depends on
+    // whether the shader will compose (terrain + raw VHM at sample time) or
+    // read an absolute canopy directly.
+    //
+    //   MAPPY_VHM_SHADER_COMPOSE=1 → prefer vhm_raw > vhm_composed > dsm
+    //   (default)                  → prefer vhm_composed > dsm (vhm_raw ignored)
+    const useRaw = vegetationUsesRawVhm();
+    const priorityByKind = useRaw
+      ? { vhm_raw: 3, vhm_composed: 2, dsm: 1 }
+      : { vhm_composed: 3, vhm_raw: 0, dsm: 1 }; // vhm_raw=0 → always loses in default mode
     const byKey = new Map<string, VegetationSurfaceTileMetadata>();
     for (const entry of metadata) {
+      if (priorityByKind[entry.kind] === 0) continue; // filter out raw in default mode
       const key = `${Math.round(entry.minX / 1000)}-${Math.round(entry.minY / 1000)}`;
       const existing = byKey.get(key);
-      if (!existing) {
+      if (!existing || priorityByKind[entry.kind] > priorityByKind[existing.kind]) {
         byKey.set(key, entry);
-      } else if (isVhmTile(entry.filePath) && !isVhmTile(existing.filePath)) {
-        byKey.set(key, entry); // VHM wins over DSM
       }
     }
-    return Array.from(byKey.values());
+    const selected = Array.from(byKey.values());
+    const counts = { dsm: 0, vhm_composed: 0, vhm_raw: 0 };
+    for (const t of selected) counts[t.kind] += 1;
+    console.log(
+      `[vegetation-shadow] tile kinds after dedup (shader-compose=${useRaw ? "on" : "off"}): ` +
+        `vhm_raw=${counts.vhm_raw}, vhm_composed=${counts.vhm_composed}, dsm=${counts.dsm}`,
+    );
+    return selected;
   })();
   vegetationTileMetadataCachePromise = loadPromise;
 
