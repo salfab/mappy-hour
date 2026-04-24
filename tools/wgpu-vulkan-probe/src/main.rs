@@ -2978,7 +2978,6 @@ fn encode_shadow_params(
     bytes[offset..offset + 4].copy_from_slice(&(if vegetation_is_raw { 1u32 } else { 0 }).to_le_bytes());
     offset += 4;
     bytes[offset..offset + 4].copy_from_slice(&0.0_f32.to_le_bytes());
-    offset += 4;
 
     bytes
 }
