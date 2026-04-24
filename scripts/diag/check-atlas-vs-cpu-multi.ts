@@ -76,7 +76,7 @@ const TARGETS: Target[] = [
 
 // Dates réparties sur l'année pour couvrir différentes positions solaires.
 const DATES = [
-  "2026-04-22", // date actuellement précalculée (post-nuke)
+  "2026-04-29", // date actuellement précalculée (Vulkan GPU terrain regen)
 ];
 
 function tileIdFor(easting: number, northing: number, size = 250): string {
