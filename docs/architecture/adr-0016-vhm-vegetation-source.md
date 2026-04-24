@@ -107,4 +107,5 @@ Si un problème survient, renommer les répertoires `swisssurface3d-raster_vhm_*
 - Scripts : `scripts/ingest/download-vegetation-vhm.ts`, `scripts/ingest/compose-vhm-canopy.py`
 - Source data : WSL/NFI "Vegetation Height Model NFI" (DOI 10.16904/1000001.1)
 - Manifests : `data/raw/swisstopo/swisssurface3d_raster/manifest-{region}-vhm.json`
-- Shortcut registry : entry 2b.14 (to be added)
+- Shortcut registry : entry 2b.14
+- Layout / sémantique du répertoire mixte : [docs/data/vegetation-surface-rasters.md](../data/vegetation-surface-rasters.md)
