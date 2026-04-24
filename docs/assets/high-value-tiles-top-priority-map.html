@@ -197,19 +197,21 @@
         data.tiles.forEach((t) => {
           tileCountByRegion[t.region] = (tileCountByRegion[t.region] || 0) + 1;
         });
-        data.areas.forEach((area) => {
-          const color = COLORS[area.region] || "#cc4f39";
-          if (!seenRegions.has(area.region)) {
-            seenRegions.add(area.region);
-            const count = tileCountByRegion[area.region] || 0;
-            const label = area.region.charAt(0).toUpperCase() + area.region.slice(1);
-            legendLines.push(
-              `<div class="legend-item">` +
-              `<span class="legend-swatch" style="background:${color}"></span>` +
-              `${label} <span style="color:#59656f;margin-left:2px">(${count})</span>` +
-              `</div>`,
-            );
-          }
+        // Legend entries come from every region present in the tile list
+        // (not just data.areas, which only covers the places-scored subset).
+        const regionsSorted = Object.keys(tileCountByRegion).sort();
+        regionsSorted.forEach((region) => {
+          if (seenRegions.has(region)) return;
+          seenRegions.add(region);
+          const color = COLORS[region] || "#cc4f39";
+          const count = tileCountByRegion[region] || 0;
+          const label = region.charAt(0).toUpperCase() + region.slice(1);
+          legendLines.push(
+            `<div class="legend-item">` +
+            `<span class="legend-swatch" style="background:${color}"></span>` +
+            `${label} <span style="color:#59656f;margin-left:2px">(${count})</span>` +
+            `</div>`,
+          );
         });
         legend.innerHTML = legendLines.join("");
 
@@ -236,7 +238,14 @@
             fillOpacity: 0.18,
           }).addTo(map);
 
-          const zonesHtml = tile.targetAreaLabels
+          // Tiles merged from a bbox selection (e.g. greater-lausanne) don't
+          // carry the places-density metadata, so every field is optional.
+          const labels = tile.targetAreaLabels ?? [];
+          const ids = tile.targetAreaIds ?? [];
+          const scoreStr = tile.score != null ? tile.score : "—";
+          const outdoorStr =
+            tile.counts?.outdoorSeating != null ? tile.counts.outdoorSeating : "—";
+          const zonesHtml = labels
             .map((l) => `<div style="margin:1px 0">· ${l}</div>`)
             .join("");
           const placesHtml = tile.samplePlaceNames?.length
@@ -244,20 +253,20 @@
             : "";
 
           rectangle.bindTooltip(
-            `<strong>${tile.tileId}</strong><br>Score ${tile.score} · Outdoor ${tile.counts.outdoorSeating}`,
+            `<strong>${tile.tileId}</strong><br>Score ${scoreStr} · Outdoor ${outdoorStr}`,
             { sticky: true },
           );
 
           rectangle.bindPopup(
             `<span class="tile-id">${tile.tileId}</span>` +
             `<div style="margin-top:6px">${zonesHtml}</div>` +
-            `<div style="margin-top:4px;font-size:12px">Score&nbsp;${tile.score} &nbsp;·&nbsp; Outdoor&nbsp;${tile.counts.outdoorSeating}</div>` +
+            `<div style="margin-top:4px;font-size:12px">Score&nbsp;${scoreStr} &nbsp;·&nbsp; Outdoor&nbsp;${outdoorStr}</div>` +
             placesHtml,
           );
 
           rectangle.on("click", () => {
             console.log(
-              `[tile] ${tile.tileId} | region: ${tile.region} | zones: ${tile.targetAreaIds.join(", ")} | score: ${tile.score} | outdoor: ${tile.counts.outdoorSeating}`,
+              `[tile] ${tile.tileId} | region: ${tile.region} | zones: ${ids.join(", ")} | score: ${scoreStr} | outdoor: ${outdoorStr}`,
             );
           });
 
