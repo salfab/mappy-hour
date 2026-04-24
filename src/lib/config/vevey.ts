@@ -6,7 +6,11 @@ export const VEVEY_CENTER = {
 };
 
 // Vevey + La Tour-de-Peilz + Corseaux + Corsier + Chardonne
-export const VEVEY_LOCAL_BBOX: BBox = [6.80, 46.44, 6.89, 46.49];
+// Extended westward (minLon 6.80→6.76) to cover the Lavaux gap between
+// Lausanne region and Vevey proper: Villette, Cully, Grandvaux, Riex,
+// Epesses, Rivaz, Saint-Saphorin. Extended north (maxLat 46.49→46.50)
+// to include upper Grandvaux slopes.
+export const VEVEY_LOCAL_BBOX: BBox = [6.76, 46.44, 6.89, 46.50];
 
 export const VEVEY_HORIZON_RADIUS_KM = 120;
 
