@@ -5,7 +5,7 @@ import {
   evaluateBuildingsShadowTwoLevel,
   loadBuildingsObstacleIndex,
 } from "@/lib/sun/buildings-shadow";
-import { HorizonMask, loadLausanneHorizonMask } from "@/lib/sun/horizon-mask";
+import { HorizonMask } from "@/lib/sun/horizon-mask";
 import {
   DEFAULT_SHADOW_CALIBRATION,
   ShadowCalibration,
@@ -49,7 +49,7 @@ export interface BuildSharedPointEvaluationSourcesOptions {
 }
 
 export interface SharedPointEvaluationSources {
-  horizonMask: Awaited<ReturnType<typeof loadLausanneHorizonMask>>;
+  horizonMask: HorizonMask | null;
   buildingsIndex: Awaited<ReturnType<typeof loadBuildingsObstacleIndex>>;
   terrainTiles: TerrainTileSource[] | null;
   vegetationSurfaceTiles: Awaited<
@@ -96,7 +96,7 @@ export interface PointEvaluationContext {
   buildingsShadowMethod: string;
   vegetationShadowMethod?: string;
   warnings: string[];
-  horizonMask: Awaited<ReturnType<typeof loadLausanneHorizonMask>>;
+  horizonMask: HorizonMask | null;
   buildingShadowEvaluator?: (sample: { azimuthDeg: number; altitudeDeg: number }) => {
     blocked: boolean;
     blockerId: string | null;
@@ -526,11 +526,15 @@ async function getOrCreateWebGpuBackend(
 export async function buildSharedPointEvaluationSources(
   options: BuildSharedPointEvaluationSourcesOptions = {},
 ): Promise<SharedPointEvaluationSources> {
-  const [fallbackHorizonMask, buildingsIndex] = await Promise.all([
-    loadLausanneHorizonMask(),
-    loadBuildingsObstacleIndex(),
-  ]);
-  const horizonMask = options.terrainHorizonOverride ?? fallbackHorizonMask;
+  const buildingsIndex = await loadBuildingsObstacleIndex();
+  // No static horizon-mask fallback: callers that need one must either
+  //  - precompute path → `resolveAdaptiveTerrainHorizonForTile` sets `terrainHorizonOverride`
+  //  - live API path   → build it on the fly via `buildDynamicHorizonMask`
+  // Dropping the old Lausanne-centered fallback avoids silently using a
+  // 40+ km offset mask for Geneva/Vevey/etc. live queries. If a caller
+  // reaches this function without an override and no dynamic builder,
+  // the warning at the bottom of buildPointEvaluationContext flags it.
+  const horizonMask = options.terrainHorizonOverride ?? null;
   const terrainTiles = options.lv95Bounds
     ? await loadTerrainTilesForBounds({
         minX: options.lv95Bounds.minX,
@@ -929,7 +933,7 @@ export async function buildPointEvaluationContext(
   const warnings: string[] = [];
   if (!horizonMask) {
     warnings.push(
-      "No horizon mask found. Run preprocess:horizon:mask (fallback) and ingest terrain horizon DEM tiles for your target area.",
+      "No horizon mask. Callers should supply `terrainHorizonOverride` (live API: buildDynamicHorizonMask; precompute: resolveAdaptiveTerrainHorizonForTile). Far-horizon blocking will be ignored.",
     );
   }
   if (!buildingsIndex) {
