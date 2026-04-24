@@ -38,6 +38,14 @@ export interface BuildSharedPointEvaluationSourcesOptions {
   vegetationSearchDistanceMeters?: number;
   /** Region name for WebGPU IPC worker */
   region?: string;
+  /**
+   * Skip loading the pre-computed zenith indoor mask. The preflight
+   * (`precompute-tile-grid-metadata`) uses this: it cannot require the
+   * metadata it's about to generate. The shared-sources function then
+   * returns `zenithIndoorCheck = undefined`; consumers (like the
+   * preflight itself) run the zenith shadow render and derive the mask.
+   */
+  skipZenithIndoorCheck?: boolean;
 }
 
 export interface SharedPointEvaluationSources {
@@ -612,7 +620,7 @@ export async function buildSharedPointEvaluationSources(
   // Provides accurate indoor/outdoor detection using real DXF mesh geometry
   // instead of convex hull footprints. Generated once per building model.
   let zenithIndoorCheck: SharedPointEvaluationSources["zenithIndoorCheck"];
-  if (options.lv95Bounds) {
+  if (options.lv95Bounds && !options.skipZenithIndoorCheck) {
     try {
       const { loadTileGridMetadata } = await import("@/lib/precompute/tile-grid-metadata");
       const { getSunlightModelVersion } = await import("@/lib/precompute/model-version");

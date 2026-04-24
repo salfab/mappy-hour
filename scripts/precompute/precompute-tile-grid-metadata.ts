@@ -116,6 +116,9 @@ async function main() {
         maxY: tile.maxNorthing,
       },
       region: args.region,
+      // We ARE the preflight generating the grid metadata — the fail-fast
+      // in shared-sources would otherwise create a chicken-and-egg loop.
+      skipZenithIndoorCheck: true,
     });
 
     const elevations: (number | null)[] = new Array(rawPoints.length);

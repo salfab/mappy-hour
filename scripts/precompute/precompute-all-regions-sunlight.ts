@@ -101,10 +101,15 @@ function ensureGridMetadataForAllRegions(
       `--grid-step-meters=${gridStepMeters}`,
     ];
     console.log(`[precompute-all]   · grid-metadata région=${region}`);
+    // The preflight renders a zenith shadow map to classify indoor/outdoor;
+    // it evaluates one point at a time through BuildingShadowBackend.evaluate,
+    // which only gpu-raster implements. The Vulkan backend is batch-only and
+    // has no single-point path, so we force gpu-raster here regardless of the
+    // main compute mode — the metadata produced is backend-agnostic.
     const result = spawnSync("npx", ["tsx", ...args], {
       stdio: "inherit",
       shell: process.platform === "win32",
-      env: { ...process.env, MAPPY_BUILDINGS_SHADOW_MODE: buildingsShadowMode },
+      env: { ...process.env, MAPPY_BUILDINGS_SHADOW_MODE: "gpu-raster" },
     });
     if (result.status !== 0) {
       throw new Error(
