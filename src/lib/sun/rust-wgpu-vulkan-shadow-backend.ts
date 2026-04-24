@@ -890,23 +890,30 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     this.pointsBinPath = newPath;
     if (previous) await this.deleteRuntimeFile(previous);
     // reload_points recreates the shadow-compute resources on the server
-    // side, so any horizon/vegetation data previously uploaded is gone.
-    // Invalidate our cached hashes; callers must re-upload before relying
-    // on terrain / vegetation masks.
+    // side, so any horizon/vegetation/terrain data previously uploaded is
+    // gone. Invalidate our cached hashes; callers must re-upload before
+    // relying on terrain / vegetation / horizon masks.
     this.serverHorizonHash = null;
     this.serverVegetationHash = null;
+    this.serverTerrainHash = null;
     const prevMasks = this.horizonMasksBinPath;
     const prevIndices = this.horizonIndicesBinPath;
     const prevVegMeta = this.vegetationMetaBinPath;
     const prevVegData = this.vegetationDataBinPath;
+    const prevTerrainMeta = this.terrainMetaBinPath;
+    const prevTerrainData = this.terrainDataBinPath;
     this.horizonMasksBinPath = null;
     this.horizonIndicesBinPath = null;
     this.vegetationMetaBinPath = null;
     this.vegetationDataBinPath = null;
+    this.terrainMetaBinPath = null;
+    this.terrainDataBinPath = null;
     if (prevMasks) await this.deleteRuntimeFile(prevMasks);
     if (prevIndices) await this.deleteRuntimeFile(prevIndices);
     if (prevVegMeta) await this.deleteRuntimeFile(prevVegMeta);
     if (prevVegData) await this.deleteRuntimeFile(prevVegData);
+    if (prevTerrainMeta) await this.deleteRuntimeFile(prevTerrainMeta);
+    if (prevTerrainData) await this.deleteRuntimeFile(prevTerrainData);
   }
 
   private currentFocusKey(): string {
