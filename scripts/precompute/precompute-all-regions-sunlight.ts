@@ -38,6 +38,62 @@ function readRegionsFromSelectionFile(filePath: string): string[] {
   ];
 }
 
+function countTilesPerRegion(filePath: string): Record<string, number> {
+  const raw = fs.readFileSync(path.resolve(process.cwd(), filePath), "utf8");
+  const data = JSON.parse(raw) as { tiles: Array<{ region: string }> };
+  const counts: Record<string, number> = {};
+  for (const t of data.tiles) counts[t.region] = (counts[t.region] ?? 0) + 1;
+  return counts;
+}
+
+function parseArgValue(argv: string[], prefix: string): string | null {
+  for (const arg of argv) {
+    if (arg.startsWith(prefix)) return arg.slice(prefix.length);
+  }
+  return null;
+}
+
+function printRunRecap(params: {
+  selectionFile: string;
+  regions: string[];
+  tileCounts: Record<string, number>;
+  buildingsShadowMode: string;
+  gridStepMeters: number;
+  passthrough: string[];
+}): void {
+  const startDate = parseArgValue(params.passthrough, "--start-date=") ?? "(today)";
+  const days = parseArgValue(params.passthrough, "--days=") ?? "1";
+  const startLocalTime = parseArgValue(params.passthrough, "--start-local-time=") ?? "(dawn)";
+  const endLocalTime = parseArgValue(params.passthrough, "--end-local-time=") ?? "(dusk)";
+  const sampleEvery = parseArgValue(params.passthrough, "--sample-every-minutes=") ?? "15";
+  const skipExisting = parseArgValue(params.passthrough, "--skip-existing=") ?? "true";
+  const totalTiles = Object.values(params.tileCounts).reduce((a, b) => a + b, 0);
+
+  const box = [
+    "",
+    "╔═══════════════════════════════════════════════════════════════════════╗",
+    "║                    PRECOMPUTE RUN RECAP                               ║",
+    "╚═══════════════════════════════════════════════════════════════════════╝",
+  ];
+  console.log(box.join("\n"));
+  console.log(`  Tile selection   : ${params.selectionFile}`);
+  console.log(`  Total tiles      : ${totalTiles}`);
+  console.log(`  Regions (${params.regions.length})      : ${params.regions.join(", ")}`);
+  for (const region of params.regions) {
+    const count = params.tileCounts[region] ?? 0;
+    const bar = "█".repeat(Math.max(1, Math.round((count / totalTiles) * 40)));
+    console.log(
+      `    • ${region.padEnd(10)} ${count.toString().padStart(5)} tiles  ${bar}`,
+    );
+  }
+  console.log(`  Date range       : ${startDate} (+ ${days} day${days === "1" ? "" : "s"})`);
+  console.log(`  Local time win.  : ${startLocalTime} → ${endLocalTime}, every ${sampleEvery} min`);
+  console.log(`  Buildings mode   : ${params.buildingsShadowMode}`);
+  console.log(`  Grid step        : ${params.gridStepMeters} m`);
+  console.log(`  Skip existing    : ${skipExisting}`);
+  console.log("───────────────────────────────────────────────────────────────────────\n");
+}
+
 function parseSelectionFileArg(argv: string[]): string | null {
   for (const arg of argv) {
     if (arg.startsWith("--tile-selection-file=")) {
@@ -138,21 +194,30 @@ function main() {
   }
 
   const regions = readRegionsFromSelectionFile(selectionFile);
+  const tileCounts = countTilesPerRegion(selectionFile);
   const cliBuildingsShadowMode = parseBuildingsShadowModeArg(passthrough);
   const buildingsShadowMode =
     cliBuildingsShadowMode ??
     (process.env.MAPPY_BUILDINGS_SHADOW_MODE
       ? parseBuildingsShadowMode(process.env.MAPPY_BUILDINGS_SHADOW_MODE)
       : "gpu-raster");
-  console.log(`[precompute-all] régions détectées depuis le fichier : ${regions.join(", ")}`);
-  console.log(`[precompute-all] buildingsShadowMode=${buildingsShadowMode}`);
+
+  const gridStepMeters = parseGridStepMetersArg(passthrough);
+
+  printRunRecap({
+    selectionFile,
+    regions,
+    tileCounts,
+    buildingsShadowMode,
+    gridStepMeters,
+    passthrough,
+  });
+
   if (buildingsShadowMode === "rust-wgpu-vulkan") {
     console.warn(
       "[precompute-all] EXPERIMENTAL cachePolicy=shared-contract : les caches gpu-raster compatibles peuvent être réutilisés/skippés.",
     );
   }
-
-  const gridStepMeters = parseGridStepMetersArg(passthrough);
 
   try {
     ensureGridMetadataForAllRegions(regions, selectionFile, gridStepMeters, buildingsShadowMode);
