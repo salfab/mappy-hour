@@ -50,14 +50,19 @@ async function main() {
   }
 
   const jsonOneLine = JSON.stringify(JSON.parse(jsonRaw));
-  const updated = html.replace(
+  const sourceRel = path.relative(ROOT, args.json).replace(/\\/g, "/");
+  const withData = html.replace(
     /const SELECTION_DATA = (?:null|\{[\s\S]*?\});/,
     `const SELECTION_DATA = ${jsonOneLine};`,
+  );
+  const updated = withData.replace(
+    /const SOURCE_FILE = (?:null|"[^"]*");/,
+    `const SOURCE_FILE = ${JSON.stringify(sourceRel)};`,
   );
 
   await fs.writeFile(args.html, updated, "utf8");
   console.log(
-    `[embed-tile-selection] JSON embarqué (${Math.round(jsonOneLine.length / 1024)} KB) dans ${path.relative(ROOT, args.html)}`,
+    `[embed-tile-selection] JSON embarqué (${Math.round(jsonOneLine.length / 1024)} KB) dans ${path.relative(ROOT, args.html)}; source=${sourceRel}`,
   );
 }
 
