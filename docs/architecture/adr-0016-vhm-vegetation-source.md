@@ -41,10 +41,11 @@ Alternative "refacto shader" gardée en tête pour une future évolution si on v
 
 ### Implémentation
 
-1. `scripts/ingest/download-vegetation-vhm.ts` : wrapper Node qui appelle un script Python (rasterio requis pour le codec LERC que GDAL/Node ne supporte pas).
-2. `scripts/ingest/compose-vhm-canopy.py` : lit le VHM via HTTP range sur le COG EnviDat (URL `doi/1000001.1/2022/landesforstinventar-vegetationshoehenmodell_stereo_2022_2056.tif`), lit les tuiles SwissALTI3D locales, compose `canopy_abs`, écrit les tuiles 1 km × 1 km en GeoTIFF.
-3. Output : `data/raw/swisstopo/swisssurface3d_raster/swisssurface3d-raster_vhm_<e>-<n>/*.tif` — **même arborescence** que le DSM SwissSURFACE3D existant.
-4. `vegetation-shadow.ts` (`swissSurfaceFindTilesForBounds`) **prefère** les tuiles VHM lorsqu'une cellule km a à la fois une tuile DSM et une tuile VHM (`vhm_` prefix gagne).
+1. `scripts/ingest/download-vegetation-vhm.ts` : wrapper Node qui orchestre les deux scripts Python (rasterio requis pour le codec LERC que GDAL/Node ne supporte pas). Option `--skip-compose` pour n'ingérer que le raw.
+2. `scripts/ingest/download-vhm.py` : lit le VHM via HTTP range sur le COG EnviDat (URL `doi/1000001.1/2022/landesforstinventar-vegetationshoehenmodell_stereo_2022_2056.tif`), clamp ≥0, nodata→0, écrit les tuiles **raw** 1 km × 1 km (heights relatives au sol) en GeoTIFF.
+3. `scripts/ingest/compose-vhm-canopy.py` : lit les tuiles raw déjà téléchargées + les tuiles SwissALTI3D locales, écrit les tuiles **composées** `canopy_abs = terrain + max(0, vhm)`.
+4. Outputs : `data/raw/swisstopo/swisssurface3d_raster/swisssurface3d-raster_vhm_raw_<e>-<n>/*.tif` (raw, pour option B) et `swisssurface3d-raster_vhm_<e>-<n>/*.tif` (composé, pour option A + CPU) — **même arborescence** que le DSM SwissSURFACE3D existant.
+5. `vegetation-shadow.ts` (`swissSurfaceFindTilesForBounds`) **prefère** les tuiles VHM (composées par défaut, raw si `MAPPY_VHM_SHADER_COMPOSE=1`) lorsqu'une cellule km a plusieurs sources — voir priority map dans le code.
 
 ### Couverture produite
 
