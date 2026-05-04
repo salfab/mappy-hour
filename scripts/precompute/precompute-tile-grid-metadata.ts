@@ -80,7 +80,14 @@ async function main() {
   }
 
   if (tileIds && tileIds.length === 0) {
-    throw new Error("No tiles selected after applying tile-selection-file/bbox filters.");
+    // Benign no-op: precompute-all-regions runs a 2-pass × N-region matrix
+    // where many cells legitimately have no tiles for the (region, group)
+    // combo. Returning here keeps exit code 0 instead of polluting the
+    // parent log with `✗ a échoué`.
+    console.log(
+      `[grid-metadata] no tiles selected after applying tile-selection-file/bbox/group filters — exiting cleanly.`,
+    );
+    return;
   }
 
   const tiles = tileIds ? allTiles.filter((tile) => tileIds.includes(tile.tileId)) : allTiles;

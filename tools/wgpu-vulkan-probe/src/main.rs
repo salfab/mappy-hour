@@ -166,6 +166,49 @@ fn parse_f32_tuple4(key: &str, value: &str) -> Result<[f32; 4], String> {
     Ok([a, b, c, d])
 }
 
+/// Build the wgpu limits we'll request from the device, taking the
+/// adapter's advertised maximum for every limit we actually rely on.
+///
+/// `wgpu::Limits::default()` is sized for the lowest common denominator
+/// (mobile / WebGPU baseline), which silently caps us far below what
+/// modern desktop GPUs (Intel Arc, NVIDIA, AMD) can offer. Every limit
+/// here was either hit in production (storage_buffer_binding_size on
+/// Morges-west tiles, see commit 7856ee7) or is structurally coupled
+/// to one that was. The `.max(default)` form keeps the default as a
+/// safety floor so a misconfigured adapter never lowers our ceiling.
+fn negotiate_required_limits(adapter_limits: &wgpu::Limits) -> wgpu::Limits {
+    let defaults = wgpu::Limits::default();
+    let mut limits = defaults.clone();
+
+    // 10 storage buffers in the shadow compute shader (points, buildings,
+    // horizon_masks, horizon_indices, terrain_data, veg_meta, veg_data,
+    // vegetation_results, sunny, sunny_no_veg) plus 4 result/meta = 14.
+    // Default is 8.
+    limits.max_storage_buffers_per_shader_stage = adapter_limits
+        .max_storage_buffers_per_shader_stage
+        .max(defaults.max_storage_buffers_per_shader_stage)
+        .max(12);
+
+    // The terrain_data binding (binding 13) holds concatenated SwissALTI3D
+    // rasters for every km cell touching the focus zone. Pre-dedup it
+    // peaked > 128 MiB on Morges-west (commit 7856ee7); post-dedup it stays
+    // well under, but we keep this lifted to avoid silent re-introduction.
+    limits.max_storage_buffer_binding_size = adapter_limits
+        .max_storage_buffer_binding_size
+        .max(defaults.max_storage_buffer_binding_size);
+
+    // max_buffer_size is the absolute total cap on a single VkBuffer.
+    // It must be ≥ max_storage_buffer_binding_size to be useful, and the
+    // wgpu default of 256 MiB is uncomfortably close to our worst-case
+    // single-buffer (terrain pack pre-dedup = 136 MiB, shadow map at higher
+    // resolutions could approach this too). Negotiate adapter max.
+    limits.max_buffer_size = adapter_limits
+        .max_buffer_size
+        .max(defaults.max_buffer_size);
+
+    limits
+}
+
 async fn run(config: Config) -> Result<(), String> {
     eprintln!(
         "[wgpu-vulkan-probe] start os={} arch={} rust={} mode={:?} iterations={} triangles={} resolution={} points={} azimuth_deg={} azimuth_step_deg={} altitude_deg={} mesh_bin={} points_bin={} focus_bounds={}",
@@ -242,22 +285,7 @@ async fn run(config: Config) -> Result<(), String> {
     );
 
     let adapter_limits = adapter.limits();
-    let mut required_limits = wgpu::Limits::default();
-    // Phase E: shadow compute shader now uses 10 storage buffers
-    // (points, buildings, horizon_masks, horizon_indices, terrain, veg_meta,
-    //  veg_data, vegetation, sunny, sunny_no_veg). Default limit is 8.
-    required_limits.max_storage_buffers_per_shader_stage = adapter_limits
-        .max_storage_buffers_per_shader_stage
-        .max(12);
-    // Border tiles in Morges-west (Saint-Sulpice / Préverenges) and similar
-    // hot spots assemble a terrain raster pack > 128 MiB for binding 13
-    // (terrain_data). The wgpu default cap of 134_217_728 bytes (= 128 MiB)
-    // makes the bind group fail at create time. Intel Arc 140V supports
-    // multiple GB per binding, so just request whatever the adapter
-    // advertises (still bounded by the actual VRAM).
-    required_limits.max_storage_buffer_binding_size = adapter_limits
-        .max_storage_buffer_binding_size
-        .max(required_limits.max_storage_buffer_binding_size);
+    let required_limits = negotiate_required_limits(&adapter_limits);
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("wgpu-vulkan-probe-device"),

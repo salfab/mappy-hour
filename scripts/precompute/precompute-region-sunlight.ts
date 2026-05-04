@@ -268,7 +268,15 @@ async function main() {
   }
 
   if (tileIds && tileIds.length === 0) {
-    throw new Error("No tiles selected after applying tile-selection-file/bbox filters.");
+    // Empty result is a benign no-op when this script is called as part of
+    // a 2-pass × N-region matrix by precompute-all-regions: most cells of
+    // the matrix have no tiles for the (region, group-filter) combo, and
+    // throwing here surfaced as a misleading `✗ a échoué (exit 1)` line in
+    // the parent log even though nothing was wrong.
+    console.log(
+      `[precompute] no tiles selected after applying tile-selection-file/bbox/group filters — exiting cleanly.`,
+    );
+    return;
   }
 
   const allTiles = buildRegionTiles(args.region, 250);
