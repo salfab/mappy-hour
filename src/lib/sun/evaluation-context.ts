@@ -636,7 +636,7 @@ export async function buildSharedPointEvaluationSources(
       const tileMinN = Math.floor(options.lv95Bounds.minY / tileSizeMeters) * tileSizeMeters;
       const tileId = `e${tileMinE}_n${tileMinN}_s${tileSizeMeters}`;
       const metadata = await loadTileGridMetadata(
-        regionName, modelVersion.modelVersionHash, 1, tileId,
+        regionName, modelVersion.gridMetadataHash, 1, tileId,
       );
       if (metadata) {
         const gridMinIx = Math.floor(tileMinE);

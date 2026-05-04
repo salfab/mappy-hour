@@ -1484,7 +1484,7 @@ export async function precomputeCacheRuns(
           try {
             const { loadTileGridMetadata } = await import("@/lib/precompute/tile-grid-metadata");
             gridMetadata = await loadTileGridMetadata(
-              request.region, modelVersion.modelVersionHash, request.gridStepMeters, tile.tileId,
+              request.region, modelVersion.gridMetadataHash, request.gridStepMeters, tile.tileId,
             );
           } catch {
             // grid metadata not available — proceed without

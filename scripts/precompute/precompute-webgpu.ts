@@ -181,7 +181,7 @@ async function main() {
 
       const tileStart = performance.now();
       const gridMetadata = await loadTileGridMetadata(
-        args.region, modelVersion.modelVersionHash, args.gridStepMeters, tile.tileId,
+        args.region, modelVersion.gridMetadataHash, args.gridStepMeters, tile.tileId,
       );
       const artifact = await computeSunlightTileArtifact({
         region: args.region,

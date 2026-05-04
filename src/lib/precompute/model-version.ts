@@ -36,7 +36,26 @@ interface ManifestSummary {
 }
 
 export interface SunlightModelVersion {
+  /**
+   * Full payload hash. Bumps on ANY input change. Drives the atlas cache
+   * directory (`data/cache/sunlight/{region}/{modelVersionHash}/...`) and the
+   * adaptive horizon sharing cache.
+   */
   modelVersionHash: string;
+  /**
+   * Narrower hash, scoped to inputs that actually affect the per-tile zenith
+   * indoor mask + per-point elevation produced by the preflight (see
+   * `precompute-tile-grid-metadata.ts`). Excludes vegetation/horizon manifests
+   * and the adaptive horizon sharing config — those don't influence the
+   * zenith shadow render. Allows the heavy preflight (~4s/tile gpu-raster)
+   * to be reused across atlas-only bumps (VHM re-ingest, algorithm bump on
+   * the binary atlas format, etc.).
+   *
+   * Conservative on what it includes: buildings + terrain manifest + terrain
+   * selection strategy + calibration + algorithm version. A change to any
+   * of these legitimately invalidates the grid metadata.
+   */
+  gridMetadataHash: string;
   algorithmVersion: string;
   artifactFormatVersion: number;
   inputs: {
@@ -164,10 +183,28 @@ export async function getSunlightModelVersion(
     adaptiveHorizonSharing: adaptiveHorizonSharingConfig,
   };
 
+  // Narrow payload for grid-metadata cache key: only the inputs the zenith
+  // shadow + elevation classification actually depend on. Excludes
+  // vegetation/horizon/adaptiveSharing — those affect the atlas only, not
+  // the indoor mask.
+  const gridMetadataPayload = {
+    algorithmVersion: SUNLIGHT_CACHE_ALGORITHM_VERSION,
+    region,
+    calibration: shadowCalibration,
+    buildings: payload.buildings,
+    terrainManifest,
+    terrainSelectionStrategy: TERRAIN_SELECTION_STRATEGY,
+  };
+
   const modelVersion: SunlightModelVersion = {
     modelVersionHash: crypto
       .createHash("sha256")
       .update(JSON.stringify(payload))
+      .digest("hex")
+      .slice(0, 16),
+    gridMetadataHash: crypto
+      .createHash("sha256")
+      .update(JSON.stringify(gridMetadataPayload))
       .digest("hex")
       .slice(0, 16),
     algorithmVersion: SUNLIGHT_CACHE_ALGORITHM_VERSION,

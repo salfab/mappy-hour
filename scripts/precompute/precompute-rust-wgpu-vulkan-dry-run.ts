@@ -265,7 +265,7 @@ async function main(): Promise<void> {
   const model = await getSunlightModelVersion(args.region, shadowCalibration);
   const loadedGridMetadata = await loadTileGridMetadata(
     args.region,
-    model.modelVersionHash,
+    model.gridMetadataHash,
     args.gridStepMeters,
     tile.tileId,
   );

@@ -42,7 +42,7 @@ async function main() {
   });
   if (!atlas) throw new Error(`pas d'atlas pour ${tileId}`);
 
-  const metadata = await loadTileGridMetadata(region, modelVersion.modelVersionHash, 1, tileId);
+  const metadata = await loadTileGridMetadata(region, modelVersion.gridMetadataHash, 1, tileId);
   if (!metadata) throw new Error(`pas de grid metadata`);
 
   const regionTiles = buildRegionTiles(region, size);

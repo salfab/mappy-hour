@@ -93,7 +93,7 @@ async function main() {
   const tiles = tileIds ? allTiles.filter((tile) => tileIds.includes(tile.tileId)) : allTiles;
 
   const modelVersion = await getSunlightModelVersion(args.region, { buildingHeightBiasMeters: 0 });
-  console.log(`[grid-metadata] region=${args.region} model=${modelVersion.modelVersionHash} tiles=${tiles.length} grid=${args.gridStepMeters}m`);
+  console.log(`[grid-metadata] region=${args.region} gridHash=${modelVersion.gridMetadataHash} (atlasHash=${modelVersion.modelVersionHash}) tiles=${tiles.length} grid=${args.gridStepMeters}m`);
 
   const globalStart = performance.now();
   let totalOutdoor = 0;
@@ -104,7 +104,7 @@ async function main() {
     const tileStart = performance.now();
 
     // Check if already exists
-    const existing = await loadTileGridMetadata(args.region, modelVersion.modelVersionHash, args.gridStepMeters, tile.tileId);
+    const existing = await loadTileGridMetadata(args.region, modelVersion.gridMetadataHash, args.gridStepMeters, tile.tileId);
     if (existing) {
       totalOutdoor += existing.outdoorCount;
       totalIndoor += existing.indoorCount;
@@ -179,7 +179,7 @@ async function main() {
 
     const metadata: TileGridMetadata = {
       tileId: tile.tileId,
-      modelVersionHash: modelVersion.modelVersionHash,
+      modelVersionHash: modelVersion.gridMetadataHash,
       gridStepMeters: args.gridStepMeters,
       totalPoints: rawPoints.length,
       outdoorCount,
@@ -188,8 +188,8 @@ async function main() {
       indoor,
     };
 
-    // Write compressed
-    const filePath = getTileGridMetadataPath(args.region, modelVersion.modelVersionHash, args.gridStepMeters, tile.tileId);
+    // Write compressed under the narrower grid metadata hash dir.
+    const filePath = getTileGridMetadataPath(args.region, modelVersion.gridMetadataHash, args.gridStepMeters, tile.tileId);
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     const compressed = await gzip(JSON.stringify(metadata));
     await fs.writeFile(filePath, compressed);

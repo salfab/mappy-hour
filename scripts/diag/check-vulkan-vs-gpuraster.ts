@@ -124,8 +124,8 @@ async function main() {
 
   // ─── 2) Charger points outdoor via grid metadata ────────────────────
   const modelVersion = await getSunlightModelVersion(args.region, { buildingHeightBiasMeters: 0 });
-  const metadata = await loadTileGridMetadata(args.region, modelVersion.modelVersionHash, 1, args.tileId);
-  if (!metadata) throw new Error(`Grid metadata absente pour ${args.region}/${args.tileId} (model=${modelVersion.modelVersionHash}).`);
+  const metadata = await loadTileGridMetadata(args.region, modelVersion.gridMetadataHash, 1, args.tileId);
+  if (!metadata) throw new Error(`Grid metadata absente pour ${args.region}/${args.tileId} (gridHash=${modelVersion.gridMetadataHash}, atlasHash=${modelVersion.modelVersionHash}).`);
 
   // Reconstruire les points avec le même buildTilePoints que le precompute
   const regionTiles = buildRegionTiles(args.region, bounds.size);

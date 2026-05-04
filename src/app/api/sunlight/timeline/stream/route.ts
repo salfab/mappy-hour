@@ -354,7 +354,7 @@ export async function GET(request: Request) {
               shadowCalibration,
             ) : null;
             const gridMetadata = region && gmModelVersion ? await loadTileGridMetadata(
-              region, gmModelVersion.modelVersionHash, query.gridStepMeters, gmTileId,
+              region, gmModelVersion.gridMetadataHash, query.gridStepMeters, gmTileId,
             ) : null;
 
             if (atlas ?? binary) {

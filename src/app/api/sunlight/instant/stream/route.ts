@@ -240,7 +240,7 @@ export async function GET(request: Request) {
               for (let n = Math.floor(minN / TS) * TS; n <= maxN; n += TS) {
                 const tileId = `e${e}_n${n}_s${TS}`;
                 loads.push(
-                  loadTileGridMetadata(region, modelVersion.modelVersionHash, 1, tileId).then(
+                  loadTileGridMetadata(region, modelVersion.gridMetadataHash, 1, tileId).then(
                     (md) => { if (md) metaByTile.set(tileId, md); },
                   ),
                 );
