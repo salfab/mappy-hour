@@ -59,25 +59,46 @@ C'est un chantier à faire si on veut des métriques rigoureuses post-refacto. P
 
 ## Validation CPU vs Vulkan post-refacto
 
-**Non exécutée** dans cette session — `scripts/diag/check-atlas-vs-cpu-multi.ts` a un set de 5 cibles Lausanne hardcodées (e2538000_n1152500, etc.) qui ne sont **PAS dans la sélection golden** (je n'avais pris que e2536750_n1152000 et e2533000_n1153000 pour Lausanne). Pour valider le post-refacto contre CPU :
+**✅ Exécutée et validée**. Procédure utilisée :
 
-1. Soit étendre la sélection golden avec les 5 cibles hardcodées
-2. Soit modifier le `modelHash` dans le script de check pour pointer sur `bff55b407db8426b` (post-refacto)
-3. Soit écrire un check ad-hoc sur les 7 tuiles golden
+1. Précompute des 5 tuiles cibles + 5 voisines (les voisines sont nécessaires pour la grid-metadata du point cliqué, qui peut tomber dans la tuile adjacente) sous le nouveau hash `bff55b407db8426b` :
+   ```
+   pnpm precompute:all-regions:vulkan -- \
+     --tile-selection-file=data/processed/precompute/cpu-check-targets-2026-05-04.json \
+     --start-date=2026-04-29 --days=1 --skip-existing=true
+   ```
+2. Run le check avec env override (commit du flag dans `check-atlas-vs-cpu-multi.ts`) :
+   ```
+   MAPPY_BUILDINGS_SHADOW_MODE=gpu-raster MAPPY_CHECK_MODEL_HASH=bff55b407db8426b \
+     pnpm exec tsx scripts/diag/check-atlas-vs-cpu-multi.ts
+   ```
 
-**À faire avant merge officiel** si on veut le seuil 2% mism% formellement validé.
+**Résultats** : `cpu-vs-vulkan.log` dans ce dossier. Comparaison directe baseline vs post-refacto :
+
+| Cible | Mism% baseline | Mism% post-refacto | Δ |
+|---|---|---|---|
+| LAU Rumine ouest | 3.5% (2 mism, 1 miss) | 3.5% (2 mism, 0 miss) | identique |
+| LAU St-François N | 0.0% | 0.0% | identique |
+| LAU Cathédrale N | 1.8% | 1.8% | identique |
+| LAU Pont Bessières | 1.8% | 1.8% | identique |
+| LAU Chauderon | 0.0% | 0.0% | identique |
+| **Moyenne** | **1.4%** | **1.4%** | **identique** |
+
+**Verdict bit-parity** : strictement aucune régression sur la précision sun/shadow. Les `miss` baseline (atlas qui n'avait pas certains buckets requis) sont passés à 0 post-refacto = bonus de complétude (run frais, full day).
+
+Note : LAU Rumine ouest reste à 3.5% (au-dessus du seuil 2% du CLAUDE.md), mais c'est un état pré-existant identique à la baseline — **pas introduit par ce refacto**. C'est un finding séparé (probablement un bâtiment haut spécifique à Rumine qui crée des ombres sub-pixel mal alignées entre Vulkan et CPU).
 
 ## Critères de décision GO/NO-GO (récap procedure README baseline)
 
 | Critère | Cible | Mesuré | Status |
 |---|---|---|---|
-| `mism%` moyen CPU vs Vulkan | < 2% | non mesuré post-refacto | ⏸ pending |
+| `mism%` moyen CPU vs Vulkan | < 2% | 1.4% (identique baseline) | ✅ |
 | Vevey perf | < 90% baseline (40s) | 6s = 13% | ✅ très large succès |
 | Erreurs / panics | 0 | 0 | ✅ |
 | Hash modèle bump | distinct par région | 4/4 distincts | ✅ |
 | Dédup observable | < total TIFs | 775 / 2072 = 37% | ✅ |
 
-**Verdict pragmatique** : 4 critères sur 5 verts, 1 seul (CPU mism%) reste à mesurer formellement. Le gain perf 7.5× sur vevey est massif. Aucune erreur. Bug latent corrigé en chemin (vevey region parser). Le refacto vaut clairement la peine. Le critère manquant peut être validé en ~30 min en étendant la sélection golden avec les 5 points Lausanne hardcodés et en re-runnant `check-atlas-vs-cpu-multi.ts`.
+**Verdict** : 5 critères sur 5 verts. Refacto **validé pour merge / passage en production**. Tag `baseline/dedup-terrain-2026-05-04` reste pour rollback si surprise plus tard.
 
 ## Files in this snapshot
 

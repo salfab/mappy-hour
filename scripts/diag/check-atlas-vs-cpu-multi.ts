@@ -58,21 +58,34 @@ type Target = {
   lon: number;
 };
 
+// Override the per-target modelHash with a single hash via env var. Useful
+// during refactors that bump modelVersionHash (e.g. terrain dedup 2026-05-04)
+// — set MAPPY_CHECK_MODEL_HASH=<new hash> and the script reads atlases from
+// the new cache dir without editing the targets list.
+const MODEL_HASH_OVERRIDE = process.env.MAPPY_CHECK_MODEL_HASH?.trim() || null;
+const DEFAULT_LAUSANNE_HASH = "d43fe24cbb9190af";
+
 // Points critiques pour tester les ombres de bâtiments :
 // chaque point est près d'un gros bâtiment qui devrait projeter une ombre
 // marquée à certaines heures.
 const TARGETS: Target[] = [
   // Lausanne — Rumine (tuile régénérée avec Niveau 3 + merge fix, sert de baseline)
-  { label: "LAU Rumine ouest", region: "lausanne", modelHash: "d43fe24cbb9190af", lat: 46.5231, lon: 6.6323 },
+  { label: "LAU Rumine ouest", region: "lausanne", modelHash: MODEL_HASH_OVERRIDE ?? DEFAULT_LAUSANNE_HASH, lat: 46.5231, lon: 6.6323 },
   // Lausanne — St-François
-  { label: "LAU St-François N", region: "lausanne", modelHash: "d43fe24cbb9190af", lat: 46.5204, lon: 6.6333 },
+  { label: "LAU St-François N", region: "lausanne", modelHash: MODEL_HASH_OVERRIDE ?? DEFAULT_LAUSANNE_HASH, lat: 46.5204, lon: 6.6333 },
   // Lausanne — Cathédrale sud
-  { label: "LAU Cathédrale N", region: "lausanne", modelHash: "d43fe24cbb9190af", lat: 46.5236, lon: 6.6354 },
+  { label: "LAU Cathédrale N", region: "lausanne", modelHash: MODEL_HASH_OVERRIDE ?? DEFAULT_LAUSANNE_HASH, lat: 46.5236, lon: 6.6354 },
   // Lausanne — Pont Bessières (ombres fortes du pont + immeubles hauts)
-  { label: "LAU Pont Bessières", region: "lausanne", modelHash: "d43fe24cbb9190af", lat: 46.5222, lon: 6.6348 },
+  { label: "LAU Pont Bessières", region: "lausanne", modelHash: MODEL_HASH_OVERRIDE ?? DEFAULT_LAUSANNE_HASH, lat: 46.5222, lon: 6.6348 },
   // Lausanne — Chauderon (rue Centrale, ombres matinales)
-  { label: "LAU Chauderon", region: "lausanne", modelHash: "d43fe24cbb9190af", lat: 46.5255, lon: 6.6245 },
+  { label: "LAU Chauderon", region: "lausanne", modelHash: MODEL_HASH_OVERRIDE ?? DEFAULT_LAUSANNE_HASH, lat: 46.5255, lon: 6.6245 },
 ];
+
+if (MODEL_HASH_OVERRIDE) {
+  console.error(
+    `[check-atlas-vs-cpu-multi] modelHash override active: ${MODEL_HASH_OVERRIDE} (default ${DEFAULT_LAUSANNE_HASH} ignored)`,
+  );
+}
 
 // Dates réparties sur l'année pour couvrir différentes positions solaires.
 const DATES = [
