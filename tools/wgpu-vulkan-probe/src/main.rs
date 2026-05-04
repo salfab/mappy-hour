@@ -249,6 +249,15 @@ async fn run(config: Config) -> Result<(), String> {
     required_limits.max_storage_buffers_per_shader_stage = adapter_limits
         .max_storage_buffers_per_shader_stage
         .max(12);
+    // Border tiles in Morges-west (Saint-Sulpice / Préverenges) and similar
+    // hot spots assemble a terrain raster pack > 128 MiB for binding 13
+    // (terrain_data). The wgpu default cap of 134_217_728 bytes (= 128 MiB)
+    // makes the bind group fail at create time. Intel Arc 140V supports
+    // multiple GB per binding, so just request whatever the adapter
+    // advertises (still bounded by the actual VRAM).
+    required_limits.max_storage_buffer_binding_size = adapter_limits
+        .max_storage_buffer_binding_size
+        .max(required_limits.max_storage_buffer_binding_size);
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("wgpu-vulkan-probe-device"),
