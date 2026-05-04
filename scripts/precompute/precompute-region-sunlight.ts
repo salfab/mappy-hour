@@ -71,9 +71,17 @@ function parseArgs(argv: string[]): ParsedArgs {
         region === "lausanne" ||
         region === "nyon" ||
         region === "morges" ||
-        region === "geneve"
+        region === "geneve" ||
+        region === "vevey"
       ) {
         result.region = region;
+      } else {
+        // Fail fast on unknown region — prior behaviour silently fell back to
+        // the default "lausanne" and the misrouted run looked successful but
+        // produced no atlas under the intended region cache dir.
+        throw new Error(
+          `Unknown --region=${region}. Expected lausanne|nyon|morges|geneve|vevey.`,
+        );
       }
       continue;
     }
