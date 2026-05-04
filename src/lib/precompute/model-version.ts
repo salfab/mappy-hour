@@ -14,6 +14,7 @@ import {
 } from "@/lib/storage/data-paths";
 import { loadBuildingsObstacleIndex } from "@/lib/sun/buildings-shadow";
 import { adaptiveHorizonSharingConfig } from "@/lib/sun/adaptive-horizon-sharing";
+import { TERRAIN_SELECTION_STRATEGY } from "@/lib/terrain/swiss-terrain";
 import type { PrecomputedRegionName } from "./sunlight-cache";
 import { TtlCache } from "./runtime-cache";
 
@@ -43,6 +44,7 @@ export interface SunlightModelVersion {
     calibration: ShadowCalibration;
     buildings: Record<string, unknown>;
     terrainManifest: ManifestSummary;
+    terrainSelectionStrategy: string;
     vegetationManifest: ManifestSummary;
     horizonManifest: ManifestSummary;
     adaptiveHorizonSharing: Record<string, unknown>;
@@ -156,6 +158,7 @@ export async function getSunlightModelVersion(
           exists: false,
         },
     terrainManifest,
+    terrainSelectionStrategy: TERRAIN_SELECTION_STRATEGY,
     vegetationManifest,
     horizonManifest,
     adaptiveHorizonSharing: adaptiveHorizonSharingConfig,
@@ -174,6 +177,7 @@ export async function getSunlightModelVersion(
       calibration: shadowCalibration,
       buildings: payload.buildings,
       terrainManifest,
+      terrainSelectionStrategy: TERRAIN_SELECTION_STRATEGY,
       vegetationManifest,
       horizonManifest,
       adaptiveHorizonSharing: adaptiveHorizonSharingConfig,

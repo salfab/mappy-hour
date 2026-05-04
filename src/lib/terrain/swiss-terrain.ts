@@ -74,13 +74,107 @@ async function listTerrainTifsRecursively(rootDirectory: string): Promise<string
   return result;
 }
 
+/**
+ * Strategy used to pick a single SwissALTI3D TIF when multiple exist for the
+ * same km cell on disk (multiple acquisition years × resolutions). Bumped via
+ * model-version.ts so atlases produced under different strategies are stored
+ * under distinct modelVersionHash directories.
+ */
+export const TERRAIN_SELECTION_STRATEGY = "max-year-best-res-v1";
+
+interface ParsedTerrainTifName {
+  kmE: number;
+  kmN: number;
+  year: number;
+  resolutionMeters: number;
+}
+
+/**
+ * Extract (year, kmCell, resolution) from a SwissALTI3D filename.
+ *
+ * Expected: `swissalti3d_{year}_{kmE}-{kmN}_{resolution}_2056_5728.tif`
+ * e.g. `swissalti3d_2021_2527-1150_0.5_2056_5728.tif` → 2021, 2527, 1150, 0.5
+ *
+ * Returns null when the filename does not match (older formats, custom drops).
+ * The caller falls back to including such files unconditionally so existing
+ * non-conforming layouts keep working.
+ */
+function parseTerrainTifName(filePath: string): ParsedTerrainTifName | null {
+  const base = path.basename(filePath).toLowerCase();
+  const match = base.match(
+    /^swissalti3d_(\d{4})_(\d+)-(\d+)_([\d.]+)_2056_5728\.tif$/,
+  );
+  if (!match) return null;
+  const year = Number(match[1]);
+  const kmE = Number(match[2]);
+  const kmN = Number(match[3]);
+  const resolutionMeters = Number(match[4]);
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(kmE) ||
+    !Number.isFinite(kmN) ||
+    !Number.isFinite(resolutionMeters)
+  ) {
+    return null;
+  }
+  return { year, kmE, kmN, resolutionMeters };
+}
+
+/**
+ * Pick a single canonical TIF per km cell:
+ *   1. Latest acquisition year wins.
+ *   2. Within that year, finest resolution wins (smallest resolution in m).
+ *
+ * Files that do not match the SwissALTI3D naming convention are kept as-is
+ * (one entry per file) so custom or legacy drops still load.
+ *
+ * Without this dedup, every (kmCell × year × resolution) combination is
+ * concatenated into the GPU's terrain_data buffer (binding 13). Border
+ * tiles on Morges-west pushed it past wgpu's default
+ * max_storage_buffer_binding_size (128 MiB) on Intel Arc, see commit 7856ee7.
+ * The fix lifted the limit; this dedup reclaims the redundancy upstream and
+ * makes the sample reads deterministic (no longer depends on fs.readdir order).
+ */
+function dedupTerrainTifs(allPaths: string[]): string[] {
+  const grouped = new Map<string, ParsedTerrainTifName & { filePath: string }>();
+  const unparseable: string[] = [];
+
+  for (const filePath of allPaths) {
+    const parsed = parseTerrainTifName(filePath);
+    if (!parsed) {
+      unparseable.push(filePath);
+      continue;
+    }
+    const key = `${parsed.kmE}-${parsed.kmN}`;
+    const existing = grouped.get(key);
+    if (
+      !existing ||
+      parsed.year > existing.year ||
+      (parsed.year === existing.year &&
+        parsed.resolutionMeters < existing.resolutionMeters)
+    ) {
+      grouped.set(key, { ...parsed, filePath });
+    }
+  }
+
+  const picked = Array.from(grouped.values()).map((entry) => entry.filePath);
+  picked.sort();
+  return [...picked, ...unparseable.sort()];
+}
+
 async function loadTerrainMetadata(): Promise<TerrainTileMetadata[]> {
   if (metadataCache) {
     return metadataCache;
   }
 
   metadataCache = (async () => {
-    const tifs = await listTerrainTifsRecursively(RAW_TERRAIN_CH_DIR);
+    const tifsRaw = await listTerrainTifsRecursively(RAW_TERRAIN_CH_DIR);
+    const tifs = dedupTerrainTifs(tifsRaw);
+    if (tifs.length < tifsRaw.length) {
+      console.error(
+        `[swiss-terrain] dedup ${tifsRaw.length} → ${tifs.length} TIFs (${TERRAIN_SELECTION_STRATEGY})`,
+      );
+    }
     const metadata: TerrainTileMetadata[] = [];
 
     for (const filePath of tifs) {

@@ -22,12 +22,23 @@ SELECTION_FILE = Path("data/processed/precompute/golden-dedup-terrain-2026-05-04
 CACHE_ROOT = Path("data/cache/sunlight")
 
 REGION_MODEL_HASH = {
-    "lausanne": "d43fe24cbb9190af",
-    "morges":   "c9de8e41eb148fe8",
-    "nyon":     "7bf203237ff6647b",
-    "geneve":   "16657d851e53a837",
-    "vevey":    None,  # to discover
+    "lausanne": None,  # to discover (most recent in cache)
+    "morges":   None,
+    "nyon":     None,
+    "geneve":   None,
+    "vevey":    None,
 }
+
+
+def newest_hash_dir(region: str) -> str | None:
+    """Pick the most recently modified model hash dir under a region."""
+    base = CACHE_ROOT / region
+    if not base.exists():
+        return None
+    candidates = [d for d in base.iterdir() if d.is_dir() and len(d.name) == 16]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda d: d.stat().st_mtime).name
 
 
 def sha256_file(path: Path) -> str:
@@ -58,8 +69,9 @@ def main():
     with open(SELECTION_FILE, encoding="utf-8") as f:
         selection = json.load(f)
 
-    if REGION_MODEL_HASH["vevey"] is None:
-        REGION_MODEL_HASH["vevey"] = find_vevey_hash()
+    for region in REGION_MODEL_HASH:
+        if REGION_MODEL_HASH[region] is None:
+            REGION_MODEL_HASH[region] = newest_hash_dir(region)
 
     captures = []
     found = 0
