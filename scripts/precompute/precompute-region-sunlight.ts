@@ -286,9 +286,9 @@ async function main() {
   const allTiles = buildRegionTiles(args.region, 250);
   const tileCount = tileIds ? tileIds.length : allTiles.length;
 
-  const shadowMode = process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "(unset, default cpu)";
+  const shadowModeLabel = process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "(unset, default cpu)";
   console.log(
-    `[precompute] engine=cache-admin shadowMode=${shadowMode} workers=${workers} region=${args.region} startDate=${args.startDate} days=${args.days} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} atlasRes=${args.atlasResolutionDeg}° skipExisting=${args.skipExisting} tiles=${tileCount}`,
+    `[precompute] engine=cache-admin shadowMode=${shadowModeLabel} workers=${workers} region=${args.region} startDate=${args.startDate} days=${args.days} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} atlasRes=${args.atlasResolutionDeg}° skipExisting=${args.skipExisting} tiles=${tileCount}`,
   );
   if (shadowMode === "rust-wgpu-vulkan") {
     console.warn(
