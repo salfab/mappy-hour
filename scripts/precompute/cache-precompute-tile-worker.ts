@@ -117,6 +117,11 @@ async function runTask(task: WorkerTask): Promise<void> {
       endLocalTime: task.endLocalTime,
       tile: task.tile,
       shadowCalibration: task.shadowCalibration,
+      // Bug fix 2026-05-05: previously omitted, fell back to default `true`,
+      // making `skipExisting=false` silently ignored when the worker pool was
+      // active. Sequential path (cache-admin.ts:1523) was correct; only the
+      // multi-worker path was leaking the wrong default.
+      skipExisting: task.skipExisting,
       cooperativeYieldEveryPoints: 50,
       signal: abortController.signal,
       onProgress: (progress) => {
