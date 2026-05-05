@@ -137,6 +137,77 @@ export function lv95ToWgs84Precise(easting: number, northing: number): Wgs84Poin
 }
 
 /**
+ * Rigorous WGS84 → LV95 transformation (inverse of {@link lv95ToWgs84Precise}).
+ *
+ * Pipeline: WGS84 geodetic → geocentric → 3-parameter translation (ETRS89 →
+ * CH1903+) → Bessel geodetic (iterative) → sphere (conformal latitude) →
+ * oblique sphere (rotation) → plane (oblique Mercator).
+ *
+ * Precision sub-mm on the national extent — matches proj4 within round-off.
+ * Same constants as {@link lv95ToWgs84Precise}; `h = 0` assumed.
+ */
+export function wgs84ToLv95Precise(lon: number, lat: number): Lv95Point {
+  // Step 1: WGS84 geodetic → geocentric (closed, h=0)
+  const phiW = lat * (Math.PI / 180);
+  const lamW = lon * (Math.PI / 180);
+  const sinPhiW = Math.sin(phiW);
+  const cosPhiW = Math.cos(phiW);
+  const N_W = WGS_A / Math.sqrt(1 - WGS_E2 * sinPhiW * sinPhiW);
+  const Xw = N_W * cosPhiW * Math.cos(lamW);
+  const Yw = N_W * cosPhiW * Math.sin(lamW);
+  const Zw = N_W * (1 - WGS_E2) * sinPhiW;
+
+  // Step 2: ETRS89/WGS84 → CH1903+ (3-parameter translation inverse)
+  const X = Xw - DX;
+  const Y = Yw - DY;
+  const Z = Zw - DZ;
+
+  // Step 3: CH1903+ geocentric → Bessel geodetic (iterate 3×)
+  const p = Math.sqrt(X * X + Y * Y);
+  let phiBessel = Math.atan2(Z, p * (1 - BESSEL_E2));
+  for (let i = 0; i < 3; i++) {
+    const sinPhiB = Math.sin(phiBessel);
+    const N_B = BESSEL_A / Math.sqrt(1 - BESSEL_E2 * sinPhiB * sinPhiB);
+    phiBessel = Math.atan2(Z + BESSEL_E2 * N_B * sinPhiB, p);
+  }
+  const lambdaBessel = Math.atan2(Y, X);
+
+  // Step 4: Bessel geodetic → sphere (conformal latitude, closed)
+  const sinPhiB = Math.sin(phiBessel);
+  const S_iso =
+    Math.log(Math.tan(Math.PI / 4 + phiBessel / 2)) -
+    (BESSEL_E / 2) *
+      Math.log(
+        (1 + BESSEL_E * sinPhiB) / (1 - BESSEL_E * sinPhiB),
+      );
+  const b = 2 * Math.atan(Math.exp(PROJ_K + PROJ_ALPHA * S_iso)) - Math.PI / 2;
+  const lambdaPrime = (lambdaBessel - LAMBDA_0_BERN) * PROJ_ALPHA;
+
+  // Step 5: Equatorial sphere → oblique sphere (inverse rotation, closed)
+  const sinB0 = Math.sin(PROJ_B0);
+  const cosB0 = Math.cos(PROJ_B0);
+  const sinB = Math.sin(b);
+  const cosB = Math.cos(b);
+  const sinLP = Math.sin(lambdaPrime);
+  const cosLP = Math.cos(lambdaPrime);
+  const sinBs = cosB0 * sinB - sinB0 * cosB * cosLP;
+  const bSphere = Math.asin(sinBs);
+  const lambdaSphereBern = Math.atan2(
+    cosB * sinLP,
+    sinB0 * sinB + cosB0 * cosB * cosLP,
+  );
+
+  // Step 6: Sphere → plane (oblique Mercator, closed)
+  const y = PROJ_R * lambdaSphereBern;
+  const x = PROJ_R * Math.log(Math.tan(Math.PI / 4 + bSphere / 2));
+
+  return {
+    easting: 2600000 + y,
+    northing: 1200000 + x,
+  };
+}
+
+/**
  * Polynomial approximation LV95 → WGS84 (Swisstopo official formulas).
  *
  * Source: Swisstopo "Approximate formulas for the transformation between Swiss

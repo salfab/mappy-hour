@@ -3,7 +3,7 @@ import path from "node:path";
 
 import SunCalc from "suncalc";
 
-import { lv95ToWgs84 } from "@/lib/geo/projection";
+import { lv95ToWgs84Precise } from "@/lib/geo/projection";
 import type { PrecomputedRegionName, RegionTileSpec } from "@/lib/precompute/sunlight-cache";
 import { PROCESSED_HORIZON_SHARING_DIR } from "@/lib/storage/data-paths";
 import { HorizonMask, isTerrainBlockedByHorizon } from "@/lib/sun/horizon-mask";
@@ -238,7 +238,7 @@ function buildSamplePoints(tile: RegionTileSpec): Array<{ lat: number; lon: numb
         tile.minEasting + ratioX * (tile.maxEasting - tile.minEasting);
       const northing =
         tile.minNorthing + ratioY * (tile.maxNorthing - tile.minNorthing);
-      const wgs84 = lv95ToWgs84(easting, northing);
+      const wgs84 = lv95ToWgs84Precise(easting, northing);
       points.push({
         lat: wgs84.lat,
         lon: wgs84.lon,
@@ -305,7 +305,7 @@ function macroCenterForTile(tile: RegionTileSpec): { lat: number; lon: number } 
     Math.floor(centerNorthing / MACRO_CELL_NORTHING_METERS) *
       MACRO_CELL_NORTHING_METERS +
     MACRO_CELL_NORTHING_METERS / 2;
-  const wgs84 = lv95ToWgs84(macroCenterEasting, macroCenterNorthing);
+  const wgs84 = lv95ToWgs84Precise(macroCenterEasting, macroCenterNorthing);
   return {
     lat: round6(wgs84.lat),
     lon: round6(wgs84.lon),

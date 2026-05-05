@@ -44,7 +44,7 @@ const {
 }));
 
 vi.mock("@/lib/geo/projection", () => ({
-  wgs84ToLv95: wgs84ToLv95Mock,
+  wgs84ToLv95Precise: wgs84ToLv95Mock,
 }));
 
 vi.mock("@/lib/sun/buildings-shadow", () => ({

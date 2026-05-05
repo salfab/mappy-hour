@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { buildGridFromBbox } from "@/lib/geo/grid";
-import { wgs84ToLv95 } from "@/lib/geo/projection";
+import { wgs84ToLv95Precise } from "@/lib/geo/projection";
 import { getSunlightModelVersion } from "@/lib/precompute/model-version";
 import { resolveRegionForBbox } from "@/lib/precompute/sunlight-tile-service";
 import { loadTileGridMetadata } from "@/lib/precompute/tile-grid-metadata";
@@ -227,8 +227,8 @@ export async function GET(request: Request) {
           let indoorLookup: IndoorLookup = () => false;
           if (region) {
             const modelVersion = await getSunlightModelVersion(region, shadowCalibration);
-            const sw = wgs84ToLv95(query.minLon, query.minLat);
-            const ne = wgs84ToLv95(query.maxLon, query.maxLat);
+            const sw = wgs84ToLv95Precise(query.minLon, query.minLat);
+            const ne = wgs84ToLv95Precise(query.maxLon, query.maxLat);
             const minE = Math.min(sw.easting, ne.easting);
             const maxE = Math.max(sw.easting, ne.easting);
             const minN = Math.min(sw.northing, ne.northing);

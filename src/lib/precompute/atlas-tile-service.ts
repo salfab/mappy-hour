@@ -1,6 +1,6 @@
 import SunCalc from "suncalc";
 
-import { lv95ToWgs84 } from "@/lib/geo/projection";
+import { lv95ToWgs84Precise } from "@/lib/geo/projection";
 import type { ShadowCalibration } from "@/lib/sun/shadow-calibration";
 import {
   computeSunlightTileArtifact,
@@ -242,7 +242,7 @@ export function canSkipAllTilesForDay(params: {
     const cached = cachedPerTile[i];
     const centerE = (tile.minEasting + tile.maxEasting) / 2;
     const centerN = (tile.minNorthing + tile.maxNorthing) / 2;
-    const tileCenter = lv95ToWgs84(centerE, centerN);
+    const tileCenter = lv95ToWgs84Precise(centerE, centerN);
     const phi = RAD * tileCenter.lat;
     const sinPhi = Math.sin(phi);
     const cosPhi = Math.cos(phi);
@@ -357,7 +357,7 @@ export async function computeAndMergeAtlasForTile(
   const skipExisting = params.skipExisting ?? true;
   const centerE = (params.tile.minEasting + params.tile.maxEasting) / 2;
   const centerN = (params.tile.minNorthing + params.tile.maxNorthing) / 2;
-  const tileCenter = lv95ToWgs84(centerE, centerN);
+  const tileCenter = lv95ToWgs84Precise(centerE, centerN);
 
   const targetBuckets = resolveTargetBuckets(
     params,

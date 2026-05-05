@@ -1,4 +1,4 @@
-import { wgs84ToLv95 } from "@/lib/geo/projection";
+import { wgs84ToLv95Precise } from "@/lib/geo/projection";
 import {
   createDetailedBuildingShadowVerifier,
   evaluateBuildingsShadow,
@@ -733,7 +733,7 @@ export async function buildPointEvaluationContext(
 ): Promise<PointEvaluationContext> {
   const shadowCalibration =
     options.shadowCalibration ?? DEFAULT_SHADOW_CALIBRATION;
-  const pointLv95 = wgs84ToLv95(lon, lat);
+  const pointLv95 = wgs84ToLv95Precise(lon, lat);
   const sharedSources =
     options.sharedSources ??
     (await buildSharedPointEvaluationSources({

@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { loadAllPlaces } from "@/lib/places/lausanne-places";
-import { wgs84ToLv95, lv95ToWgs84 } from "@/lib/geo/projection";
+import { wgs84ToLv95Precise, lv95ToWgs84Precise } from "@/lib/geo/projection";
 import {
   findCachedModelVersionHash,
   type PrecomputedRegionName,
@@ -601,7 +601,7 @@ export async function POST(request: Request) {
       const meta = atlases[0].meta;
       const tileCenterE = (meta.tile.minEasting + meta.tile.maxEasting) / 2;
       const tileCenterN = (meta.tile.minNorthing + meta.tile.maxNorthing) / 2;
-      const { lat: tileLat, lon: tileLon } = lv95ToWgs84(tileCenterE, tileCenterN);
+      const { lat: tileLat, lon: tileLon } = lv95ToWgs84Precise(tileCenterE, tileCenterN);
       const RAD_TO_DEG = 180 / Math.PI;
       for (const utcDate of coverageUtcSamples) {
         const pos = SunCalc.getPosition(utcDate, tileLat, tileLon);
@@ -628,7 +628,7 @@ export async function POST(request: Request) {
       if (!region) return null;
       const info = await resolveRegionInfo(region);
       if (!info) return null;
-      const lv95 = wgs84ToLv95(lon, lat);
+      const lv95 = wgs84ToLv95Precise(lon, lat);
       const ix = Math.floor(lv95.easting);
       const iy = Math.floor(lv95.northing);
       const tileMinE = Math.floor(ix / tileSizeMeters) * tileSizeMeters;
@@ -730,8 +730,8 @@ export async function POST(request: Request) {
         if (p.lon > maxLon) maxLon = p.lon;
         if (p.lat > maxLat) maxLat = p.lat;
       }
-      const sw = wgs84ToLv95(minLon, minLat);
-      const ne = wgs84ToLv95(maxLon, maxLat);
+      const sw = wgs84ToLv95Precise(minLon, minLat);
+      const ne = wgs84ToLv95Precise(maxLon, maxLat);
       return {
         minX: Math.min(sw.easting, ne.easting),
         minY: Math.min(sw.northing, ne.northing),
@@ -852,7 +852,7 @@ export async function POST(request: Request) {
               const meta = atlases[0].meta;
               const tileCenterLv95E = (meta.tile.minEasting + meta.tile.maxEasting) / 2;
               const tileCenterLv95N = (meta.tile.minNorthing + meta.tile.maxNorthing) / 2;
-              const { lat: tileLat, lon: tileLon } = lv95ToWgs84(tileCenterLv95E, tileCenterLv95N);
+              const { lat: tileLat, lon: tileLon } = lv95ToWgs84Precise(tileCenterLv95E, tileCenterLv95N);
               const RAD_TO_DEG = 180 / Math.PI;
               const utcSamples = createUtcSamples(
                 parsed.data.date, parsed.data.timezone, parsed.data.sampleEveryMinutes,

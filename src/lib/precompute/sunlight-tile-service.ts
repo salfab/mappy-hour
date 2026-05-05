@@ -20,7 +20,7 @@ interface TileGridMetadata {
   indoor: boolean[];
 }
 import { isBatchBackend } from "@/lib/sun/building-shadow-backend";
-import { lv95ToWgs84 } from "@/lib/geo/projection";
+import { lv95ToWgs84Precise } from "@/lib/geo/projection";
 import {
   adaptiveHorizonSharingConfig,
   resolveAdaptiveTerrainHorizonForTile,
@@ -808,7 +808,7 @@ export async function computeSunlightTileArtifact(params: {
         : `No samples produced for ${params.date} ${params.startLocalTime}-${params.endLocalTime}.`,
     );
   }
-  const allowlistTileCenterWgs84 = lv95ToWgs84(
+  const allowlistTileCenterWgs84 = lv95ToWgs84Precise(
     (params.tile.minEasting + params.tile.maxEasting) / 2,
     (params.tile.minNorthing + params.tile.maxNorthing) / 2,
   );
@@ -1105,7 +1105,7 @@ export async function computeSunlightTileArtifact(params: {
   const frames: PrecomputedSunlightTileArtifact["frames"] = [];
   const totalFrameEvaluations = preparedOutdoorPoints.length * samples.length;
   let completedFrameEvaluations = 0;
-  const tileCenterWgs84 = lv95ToWgs84(
+  const tileCenterWgs84 = lv95ToWgs84Precise(
     (params.tile.minEasting + params.tile.maxEasting) / 2,
     (params.tile.minNorthing + params.tile.maxNorthing) / 2,
   );
@@ -2188,7 +2188,7 @@ export async function* streamTilesForBbox(params: {
       // serving a timeline with silently-empty frames.
       const tileCenterE = (tile.minEasting + tile.maxEasting) / 2;
       const tileCenterN = (tile.minNorthing + tile.maxNorthing) / 2;
-      const { lat: tileLat, lon: tileLon } = lv95ToWgs84(tileCenterE, tileCenterN);
+      const { lat: tileLat, lon: tileLon } = lv95ToWgs84Precise(tileCenterE, tileCenterN);
       const RAD_TO_DEG = 180 / Math.PI;
       let allFramesCovered = true;
       for (const utc of samples) {
@@ -2295,7 +2295,7 @@ export async function* streamTilesForBbox(params: {
     if (atlasHits.length > 0) {
       const tileCenterE = (tile.minEasting + tile.maxEasting) / 2;
       const tileCenterN = (tile.minNorthing + tile.maxNorthing) / 2;
-      const { lat: tileLat, lon: tileLon } = lv95ToWgs84(tileCenterE, tileCenterN);
+      const { lat: tileLat, lon: tileLon } = lv95ToWgs84Precise(tileCenterE, tileCenterN);
       const RAD_TO_DEG = 180 / Math.PI;
       let allFramesCovered = true;
       for (const utc of samples) {

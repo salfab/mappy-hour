@@ -8,7 +8,7 @@ import { NYON_CONFIG } from "@/lib/config/nyon";
 import { MORGES_CONFIG } from "@/lib/config/morges";
 import { GENEVE_CONFIG } from "@/lib/config/geneve";
 import { VEVEY_CONFIG } from "@/lib/config/vevey";
-import { lv95ToWgs84, lv95ToWgs84Precise, wgs84ToLv95 } from "@/lib/geo/projection";
+import { lv95ToWgs84Precise, wgs84ToLv95Precise } from "@/lib/geo/projection";
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 import { getSunlightCacheStorage } from "./sunlight-cache-storage";
 import { SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "./model-version";
@@ -449,10 +449,10 @@ export async function listCachedTileIds(params: {
 function getLv95BoundsForRegion(region: PrecomputedRegionName) {
   const bbox = getPrecomputedRegionBbox(region);
   const corners = [
-    wgs84ToLv95(bbox.minLon, bbox.minLat),
-    wgs84ToLv95(bbox.minLon, bbox.maxLat),
-    wgs84ToLv95(bbox.maxLon, bbox.minLat),
-    wgs84ToLv95(bbox.maxLon, bbox.maxLat),
+    wgs84ToLv95Precise(bbox.minLon, bbox.minLat),
+    wgs84ToLv95Precise(bbox.minLon, bbox.maxLat),
+    wgs84ToLv95Precise(bbox.maxLon, bbox.minLat),
+    wgs84ToLv95Precise(bbox.maxLon, bbox.maxLat),
   ];
 
   return {
@@ -491,8 +491,8 @@ export function buildRegionTiles(
     ) {
       const maxEasting = minEasting + tileSizeMeters;
       const maxNorthing = minNorthing + tileSizeMeters;
-      const southWest = lv95ToWgs84(minEasting, minNorthing);
-      const northEast = lv95ToWgs84(maxEasting, maxNorthing);
+      const southWest = lv95ToWgs84Precise(minEasting, minNorthing);
+      const northEast = lv95ToWgs84Precise(maxEasting, maxNorthing);
       const bbox = {
         minLon: Math.min(southWest.lon, northEast.lon),
         minLat: Math.min(southWest.lat, northEast.lat),

@@ -5,7 +5,7 @@ import SunCalc from "suncalc";
 import { z } from "zod";
 
 import { MAX_OUTDOOR_POINTS, DEFAULT_MAX_OUTDOOR_POINTS } from "@/lib/config/grid-limits";
-import { lv95ToWgs84, wgs84ToLv95 } from "@/lib/geo/projection";
+import { lv95ToWgs84Precise, wgs84ToLv95Precise } from "@/lib/geo/projection";
 import {
   streamTilesForBbox,
   resolveRegionForBbox,
@@ -406,7 +406,7 @@ export async function GET(request: Request) {
               // Tile center for sun position computation
               const tileCenterLv95E = (tileMinIx + (tileMaxIx + 1)) / 2 * query.gridStepMeters;
               const tileCenterLv95N = (tileMinIy + (tileMaxIy + 1)) / 2 * query.gridStepMeters;
-              const { lat: tileLat, lon: tileLon } = lv95ToWgs84(tileCenterLv95E, tileCenterLv95N);
+              const { lat: tileLat, lon: tileLon } = lv95ToWgs84Precise(tileCenterLv95E, tileCenterLv95N);
               const RAD_TO_DEG = 180 / Math.PI;
               for (let f = 0; f < atlasUtcSamples.length; f++) {
                 const utcDate = atlasUtcSamples[f];
@@ -507,12 +507,12 @@ export async function GET(request: Request) {
             const masksBase64 = encodeTileMasksBlob(outdoorMask, frameMaskBuffers);
             perTileTiming.encode += performance.now() - tEncodeStart;
 
-            // Per-tile corners via lv95ToWgs84 for affine transform positioning.
+            // Per-tile corners via lv95ToWgs84Precise for affine transform positioning.
             const gs = query.gridStepMeters;
-            const tileSW = lv95ToWgs84(tileMinIx * gs, tileMinIy * gs);
-            const tileNE = lv95ToWgs84((tileMaxIx + 1) * gs, (tileMaxIy + 1) * gs);
-            const tileNW = lv95ToWgs84(tileMinIx * gs, (tileMaxIy + 1) * gs);
-            const tileSE = lv95ToWgs84((tileMaxIx + 1) * gs, tileMinIy * gs);
+            const tileSW = lv95ToWgs84Precise(tileMinIx * gs, tileMinIy * gs);
+            const tileNE = lv95ToWgs84Precise((tileMaxIx + 1) * gs, (tileMaxIy + 1) * gs);
+            const tileNW = lv95ToWgs84Precise(tileMinIx * gs, (tileMaxIy + 1) * gs);
+            const tileSE = lv95ToWgs84Precise((tileMaxIx + 1) * gs, tileMinIy * gs);
 
             const tSendStart = performance.now();
             sendEvent("tile", {
@@ -563,8 +563,8 @@ export async function GET(request: Request) {
           let overlayBounds: { minLat: number; maxLat: number; minLon: number; maxLon: number } | undefined;
           if (globalMinCol < Infinity) {
             const gs = query.gridStepMeters;
-            const sw = lv95ToWgs84(globalMinCol * gs, globalMinRow * gs);
-            const ne = lv95ToWgs84((globalMaxCol + 1) * gs, (globalMaxRow + 1) * gs);
+            const sw = lv95ToWgs84Precise(globalMinCol * gs, globalMinRow * gs);
+            const ne = lv95ToWgs84Precise((globalMaxCol + 1) * gs, (globalMaxRow + 1) * gs);
             overlayBounds = { minLat: sw.lat, maxLat: ne.lat, minLon: sw.lon, maxLon: ne.lon };
           }
 
