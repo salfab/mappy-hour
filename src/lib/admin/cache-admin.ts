@@ -311,6 +311,18 @@ function resolvePrecomputeWorkerCount(tileCount: number): number {
       return Math.max(1, Math.min(tileCount, Math.floor(parsed)));
     }
   }
+  // Vulkan / WebGPU compute backends spawn 1 GPU child process per worker that
+  // all contend on the same physical GPU. Bench 2026-05-05 measured 15-30×
+  // PERF REGRESSION at workers=2/4 vs workers=1 on rust-wgpu-vulkan
+  // (cold-start × N workers + GPU device contention). The CPU-mode bench from
+  // 2026-03-15 that recommended workers=4 was on detailed/two-level CPU paths,
+  // not GPU-bound. Default to 1 worker for any GPU-IPC backend; user can
+  // still override via MAPPY_PRECOMPUTE_WORKERS=N if they have a multi-GPU
+  // setup or want to experiment.
+  const shadowMode = process.env.MAPPY_BUILDINGS_SHADOW_MODE?.trim().toLowerCase();
+  if (shadowMode === "rust-wgpu-vulkan" || shadowMode === "webgpu-compute") {
+    return 1;
+  }
   const cpuCount = os.cpus().length;
   const suggested = Math.min(4, Math.max(2, cpuCount - 1));
   return Math.max(1, Math.min(tileCount, suggested));

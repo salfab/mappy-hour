@@ -234,9 +234,13 @@ async function main() {
     process.env.MAPPY_BUILDINGS_SHADOW_MODE = args.buildingsShadowMode;
   }
   const { precomputeCacheRuns } = await import("../../src/lib/admin/cache-admin");
+  const shadowMode = process.env.MAPPY_BUILDINGS_SHADOW_MODE?.trim().toLowerCase();
+  const isGpuIpcBackend = shadowMode === "rust-wgpu-vulkan" || shadowMode === "webgpu-compute";
   const workers =
     process.env.MAPPY_PRECOMPUTE_WORKERS?.trim() ||
-    "(auto: min(4, max(2, cpu-1)))";
+    (isGpuIpcBackend
+      ? "(auto: 1, GPU-IPC backend forces single-worker — see ADR-0019)"
+      : "(auto: min(4, max(2, cpu-1)))");
 
   // Resolve bbox to tile IDs if specified
   let tileIds: string[] | undefined;
