@@ -20,7 +20,7 @@
  */
 
 import { performance } from "node:perf_hooks";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import { computeSunlightTileArtifact, disposeSunlightTileEvaluationBackends } from "../../src/lib/precompute/sunlight-tile-service";
 import { getSunlightModelVersion } from "../../src/lib/precompute/model-version";
 import { DEFAULT_SHADOW_CALIBRATION } from "../../src/lib/sun/shadow-calibration";
@@ -41,7 +41,7 @@ const WARMUP = process.env.WARMUP !== "0";
 function forgeTile(sizeMeters: number, offsetE: number, offsetN: number): RegionTileSpec {
   const minE = ORIGIN_E + offsetE;
   const minN = ORIGIN_N + offsetN;
-  const { lat, lon } = lv95ToWgs84(minE + sizeMeters / 2, minN + sizeMeters / 2);
+  const { lat, lon } = lv95ToWgs84Precise(minE + sizeMeters / 2, minN + sizeMeters / 2);
   const margin = 0.02;
   return {
     tileId: `bench_e${minE}_n${minN}_s${sizeMeters}`,

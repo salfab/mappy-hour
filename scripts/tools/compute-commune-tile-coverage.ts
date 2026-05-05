@@ -9,7 +9,7 @@
 
 import polyClip from "polygon-clipping";
 
-import { wgs84ToLv95, lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { wgs84ToLv95Precise, lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 
 const OVERPASS_ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
@@ -137,7 +137,7 @@ function ringBboxLv95(ring: Ring): { minX: number; minY: number; maxX: number; m
     maxX = -Infinity,
     maxY = -Infinity;
   for (const [lon, lat] of ring) {
-    const { easting, northing } = wgs84ToLv95(lon, lat);
+    const { easting, northing } = wgs84ToLv95Precise(lon, lat);
     if (easting < minX) minX = easting;
     if (easting > maxX) maxX = easting;
     if (northing < minY) minY = northing;
@@ -185,7 +185,7 @@ async function main() {
   //    Each outer ring → its own polygon (we ignore inner/holes; rare for communes).
   const lv95MultiPoly: polyClip.MultiPolygon = allRings.map((ring) => [
     ring.map(([lon, lat]) => {
-      const { easting, northing } = wgs84ToLv95(lon, lat);
+      const { easting, northing } = wgs84ToLv95Precise(lon, lat);
       return [easting, northing] as [number, number];
     }),
   ]);

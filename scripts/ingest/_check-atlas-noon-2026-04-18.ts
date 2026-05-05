@@ -16,7 +16,7 @@ import {
   loadPrecomputedTileAtlas,
   lookupAtlasBucket,
 } from "../../src/lib/precompute/sunlight-cache-atlas";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 
 const RAD_TO_DEG = 180 / Math.PI;
 const RES = 1;
@@ -75,7 +75,7 @@ async function main() {
       if (!parsed) continue;
       const centerE = parsed.minE + parsed.size / 2;
       const centerN = parsed.minN + parsed.size / 2;
-      const { lat, lon } = lv95ToWgs84(centerE, centerN);
+      const { lat, lon } = lv95ToWgs84Precise(centerE, centerN);
       const pos = SunCalc.getPosition(utc, lat, lon);
       const altDeg = pos.altitude * RAD_TO_DEG;
       if (altDeg <= 0) continue;

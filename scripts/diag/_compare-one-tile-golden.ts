@@ -3,7 +3,7 @@ import path from "node:path";
 import { gunzip as gunzipCb } from "node:zlib";
 import { promisify } from "node:util";
 import SunCalc from "suncalc";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import { decodeTileAtlasFromBinary, lookupAtlasByAngle } from "../../src/lib/precompute/sunlight-cache-atlas";
 const gunzip = promisify(gunzipCb);
 async function load(cacheRoot: string, tileId: string) {
@@ -14,7 +14,7 @@ async function load(cacheRoot: string, tileId: string) {
 async function main() {
   const tileId = process.argv[2] ?? "e2534000_n1152000_s250";
   const m = /^e(\d+)_n(\d+)/.exec(tileId)!;
-  const center = lv95ToWgs84(parseInt(m[1])+125, parseInt(m[2])+125);
+  const center = lv95ToWgs84Precise(parseInt(m[1])+125, parseInt(m[2])+125);
   const utc = new Date("2026-04-29T07:30:00+02:00");
   const pos = SunCalc.getPosition(utc, center.lat, center.lon);
   const alt = pos.altitude * 180 / Math.PI;

@@ -13,7 +13,7 @@
 
 import SunCalc from "suncalc";
 
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import {
   computeSunlightTileArtifact,
   disposeSunlightTileEvaluationBackends,
@@ -78,7 +78,7 @@ async function main(): Promise<void> {
   const size = Number(m[3]);
   const centerE = minE + size / 2;
   const centerN = minN + size / 2;
-  const { lat, lon } = lv95ToWgs84(centerE, centerN);
+  const { lat, lon } = lv95ToWgs84Precise(centerE, centerN);
   const pos = SunCalc.getPosition(new Date(FRAME_UTC), lat, lon);
   const altDegTrue = pos.altitude * RAD_TO_DEG;
   let azDegTrue = (pos.azimuth * RAD_TO_DEG + 180) % 360;

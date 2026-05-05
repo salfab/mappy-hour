@@ -1,4 +1,4 @@
-import { wgs84ToLv95 } from "../../src/lib/geo/projection";
+import { wgs84ToLv95Precise } from "../../src/lib/geo/projection";
 
 // École de Montriond, Lausanne (nord du Parc de Milan)
 // approx 46.5173, 6.6170
@@ -9,7 +9,7 @@ const points = [
   { name: "Avenue Montriond 25", lat: 46.5173, lon: 6.6170 },
 ];
 for (const p of points) {
-  const lv = wgs84ToLv95(p.lon, p.lat);
+  const lv = wgs84ToLv95Precise(p.lon, p.lat);
   const tileE = Math.floor(lv.easting / 250) * 250;
   const tileN = Math.floor(lv.northing / 250) * 250;
   console.log(

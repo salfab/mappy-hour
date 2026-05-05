@@ -17,7 +17,7 @@
 
 import SunCalc from "suncalc";
 
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import {
   loadPrecomputedSunlightTileBinary,
   getFrameMask,
@@ -138,7 +138,7 @@ async function main(): Promise<void> {
   const utc = new Date(frameMeta.utcTime);
   const centerE = tile.meta.tile.minEasting + tile.meta.tile.tileSizeMeters / 2;
   const centerN = tile.meta.tile.minNorthing + tile.meta.tile.tileSizeMeters / 2;
-  const { lat, lon } = lv95ToWgs84(centerE, centerN);
+  const { lat, lon } = lv95ToWgs84Precise(centerE, centerN);
   const pos = SunCalc.getPosition(utc, lat, lon);
   const altDeg = pos.altitude * RAD_TO_DEG;
   let azDeg = (pos.azimuth * RAD_TO_DEG + 180) % 360;

@@ -4,7 +4,7 @@
  */
 import SunCalc from "suncalc";
 
-import { wgs84ToLv95, lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { wgs84ToLv95Precise, lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import {
   loadPrecomputedTileAtlasesInPrecisionOrder,
   lookupAtlasByAngle,
@@ -36,7 +36,7 @@ async function main() {
   });
   const a = atlases[0];
   const utc = new Date(`${DATE}T${LOCAL_TIME}:00+02:00`);
-  const tileCenter = lv95ToWgs84(TILE_E_MIN + TILE_SIZE / 2, TILE_N_MIN + TILE_SIZE / 2);
+  const tileCenter = lv95ToWgs84Precise(TILE_E_MIN + TILE_SIZE / 2, TILE_N_MIN + TILE_SIZE / 2);
   const pos = SunCalc.getPosition(utc, tileCenter.lat, tileCenter.lon);
   const alt = pos.altitude * RAD_TO_DEG;
   let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
@@ -65,7 +65,7 @@ async function main() {
     for (let ix = 0; ix < 5; ix++) {
       const ey = TILE_E_MIN + 25 + ix * 50;
       const ny = TILE_N_MIN + 25 + iy * 50;
-      const ll = lv95ToWgs84(ey, ny);
+      const ll = lv95ToWgs84Precise(ey, ny);
       const ctx = await buildPointEvaluationContext(ll.lat, ll.lon, { sharedSources: shared });
       if (ctx.insideBuilding) { cpuIndoor++; continue; }
       cpuOutdoor++;

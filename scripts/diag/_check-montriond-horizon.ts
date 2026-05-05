@@ -1,8 +1,8 @@
 import { buildPointEvaluationContext } from "../../src/lib/sun/evaluation-context";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 
 async function check(label: string, e: number, n: number) {
-  const { lat, lon } = lv95ToWgs84(e, n);
+  const { lat, lon } = lv95ToWgs84Precise(e, n);
   console.log(`\n═══ ${label}  (LV95 ${e},${n} → lat=${lat.toFixed(6)} lon=${lon.toFixed(6)}) ═══`);
   const ctx = await buildPointEvaluationContext(lat, lon, {});
   const mask = ctx.horizonMask;

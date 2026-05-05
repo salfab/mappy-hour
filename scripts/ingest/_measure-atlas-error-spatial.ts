@@ -19,7 +19,7 @@ import path from "node:path";
 import SunCalc from "suncalc";
 
 import { CACHE_SUNLIGHT_DIR } from "../../src/lib/storage/data-paths";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import {
   loadPrecomputedSunlightTileBinary,
   getFrameMask,
@@ -161,7 +161,7 @@ async function main(): Promise<void> {
     const parsed = parseTileId(tileId);
     const centerE = parsed.minE + parsed.size / 2;
     const centerN = parsed.minN + parsed.size / 2;
-    const { lat, lon } = lv95ToWgs84(centerE, centerN);
+    const { lat, lon } = lv95ToWgs84Precise(centerE, centerN);
     const originIx = Math.floor(parsed.minE / GRID_STEP);
     const originIy = Math.floor(parsed.minN / GRID_STEP);
 

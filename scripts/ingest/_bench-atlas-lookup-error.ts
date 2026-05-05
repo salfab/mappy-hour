@@ -30,7 +30,7 @@ import {
   loadPrecomputedTileAtlas,
   lookupAtlasBucket,
 } from "../../src/lib/precompute/sunlight-cache-atlas";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 
 const REGION = "lausanne" as const;
 const MODEL_HASH = "d43fe24cbb9190af";
@@ -110,7 +110,7 @@ async function main() {
   const minE = Number(m[1]);
   const minN = Number(m[2]);
   const size = Number(m[3]);
-  const { lat, lon } = lv95ToWgs84(minE + size / 2, minN + size / 2);
+  const { lat, lon } = lv95ToWgs84Precise(minE + size / 2, minN + size / 2);
 
   const windows = await discoverCachedWindows();
   console.log(`Tile: ${TILE_ID}`);

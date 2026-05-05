@@ -8,7 +8,7 @@ import path from "node:path";
 import SunCalc from "suncalc";
 import { CACHE_SUNLIGHT_DIR } from "../../src/lib/storage/data-paths";
 import { loadPrecomputedSunlightTileBinary } from "../../src/lib/precompute/sunlight-cache-binary";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 
 const REGION = "lausanne";
 const MODEL_HASH = "d43fe24cbb9190af";
@@ -24,7 +24,7 @@ const SUSPECT_BUCKETS: Array<[number, number]> = [
 async function main() {
   const m = /^e(\d+)_n(\d+)_s(\d+)$/.exec(TILE_ID)!;
   const minE = Number(m[1]); const minN = Number(m[2]); const size = Number(m[3]);
-  const { lat, lon } = lv95ToWgs84(minE + size / 2, minN + size / 2);
+  const { lat, lon } = lv95ToWgs84Precise(minE + size / 2, minN + size / 2);
 
   const dateRoot = path.join(CACHE_SUNLIGHT_DIR, REGION, MODEL_HASH, `g${GRID_STEP}`, `m${SAMPLE_MINUTES}`);
   const dates = await fs.readdir(dateRoot);

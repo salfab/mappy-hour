@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { buildGridFromBbox } from "@/lib/geo/grid";
-import { wgs84ToLv95 } from "@/lib/geo/projection";
+import { wgs84ToLv95Precise } from "@/lib/geo/projection";
 import {
   buildPointEvaluationContext,
   buildSharedPointEvaluationSources,
@@ -53,10 +53,10 @@ function addDays(date: string, days: number): string {
 async function preparePoints(): Promise<PreparedPoint[]> {
   const grid = buildGridFromBbox(BBOX, GRID_STEP_METERS);
   const corners = [
-    wgs84ToLv95(BBOX.minLon, BBOX.minLat),
-    wgs84ToLv95(BBOX.minLon, BBOX.maxLat),
-    wgs84ToLv95(BBOX.maxLon, BBOX.minLat),
-    wgs84ToLv95(BBOX.maxLon, BBOX.maxLat),
+    wgs84ToLv95Precise(BBOX.minLon, BBOX.minLat),
+    wgs84ToLv95Precise(BBOX.minLon, BBOX.maxLat),
+    wgs84ToLv95Precise(BBOX.maxLon, BBOX.minLat),
+    wgs84ToLv95Precise(BBOX.maxLon, BBOX.maxLat),
   ];
   const minX = Math.floor(Math.min(...corners.map((point) => point.easting))) - 20;
   const minY = Math.floor(Math.min(...corners.map((point) => point.northing))) - 20;

@@ -4,7 +4,7 @@
  */
 
 import SunCalc from "suncalc";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import {
   loadPrecomputedSunlightTileBinary,
   getFrameMask,
@@ -94,7 +94,7 @@ async function main() {
   console.log(`Total ix/iy mismatches: ${ixIyMismatches} / ${n}`);
 
   // Per-frame: atlas lookup XOR
-  const { lat, lon } = lv95ToWgs84(
+  const { lat, lon } = lv95ToWgs84Precise(
     (tile.meta.tile.minEasting + tile.meta.tile.maxEasting) / 2,
     (tile.meta.tile.minNorthing + tile.meta.tile.maxNorthing) / 2,
   );

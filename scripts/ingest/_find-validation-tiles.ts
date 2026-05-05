@@ -1,4 +1,4 @@
-import { wgs84ToLv95 } from "../../src/lib/geo/projection";
+import { wgs84ToLv95Precise } from "../../src/lib/geo/projection";
 import SunCalc from "suncalc";
 
 const places = [
@@ -6,7 +6,7 @@ const places = [
   { id: "great-escape", lat: 46.5228, lon: 6.63277 },
 ];
 for (const p of places) {
-  const { easting, northing } = wgs84ToLv95(p.lon, p.lat);
+  const { easting, northing } = wgs84ToLv95Precise(p.lon, p.lat);
   const minE = Math.floor(easting / 250) * 250;
   const minN = Math.floor(northing / 250) * 250;
   const tileId = `e${minE}_n${minN}_s250`;

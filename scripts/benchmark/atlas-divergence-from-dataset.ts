@@ -32,7 +32,7 @@ import {
   MASK_KIND_SUN,
   MASK_KIND_SUN_NO_VEG,
 } from "../../src/lib/precompute/sunlight-cache-binary";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import { CACHE_SUNLIGHT_DIR } from "../../src/lib/storage/data-paths";
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 
@@ -211,7 +211,7 @@ async function main() {
         const tb = tile.meta.tile;
         const centerE = (tb.minEasting + tb.maxEasting) / 2;
         const centerN = (tb.minNorthing + tb.maxNorthing) / 2;
-        const c = lv95ToWgs84(centerE, centerN);
+        const c = lv95ToWgs84Precise(centerE, centerN);
         tileCenterLat = c.lat; tileCenterLon = c.lon;
       }
       for (let f = 0; f < tile.frameCount; f++) {

@@ -16,7 +16,7 @@ import path from "node:path";
 import { gunzip as gunzipCallback } from "node:zlib";
 import { promisify } from "node:util";
 
-import { wgs84ToLv95 } from "../../src/lib/geo/projection";
+import { wgs84ToLv95Precise } from "../../src/lib/geo/projection";
 import {
   loadPrecomputedTileAtlasesInPrecisionOrder,
   lookupAtlasByAngle,
@@ -133,7 +133,7 @@ async function analyzeTile(entry: typeof TILES[number]) {
   }
 
   // CPU golden on the center point
-  const lv = wgs84ToLv95(entry.lon, entry.lat);
+  const lv = wgs84ToLv95Precise(entry.lon, entry.lat);
   const shared = await buildSharedPointEvaluationSources({
     lv95Bounds: { minX: lv.easting - 50, minY: lv.northing - 50, maxX: lv.easting + 50, maxY: lv.northing + 50 },
   });

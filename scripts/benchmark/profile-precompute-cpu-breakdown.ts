@@ -6,7 +6,7 @@ import SunCalc from "suncalc";
 
 import { LAUSANNE_CENTER } from "@/lib/config/lausanne";
 import { NYON_CENTER } from "@/lib/config/nyon";
-import { lv95ToWgs84 } from "@/lib/geo/projection";
+import { lv95ToWgs84Precise } from "@/lib/geo/projection";
 import { getSunlightModelVersion } from "@/lib/precompute/model-version";
 import {
   buildRegionTiles,
@@ -301,7 +301,7 @@ function collectTileWindowBuildingAllowlist(params: {
       params.tile.maxEasting - params.tile.minEasting,
       params.tile.maxNorthing - params.tile.minNorthing,
     ) / 2;
-  const centerWgs84 = lv95ToWgs84(centerX, centerY);
+  const centerWgs84 = lv95ToWgs84Precise(centerX, centerY);
   const maxDistanceMeters = params.maxDistanceMeters ?? BUILDING_SHADOW_MAX_DISTANCE_METERS;
   const maxObstacleHalfDiagonalMeters = obstacles.reduce(
     (maxValue, obstacle) => Math.max(maxValue, obstacle.halfDiagonal),

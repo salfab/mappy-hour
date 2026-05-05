@@ -41,7 +41,7 @@ import {
   type BinaryTileAtlas,
   type TileAtlasMetadata,
 } from "../../src/lib/precompute/sunlight-cache-atlas";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 
 type Args = {
@@ -473,7 +473,7 @@ async function main() {
     const size = Number(m[3]);
     const centerE = minE + size / 2;
     const centerN = minN + size / 2;
-    const { lat, lon } = lv95ToWgs84(centerE, centerN);
+    const { lat, lon } = lv95ToWgs84Precise(centerE, centerN);
 
     try {
       const atlas = await buildAtlasForTile(tileId, entries, lat, lon, modelHash, args);

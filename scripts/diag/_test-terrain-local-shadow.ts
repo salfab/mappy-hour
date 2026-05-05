@@ -4,7 +4,7 @@
  */
 import SunCalc from "suncalc";
 
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import { buildPointEvaluationContext, buildSharedPointEvaluationSources } from "../../src/lib/sun/evaluation-context";
 
 const RAD_TO_DEG = 180 / Math.PI;
@@ -32,7 +32,7 @@ async function main() {
 
   let blockedCount = 0;
   for (const s of samples) {
-    const { lat, lon } = lv95ToWgs84(s.e, s.n);
+    const { lat, lon } = lv95ToWgs84Precise(s.e, s.n);
     const ctx = await buildPointEvaluationContext(lat, lon, { sharedSources: shared });
     const tEval = ctx.terrainShadowEvaluator;
     const bEval = ctx.buildingShadowEvaluator;

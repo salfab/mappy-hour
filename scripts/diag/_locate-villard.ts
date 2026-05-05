@@ -1,9 +1,9 @@
-import { wgs84ToLv95 } from "../../src/lib/geo/projection";
+import { wgs84ToLv95Precise } from "../../src/lib/geo/projection";
 
 const LAT = 46.5169250;
 const LON = 6.6206944;
 
-const { easting, northing } = wgs84ToLv95(LON, LAT);
+const { easting, northing } = wgs84ToLv95Precise(LON, LAT);
 console.log(`LV95: E=${easting.toFixed(1)}  N=${northing.toFixed(1)}`);
 
 const tileE = Math.floor(easting / 250) * 250;

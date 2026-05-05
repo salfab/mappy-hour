@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import SunCalc from "suncalc";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import { loadPrecomputedTileAtlasesInPrecisionOrder, lookupAtlasByAngle } from "../../src/lib/precompute/sunlight-cache-atlas";
 const MODEL_HASH = "d43fe24cbb9190af", GRID = 1, RAD_TO_DEG = 180 / Math.PI;
 async function main() {
@@ -16,7 +16,7 @@ async function main() {
     if (atlases.length === 0) continue;
     const a = atlases[0];
     if (a.outdoorPointCount < 100) continue;
-    const c = lv95ToWgs84(t.e+125, t.n+125);
+    const c = lv95ToWgs84Precise(t.e+125, t.n+125);
     const pos = SunCalc.getPosition(utc, c.lat, c.lon);
     const alt = pos.altitude * RAD_TO_DEG;
     let az = (pos.azimuth * RAD_TO_DEG + 180) % 360; if (az<0) az+=360;

@@ -9,7 +9,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import { loadBuildingsObstacleIndex } from "../../src/lib/sun/buildings-shadow";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 
 async function main() {
   // Cathedral area in LV95
@@ -98,8 +98,8 @@ async function main() {
   await fs.mkdir(outputDir, { recursive: true });
   const htmlPath = path.join(outputDir, "zenith-footprint.html");
 
-  const sw = lv95ToWgs84(minX, minY);
-  const ne = lv95ToWgs84(maxX, maxY);
+  const sw = lv95ToWgs84Precise(minX, minY);
+  const ne = lv95ToWgs84Precise(maxX, maxY);
 
   await fs.writeFile(htmlPath, `<!DOCTYPE html>
 <html><head><title>Zenith Footprint - Cathedral</title>

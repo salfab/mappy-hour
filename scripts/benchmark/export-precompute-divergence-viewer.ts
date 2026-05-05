@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { lv95ToWgs84 } from "@/lib/geo/projection";
+import { lv95ToWgs84Precise } from "@/lib/geo/projection";
 import { loadBuildingsObstacleIndex } from "@/lib/sun/buildings-shadow";
 
 type ModeName = "gpu-raster" | "rust-wgpu-vulkan" | "detailed";
@@ -309,7 +309,7 @@ async function collectBuildingFeatures(
         ];
     const geometryKind = obstacle.footprint && obstacle.footprint.length >= 3 ? "footprint" : "bbox";
     const ring = footprint.map((point) => {
-      const wgs84 = lv95ToWgs84(point.x, point.y);
+      const wgs84 = lv95ToWgs84Precise(point.x, point.y);
       return [wgs84.lon, wgs84.lat] as [number, number];
     });
     ring.push(ring[0]);
@@ -337,10 +337,10 @@ async function collectBuildingFeatures(
 }
 
 function tileBoundsFeature(bounds: TileBounds): GeoJsonFeature {
-  const sw = lv95ToWgs84(bounds.minEasting, bounds.minNorthing);
-  const se = lv95ToWgs84(bounds.maxEasting, bounds.minNorthing);
-  const ne = lv95ToWgs84(bounds.maxEasting, bounds.maxNorthing);
-  const nw = lv95ToWgs84(bounds.minEasting, bounds.maxNorthing);
+  const sw = lv95ToWgs84Precise(bounds.minEasting, bounds.minNorthing);
+  const se = lv95ToWgs84Precise(bounds.maxEasting, bounds.minNorthing);
+  const ne = lv95ToWgs84Precise(bounds.maxEasting, bounds.maxNorthing);
+  const nw = lv95ToWgs84Precise(bounds.minEasting, bounds.maxNorthing);
   return {
     type: "Feature",
     geometry: {

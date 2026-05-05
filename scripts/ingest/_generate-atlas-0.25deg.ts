@@ -23,7 +23,7 @@ if (process.env.MAPPY_BUILDINGS_SHADOW_MODE !== "rust-wgpu-vulkan") {
   process.exit(1);
 }
 
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import { computeAndMergeAtlasForTile } from "../../src/lib/precompute/atlas-tile-service";
 import { disposeSunlightTileEvaluationBackends } from "../../src/lib/precompute/sunlight-tile-service";
 import { DEFAULT_SHADOW_CALIBRATION } from "../../src/lib/sun/shadow-calibration";
@@ -64,7 +64,7 @@ async function main(): Promise<void> {
     const parsed = parseTileId(tileId);
     const centerE = parsed.minE + parsed.size / 2;
     const centerN = parsed.minN + parsed.size / 2;
-    const { lat, lon } = lv95ToWgs84(centerE, centerN);
+    const { lat, lon } = lv95ToWgs84Precise(centerE, centerN);
 
     const tileSpec: RegionTileSpec = {
       tileId,

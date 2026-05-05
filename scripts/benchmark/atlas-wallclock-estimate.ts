@@ -24,7 +24,7 @@ import path from "node:path";
 import SunCalc from "suncalc";
 
 import { CACHE_SUNLIGHT_DIR } from "../../src/lib/storage/data-paths";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 
 type Args = {
@@ -124,7 +124,7 @@ async function main() {
           if (!parsed) continue;
           const centerE = parsed.minE + parsed.size / 2;
           const centerN = parsed.minN + parsed.size / 2;
-          const center = lv95ToWgs84(centerE, centerN);
+          const center = lv95ToWgs84Precise(centerE, centerN);
           for (const utc of frameTimesUtc) {
             const p = SunCalc.getPosition(utc, center.lat, center.lon);
             const alt = p.altitude * 180 / Math.PI;

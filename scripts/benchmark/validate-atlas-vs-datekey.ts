@@ -34,7 +34,7 @@ import {
   ATLAS_MASK_KIND_SUN,
   getAtlasBucketMasks,
 } from "../../src/lib/precompute/sunlight-cache-atlas";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import { CACHE_SUNLIGHT_DIR } from "../../src/lib/storage/data-paths";
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 
@@ -222,7 +222,7 @@ async function main() {
     const tb = atlas.meta.tile;
     const centerE = (tb.minEasting + tb.maxEasting) / 2;
     const centerN = (tb.minNorthing + tb.maxNorthing) / 2;
-    const { lat: tileLat, lon: tileLon } = lv95ToWgs84(centerE, centerN);
+    const { lat: tileLat, lon: tileLon } = lv95ToWgs84Precise(centerE, centerN);
 
     const tileStats: Record<string, BandStats> = Object.fromEntries(bandNames.map(b => [b, emptyBand()]));
 

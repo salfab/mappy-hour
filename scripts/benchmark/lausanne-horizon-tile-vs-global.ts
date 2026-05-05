@@ -3,7 +3,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { LAUSANNE_CENTER } from "../../src/lib/config/lausanne";
-import { lv95ToWgs84, wgs84ToLv95 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise, wgs84ToLv95Precise } from "../../src/lib/geo/projection";
 import { buildDynamicHorizonMask } from "../../src/lib/sun/dynamic-horizon-mask";
 import type { HorizonMask } from "../../src/lib/sun/horizon-mask";
 import { evaluateInstantSunlight } from "../../src/lib/sun/solar";
@@ -118,7 +118,7 @@ function buildTilePoints(
   tileSizeMeters: number,
   pointStepMeters: number,
 ): TilePoint[] {
-  const centerLv95 = wgs84ToLv95(cluster.lon, cluster.lat);
+  const centerLv95 = wgs84ToLv95Precise(cluster.lon, cluster.lat);
   const half = tileSizeMeters / 2;
   const points: TilePoint[] = [];
   let index = 0;
@@ -127,7 +127,7 @@ function buildTilePoints(
     for (let dy = -half; dy <= half + 1e-9; dy += pointStepMeters) {
       const easting = centerLv95.easting + dx;
       const northing = centerLv95.northing + dy;
-      const wgs84 = lv95ToWgs84(easting, northing);
+      const wgs84 = lv95ToWgs84Precise(easting, northing);
       points.push({
         id: `${cluster.name}-${index}`,
         cluster: cluster.name,
@@ -190,7 +190,7 @@ async function main() {
     throw new Error("No points built for Lausanne tile benchmark.");
   }
 
-  const globalLv95 = wgs84ToLv95(LAUSANNE_CENTER.lon, LAUSANNE_CENTER.lat);
+  const globalLv95 = wgs84ToLv95Precise(LAUSANNE_CENTER.lon, LAUSANNE_CENTER.lat);
   const globalKey = toCenterKey(globalLv95.easting, globalLv95.northing);
   const clusterCenterByName = new Map(
     CLUSTERS.map((cluster) => [cluster.name, cluster]),
@@ -209,7 +209,7 @@ async function main() {
   const bootstrapMs = centerBuildMs.get(globalKey) ?? 0;
 
   for (const cluster of CLUSTERS) {
-    const lv95 = wgs84ToLv95(cluster.lon, cluster.lat);
+    const lv95 = wgs84ToLv95Precise(cluster.lon, cluster.lat);
     await ensureMask(
       toCenterKey(lv95.easting, lv95.northing),
       cluster.lat,
@@ -297,8 +297,8 @@ async function main() {
         name === "global-mask"
           ? globalKey
           : toCenterKey(
-              wgs84ToLv95(cluster.lon, cluster.lat).easting,
-              wgs84ToLv95(cluster.lon, cluster.lat).northing,
+              wgs84ToLv95Precise(cluster.lon, cluster.lat).easting,
+              wgs84ToLv95Precise(cluster.lon, cluster.lat).northing,
             );
       const strategyMask = centerMasks.get(strategyKey);
       if (!strategyMask) {
@@ -417,7 +417,7 @@ async function main() {
 
   const tileCenterKeys = new Set(
     CLUSTERS.map((cluster) => {
-      const lv95 = wgs84ToLv95(cluster.lon, cluster.lat);
+      const lv95 = wgs84ToLv95Precise(cluster.lon, cluster.lat);
       return toCenterKey(lv95.easting, lv95.northing);
     }),
   );

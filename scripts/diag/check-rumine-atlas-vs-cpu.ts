@@ -7,7 +7,7 @@
  */
 import SunCalc from "suncalc";
 
-import { wgs84ToLv95 } from "../../src/lib/geo/projection";
+import { wgs84ToLv95Precise } from "../../src/lib/geo/projection";
 import {
   loadPrecomputedTileAtlasesInPrecisionOrder,
   lookupAtlasByAngle,
@@ -54,7 +54,7 @@ function findClosestOutdoorPoint(atlas: BinaryTileAtlas, targetLat: number, targ
   distMeters: number;
 } | null {
   let best: { idx: number; dist2: number } | null = null;
-  const target = wgs84ToLv95(targetLon, targetLat);
+  const target = wgs84ToLv95Precise(targetLon, targetLat);
   for (let i = 0; i < atlas.pointCount; i++) {
     const flags = atlas.pointFlags[i];
     const outdoorIdx = atlas.pointOutdoorIndex[i];
@@ -209,7 +209,7 @@ async function evaluateCandidate(
 }
 
 async function main() {
-  const lv95 = wgs84ToLv95(CANDIDATES[0].lon, CANDIDATES[0].lat);
+  const lv95 = wgs84ToLv95Precise(CANDIDATES[0].lon, CANDIDATES[0].lat);
   const tileId = tileIdFor(lv95.easting, lv95.northing);
   console.log(`tileId=${tileId} (all candidates must share this tile)\n`);
 

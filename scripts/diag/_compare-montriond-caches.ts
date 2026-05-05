@@ -3,7 +3,7 @@ import path from "node:path";
 import { gunzip as gunzipCb } from "node:zlib";
 import { promisify } from "node:util";
 import SunCalc from "suncalc";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import {
   decodeTileAtlasFromBinary,
   lookupAtlasByAngle,
@@ -31,7 +31,7 @@ async function main() {
   for (const tileId of tileIds) {
     console.log(`\n═══ ${tileId} ═══`);
     const e = parseInt(tileId.slice(1,8)); const n = parseInt(tileId.slice(10,17));
-    const center = lv95ToWgs84(e+125, n+125);
+    const center = lv95ToWgs84Precise(e+125, n+125);
     const utc = new Date("2026-04-29T07:30:00+02:00");
     const pos = SunCalc.getPosition(utc, center.lat, center.lon);
     const alt = pos.altitude * RAD_TO_DEG;

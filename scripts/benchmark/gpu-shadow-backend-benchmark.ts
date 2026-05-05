@@ -14,7 +14,7 @@ import os from "node:os";
 
 import SunCalc from "suncalc";
 
-import { lv95ToWgs84 } from "@/lib/geo/projection";
+import { lv95ToWgs84Precise } from "@/lib/geo/projection";
 import {
   buildRegionTiles,
   buildTilePoints,
@@ -197,7 +197,7 @@ async function main() {
   const utcSamples = createUtcSamples(
     DATE, TIMEZONE, SAMPLE_EVERY_MINUTES, START_LOCAL_TIME, END_LOCAL_TIME,
   );
-  const centerWgs84 = lv95ToWgs84(
+  const centerWgs84 = lv95ToWgs84Precise(
     (tile.minEasting + tile.maxEasting) / 2,
     (tile.minNorthing + tile.maxNorthing) / 2,
   );

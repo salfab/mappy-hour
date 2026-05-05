@@ -14,7 +14,7 @@ if (process.env.MAPPY_BUILDINGS_SHADOW_MODE !== "rust-wgpu-vulkan") {
   process.exit(1);
 }
 
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import { computeAndMergeAtlasForTile } from "../../src/lib/precompute/atlas-tile-service";
 import { disposeSunlightTileEvaluationBackends } from "../../src/lib/precompute/sunlight-tile-service";
 import { DEFAULT_SHADOW_CALIBRATION } from "../../src/lib/sun/shadow-calibration";
@@ -39,7 +39,7 @@ const END_LOCAL = "22:00";
 async function main(): Promise<void> {
   const m = /^e(\d+)_n(\d+)_s(\d+)$/.exec(TILE_ID)!;
   const minE = Number(m[1]); const minN = Number(m[2]); const size = Number(m[3]);
-  const { lat, lon } = lv95ToWgs84(minE + size / 2, minN + size / 2);
+  const { lat, lon } = lv95ToWgs84Precise(minE + size / 2, minN + size / 2);
   const tile: RegionTileSpec = {
     tileId: TILE_ID, tileSizeMeters: size,
     minEasting: minE, minNorthing: minN,

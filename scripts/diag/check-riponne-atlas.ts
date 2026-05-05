@@ -6,7 +6,7 @@
  */
 import SunCalc from "suncalc";
 
-import { wgs84ToLv95 } from "../../src/lib/geo/projection";
+import { wgs84ToLv95Precise } from "../../src/lib/geo/projection";
 import {
   loadPrecomputedTileAtlas,
   loadPrecomputedTileAtlasesInPrecisionOrder,
@@ -44,7 +44,7 @@ function tileIdFor(easting: number, northing: number, size = 250): string {
 }
 
 async function main() {
-  const { easting, northing } = wgs84ToLv95(RIPONNE_LON, RIPONNE_LAT);
+  const { easting, northing } = wgs84ToLv95Precise(RIPONNE_LON, RIPONNE_LAT);
   const tileId = tileIdFor(easting, northing);
   console.log(`Riponne WGS84=(${RIPONNE_LAT}, ${RIPONNE_LON})`);
   console.log(`Riponne LV95=(${easting.toFixed(1)}, ${northing.toFixed(1)})`);

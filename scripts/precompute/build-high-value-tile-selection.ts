@@ -5,7 +5,7 @@ import { GENEVE_LOCAL_BBOX } from "../../src/lib/config/geneve";
 import { bboxFromRadiusKm, type BBox, LAUSANNE_LOCAL_BBOX } from "../../src/lib/config/lausanne";
 import { MORGES_LOCAL_BBOX } from "../../src/lib/config/morges";
 import { NYON_LOCAL_BBOX } from "../../src/lib/config/nyon";
-import { wgs84ToLv95 } from "../../src/lib/geo/projection";
+import { wgs84ToLv95Precise } from "../../src/lib/geo/projection";
 import { loadPlacesByRegion, type PlacesFile } from "../../src/lib/places/lausanne-places";
 import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "../../src/lib/precompute/constants";
 import type { PrecomputedRegionName, RegionBbox } from "../../src/lib/precompute/sunlight-cache";
@@ -562,7 +562,7 @@ function scorePlace(place: NormalizedPlace): number {
 }
 
 function tileIdForPlace(place: NormalizedPlace): string {
-  const point = wgs84ToLv95(place.lon, place.lat);
+  const point = wgs84ToLv95Precise(place.lon, place.lat);
   const tileSize = CANONICAL_PRECOMPUTE_TILE_SIZE_METERS;
   const minEasting = Math.floor(point.easting / tileSize) * tileSize;
   const minNorthing = Math.floor(point.northing / tileSize) * tileSize;

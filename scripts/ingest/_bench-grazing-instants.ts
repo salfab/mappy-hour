@@ -32,7 +32,7 @@ if (process.env.MAPPY_BUILDINGS_SHADOW_MODE !== "detailed") {
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import {
   computeSunlightTileArtifact,
   disposeSunlightTileEvaluationBackends,
@@ -90,7 +90,7 @@ async function main(): Promise<void> {
   const parsed = parseTileId(TILE_ID);
   const centerE = parsed.minE + parsed.size / 2;
   const centerN = parsed.minN + parsed.size / 2;
-  const { lat: centerLat, lon: centerLon } = lv95ToWgs84(centerE, centerN);
+  const { lat: centerLat, lon: centerLon } = lv95ToWgs84Precise(centerE, centerN);
 
   const tileSpec: RegionTileSpec = {
     tileId: TILE_ID, tileSizeMeters: parsed.size,
@@ -178,7 +178,7 @@ async function main(): Promise<void> {
       const pt = cpuArtifact.points[p];
       if (pt.outdoorIndex === null || pt.outdoorIndex === undefined) continue;
       const oi = pt.outdoorIndex;
-      const { lat, lon } = lv95ToWgs84(pt.lv95Easting, pt.lv95Northing);
+      const { lat, lon } = lv95ToWgs84Precise(pt.lv95Easting, pt.lv95Northing);
       points.push({
         lat: Math.round(lat * 1e6) / 1e6,
         lon: Math.round(lon * 1e6) / 1e6,

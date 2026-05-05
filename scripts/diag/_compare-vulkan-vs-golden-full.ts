@@ -11,7 +11,7 @@ import path from "node:path";
 import { gunzip as gunzipCb } from "node:zlib";
 import { promisify } from "node:util";
 import SunCalc from "suncalc";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import {
   decodeTileAtlasFromBinary,
   lookupAtlasByAngle,
@@ -110,7 +110,7 @@ async function main() {
     if (!vA || !gA) { missing++; continue; }
     if (vA.outdoorPointCount !== gA.outdoorPointCount) { missing++; continue; }
     const m = /^e(\d+)_n(\d+)/.exec(tileId)!;
-    const center = lv95ToWgs84(parseInt(m[1]) + 125, parseInt(m[2]) + 125);
+    const center = lv95ToWgs84Precise(parseInt(m[1]) + 125, parseInt(m[2]) + 125);
     for (const s of SAMPLES) {
       const pos = SunCalc.getPosition(s.utc, center.lat, center.lon);
       const alt = pos.altitude * RAD_TO_DEG;

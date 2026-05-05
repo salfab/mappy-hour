@@ -1,5 +1,5 @@
 import SunCalc from "suncalc";
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import {
   loadPrecomputedTileAtlasesInPrecisionOrder,
   lookupAtlasByAngle,
@@ -18,7 +18,7 @@ async function check(tileId: string, label: string, centerE: number, centerN: nu
   if (atlases.length === 0) { console.log("  NO ATLAS"); return; }
   const a = atlases[0];
   console.log(`  res=${a.resolutionDegAz}° outdoor=${a.outdoorPointCount} buckets=${a.bucketCount}`);
-  const center = lv95ToWgs84(centerE, centerN);
+  const center = lv95ToWgs84Precise(centerE, centerN);
   const minutes = ["07:30","09:00","10:30","12:00","14:00","16:00","18:00","20:00"];
   for (const m of minutes) {
     const utc = new Date(`2026-04-29T${m}:00+02:00`);

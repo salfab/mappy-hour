@@ -1,4 +1,4 @@
-import { wgs84ToLv95 } from "../../src/lib/geo/projection";
+import { wgs84ToLv95Precise } from "../../src/lib/geo/projection";
 
 const points = [
   { name: "Parc de Milan centre", lat: 46.5157, lon: 6.6185 },
@@ -8,7 +8,7 @@ const points = [
   { name: "Parc de Milan W", lat: 46.5157, lon: 6.6165 },
 ];
 for (const p of points) {
-  const lv = wgs84ToLv95(p.lon, p.lat);
+  const lv = wgs84ToLv95Precise(p.lon, p.lat);
   const tileE = Math.floor(lv.easting / 250) * 250;
   const tileN = Math.floor(lv.northing / 250) * 250;
   console.log(

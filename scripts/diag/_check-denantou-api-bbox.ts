@@ -4,7 +4,7 @@
  */
 import SunCalc from "suncalc";
 
-import { wgs84ToLv95, lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { wgs84ToLv95Precise, lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import {
   loadPrecomputedTileAtlasesInPrecisionOrder,
   lookupAtlasByAngle,
@@ -21,8 +21,8 @@ const DATE = "2026-04-29";
 const RAD_TO_DEG = 180 / Math.PI;
 
 function tilesIn(bbox: typeof BBOX): string[] {
-  const sw = wgs84ToLv95(bbox.minLon, bbox.minLat);
-  const ne = wgs84ToLv95(bbox.maxLon, bbox.maxLat);
+  const sw = wgs84ToLv95Precise(bbox.minLon, bbox.minLat);
+  const ne = wgs84ToLv95Precise(bbox.maxLon, bbox.maxLat);
   const tiles = new Set<string>();
   const TS = 250;
   for (let te = Math.floor(sw.easting / TS) * TS; te <= ne.easting; te += TS) {
@@ -38,9 +38,9 @@ async function main() {
   console.log(`Tiles in bbox: ${tiles.join(", ")}`);
 
   // Compute az/alt for each sample 07:30 → 21:00 every 15min (same as curl)
-  const centerE = (wgs84ToLv95(BBOX.minLon, BBOX.minLat).easting + wgs84ToLv95(BBOX.maxLon, BBOX.maxLat).easting) / 2;
-  const centerN = (wgs84ToLv95(BBOX.minLon, BBOX.minLat).northing + wgs84ToLv95(BBOX.maxLon, BBOX.maxLat).northing) / 2;
-  const center = lv95ToWgs84(centerE, centerN);
+  const centerE = (wgs84ToLv95Precise(BBOX.minLon, BBOX.minLat).easting + wgs84ToLv95Precise(BBOX.maxLon, BBOX.maxLat).easting) / 2;
+  const centerN = (wgs84ToLv95Precise(BBOX.minLon, BBOX.minLat).northing + wgs84ToLv95Precise(BBOX.maxLon, BBOX.maxLat).northing) / 2;
+  const center = lv95ToWgs84Precise(centerE, centerN);
 
   const samples: Array<{ local: string; utc: Date; az: number; alt: number }> = [];
   const minutes = [

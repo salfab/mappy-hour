@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import AdmZip from "adm-zip";
 import SunCalc from "suncalc";
 
-import { lv95ToWgs84, wgs84ToLv95 } from "@/lib/geo/projection";
+import { lv95ToWgs84Precise, wgs84ToLv95Precise } from "@/lib/geo/projection";
 import { evaluateBuildingsShadow } from "@/lib/sun/buildings-shadow";
 import {
   RAW_BUILDINGS_DIR,
@@ -597,10 +597,10 @@ async function main() {
   );
 
   const corners = [
-    wgs84ToLv95(ANALYSIS.bbox.minLon, ANALYSIS.bbox.minLat),
-    wgs84ToLv95(ANALYSIS.bbox.minLon, ANALYSIS.bbox.maxLat),
-    wgs84ToLv95(ANALYSIS.bbox.maxLon, ANALYSIS.bbox.minLat),
-    wgs84ToLv95(ANALYSIS.bbox.maxLon, ANALYSIS.bbox.maxLat),
+    wgs84ToLv95Precise(ANALYSIS.bbox.minLon, ANALYSIS.bbox.minLat),
+    wgs84ToLv95Precise(ANALYSIS.bbox.minLon, ANALYSIS.bbox.maxLat),
+    wgs84ToLv95Precise(ANALYSIS.bbox.maxLon, ANALYSIS.bbox.minLat),
+    wgs84ToLv95Precise(ANALYSIS.bbox.maxLon, ANALYSIS.bbox.maxLat),
   ];
   const minX = Math.floor(Math.min(...corners.map((point) => point.easting)));
   const maxX = Math.ceil(Math.max(...corners.map((point) => point.easting)));
@@ -638,7 +638,7 @@ async function main() {
   const improvedEvalStartedAt = performance.now();
   for (let northing = minY; northing <= maxY; northing += ANALYSIS.gridStepMeters) {
     for (let easting = minX; easting <= maxX; easting += ANALYSIS.gridStepMeters) {
-      const wgs = lv95ToWgs84(easting, northing);
+      const wgs = lv95ToWgs84Precise(easting, northing);
       if (
         wgs.lon < ANALYSIS.bbox.minLon ||
         wgs.lon > ANALYSIS.bbox.maxLon ||

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import SunCalc from "suncalc";
 
-import { lv95ToWgs84 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise } from "../../src/lib/geo/projection";
 import {
   loadPrecomputedTileAtlasesInPrecisionOrder,
   lookupAtlasByAngle,
@@ -45,7 +45,7 @@ async function main() {
     });
     const a = atlases[0];
     if (!a) continue;
-    const center = lv95ToWgs84(t.tileE + 125, t.tileN + 125);
+    const center = lv95ToWgs84Precise(t.tileE + 125, t.tileN + 125);
     const pos = SunCalc.getPosition(utc, center.lat, center.lon);
     const alt = pos.altitude * RAD_TO_DEG;
     let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
