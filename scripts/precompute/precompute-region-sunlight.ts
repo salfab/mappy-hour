@@ -558,6 +558,52 @@ async function main() {
       `  ${icon} ${day.date}  ok=${day.succeededTiles}  skip=${day.skippedTiles}  fail=${day.failedTiles}  durée=${formatDuration(day.elapsedMs / 1000)}`,
     );
   }
+
+  // Atlas drift recovery: if mergeBucketsIntoAtlas had to gracefully invalidate
+  // any stale atlas during this run (Option A), generate a patch script the
+  // operator can run to fill the gaps.
+  if (result.atlasDriftRecords.length > 0) {
+    const { writeAtlasDriftPatchScript } = await import(
+      "../../src/lib/precompute/atlas-drift-patch-script"
+    );
+    const scriptPath = await writeAtlasDriftPatchScript({
+      records: result.atlasDriftRecords,
+      run: {
+        region: args.region,
+        startDate: args.startDate,
+        days: args.days,
+        timezone: args.timezone,
+        sampleEveryMinutes: args.sampleEveryMinutes,
+        gridStepMeters: args.gridStepMeters,
+        startLocalTime: args.startLocalTime,
+        endLocalTime: args.endLocalTime,
+        buildingHeightBiasMeters: args.buildingHeightBiasMeters,
+        buildingsShadowMode: args.buildingsShadowMode,
+        atlasResolutionDeg: args.atlasResolutionDeg,
+      },
+    });
+    console.warn("");
+    console.warn(
+      `⚠️  Atlas drift detected on ${result.atlasDriftRecords.length} tile(s) during this run.`,
+    );
+    console.warn(
+      `   Stale atlases were gracefully invalidated; per-day tile artifacts for these tiles`,
+    );
+    console.warn(
+      `   are now incoherent with the fresh atlases and should be regenerated.`,
+    );
+    console.warn("");
+    console.warn(`   Run the following to fill the gaps (idempotent):`);
+    console.warn("");
+    console.warn(`       bash ${scriptPath}`);
+    console.warn("");
+    console.warn(
+      `   Affected tiles: ${result.atlasDriftRecords
+        .slice(0, 5)
+        .map((r) => `${r.region}/${r.tileId}`)
+        .join(", ")}${result.atlasDriftRecords.length > 5 ? ", ..." : ""}`,
+    );
+  }
 }
 
 void main().catch((error) => {

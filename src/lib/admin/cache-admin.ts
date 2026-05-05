@@ -19,6 +19,10 @@ import {
 } from "@/lib/precompute/sunlight-tile-service";
 import { getSunlightCacheStorage } from "@/lib/precompute/sunlight-cache-storage";
 import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
+import {
+  consumeAtlasDriftRecords,
+  enableAtlasDriftSink,
+} from "@/lib/precompute/atlas-drift-sink";
 import { buildOutlineRingsFromTileIds } from "@/lib/admin/cache-run-outline";
 import type {
   CacheRunCanonicalRef,
@@ -159,6 +163,13 @@ export interface CachePrecomputeResult {
     complete: boolean;
     elapsedMs: number;
   }>;
+  /**
+   * Atlas drift records collected during this run. Non-empty when
+   * `mergeBucketsIntoAtlas` had to gracefully invalidate stale atlases due to
+   * outdoor-count drift (see atlas-drift-sink.ts). The orchestrator writes a
+   * patch script from these records so the operator can fill the gaps.
+   */
+  atlasDriftRecords: import("@/lib/precompute/atlas-drift-sink").AtlasDriftRecord[];
 }
 
 export interface CachePrecomputeProgress {
@@ -1217,6 +1228,10 @@ export async function precomputeCacheRuns(
     signal?: AbortSignal;
   } = {},
 ): Promise<CachePrecomputeResult> {
+  // Enable the atlas drift sink for this run. Any graceful invalidation in
+  // mergeBucketsIntoAtlas will be recorded and consumed at the end so the
+  // orchestrator can produce a patch script.
+  enableAtlasDriftSink();
   const tileSizeMeters = CANONICAL_PRECOMPUTE_TILE_SIZE_METERS;
   const shadowCalibration = normalizeShadowCalibration({
     buildingHeightBiasMeters: request.buildingHeightBiasMeters,
@@ -1736,5 +1751,6 @@ export async function precomputeCacheRuns(
       buildingHeightBiasMeters: shadowCalibration.buildingHeightBiasMeters,
     },
     dates,
+    atlasDriftRecords: consumeAtlasDriftRecords(),
   };
 }

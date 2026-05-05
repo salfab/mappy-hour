@@ -6,6 +6,7 @@ import path from "node:path";
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 import { getSunlightCacheStorage } from "./sunlight-cache-storage";
 import type { PrecomputedRegionName, RegionTileSpec } from "./sunlight-cache";
+import { recordAtlasDrift } from "./atlas-drift-sink";
 
 const gzip = promisify(gzipCb);
 const gunzip = promisify(gunzipCb);
@@ -626,9 +627,34 @@ export function mergeBucketsIntoAtlas(params: {
   const perBucketBytes = ATLAS_MASK_KINDS * maskBytesPerBucket;
 
   if (existing != null && existing.maskBytesPerBucket !== maskBytesPerBucket) {
-    throw new Error(
-      `Cannot merge atlas: maskBytesPerBucket mismatch (existing=${existing.maskBytesPerBucket}, new=${maskBytesPerBucket})`,
+    // Outdoor-count drift detected: the existing atlas was written with a
+    // different `outdoorCount` (typically ±1-5 points caused by the gpu-raster
+    // zenith non-determinism on building edges). The two bitmask layouts are
+    // indexed on different point sets, so they cannot be merged. We invalidate
+    // the stale atlas, emit a drift record so the orchestrator can produce a
+    // patch script (see atlas-drift-sink.ts), and write fresh with the new
+    // buckets only.
+    console.warn(
+      `[atlas-merge] outdoor count drift on ${params.meta.tile.tileId}: ` +
+        `existing=${existing.outdoorPointCount} (${existing.maskBytesPerBucket} B/bucket, ` +
+        `${existing.bucketCount} buckets), ` +
+        `new=${params.outdoorPointCount} (${maskBytesPerBucket} B/bucket). ` +
+        `Invalidating stale atlas, writing fresh.`,
     );
+    recordAtlasDrift({
+      region: params.meta.region,
+      modelVersionHash: params.meta.modelVersionHash,
+      gridStepMeters: params.meta.gridStepMeters,
+      tileId: params.meta.tile.tileId,
+      resolutionDeg: params.meta.resolutionDegAz,
+      previousOutdoorCount: existing.outdoorPointCount,
+      newOutdoorCount: params.outdoorPointCount,
+      previousMaskBytesPerBucket: existing.maskBytesPerBucket,
+      newMaskBytesPerBucket: maskBytesPerBucket,
+      previousBucketCount: existing.bucketCount,
+      detectedAt: new Date().toISOString(),
+    });
+    return mergeBucketsIntoAtlas({ ...params, existing: null });
   }
 
   type Slot = { azBucket: number; altBucket: number; maskSource: Uint8Array; maskSourceOffset: number };

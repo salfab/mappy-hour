@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   decodeTileAtlasFromBinary,
@@ -10,6 +10,11 @@ import {
   type BinaryTileAtlas,
   type TileAtlasMetadata,
 } from "./sunlight-cache-atlas";
+import {
+  consumeAtlasDriftRecords,
+  disableAtlasDriftSink,
+  enableAtlasDriftSink,
+} from "./atlas-drift-sink";
 
 const MASK_BYTES = 4;
 const POINT_COUNT = 2;
@@ -195,6 +200,84 @@ describe("mergeBucketsIntoAtlas", () => {
     expect(reloaded2.bucketCount).toBe(2);
     expect(Array.from(readBucket(reloaded2, 10, 20)!.sunMask)).toEqual([99, 99, 99, 99]);
     expect(Array.from(readBucket(reloaded2, 11, 20)!.sunMask)).toEqual([8, 8, 8, 8]);
+  });
+
+  describe("outdoor count drift (Option A+ graceful invalidation)", () => {
+    beforeEach(() => enableAtlasDriftSink());
+    afterEach(() => disableAtlasDriftSink());
+
+    it("invalidates stale atlas and writes fresh when maskBytesPerBucket differs", () => {
+      // Step 1: build a stale atlas with maskBytesPerBucket=4 (outdoorCount=2)
+      const stale = mergeBucketsIntoAtlas({
+        existing: null,
+        meta: makeMeta(),
+        ...makePointParams(),
+        newBuckets: [makeBucket(10, 20, 7), makeBucket(11, 20, 8)],
+      });
+      expect(stale.bucketCount).toBe(2);
+      expect(stale.maskBytesPerBucket).toBe(4);
+      expect(consumeAtlasDriftRecords()).toHaveLength(0);
+
+      // Step 2: try to merge new buckets with maskBytesPerBucket=5 (drift +1)
+      const driftedParams = {
+        ...makePointParams(),
+        outdoorPointCount: 9, // ceil(9/8)=2 → still 2 bytes? need to bump to be safe
+        maskBytesPerBucket: 5,
+      };
+      const merged = mergeBucketsIntoAtlas({
+        existing: stale,
+        meta: makeMeta(),
+        ...driftedParams,
+        newBuckets: [
+          {
+            azBucket: 12,
+            altBucket: 20,
+            sunMask: new Uint8Array([1, 1, 1, 1, 1]),
+            sunNoVegMask: new Uint8Array([2, 2, 2, 2, 2]),
+            terrainMask: new Uint8Array([3, 3, 3, 3, 3]),
+            buildingsMask: new Uint8Array([4, 4, 4, 4, 4]),
+            vegetationMask: new Uint8Array([5, 5, 5, 5, 5]),
+          },
+        ],
+      });
+
+      // The stale buckets MUST be dropped — only the new bucket survives.
+      expect(merged.bucketCount).toBe(1);
+      expect(merged.maskBytesPerBucket).toBe(5);
+      expect(merged.bucketAz[0]).toBe(12);
+
+      // Drift record emitted to sink.
+      const drifts = consumeAtlasDriftRecords();
+      expect(drifts).toHaveLength(1);
+      expect(drifts[0]).toMatchObject({
+        region: "lausanne",
+        modelVersionHash: "test-hash",
+        tileId: "e0_n0_s250",
+        previousMaskBytesPerBucket: 4,
+        newMaskBytesPerBucket: 5,
+        previousBucketCount: 2,
+      });
+    });
+
+    it("does not record drift when maskBytesPerBucket matches", () => {
+      const existing = mergeBucketsIntoAtlas({
+        existing: null,
+        meta: makeMeta(),
+        ...makePointParams(),
+        newBuckets: [makeBucket(10, 20, 7)],
+      });
+      consumeAtlasDriftRecords(); // clear any seed records
+
+      const merged = mergeBucketsIntoAtlas({
+        existing,
+        meta: makeMeta(),
+        ...makePointParams(),
+        newBuckets: [makeBucket(11, 20, 8)],
+      });
+
+      expect(merged.bucketCount).toBe(2);
+      expect(consumeAtlasDriftRecords()).toHaveLength(0);
+    });
   });
 
   it("sorts buckets by (altBucket asc, azBucket asc)", () => {
