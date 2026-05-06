@@ -25,6 +25,18 @@ type ObstacleArray = NonNullable<Awaited<ReturnType<typeof loadBuildingsObstacle
 type Bounds2d = { minX: number; minY: number; maxX: number; maxY: number };
 type Bounds3d = Bounds2d & { minZ: number; maxZ: number };
 
+type SessionSlot = {
+  id: string;
+  pointsHash: string | null;
+  pointCount: number | null;
+  focusKey: string | null;
+  horizonHash: string | null;
+  horizonMasksBinPath: string | null;
+  horizonIndicesBinPath: string | null;
+  pointsBinPath: string | null;
+  opened: boolean;
+};
+
 const DEFAULT_RESOLUTION = 4096;
 
 function runtimeOutputDir(): string {
@@ -141,23 +153,15 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   private focusBounds: Bounds2d | null = null;
   private maxBuildingHeight: number;
   private server: RustWgpuVulkanShadowServer | null = null;
-  private serverPointCount: number | null = null;
-  private serverPointsHash: string | null = null;
-  private serverFocusKey: string | null = null;
-  private pointsBinPath: string | null = null;
   private evaluationId = 0;
-  // Horizon upload state: the masks/indices live on the server until
-  // invalidated (points change OR mesh change). We remember the hash of
-  // the last uploaded (masks + indices) to skip redundant uploads.
-  private serverHorizonHash: string | null = null;
-  private horizonMasksBinPath: string | null = null;
-  private horizonIndicesBinPath: string | null = null;
-  // Vegetation upload state. Hash includes origin since the shader uses
-  // it to translate centered point coords back to LV95 during ray-march.
+  // Multi-session pool: N slots, each with its own per-tile state.
+  private readonly sessionCount: number;
+  private sessionSlots: SessionSlot[] = [];
+  private slotChains: Promise<unknown>[] = [];
+  // Scene-wide upload state (shared across all sessions on Rust side).
   private serverVegetationHash: string | null = null;
   private vegetationMetaBinPath: string | null = null;
   private vegetationDataBinPath: string | null = null;
-  // Terrain (local DEM) upload state — same pattern as vegetation.
   private serverTerrainHash: string | null = null;
   private terrainMetaBinPath: string | null = null;
   private terrainDataBinPath: string | null = null;
@@ -181,6 +185,17 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     this.triangleCount = params.triangleCount;
     this.maxBuildingHeight = params.maxBuildingHeight;
     this.name = `rust-wgpu-vulkan-${params.resolution}`;
+    const n = parseInt(process.env.MAPPY_RUST_VULKAN_SESSIONS ?? "1", 10);
+    this.sessionCount = Number.isFinite(n) && n >= 1 ? Math.min(n, 4) : 1;
+    for (let i = 0; i < this.sessionCount; i++) {
+      this.sessionSlots.push({
+        id: i === 0 ? "default" : `slot-${i}`,
+        pointsHash: null, pointCount: null, focusKey: null,
+        horizonHash: null, horizonMasksBinPath: null, horizonIndicesBinPath: null,
+        pointsBinPath: null, opened: false,
+      });
+      this.slotChains.push(Promise.resolve());
+    }
   }
 
   static async createWithDxfMeshes(
@@ -263,7 +278,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     // Invalidate the cached focus key so the next evaluateBatch will sync
     // the server's focus (caller usually calls setFrustumFocus right after
     // updateMesh, so the value itself is already fresh).
-    this.serverFocusKey = null;
+    for (const s of this.sessionSlots) { s.focusKey = null; }
     await this.deleteRuntimeFile(previousMeshPath);
   }
 
@@ -321,12 +336,13 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     if (pointCount === 0) {
       return { buildingsMask: new Uint32Array(0), terrainMask: null, vegetationMask: null };
     }
-    await this.ensureServer(points, pointCount);
+    const slot0 = this.sessionSlots[0];
+    await this.ensureSlot(slot0, points, pointCount);
     if (!this.server) {
       throw new Error("Rust/wgpu Vulkan server failed to start.");
     }
     if (options?.horizon) {
-      await this.uploadHorizonMasks(options.horizon);
+      await this.uploadHorizonMasksForSlot(slot0, options.horizon);
     }
     if (options?.vegetation) {
       await this.uploadVegetationRasters(options.vegetation);
@@ -334,7 +350,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     if (options?.terrain) {
       await this.uploadTerrainRasters(options.terrain);
     }
-    return this.runEvaluate(pointCount, azimuthDeg, altitudeDeg);
+    return this.runEvaluate(slot0, pointCount, azimuthDeg, altitudeDeg);
   }
 
   /**
@@ -401,13 +417,14 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     // segment dominates and whether multi-session would actually help.
     // See ADR-0011 Phase G post-mortem.
     const lockEnterT0 = performance.now();
-    return this.withBackendLock(async () => {
+    return this.withSessionLock(async (slot) => {
       const lockWaitMs = performance.now() - lockEnterT0;
-      return this.evaluateBatchFramesWithShadowsLocked(frames, points, pointCount, options, lockWaitMs);
+      return this.evaluateBatchFramesWithShadowsOnSlot(slot, frames, points, pointCount, options, lockWaitMs);
     });
   }
 
-  private async evaluateBatchFramesWithShadowsLocked(
+  private async evaluateBatchFramesWithShadowsOnSlot(
+    slot: SessionSlot,
     frames: Array<{ azimuthDeg: number; altitudeDeg: number }>,
     points: Float32Array,
     pointCount: number,
@@ -427,14 +444,14 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       }));
     }
     const ensureT0 = performance.now();
-    await this.ensureServer(points, pointCount);
+    await this.ensureSlot(slot, points, pointCount);
     if (!this.server) {
       throw new Error("Rust/wgpu Vulkan server failed to start.");
     }
     const ensureMs = performance.now() - ensureT0;
     const uploadHorizonT0 = performance.now();
     if (options?.horizon) {
-      await this.uploadHorizonMasks(options.horizon);
+      await this.uploadHorizonMasksForSlot(slot, options.horizon);
     }
     const uploadHorizonMs = performance.now() - uploadHorizonT0;
     const uploadVegT0 = performance.now();
@@ -451,27 +468,27 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     this.evaluationId += 1;
     const azimuthsDeg = frames.map((f) => f.azimuthDeg);
     const altitudesDeg = frames.map((f) => f.altitudeDeg);
-    // Binary IPC for the bitmask response: Rust streams Vec<u32> raw bytes
-    // (~800 KB for 60 frames × 5 masks × 1500 u32) directly on stdout after
-    // the JSON header line. The client's stream parser collects the payload
-    // and re-attaches the *Words arrays for API parity. ~10× faster than
-    // JSON serialize+parse, and no temp-file I/O.
+    // Binary IPC: Rust streams Vec<u32> raw bytes on stdout after JSON header.
     let result;
     const ipcT0 = performance.now();
     try {
       result = await this.server.evaluateBatch(this.evaluationId, azimuthsDeg, altitudesDeg, {
         includeMask: true,
+        sessionId: slot.id,
       });
     } catch (error) {
-      // Server timed out or crashed — kill it so ensureServer recreates it next time.
-      // Also reset all server-state hashes: the new server will start with empty GPU
-      // buffers and must re-upload everything before the next evaluate.
+      // Server timed out or crashed — kill it so ensureSlot recreates it next time.
       console.error(`[rust-wgpu-vulkan] evaluateBatch failed, killing server: ${error instanceof Error ? error.message : error}`);
       try { await this.server.forceKill(); } catch { /* best effort */ }
       this.server = null;
-      this.serverHorizonHash = null;
       this.serverVegetationHash = null;
       this.serverTerrainHash = null;
+      for (const s of this.sessionSlots) {
+        s.horizonHash = null;
+        s.pointsHash = null;
+        s.pointCount = null;
+        s.opened = false;
+      }
       throw error;
     }
     const ipcMs = performance.now() - ipcT0;
@@ -480,13 +497,9 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         `Rust/wgpu Vulkan batch point count mismatch: server=${result.pointCount}, expected=${pointCount}`,
       );
     }
-    // Terrain mask is produced by the GPU when EITHER horizon masks OR local
-    // terrain rasters were uploaded — the shader OR-combines both into
-    // terrainBlockedWords. Previously gated only on horizon, which silently
-    // dropped the local DEM ray-march output (shortcut 2b.11) and forced the
-    // JS hot-loop fallback in sunlight-tile-service.
+    // Terrain mask present when EITHER horizon masks OR terrain rasters uploaded.
     const hasTerrain =
-      this.serverHorizonHash !== null || this.serverTerrainHash !== null;
+      slot.horizonHash !== null || this.serverTerrainHash !== null;
     const hasVeg = this.serverVegetationHash !== null;
     const decodeT0 = performance.now();
     const decoded = result.frames.map((f) => ({
@@ -532,14 +545,16 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     if (pointCount === 0) {
       return { buildingsMask: new Uint32Array(0), terrainMask: null, vegetationMask: null };
     }
-    await this.ensureServer(points, pointCount);
+    const slot0 = this.sessionSlots[0];
+    await this.ensureSlot(slot0, points, pointCount);
     if (!this.server) {
       throw new Error("Rust/wgpu Vulkan server failed to start.");
     }
-    return this.runEvaluate(pointCount, azimuthDeg, altitudeDeg);
+    return this.runEvaluate(slot0, pointCount, azimuthDeg, altitudeDeg);
   }
 
   private async runEvaluate(
+    slot: SessionSlot,
     pointCount: number,
     azimuthDeg: number,
     altitudeDeg: number,
@@ -556,6 +571,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     try {
       result = await this.server.evaluate(this.evaluationId, azimuthDeg, altitudeDeg, {
         includeMask: true,
+        sessionId: slot.id,
       });
     } catch (error) {
       console.error(`[rust-wgpu-vulkan] evaluate failed, killing server: ${error instanceof Error ? error.message : error}`);
@@ -570,7 +586,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     }
     const buildingsMask = Uint32Array.from(result.blockedWords ?? []);
     const terrainMask =
-      this.serverHorizonHash !== null && Array.isArray(result.terrainBlockedWords)
+      slot.horizonHash !== null && Array.isArray(result.terrainBlockedWords)
         ? Uint32Array.from(result.terrainBlockedWords)
         : null;
     const vegetationMask =
@@ -582,16 +598,19 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
 
   /**
    * Upload packed horizon masks + per-point indices to the Rust server.
-   * After this call, evaluateBatchWithTerrain returns the terrain bitmask
-   * in addition to the buildings bitmask.
-   *
-   * The upload is memoized: a second call with the same (masks, indices)
-   * payload is a no-op.
+   * Delegates to slot 0 (for backward compat with single-frame evaluate path).
    */
   async uploadHorizonMasks(params: {
     masks: Float32Array;
     pointMaskIndices: Uint32Array;
   }): Promise<void> {
+    return this.uploadHorizonMasksForSlot(this.sessionSlots[0], params);
+  }
+
+  private async uploadHorizonMasksForSlot(
+    slot: SessionSlot,
+    params: { masks: Float32Array; pointMaskIndices: Uint32Array },
+  ): Promise<void> {
     const { masks, pointMaskIndices } = params;
     if (masks.length === 0 || pointMaskIndices.length === 0) {
       throw new Error("uploadHorizonMasks requires non-empty masks and indices.");
@@ -602,11 +621,9 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       );
     }
     const hash = hashHorizonPayload(masks, pointMaskIndices);
-    if (this.server && this.serverHorizonHash === hash) {
-      return; // already uploaded on the current server session
+    if (this.server && slot.horizonHash === hash) {
+      return;
     }
-    // Server not up yet → just remember the payload; ensureServer will
-    // upload it after starting (or we upload right now if server is up).
     if (!this.server) {
       throw new Error(
         "uploadHorizonMasks called before the Rust server is running. Call evaluateBatch first to spin it up.",
@@ -624,18 +641,17 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     );
     try {
       this.evaluationId += 1;
-      await this.server.uploadHorizonMasks(this.evaluationId, masksPath, indicesPath);
+      await this.server.uploadHorizonMasks(this.evaluationId, masksPath, indicesPath, { sessionId: slot.id });
     } catch (error) {
       await this.deleteRuntimeFile(masksPath);
       await this.deleteRuntimeFile(indicesPath);
       throw error;
     }
-    // Cleanup previous files, then record new state.
-    const prevMasks = this.horizonMasksBinPath;
-    const prevIndices = this.horizonIndicesBinPath;
-    this.horizonMasksBinPath = masksPath;
-    this.horizonIndicesBinPath = indicesPath;
-    this.serverHorizonHash = hash;
+    const prevMasks = slot.horizonMasksBinPath;
+    const prevIndices = slot.horizonIndicesBinPath;
+    slot.horizonMasksBinPath = masksPath;
+    slot.horizonIndicesBinPath = indicesPath;
+    slot.horizonHash = hash;
     if (prevMasks) await this.deleteRuntimeFile(prevMasks);
     if (prevIndices) await this.deleteRuntimeFile(prevIndices);
   }
@@ -821,141 +837,162 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   private async shutdownServer(): Promise<void> {
     const server = this.server;
     this.server = null;
-    this.serverPointCount = null;
-    this.serverPointsHash = null;
-    this.serverFocusKey = null;
-    this.serverHorizonHash = null;
     this.serverVegetationHash = null;
     this.serverTerrainHash = null;
+    // Reset all slot states.
+    for (const slot of this.sessionSlots) {
+      await this.deleteRuntimeFile(slot.pointsBinPath);
+      await this.deleteRuntimeFile(slot.horizonMasksBinPath);
+      await this.deleteRuntimeFile(slot.horizonIndicesBinPath);
+      slot.pointsHash = null;
+      slot.pointCount = null;
+      slot.focusKey = null;
+      slot.horizonHash = null;
+      slot.horizonMasksBinPath = null;
+      slot.horizonIndicesBinPath = null;
+      slot.pointsBinPath = null;
+      slot.opened = false;
+    }
     if (server) {
       console.log("[rust-wgpu-vulkan] Shutting down native server");
       await server.shutdownWithTimeout();
       console.log("[rust-wgpu-vulkan] Native server stopped");
     }
-    await this.deleteRuntimeFile(this.pointsBinPath);
-    await this.deleteRuntimeFile(this.horizonMasksBinPath);
-    await this.deleteRuntimeFile(this.horizonIndicesBinPath);
     await this.deleteRuntimeFile(this.vegetationMetaBinPath);
     await this.deleteRuntimeFile(this.vegetationDataBinPath);
     await this.deleteRuntimeFile(this.terrainMetaBinPath);
     await this.deleteRuntimeFile(this.terrainDataBinPath);
-    this.pointsBinPath = null;
-    this.horizonMasksBinPath = null;
-    this.horizonIndicesBinPath = null;
     this.vegetationMetaBinPath = null;
     this.vegetationDataBinPath = null;
     this.terrainMetaBinPath = null;
     this.terrainDataBinPath = null;
   }
 
-  // ── Backend-level transaction lock ────────────────────────────────────
-  // Serializes the whole "ensureServer (reload points) + uploads + evaluate
-  // + read response" sequence per tile. The Rust server has global state
-  // (points, focus, masks) — interleaving two tiles' sequences corrupts
-  // results: server=A's points, expected=B's points. The IPC-level mutex
-  // inside RustWgpuVulkanShadowServer.withIpcLock is too narrow (one
-  // writeJson+nextJson pair); it allows interleaving between the reload
-  // points step and the evaluate step. This backend-level lock wraps the
-  // entire transaction.
+  // ── Per-slot transaction lock ──────────────────────────────────────────
+  // Each slot serializes its own "ensureSlot + uploads + evaluate" sequence.
+  // With N=1 (default), behaves identically to the old single withBackendLock.
+  // With N>1, tiles can run concurrently on different sessions, limited only
+  // by GPU throughput and VRAM (depth texture per session).
   //
-  // Trade-off: with this lock, MAPPY_TILE_PIPELINE_DEPTH=2 only overlaps
-  // CPU prep (next tile) with CPU frameLoop+atlas-merge (current tile),
-  // not with GPU eval. Gain ~15-20% wall-time vs the naive 25% theoretical
-  // (which would require multi-session GPU support in the Rust server).
-  private backendChainTail: Promise<unknown> = Promise.resolve();
-
-  private async withBackendLock<T>(fn: () => Promise<T>): Promise<T> {
-    const myTurn = this.backendChainTail;
-    let release!: () => void;
-    this.backendChainTail = new Promise<void>((r) => {
-      release = r;
+  // withSessionLock races all slot chains and claims the first free slot.
+  // Losing slot chains receive an immediate release to avoid deadlock.
+  private withSessionLock<T>(fn: (slot: SessionSlot) => Promise<T>): Promise<T> {
+    const tickets = this.slotChains.map((tail, i) => {
+      let release!: () => void;
+      const newTail = new Promise<void>((r) => { release = r; });
+      const whenFree = tail;
+      this.slotChains[i] = tail.then(() => newTail) as Promise<unknown>;
+      return { i, whenFree, release };
     });
-    await myTurn;
-    try {
-      return await fn();
-    } finally {
-      release();
-    }
+    return Promise.race(
+      tickets.map(({ i, whenFree, release }) =>
+        whenFree.then(async () => {
+          for (const t of tickets) {
+            if (t.i !== i) t.release();
+          }
+          try {
+            return await fn(this.sessionSlots[i]);
+          } finally {
+            release();
+          }
+        })
+      )
+    );
   }
 
-  private async ensureServer(points: Float32Array, pointCount: number): Promise<void> {
+  private async ensureSlot(slot: SessionSlot, points: Float32Array, pointCount: number): Promise<void> {
     const pointsHash = hashPoints(points, pointCount);
     const focusKey = this.currentFocusKey();
-    if (this.server) {
-      if (
-        this.serverPointCount === pointCount &&
-        this.serverPointsHash === pointsHash &&
-        this.serverFocusKey === focusKey
-      ) {
-        return;
-      }
-      // Long-lived path: only points and/or focus changed — reload in place.
-      // (Mesh is constructor-bound and does not change over the backend's lifetime.)
-      const pointsChanged =
-        this.serverPointCount !== pointCount || this.serverPointsHash !== pointsHash;
-      const focusChanged = this.serverFocusKey !== focusKey;
-      try {
-        if (focusChanged) {
-          await this.reloadFocusOnServer();
-        }
-        if (pointsChanged) {
-          await this.reloadPointsOnServer(points, pointCount);
-        }
-        this.serverPointCount = pointCount;
-        this.serverPointsHash = pointsHash;
-        this.serverFocusKey = focusKey;
-        return;
-      } catch (error) {
-        // On reload failure, fall through to full restart to stay safe.
-        console.warn(
-          `[rust-wgpu-vulkan] Reload failed, falling back to full server restart: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        await this.shutdownServer();
+
+    if (!this.server) {
+      // Cold-start: start the Rust process with slot 0 ("default") as the initial session.
+      const outputDir = this.outputDir;
+      await fs.mkdir(outputDir, { recursive: true });
+      const slot0 = this.sessionSlots[0];
+      const pointsBinPath = path.join(outputDir, `${process.pid}-${Date.now()}-${crypto.randomUUID()}.points.bin`);
+      await writeFloat32Bin(pointsBinPath, points.subarray(0, pointCount * 4));
+      slot0.pointsBinPath = pointsBinPath;
+      const focus = this.focusBounds ?? {
+        minX: this.sceneBounds.minX,
+        minY: this.sceneBounds.minY,
+        maxX: this.sceneBounds.maxX,
+        maxY: this.sceneBounds.maxY,
+      };
+      const serverStartT0 = performance.now();
+      const started = await RustWgpuVulkanShadowServer.start({
+        meshBinPath: this.meshBinPath,
+        pointsBinPath,
+        focusBounds: {
+          minX: focus.minX - this.originX,
+          minZ: focus.minY - this.originY,
+          maxX: focus.maxX - this.originX,
+          maxZ: focus.maxY - this.originY,
+        },
+        maxBuildingHeight: this.maxBuildingHeight,
+        resolution: this.resolution,
+        env: makeRustWgpuVulkanEnv(),
+        startupTimeoutMs: 30_000,
+        evaluationTimeoutMs: 180_000,
+      });
+      const serverStartMs = performance.now() - serverStartT0;
+      console.log(
+        `[rust-wgpu-vulkan] Native server started in ${serverStartMs.toFixed(0)}ms (sessions=${this.sessionCount}, triangles=${this.triangleCount})`,
+      );
+      this.server = started.server;
+      // Slot 0 is initialized by the server startup (points passed as CLI arg).
+      slot0.pointCount = started.ready.pointCount;
+      slot0.pointsHash = hashPoints(points, started.ready.pointCount);
+      slot0.focusKey = focusKey;
+      slot0.opened = true;
+      // Open additional slots (slot 1..N-1) on the server via open_session IPC.
+      for (let i = 1; i < this.sessionCount; i++) {
+        this.evaluationId += 1;
+        const s = this.sessionSlots[i];
+        const sBinPath = path.join(outputDir, `${process.pid}-${Date.now()}-${crypto.randomUUID()}.points.bin`);
+        await writeFloat32Bin(sBinPath, points.subarray(0, pointCount * 4));
+        s.pointsBinPath = sBinPath;
+        const res = await this.server.openSession(this.evaluationId, s.id, sBinPath);
+        s.pointCount = res.pointCount;
+        s.pointsHash = pointsHash;
+        s.focusKey = focusKey;
+        s.opened = true;
       }
     }
 
-    const outputDir = this.outputDir;
-    await fs.mkdir(outputDir, { recursive: true });
-    const pointsBinPath = path.join(outputDir, `${process.pid}-${Date.now()}-${crypto.randomUUID()}.points.bin`);
-    await writeFloat32Bin(pointsBinPath, points.subarray(0, pointCount * 4));
-    this.pointsBinPath = pointsBinPath;
-    const focus = this.focusBounds ?? {
-      minX: this.sceneBounds.minX,
-      minY: this.sceneBounds.minY,
-      maxX: this.sceneBounds.maxX,
-      maxY: this.sceneBounds.maxY,
-    };
-    const serverStartT0 = performance.now();
-    const started = await RustWgpuVulkanShadowServer.start({
-      meshBinPath: this.meshBinPath,
-      pointsBinPath,
-      focusBounds: {
-        minX: focus.minX - this.originX,
-        minZ: focus.minY - this.originY,
-        maxX: focus.maxX - this.originX,
-        maxZ: focus.maxY - this.originY,
-      },
-      maxBuildingHeight: this.maxBuildingHeight,
-      resolution: this.resolution,
-      env: makeRustWgpuVulkanEnv(),
-      startupTimeoutMs: 30_000,
-      evaluationTimeoutMs: 180_000,
-    });
-    if (started.ready.pointCount !== pointCount) {
-      await started.server.shutdown();
-      await this.deleteRuntimeFile(pointsBinPath);
-      throw new Error(`Rust/wgpu Vulkan ready point count mismatch: server=${started.ready.pointCount}, expected=${pointCount}.`);
+    // Server is up. Check if this slot needs reload.
+    if (
+      slot.pointCount === pointCount &&
+      slot.pointsHash === pointsHash &&
+      slot.focusKey === focusKey
+    ) {
+      return;
     }
-    const serverStartMs = performance.now() - serverStartT0;
-    console.log(
-      `[rust-wgpu-vulkan] Native server started in ${serverStartMs.toFixed(0)}ms (pointCount=${pointCount}, triangles=${this.triangleCount})`,
-    );
-    this.server = started.server;
-    this.serverPointCount = pointCount;
-    this.serverPointsHash = pointsHash;
-    this.serverFocusKey = focusKey;
+
+    const pointsChanged =
+      slot.pointCount !== pointCount || slot.pointsHash !== pointsHash;
+    const focusChanged = slot.focusKey !== focusKey;
+    try {
+      if (focusChanged) {
+        await this.reloadFocusOnServer();
+        // After focus reload, all slots share the same focus — update all.
+        for (const s of this.sessionSlots) { s.focusKey = focusKey; }
+      }
+      if (pointsChanged) {
+        await this.reloadPointsOnSlot(slot, points, pointCount);
+      }
+      slot.pointCount = pointCount;
+      slot.pointsHash = pointsHash;
+      slot.focusKey = focusKey;
+    } catch (error) {
+      console.warn(
+        `[rust-wgpu-vulkan] Reload failed on slot ${slot.id}, falling back to full server restart: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      await this.shutdownServer();
+      // Recursive call to cold-start after shutdown.
+      await this.ensureSlot(slot, points, pointCount);
+    }
   }
 
   private async reloadFocusOnServer(): Promise<void> {
@@ -979,10 +1016,8 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     );
   }
 
-  private async reloadPointsOnServer(points: Float32Array, pointCount: number): Promise<void> {
+  private async reloadPointsOnSlot(slot: SessionSlot, points: Float32Array, pointCount: number): Promise<void> {
     if (!this.server) throw new Error("Cannot reload_points: server is not running.");
-    // Write new points bin, ask server to load it, drop the previous bin only
-    // after the server confirms (so we can always roll back on failure).
     const outputDir = this.outputDir;
     await fs.mkdir(outputDir, { recursive: true });
     const newPath = path.join(
@@ -991,44 +1026,24 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     );
     await writeFloat32Bin(newPath, points.subarray(0, pointCount * 4));
     this.evaluationId += 1;
-    const result = await this.server.reloadPoints(this.evaluationId, newPath);
+    const result = await this.server.reloadPoints(this.evaluationId, newPath, { sessionId: slot.id });
     if (result.pointCount !== pointCount) {
       await this.deleteRuntimeFile(newPath);
       throw new Error(
-        `Rust/wgpu Vulkan reload_points mismatch: server=${result.pointCount}, expected=${pointCount}`,
+        `Rust/wgpu Vulkan reload_points mismatch (slot ${slot.id}): server=${result.pointCount}, expected=${pointCount}`,
       );
     }
-    // Cleanup previous points bin now that the server uses the new one.
-    const previous = this.pointsBinPath;
-    this.pointsBinPath = newPath;
+    const previous = slot.pointsBinPath;
+    slot.pointsBinPath = newPath;
     if (previous) await this.deleteRuntimeFile(previous);
-    // Phase 1B: reload_points preserves SceneResources (veg/terrain GPU buffers)
-    // on the Rust side. Keep serverVegetationHash and serverTerrainHash so that
-    // uploadVegetationRasters / uploadTerrainRasters skip re-upload when data +
-    // origin haven't changed. The bin files are no longer needed on disk once
-    // the Rust server has loaded them into GPU memory.
-    //
-    // horizon_indices_buffer is PER-SESSION (one u32 per outdoor point) and is
-    // reset to a dummy on reload_points; must always re-upload.
-    this.serverHorizonHash = null;
-    const prevMasks = this.horizonMasksBinPath;
-    const prevIndices = this.horizonIndicesBinPath;
-    const prevVegMeta = this.vegetationMetaBinPath;
-    const prevVegData = this.vegetationDataBinPath;
-    const prevTerrainMeta = this.terrainMetaBinPath;
-    const prevTerrainData = this.terrainDataBinPath;
-    this.horizonMasksBinPath = null;
-    this.horizonIndicesBinPath = null;
-    this.vegetationMetaBinPath = null;
-    this.vegetationDataBinPath = null;
-    this.terrainMetaBinPath = null;
-    this.terrainDataBinPath = null;
+    // horizon_indices_buffer is PER-SESSION; reset so next evaluate re-uploads.
+    slot.horizonHash = null;
+    const prevMasks = slot.horizonMasksBinPath;
+    const prevIndices = slot.horizonIndicesBinPath;
+    slot.horizonMasksBinPath = null;
+    slot.horizonIndicesBinPath = null;
     if (prevMasks) await this.deleteRuntimeFile(prevMasks);
     if (prevIndices) await this.deleteRuntimeFile(prevIndices);
-    if (prevVegMeta) await this.deleteRuntimeFile(prevVegMeta);
-    if (prevVegData) await this.deleteRuntimeFile(prevVegData);
-    if (prevTerrainMeta) await this.deleteRuntimeFile(prevTerrainMeta);
-    if (prevTerrainData) await this.deleteRuntimeFile(prevTerrainData);
   }
 
   private currentFocusKey(): string {

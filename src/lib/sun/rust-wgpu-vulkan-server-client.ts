@@ -300,7 +300,7 @@ export class RustWgpuVulkanShadowServer {
     id: number,
     azimuthDeg: number,
     altitudeDeg: number,
-    options: { includeMask?: boolean } = { includeMask: true },
+    options: { includeMask?: boolean; sessionId?: string } = { includeMask: true },
   ): Promise<RustWgpuVulkanResultMessage> {
     return this.withIpcLock(async () => {
       await this.writeJson({
@@ -309,6 +309,7 @@ export class RustWgpuVulkanShadowServer {
         azimuthDeg,
         altitudeDeg,
         includeMask: options.includeMask ?? true,
+        ...(options.sessionId && { sessionId: options.sessionId }),
       });
       const message = await this.nextJson<RustWgpuVulkanResultMessage>(this.evaluationTimeoutMs);
       if (message.type !== "result") {
@@ -335,7 +336,7 @@ export class RustWgpuVulkanShadowServer {
     id: number,
     azimuthsDeg: number[],
     altitudesDeg: number[],
-    options: { includeMask?: boolean } = {},
+    options: { includeMask?: boolean; sessionId?: string } = {},
   ): Promise<RustWgpuVulkanBatchResultMessage> {
     if (azimuthsDeg.length !== altitudesDeg.length) {
       throw new Error(
@@ -352,6 +353,7 @@ export class RustWgpuVulkanShadowServer {
         azimuthsDeg,
         altitudesDeg,
         includeMask: options.includeMask ?? true,
+        ...(options.sessionId && { sessionId: options.sessionId }),
       });
       const ipcMessage = await this.nextMessage(this.evaluationTimeoutMs);
       const message = ipcMessage.json as RustWgpuVulkanBatchResultMessage & {
@@ -405,12 +407,14 @@ export class RustWgpuVulkanShadowServer {
   async reloadPoints(
     id: number,
     pointsBinPath: string,
+    options: { sessionId?: string } = {},
   ): Promise<{ pointCount: number; elapsedMs: number }> {
     return this.withIpcLock(async () => {
       await this.writeJson({
         id,
         command: "reload_points",
         pointsBin: pointsBinPath,
+        ...(options.sessionId && { sessionId: options.sessionId }),
       });
       const message = await this.nextJson(this.evaluationTimeoutMs);
       if (message.type !== "reloaded_points") {
@@ -458,6 +462,7 @@ export class RustWgpuVulkanShadowServer {
     id: number,
     horizonMasksBinPath: string,
     horizonIndicesBinPath: string,
+    options: { sessionId?: string } = {},
   ): Promise<{ maskCount: number; pointCount: number; elapsedMs: number }> {
     return this.withIpcLock(async () => {
       await this.writeJson({
@@ -465,6 +470,7 @@ export class RustWgpuVulkanShadowServer {
         command: "upload_horizon_masks",
         horizonMasksBin: horizonMasksBinPath,
         horizonIndicesBin: horizonIndicesBinPath,
+        ...(options.sessionId && { sessionId: options.sessionId }),
       });
       const message = await this.nextJson(this.evaluationTimeoutMs);
       if (message.type !== "uploaded_horizon_masks") {
@@ -589,6 +595,34 @@ export class RustWgpuVulkanShadowServer {
         triangleCount: Number((message as { triangleCount?: number }).triangleCount ?? 0),
         elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
       };
+    });
+  }
+
+  async openSession(
+    id: number,
+    sessionId: string,
+    pointsBinPath: string,
+  ): Promise<{ pointCount: number; elapsedMs: number }> {
+    return this.withIpcLock(async () => {
+      await this.writeJson({ id, command: "open_session", sessionId, pointsBin: pointsBinPath });
+      const message = await this.nextJson(this.evaluationTimeoutMs);
+      if (message.type !== "opened_session") {
+        throw new Error(`Unexpected open_session response: ${JSON.stringify(message)}`);
+      }
+      return {
+        pointCount: Number((message as { pointCount?: number }).pointCount ?? 0),
+        elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
+      };
+    });
+  }
+
+  async closeSession(id: number, sessionId: string): Promise<void> {
+    return this.withIpcLock(async () => {
+      await this.writeJson({ id, command: "close_session", sessionId });
+      const message = await this.nextJson(this.evaluationTimeoutMs);
+      if (message.type !== "closed_session") {
+        throw new Error(`Unexpected close_session response: ${JSON.stringify(message)}`);
+      }
     });
   }
 

@@ -403,7 +403,7 @@ fn run_depth_render_probe(
     let mut last_blocked_count = None;
     for iteration in 1..=iterations {
         let iteration_azimuth = azimuth_deg + (iteration - 1) as f32 * azimuth_step_deg;
-        let result = engine.evaluate(device, queue, iteration_azimuth, altitude_deg, iteration)?;
+        let result = engine.evaluate("default", device, queue, iteration_azimuth, altitude_deg, iteration)?;
         let elapsed = result.elapsed_ms;
         elapsed_ms.push(elapsed);
         last_blocked_count = result.blocked_count;
@@ -505,6 +505,9 @@ struct ServerRequest {
     azimuths_deg: Option<Vec<f32>>,
     #[serde(default, alias = "altitudesDeg")]
     altitudes_deg: Option<Vec<f32>>,
+    // multi-session: which session this command targets (default = "default")
+    #[serde(default, alias = "sessionId")]
+    session_id: Option<String>,
 }
 
 fn run_shadow_server(
@@ -566,6 +569,7 @@ fn run_shadow_server(
         match request.command.as_str() {
             "evaluate" => {
                 sequence += 1;
+                let sid = request.session_id.as_deref().unwrap_or("default");
                 let azimuth_deg = match request.azimuth_deg {
                     Some(value) => value,
                     None => {
@@ -588,7 +592,7 @@ fn run_shadow_server(
                         continue;
                     }
                 };
-                let result = engine.evaluate(device, queue, azimuth_deg, altitude_deg, sequence)?;
+                let result = engine.evaluate(sid, device, queue, azimuth_deg, altitude_deg, sequence)?;
                 write_server_message(serde_json::json!({
                     "type": "result",
                     "id": id,
@@ -610,6 +614,7 @@ fn run_shadow_server(
                 }))?;
             }
             "reload_points" => {
+                let sid = request.session_id.as_deref().unwrap_or("default");
                 let path = match request.points_bin.as_deref() {
                     Some(p) => PathBuf::from(p),
                     None => {
@@ -622,11 +627,12 @@ fn run_shadow_server(
                     }
                 };
                 let started = Instant::now();
-                match engine.reload_points(device, queue, &path) {
+                match engine.reload_points(sid, device, queue, &path) {
                     Ok(new_count) => {
                         write_server_message(serde_json::json!({
                             "type": "reloaded_points",
                             "id": id,
+                            "sessionId": sid,
                             "pointCount": new_count,
                             "elapsedMs": round2(started.elapsed().as_secs_f64() * 1000.0),
                         }))?;
@@ -704,6 +710,7 @@ fn run_shadow_server(
                 }
             }
             "upload_horizon_masks" => {
+                let sid = request.session_id.as_deref().unwrap_or("default");
                 let masks_path = match request.horizon_masks_bin.as_deref() {
                     Some(p) => PathBuf::from(p),
                     None => {
@@ -727,7 +734,7 @@ fn run_shadow_server(
                     }
                 };
                 let started = Instant::now();
-                match engine.upload_horizon_masks(device, queue, &masks_path, &indices_path) {
+                match engine.upload_horizon_masks(sid, device, queue, &masks_path, &indices_path) {
                     Ok((mask_count, point_count)) => {
                         write_server_message(serde_json::json!({
                             "type": "uploaded_horizon_masks",
@@ -850,6 +857,7 @@ fn run_shadow_server(
                 }
             }
             "evaluate_batch" => {
+                let sid = request.session_id.as_deref().unwrap_or("default");
                 let azimuths = match request.azimuths_deg.as_ref() {
                     Some(v) if !v.is_empty() => v,
                     _ => {
@@ -890,7 +898,7 @@ fn run_shadow_server(
                     .collect();
                 sequence += frames.len() as u32;
                 let base_seq = sequence - frames.len() as u32 + 1;
-                match engine.evaluate_batch_frames(device, queue, &frames, base_seq) {
+                match engine.evaluate_batch_frames(sid, device, queue, &frames, base_seq) {
                     Ok(results) => {
                         // Build binary payload directly on stdout (no temp file).
                         // Layout: [buildings × N][terrain × N][veg × N][sunny × N][sunnyNoVeg × N]
@@ -976,6 +984,48 @@ fn run_shadow_server(
                         }))?;
                     }
                 }
+            }
+            "open_session" => {
+                let sid = request.session_id.as_deref().unwrap_or("default");
+                let path = match request.points_bin.as_deref() {
+                    Some(p) => PathBuf::from(p),
+                    None => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "open_session requires pointsBin",
+                        }))?;
+                        continue;
+                    }
+                };
+                let started = Instant::now();
+                match engine.open_session(device, queue, sid, &path) {
+                    Ok(point_count) => {
+                        write_server_message(serde_json::json!({
+                            "type": "opened_session",
+                            "id": id,
+                            "sessionId": sid,
+                            "pointCount": point_count,
+                            "elapsedMs": round2(started.elapsed().as_secs_f64() * 1000.0),
+                        }))?;
+                    }
+                    Err(error) => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": format!("open_session failed: {error}"),
+                        }))?;
+                    }
+                }
+            }
+            "close_session" => {
+                let sid = request.session_id.as_deref().unwrap_or("default");
+                engine.sessions.remove(sid);
+                write_server_message(serde_json::json!({
+                    "type": "closed_session",
+                    "id": id,
+                    "sessionId": sid,
+                }))?;
             }
             "ping" => {
                 write_server_message(serde_json::json!({
@@ -1265,13 +1315,14 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
 
     fn evaluate(
         &self,
+        session_id: &str,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         azimuth_deg: f32,
         altitude_deg: f32,
         sequence: u32,
     ) -> Result<DepthShadowEvaluation, String> {
-        let Some(shadow) = self.sessions.get("default") else {
+        let Some(shadow) = self.sessions.get(session_id) else {
             return Ok(DepthShadowEvaluation {
                 elapsed_ms: 0.0,
                 blocked_count: None,
@@ -1303,7 +1354,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             self.resolution,
             shadow.point_count,
             SHADOW_BIAS,
-            self.scene.has_horizon,
+            shadow.has_horizon,
             azimuth_deg,
             altitude_deg,
             self.scene.has_vegetation,
@@ -1390,7 +1441,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         // terrain rasters were uploaded, since the shader writes both into
         // terrain_result_buffer (OR-combined). Previously gated only on
         // has_horizon, which silently dropped local-DEM ray-march output.
-        if self.scene.has_horizon || self.scene.has_local_terrain {
+        if shadow.has_horizon || self.scene.has_local_terrain {
             encoder.copy_buffer_to_buffer(
                 &shadow.terrain_result_buffer,
                 0,
@@ -1432,7 +1483,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             .map_err(|error| format!("device poll failed at evaluation {sequence}: {error:?}"))?;
 
         let readback = read_shadow_results(device, shadow, sequence)?;
-        let (terrain_blocked_count, terrain_blocked_words) = if self.scene.has_horizon || self.scene.has_local_terrain {
+        let (terrain_blocked_count, terrain_blocked_words) = if shadow.has_horizon || self.scene.has_local_terrain {
             let terrain = read_terrain_results(device, shadow, sequence)?;
             (Some(terrain.blocked_count), Some(terrain.words))
         } else {
@@ -1495,6 +1546,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
     /// vegetation) are reused as in the single-frame path.
     fn evaluate_batch_frames(
         &self,
+        session_id: &str,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         frames: &[(f32, f32)],
@@ -1505,8 +1557,8 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         }
         let shadow = self
             .sessions
-            .get("default")
-            .ok_or_else(|| "evaluate_batch_frames: no active session 'default'".to_string())?;
+            .get(session_id)
+            .ok_or_else(|| format!("evaluate_batch_frames: no active session '{session_id}'"))?;
 
         let n = frames.len();
         let frame_size = shadow.result_copy_size;
@@ -1577,7 +1629,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 self.resolution,
                 shadow.point_count,
                 SHADOW_BIAS,
-                self.scene.has_horizon,
+                shadow.has_horizon,
                 az,
                 alt,
                 self.scene.has_vegetation,
@@ -1606,7 +1658,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let readback_terrain = if self.scene.has_horizon || self.scene.has_local_terrain {
+        let readback_terrain = if shadow.has_horizon || self.scene.has_local_terrain {
             Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("batch-readback-terrain"),
                 size: total_size,
@@ -1687,7 +1739,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             // Terrain output buffer must be cleared whenever the shader will
             // write to it, i.e. whenever horizon OR local terrain rasters are
             // active. Same gate as the terrain readback below.
-            if self.scene.has_horizon || self.scene.has_local_terrain {
+            if shadow.has_horizon || self.scene.has_local_terrain {
                 encoder.clear_buffer(
                     &shadow.terrain_result_buffer,
                     0,
@@ -1980,11 +2032,37 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         self.focus_bounds = Some(focus);
     }
 
+    /// Open a new named session (or replace an existing one).
+    /// Creates a fresh EngineSession for the given points bin and registers
+    /// it in `self.sessions` under `session_id`. Used by Phase 3 multi-session.
+    fn open_session(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        session_id: &str,
+        points_bin: &Path,
+    ) -> Result<u32, String> {
+        let session = create_engine_session(
+            device,
+            queue,
+            self.raw_bounds,
+            self.resolution,
+            None,
+            Some(points_bin),
+            &self.scene,
+            &self.compute_bind_group_layout,
+        )?;
+        let count = session.point_count;
+        self.sessions.insert(session_id.to_string(), session);
+        Ok(count)
+    }
+
     /// Replace the points used by the shadow-compute pass.
     /// Recreates only the shadow-compute resources; mesh, render pipeline
     /// and depth texture are untouched.
     fn reload_points(
         &mut self,
+        session_id: &str,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         points_bin: &Path,
@@ -2000,11 +2078,9 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             &self.compute_bind_group_layout,
         )?;
         let new_count = compute.point_count;
-        self.sessions.insert("default".to_string(), compute);
-        // horizon_indices_buffer is per-session (one entry per outdoor point);
-        // it must be re-uploaded after every reload_points.  Reset has_horizon
-        // so evaluate correctly skips the horizon check until re-upload.
-        self.scene.has_horizon = false;
+        self.sessions.insert(session_id.to_string(), compute);
+        // has_horizon starts as false in the new session (per-session field);
+        // horizon_indices must be re-uploaded before the next evaluate.
         Ok(new_count)
     }
 
@@ -2017,6 +2093,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
     /// one per outdoor point in the same order as the points buffer.
     fn upload_horizon_masks(
         &mut self,
+        session_id: &str,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         masks_bin: &Path,
@@ -2024,8 +2101,8 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
     ) -> Result<(u32, u32), String> {
         let shadow = self
             .sessions
-            .get_mut("default")
-            .ok_or_else(|| "upload_horizon_masks: no active session 'default'".to_string())?;
+            .get_mut(session_id)
+            .ok_or_else(|| format!("upload_horizon_masks: no active session '{session_id}'"))?;
 
         // Read mask file
         let masks_bytes = std::fs::read(masks_bin)
@@ -2099,8 +2176,8 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
 
         shadow.horizon_indices_buffer = indices_buffer;
         shadow.bind_group = new_bind_group;
+        shadow.has_horizon = true;
         self.scene.horizon_masks_buffer = masks_buffer;
-        self.scene.has_horizon = true;
         Ok((mask_count, indices_count))
     }
 
@@ -2132,11 +2209,6 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         origin_y: f32,
         is_raw: bool,
     ) -> Result<(u32, u64), String> {
-        let shadow = self
-            .sessions
-            .get_mut("default")
-            .ok_or_else(|| "upload_vegetation_rasters: no active session 'default'".to_string())?;
-
         let meta_bytes = std::fs::read(meta_bin)
             .map_err(|e| format!("failed to read veg meta {}: {e}", meta_bin.display()))?;
         if meta_bytes.is_empty() || meta_bytes.len() % (VEG_TILE_META_SIZE as usize) != 0 {
@@ -2176,26 +2248,32 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         });
         queue.write_buffer(&data_buffer, 0, &data_bytes);
 
-        let new_bind_group = build_compute_bind_group(
-            device,
-            &self.compute_bind_group_layout,
-            &shadow.params_buffer,
-            &shadow.depth_view,
-            &shadow.points_buffer,
-            &shadow.result_buffer,
-            &self.scene.horizon_masks_buffer,
-            &shadow.horizon_indices_buffer,
-            &shadow.terrain_result_buffer,
-            &meta_buffer,
-            &data_buffer,
-            &shadow.veg_result_buffer,
-            &shadow.sunny_result_buffer,
-            &shadow.sunny_no_veg_result_buffer,
-            &self.scene.terrain_tiles_meta_buffer,
-            &self.scene.terrain_data_buffer,
-        );
-
-        shadow.bind_group = new_bind_group;
+        // Rebuild bind groups for ALL sessions (scene-shared veg buffers changed).
+        // Extract immutable refs from self before the mutable sessions loop.
+        let bgl = &self.compute_bind_group_layout;
+        let horizon_masks = &self.scene.horizon_masks_buffer;
+        let terrain_meta = &self.scene.terrain_tiles_meta_buffer;
+        let terrain_data = &self.scene.terrain_data_buffer;
+        let new_bind_groups: Vec<(String, wgpu::BindGroup)> = self
+            .sessions
+            .iter()
+            .map(|(sid, s)| {
+                let bg = build_compute_bind_group(
+                    device, bgl,
+                    &s.params_buffer, &s.depth_view, &s.points_buffer,
+                    &s.result_buffer, horizon_masks, &s.horizon_indices_buffer,
+                    &s.terrain_result_buffer, &meta_buffer, &data_buffer,
+                    &s.veg_result_buffer, &s.sunny_result_buffer,
+                    &s.sunny_no_veg_result_buffer, terrain_meta, terrain_data,
+                );
+                (sid.clone(), bg)
+            })
+            .collect();
+        for (sid, bg) in new_bind_groups {
+            if let Some(s) = self.sessions.get_mut(&sid) {
+                s.bind_group = bg;
+            }
+        }
         self.scene.veg_tiles_meta_buffer = meta_buffer;
         self.scene.veg_data_buffer = data_buffer;
         self.scene.has_vegetation = true;
@@ -2229,11 +2307,6 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         origin_x: f32,
         origin_y: f32,
     ) -> Result<(u32, u64), String> {
-        let shadow = self
-            .sessions
-            .get_mut("default")
-            .ok_or_else(|| "upload_terrain_rasters: no active session 'default'".to_string())?;
-
         let meta_bytes = std::fs::read(meta_bin)
             .map_err(|e| format!("failed to read terrain meta {}: {e}", meta_bin.display()))?;
         if meta_bytes.is_empty() || meta_bytes.len() % (VEG_TILE_META_SIZE as usize) != 0 {
@@ -2273,26 +2346,31 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         });
         queue.write_buffer(&data_buffer, 0, &data_bytes);
 
-        let new_bind_group = build_compute_bind_group(
-            device,
-            &self.compute_bind_group_layout,
-            &shadow.params_buffer,
-            &shadow.depth_view,
-            &shadow.points_buffer,
-            &shadow.result_buffer,
-            &self.scene.horizon_masks_buffer,
-            &shadow.horizon_indices_buffer,
-            &shadow.terrain_result_buffer,
-            &self.scene.veg_tiles_meta_buffer,
-            &self.scene.veg_data_buffer,
-            &shadow.veg_result_buffer,
-            &shadow.sunny_result_buffer,
-            &shadow.sunny_no_veg_result_buffer,
-            &meta_buffer,
-            &data_buffer,
-        );
-
-        shadow.bind_group = new_bind_group;
+        // Rebuild bind groups for ALL sessions (scene-shared terrain buffers changed).
+        let bgl = &self.compute_bind_group_layout;
+        let horizon_masks = &self.scene.horizon_masks_buffer;
+        let veg_meta = &self.scene.veg_tiles_meta_buffer;
+        let veg_data = &self.scene.veg_data_buffer;
+        let new_bind_groups: Vec<(String, wgpu::BindGroup)> = self
+            .sessions
+            .iter()
+            .map(|(sid, s)| {
+                let bg = build_compute_bind_group(
+                    device, bgl,
+                    &s.params_buffer, &s.depth_view, &s.points_buffer,
+                    &s.result_buffer, horizon_masks, &s.horizon_indices_buffer,
+                    &s.terrain_result_buffer, veg_meta, veg_data,
+                    &s.veg_result_buffer, &s.sunny_result_buffer,
+                    &s.sunny_no_veg_result_buffer, &meta_buffer, &data_buffer,
+                );
+                (sid.clone(), bg)
+            })
+            .collect();
+        for (sid, bg) in new_bind_groups {
+            if let Some(s) = self.sessions.get_mut(&sid) {
+                s.bind_group = bg;
+            }
+        }
         self.scene.terrain_tiles_meta_buffer = meta_buffer;
         self.scene.terrain_data_buffer = data_buffer;
         self.scene.has_local_terrain = true;
@@ -2355,10 +2433,9 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
 struct SceneResources {
     // ─── Horizon (masks are region-wide; indices are PER-SESSION) ────────
     // The masks buffer is preserved across reload_points; only the per-session
-    // indices need re-uploading (reset via has_horizon = false below).
+    // indices need re-uploading. has_horizon has moved to EngineSession
+    // (Phase 3: each session tracks independently whether it has valid indices).
     horizon_masks_buffer: wgpu::Buffer,
-    // Reset to false on reload_points (indices are stale until re-uploaded).
-    has_horizon: bool,
     // ─── Vegetation ──────────────────────────────────────────────────────
     veg_tiles_meta_buffer: wgpu::Buffer,
     veg_data_buffer: wgpu::Buffer,
@@ -2426,6 +2503,9 @@ struct EngineSession {
     result_word_count: u32,
     result_copy_size: u64,
     workgroup_count: u32,
+    // Per-session: whether horizon masks+indices have been uploaded for this session.
+    // Reset to false on reload_points; set to true by upload_horizon_masks.
+    has_horizon: bool,
 }
 
 struct ShadowReadback {
@@ -2447,7 +2527,6 @@ fn create_dummy_scene(device: &wgpu::Device) -> SceneResources {
     };
     SceneResources {
         horizon_masks_buffer: mk("scene-horizon-masks-dummy", 16),
-        has_horizon: false,
         veg_tiles_meta_buffer: mk("scene-veg-tiles-meta-dummy", 32),
         veg_data_buffer: mk("scene-veg-data-dummy", 16),
         has_vegetation: false,
@@ -3106,6 +3185,7 @@ fn create_engine_session(
         result_word_count,
         result_copy_size,
         workgroup_count: point_count.div_ceil(SHADOW_WORKGROUP_SIZE),
+        has_horizon: false,
     })
 }
 
