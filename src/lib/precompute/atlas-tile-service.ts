@@ -63,14 +63,12 @@ export function clearAtlasSkipCache(): void {
 // Backpressure caps pending writes to avoid memory pressure from accumulated
 // buffers when disk is slower than compute.
 //
-// Bench 2026-05-06 (8 tiles depth=3, post-Phase-G):
-//   queue=4 cold  → 40.5 tiles/min   warm → 94.7 tiles/min
-//   queue=8 cold  → 81.9 tiles/min   warm → 97.7 tiles/min
-// Cold-start gain +103% (queue=4 saturated by initial burst before disk
-// could catch up). Warm operation is not disk-bound, so the bigger queue
-// only helps the first ~10-15 tiles. Memory peak: ~160 MB (8 atlases ×
-// 20 MB compressed in flight) vs 80 MB at queue=4 — acceptable.
-const MAX_PENDING_ATLAS_WRITES = 8;
+// Bench 2026-05-06 (8 tiles depth=3, post-Phase-G): bumping the cap from
+// 4 to 8 doubled cold-start throughput (40 → 82 tiles/min) but only added
+// 3% in warm steady-state. On a typical 1000-tile prod run the cold burst
+// is ~30 s of a 30-min run (~2% total), not worth the +80 MB memory peak.
+// Bump if a future workload makes cold starts dominant.
+const MAX_PENDING_ATLAS_WRITES = 4;
 const pendingAtlasWrites = new Map<string, Promise<void>>();
 
 function pendingWriteKey(params: {
