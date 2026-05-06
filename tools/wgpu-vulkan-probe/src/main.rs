@@ -1067,6 +1067,8 @@ struct DepthShadowEngine {
     render_bind_group: wgpu::BindGroup,
     render_bind_group_layout: wgpu::BindGroupLayout,
     render_pipeline: wgpu::RenderPipeline,
+    // Region-wide rasters shared across sessions (Phase 1B).
+    scene: SceneResources,
     shadow_compute: Option<EngineSession>,
     raw_bounds: MeshBounds,
     focus_bounds: Option<FocusBounds>,
@@ -1240,6 +1242,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                     cache: None,
                 });
 
+        let scene = create_dummy_scene(config.device);
         let shadow_compute = if config.run_shadow_compute {
             Some(create_engine_session(
                 config.device,
@@ -1249,6 +1252,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 config.resolution,
                 config.point_count,
                 config.points_bin,
+                &scene,
             )?)
         } else {
             None
@@ -1265,6 +1269,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             render_bind_group,
             render_bind_group_layout: bind_group_layout,
             render_pipeline,
+            scene,
             shadow_compute,
             raw_bounds,
             focus_bounds: config.focus_bounds,
@@ -1297,24 +1302,24 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 self.resolution,
                 shadow.point_count,
                 SHADOW_BIAS,
-                shadow.has_horizon,
+                self.scene.has_horizon,
                 azimuth_deg,
                 altitude_deg,
-                shadow.has_vegetation,
-                shadow.num_veg_tiles,
-                shadow.veg_step_meters,
-                shadow.veg_max_distance_meters,
-                shadow.veg_min_clearance,
-                shadow.veg_nodata,
-                shadow.origin_x,
-                shadow.origin_y,
-                shadow.has_local_terrain,
-                shadow.num_terrain_tiles,
-                shadow.terrain_step_meters,
-                shadow.terrain_max_distance_meters,
-                shadow.terrain_altitude_gate_deg,
-                shadow.terrain_nodata,
-                shadow.vegetation_is_raw,
+                self.scene.has_vegetation,
+                self.scene.num_veg_tiles,
+                self.scene.veg_step_meters,
+                self.scene.veg_max_distance_meters,
+                self.scene.veg_min_clearance,
+                self.scene.veg_nodata,
+                self.scene.origin_x,
+                self.scene.origin_y,
+                self.scene.has_local_terrain,
+                self.scene.num_terrain_tiles,
+                self.scene.terrain_step_meters,
+                self.scene.terrain_max_distance_meters,
+                self.scene.terrain_altitude_gate_deg,
+                self.scene.terrain_nodata,
+                self.scene.vegetation_is_raw,
             );
             queue.write_buffer(&shadow.params_buffer, 0, &shadow_params);
         }
@@ -1386,7 +1391,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             // terrain rasters were uploaded, since the shader writes both into
             // terrain_result_buffer (OR-combined). Previously gated only on
             // has_horizon, which silently dropped local-DEM ray-march output.
-            if shadow.has_horizon || shadow.has_local_terrain {
+            if self.scene.has_horizon || self.scene.has_local_terrain {
                 encoder.copy_buffer_to_buffer(
                     &shadow.terrain_result_buffer,
                     0,
@@ -1395,7 +1400,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                     shadow.result_copy_size,
                 );
             }
-            if shadow.has_vegetation {
+            if self.scene.has_vegetation {
                 encoder.copy_buffer_to_buffer(
                     &shadow.veg_result_buffer,
                     0,
@@ -1441,13 +1446,13 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             sunny_no_veg_words,
         ) = if let Some(shadow) = &self.shadow_compute {
             let readback = read_shadow_results(device, shadow, sequence)?;
-            let (terrain_count, terrain_words) = if shadow.has_horizon || shadow.has_local_terrain {
+            let (terrain_count, terrain_words) = if self.scene.has_horizon || self.scene.has_local_terrain {
                 let terrain = read_terrain_results(device, shadow, sequence)?;
                 (Some(terrain.blocked_count), Some(terrain.words))
             } else {
                 (None, None)
             };
-            let (veg_count, veg_words) = if shadow.has_vegetation {
+            let (veg_count, veg_words) = if self.scene.has_vegetation {
                 let veg = read_bitmask_buffer(
                     device,
                     &shadow.veg_readback_buffer,
@@ -1570,16 +1575,16 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 &shadow.depth_view_ref,
                 &shadow.points_buffer,
                 &shadow.result_buffer,
-                &shadow.horizon_masks_buffer,
+                &self.scene.horizon_masks_buffer,
                 &shadow.horizon_indices_buffer,
                 &shadow.terrain_result_buffer,
-                &shadow.veg_tiles_meta_buffer,
-                &shadow.veg_data_buffer,
+                &self.scene.veg_tiles_meta_buffer,
+                &self.scene.veg_data_buffer,
                 &shadow.veg_result_buffer,
                 &shadow.sunny_result_buffer,
                 &shadow.sunny_no_veg_result_buffer,
-                &shadow.terrain_tiles_meta_buffer,
-                &shadow.terrain_data_buffer,
+                &self.scene.terrain_tiles_meta_buffer,
+                &self.scene.terrain_data_buffer,
             );
             render_uniforms.push(render_uniform);
             render_bgs.push(render_bg);
@@ -1601,24 +1606,24 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 self.resolution,
                 shadow.point_count,
                 SHADOW_BIAS,
-                shadow.has_horizon,
+                self.scene.has_horizon,
                 az,
                 alt,
-                shadow.has_vegetation,
-                shadow.num_veg_tiles,
-                shadow.veg_step_meters,
-                shadow.veg_max_distance_meters,
-                shadow.veg_min_clearance,
-                shadow.veg_nodata,
-                shadow.origin_x,
-                shadow.origin_y,
-                shadow.has_local_terrain,
-                shadow.num_terrain_tiles,
-                shadow.terrain_step_meters,
-                shadow.terrain_max_distance_meters,
-                shadow.terrain_altitude_gate_deg,
-                shadow.terrain_nodata,
-                shadow.vegetation_is_raw,
+                self.scene.has_vegetation,
+                self.scene.num_veg_tiles,
+                self.scene.veg_step_meters,
+                self.scene.veg_max_distance_meters,
+                self.scene.veg_min_clearance,
+                self.scene.veg_nodata,
+                self.scene.origin_x,
+                self.scene.origin_y,
+                self.scene.has_local_terrain,
+                self.scene.num_terrain_tiles,
+                self.scene.terrain_step_meters,
+                self.scene.terrain_max_distance_meters,
+                self.scene.terrain_altitude_gate_deg,
+                self.scene.terrain_nodata,
+                self.scene.vegetation_is_raw,
             );
             queue.write_buffer(&compute_params[i], 0, &params);
         }
@@ -1630,7 +1635,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let readback_terrain = if shadow.has_horizon || shadow.has_local_terrain {
+        let readback_terrain = if self.scene.has_horizon || self.scene.has_local_terrain {
             Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("batch-readback-terrain"),
                 size: total_size,
@@ -1640,7 +1645,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         } else {
             None
         };
-        let readback_veg = if shadow.has_vegetation {
+        let readback_veg = if self.scene.has_vegetation {
             Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("batch-readback-vegetation"),
                 size: total_size,
@@ -1711,14 +1716,14 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             // Terrain output buffer must be cleared whenever the shader will
             // write to it, i.e. whenever horizon OR local terrain rasters are
             // active. Same gate as the terrain readback below.
-            if shadow.has_horizon || shadow.has_local_terrain {
+            if self.scene.has_horizon || self.scene.has_local_terrain {
                 encoder.clear_buffer(
                     &shadow.terrain_result_buffer,
                     0,
                     Some(shadow.result_copy_size),
                 );
             }
-            if shadow.has_vegetation {
+            if self.scene.has_vegetation {
                 encoder.clear_buffer(
                     &shadow.veg_result_buffer,
                     0,
@@ -1795,11 +1800,11 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                     frame_size,
                 );
             }
-            if let Some(rb) = readback_veg.as_ref() {
+            if readback_veg.is_some() {
                 encoder.copy_buffer_to_buffer(
                     &shadow.veg_result_buffer,
                     0,
-                    rb,
+                    readback_veg.as_ref().unwrap(),
                     offset,
                     frame_size,
                 );
@@ -2023,9 +2028,14 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             self.resolution,
             None,
             Some(points_bin),
+            &self.scene,
         )?;
         let new_count = compute.point_count;
         self.shadow_compute = Some(compute);
+        // horizon_indices_buffer is per-session (one entry per outdoor point);
+        // it must be re-uploaded after every reload_points.  Reset has_horizon
+        // so evaluate correctly skips the horizon check until re-upload.
+        self.scene.has_horizon = false;
         Ok(new_count)
     }
 
@@ -2109,19 +2119,19 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             &masks_buffer,
             &indices_buffer,
             &shadow.terrain_result_buffer,
-            &shadow.veg_tiles_meta_buffer,
-            &shadow.veg_data_buffer,
+            &self.scene.veg_tiles_meta_buffer,
+            &self.scene.veg_data_buffer,
             &shadow.veg_result_buffer,
             &shadow.sunny_result_buffer,
             &shadow.sunny_no_veg_result_buffer,
-            &shadow.terrain_tiles_meta_buffer,
-            &shadow.terrain_data_buffer,
+            &self.scene.terrain_tiles_meta_buffer,
+            &self.scene.terrain_data_buffer,
         );
 
-        shadow.horizon_masks_buffer = masks_buffer;
         shadow.horizon_indices_buffer = indices_buffer;
         shadow.bind_group = new_bind_group;
-        shadow.has_horizon = true;
+        self.scene.horizon_masks_buffer = masks_buffer;
+        self.scene.has_horizon = true;
         Ok((mask_count, indices_count))
     }
 
@@ -2204,7 +2214,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             &shadow.depth_view_ref,
             &shadow.points_buffer,
             &shadow.result_buffer,
-            &shadow.horizon_masks_buffer,
+            &self.scene.horizon_masks_buffer,
             &shadow.horizon_indices_buffer,
             &shadow.terrain_result_buffer,
             &meta_buffer,
@@ -2212,22 +2222,22 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             &shadow.veg_result_buffer,
             &shadow.sunny_result_buffer,
             &shadow.sunny_no_veg_result_buffer,
-            &shadow.terrain_tiles_meta_buffer,
-            &shadow.terrain_data_buffer,
+            &self.scene.terrain_tiles_meta_buffer,
+            &self.scene.terrain_data_buffer,
         );
 
-        shadow.veg_tiles_meta_buffer = meta_buffer;
-        shadow.veg_data_buffer = data_buffer;
         shadow.bind_group = new_bind_group;
-        shadow.has_vegetation = true;
-        shadow.num_veg_tiles = tile_count;
-        shadow.veg_nodata = nodata;
-        shadow.veg_step_meters = step_meters;
-        shadow.veg_max_distance_meters = max_distance_meters;
-        shadow.veg_min_clearance = min_clearance;
-        shadow.vegetation_is_raw = is_raw;
-        shadow.origin_x = origin_x;
-        shadow.origin_y = origin_y;
+        self.scene.veg_tiles_meta_buffer = meta_buffer;
+        self.scene.veg_data_buffer = data_buffer;
+        self.scene.has_vegetation = true;
+        self.scene.num_veg_tiles = tile_count;
+        self.scene.veg_nodata = nodata;
+        self.scene.veg_step_meters = step_meters;
+        self.scene.veg_max_distance_meters = max_distance_meters;
+        self.scene.veg_min_clearance = min_clearance;
+        self.scene.vegetation_is_raw = is_raw;
+        self.scene.origin_x = origin_x;
+        self.scene.origin_y = origin_y;
         Ok((tile_count, data_bytes_len))
     }
 
@@ -2301,11 +2311,11 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             &shadow.depth_view_ref,
             &shadow.points_buffer,
             &shadow.result_buffer,
-            &shadow.horizon_masks_buffer,
+            &self.scene.horizon_masks_buffer,
             &shadow.horizon_indices_buffer,
             &shadow.terrain_result_buffer,
-            &shadow.veg_tiles_meta_buffer,
-            &shadow.veg_data_buffer,
+            &self.scene.veg_tiles_meta_buffer,
+            &self.scene.veg_data_buffer,
             &shadow.veg_result_buffer,
             &shadow.sunny_result_buffer,
             &shadow.sunny_no_veg_result_buffer,
@@ -2313,17 +2323,17 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             &data_buffer,
         );
 
-        shadow.terrain_tiles_meta_buffer = meta_buffer;
-        shadow.terrain_data_buffer = data_buffer;
         shadow.bind_group = new_bind_group;
-        shadow.has_local_terrain = true;
-        shadow.num_terrain_tiles = tile_count;
-        shadow.terrain_nodata = nodata;
-        shadow.terrain_step_meters = step_meters;
-        shadow.terrain_max_distance_meters = max_distance_meters;
-        shadow.terrain_altitude_gate_deg = altitude_gate_deg;
-        shadow.origin_x = origin_x;
-        shadow.origin_y = origin_y;
+        self.scene.terrain_tiles_meta_buffer = meta_buffer;
+        self.scene.terrain_data_buffer = data_buffer;
+        self.scene.has_local_terrain = true;
+        self.scene.num_terrain_tiles = tile_count;
+        self.scene.terrain_nodata = nodata;
+        self.scene.terrain_step_meters = step_meters;
+        self.scene.terrain_max_distance_meters = max_distance_meters;
+        self.scene.terrain_altitude_gate_deg = altitude_gate_deg;
+        self.scene.origin_x = origin_x;
+        self.scene.origin_y = origin_y;
         Ok((tile_count, data_bytes_len))
     }
 
@@ -2356,35 +2366,71 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
     }
 }
 
-/// Holds GPU resources used to evaluate one tile's points against the scene.
+/// Region-wide GPU resources shared across sessions (Phase 1B).
 ///
-/// **Today (Phase 1A of multi-session refacto)**: this struct mixes three
-/// distinct ownership categories. They're kept inline for now to minimize
-/// churn; future phases will split them into composed sub-structs.
+/// These rasters are valid for all tiles in the same focus bucket and do NOT
+/// need to be rebuilt when `reload_points` swaps the per-session point set.
+/// Owned by `DepthShadowEngine`; sessions reference them via bind_group.
 ///
-/// The three categories:
+/// When a resource has not been uploaded yet its buffer is a minimal dummy
+/// (16-32 bytes) and the corresponding `has_*` flag is `false`, so the shader
+/// skips that check.  After `upload_horizon_masks` / `upload_vegetation_rasters`
+/// / `upload_terrain_rasters`, the real buffer replaces the dummy and the flag
+/// is set to `true`.
 ///
-/// - **PER-SESSION** (rebuilt every `reload_points` because they depend on
-///   the new point count or content): `points_buffer`, `params_buffer`, all
+/// `has_horizon` is reset to `false` on every `reload_points` because the
+/// per-session `horizon_indices_buffer` (which maps outdoor points to mask
+/// indices) must be re-uploaded after each point-set change.  `has_vegetation`
+/// and `has_local_terrain` survive `reload_points` unchanged — the new session's
+/// bind_group already references the live scene buffers.
+struct SceneResources {
+    // ─── Horizon (masks are region-wide; indices are PER-SESSION) ────────
+    // The masks buffer is preserved across reload_points; only the per-session
+    // indices need re-uploading (reset via has_horizon = false below).
+    horizon_masks_buffer: wgpu::Buffer,
+    // Reset to false on reload_points (indices are stale until re-uploaded).
+    has_horizon: bool,
+    // ─── Vegetation ──────────────────────────────────────────────────────
+    veg_tiles_meta_buffer: wgpu::Buffer,
+    veg_data_buffer: wgpu::Buffer,
+    has_vegetation: bool,
+    num_veg_tiles: u32,
+    veg_nodata: f32,
+    veg_step_meters: f32,
+    veg_max_distance_meters: f32,
+    veg_min_clearance: f32,
+    // True when veg_data contains raw VHM heights; false = pre-composed canopy.
+    vegetation_is_raw: bool,
+    // LV95 offset for converting session-local point coords to absolute LV95.
+    origin_x: f32,
+    origin_y: f32,
+    // ─── Local terrain (DEM) ─────────────────────────────────────────────
+    terrain_tiles_meta_buffer: wgpu::Buffer,
+    terrain_data_buffer: wgpu::Buffer,
+    has_local_terrain: bool,
+    num_terrain_tiles: u32,
+    terrain_nodata: f32,
+    terrain_step_meters: f32,
+    terrain_max_distance_meters: f32,
+    terrain_altitude_gate_deg: f32,
+}
+
+/// Per-tile GPU resources. Rebuilt on every `reload_points`.
+///
+/// Ownership categories:
+///
+/// - **PER-SESSION** (point-dependent): `points_buffer`, `params_buffer`, all
 ///   `*_result_buffer` + `*_readback_buffer` outputs (sized for point count),
-///   `horizon_indices_buffer` (one index per outdoor point), `bind_group`.
+///   `horizon_indices_buffer` (one u32 per outdoor point), `bind_group`.
 ///   Counters: `point_count`, `result_word_count`, `result_copy_size`,
 ///   `workgroup_count`.
 ///
-/// - **SCENE-SHARED** (region-wide rasters; do NOT need to be rebuilt across
-///   tiles in the same focus bucket). `horizon_masks_buffer` + `has_horizon`,
-///   `veg_*` (data, meta, params), `terrain_*` (data, meta, params),
-///   `origin_x`, `origin_y`. Today these get reset to dummies on every
-///   `reload_points` because the whole struct is rebuilt — a known waste
-///   that the multi-session refacto will eliminate.
+/// - **PROCESS-WIDE** (will move to `DepthShadowEngine` in Phase 1C):
+///   `bind_group_layout`, `pipeline`, `depth_view_ref`.
 ///
-/// - **PROCESS-WIDE** (could/should be one instance per Rust process,
-///   not per session): `bind_group_layout`, `pipeline`, `depth_view_ref`.
-///
-/// Phase 1B will extract scene-shared fields into a `SceneResources` struct
-/// owned by `DepthShadowEngine`. Phase 2 will allow N sessions to share one
-/// scene. See ADR-0011 Phase G post-mortem and refactor plan in
-/// `docs/architecture/refactor-multi-session-plan.md`.
+/// Scene-shared resources (horizon masks, veg rasters, terrain rasters) have
+/// moved to `SceneResources` on `DepthShadowEngine` (Phase 1B). The bind_group
+/// is rebuilt whenever scene buffers change so it always references live data.
 struct EngineSession {
     // ─── PER-SESSION (point-dependent, rebuilt on reload_points) ───────
     params_buffer: wgpu::Buffer,
@@ -2393,12 +2439,12 @@ struct EngineSession {
     // Terrain (horizon-based) blocked bitmask output.
     terrain_result_buffer: wgpu::Buffer,
     terrain_readback_buffer: wgpu::Buffer,
+    // One u32 per outdoor point: maps point index → horizon mask index.
+    // Must be re-uploaded after every reload_points.
     horizon_indices_buffer: wgpu::Buffer,
     veg_result_buffer: wgpu::Buffer,
     veg_readback_buffer: wgpu::Buffer,
-    // Phase E: final sunny bitmasks computed in the shader (derived from
-    // terrain/buildings/vegetation locals, matching the artifact semantic
-    // bit-for-bit so the JS hot loop can drop the per-point combining).
+    // Phase E: final sunny bitmasks computed in the shader.
     sunny_result_buffer: wgpu::Buffer,
     sunny_readback_buffer: wgpu::Buffer,
     sunny_no_veg_result_buffer: wgpu::Buffer,
@@ -2409,38 +2455,7 @@ struct EngineSession {
     result_word_count: u32,
     result_copy_size: u64,
     workgroup_count: u32,
-    // ─── SCENE-SHARED (region-wide; will move to SceneResources) ────────
-    // Horizon storage inputs. Dummy (16 bytes each) when no horizon has been
-    // uploaded yet; the shader skips the horizon check in that case via
-    // params.has_horizon == 0.
-    horizon_masks_buffer: wgpu::Buffer,
-    has_horizon: bool,
-    // Vegetation ray-march inputs. Dummy until upload_vegetation_rasters.
-    veg_tiles_meta_buffer: wgpu::Buffer,
-    veg_data_buffer: wgpu::Buffer,
-    has_vegetation: bool,
-    num_veg_tiles: u32,
-    veg_nodata: f32,
-    veg_step_meters: f32,
-    veg_max_distance_meters: f32,
-    veg_min_clearance: f32,
-    // True when veg_data contains raw VHM heights (to be composed with
-    // terrain at sample time). False when veg_data is already an absolute
-    // canopy raster (current default).
-    vegetation_is_raw: bool,
-    origin_x: f32,
-    origin_y: f32,
-    // Local terrain (DEM) ray-march inputs. Dummy until upload_terrain_rasters.
-    // Covers shortcut 2b.11 on the GPU side (was CPU-only before).
-    terrain_tiles_meta_buffer: wgpu::Buffer,
-    terrain_data_buffer: wgpu::Buffer,
-    has_local_terrain: bool,
-    num_terrain_tiles: u32,
-    terrain_nodata: f32,
-    terrain_step_meters: f32,
-    terrain_max_distance_meters: f32,
-    terrain_altitude_gate_deg: f32,
-    // ─── PROCESS-WIDE (will move to DepthShadowEngine) ──────────────────
+    // ─── PROCESS-WIDE (will move to DepthShadowEngine in Phase 1C) ──────
     depth_view_ref: wgpu::TextureView,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
@@ -2451,6 +2466,49 @@ struct ShadowReadback {
     words: Vec<u32>,
 }
 
+/// Create dummy `SceneResources` for cold-start. All buffers are minimal
+/// placeholders; real data arrives via `upload_horizon_masks`,
+/// `upload_vegetation_rasters`, and `upload_terrain_rasters`.
+fn create_dummy_scene(device: &wgpu::Device) -> SceneResources {
+    let mk = |label: &'static str, size: u64| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    };
+    SceneResources {
+        horizon_masks_buffer: mk("scene-horizon-masks-dummy", 16),
+        has_horizon: false,
+        veg_tiles_meta_buffer: mk("scene-veg-tiles-meta-dummy", 32),
+        veg_data_buffer: mk("scene-veg-data-dummy", 16),
+        has_vegetation: false,
+        num_veg_tiles: 0,
+        veg_nodata: 0.0,
+        veg_step_meters: 2.0,
+        veg_max_distance_meters: 120.0,
+        veg_min_clearance: 4.0,
+        vegetation_is_raw: false,
+        origin_x: 0.0,
+        origin_y: 0.0,
+        terrain_tiles_meta_buffer: mk("scene-terrain-tiles-meta-dummy", 32),
+        terrain_data_buffer: mk("scene-terrain-data-dummy", 16),
+        has_local_terrain: false,
+        num_terrain_tiles: 0,
+        terrain_nodata: 0.0,
+        terrain_step_meters: 5.0,
+        terrain_max_distance_meters: 500.0,
+        terrain_altitude_gate_deg: 30.0,
+    }
+}
+
+/// Create a new `EngineSession` for the given point set.
+///
+/// Scene-shared resources (horizon masks, veg/terrain rasters) live in
+/// `scene` and are referenced by the returned session's bind_group. They
+/// are NOT recreated here — the caller owns `SceneResources` and keeps it
+/// alive across `reload_points` calls.
 fn create_engine_session(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -2459,6 +2517,7 @@ fn create_engine_session(
     resolution: u32,
     point_count: Option<u32>,
     points_bin: Option<&Path>,
+    scene: &SceneResources,
 ) -> Result<EngineSession, String> {
     let (points, points_source) = load_query_points(raw_bounds, point_count, points_bin)?;
     let point_count = (points.len() / 4) as u32;
@@ -2510,13 +2569,7 @@ fn create_engine_session(
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    // Dummy horizon buffers (replaced by upload_horizon_masks).
-    let horizon_masks_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-horizon-masks-dummy"),
-        size: 16, // minimal, must be >= binding size min
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
+    // Per-session horizon indices dummy (replaced by upload_horizon_masks).
     let horizon_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("wgpu-vulkan-probe-horizon-indices-dummy"),
         size: 16,
@@ -2553,19 +2606,6 @@ fn create_engine_session(
         mapped_at_creation: false,
     });
 
-    // Dummy vegetation buffers (replaced by upload_vegetation_rasters).
-    let veg_tiles_meta_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-veg-tiles-meta-dummy"),
-        size: 32, // at least one VegTileMeta struct
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let veg_data_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-veg-data-dummy"),
-        size: 16,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
     let veg_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("wgpu-vulkan-probe-veg-results"),
         size: result_copy_size,
@@ -2578,21 +2618,6 @@ fn create_engine_session(
         label: Some("wgpu-vulkan-probe-veg-readback"),
         size: result_copy_size,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
-    // Dummy terrain buffers — replaced by upload_terrain_rasters when
-    // the TS caller ships the SwissALTI3D payload. Same pattern as veg.
-    let terrain_tiles_meta_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-terrain-tiles-meta-dummy"),
-        size: 32,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let terrain_data_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-terrain-data-dummy"),
-        size: 16,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
@@ -3037,16 +3062,16 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         depth_view,
         &points_buffer,
         &result_buffer,
-        &horizon_masks_buffer,
+        &scene.horizon_masks_buffer,
         &horizon_indices_buffer,
         &terrain_result_buffer,
-        &veg_tiles_meta_buffer,
-        &veg_data_buffer,
+        &scene.veg_tiles_meta_buffer,
+        &scene.veg_data_buffer,
         &veg_result_buffer,
         &sunny_result_buffer,
         &sunny_no_veg_result_buffer,
-        &terrain_tiles_meta_buffer,
-        &terrain_data_buffer,
+        &scene.terrain_tiles_meta_buffer,
+        &scene.terrain_data_buffer,
     );
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-pipeline-layout"),
@@ -3073,34 +3098,13 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         readback_buffer,
         terrain_result_buffer,
         terrain_readback_buffer,
-        horizon_masks_buffer,
         horizon_indices_buffer,
-        has_horizon: false,
-        veg_tiles_meta_buffer,
-        veg_data_buffer,
         veg_result_buffer,
         veg_readback_buffer,
-        has_vegetation: false,
-        num_veg_tiles: 0,
-        veg_nodata: 0.0,
-        veg_step_meters: 2.0,
-        veg_max_distance_meters: 120.0,
-        veg_min_clearance: 4.0,
-        vegetation_is_raw: false,
-        origin_x: 0.0,
-        origin_y: 0.0,
         sunny_result_buffer,
         sunny_readback_buffer,
         sunny_no_veg_result_buffer,
         sunny_no_veg_readback_buffer,
-        terrain_tiles_meta_buffer,
-        terrain_data_buffer,
-        has_local_terrain: false,
-        num_terrain_tiles: 0,
-        terrain_nodata: 0.0,
-        terrain_step_meters: 5.0,
-        terrain_max_distance_meters: 500.0,
-        terrain_altitude_gate_deg: 30.0,
         points_buffer,
         depth_view_ref: depth_view.clone(),
         bind_group,
