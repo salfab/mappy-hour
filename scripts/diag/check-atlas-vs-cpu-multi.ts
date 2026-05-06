@@ -195,6 +195,11 @@ async function evaluate(target: Target, date: string): Promise<{
         horizonMask: context.horizonMask,
         buildingShadowEvaluator: context.buildingShadowEvaluator,
         vegetationShadowEvaluator: context.vegetationShadowEvaluator,
+        // Local DEM ray-march (shortcut 2b.11). Without it, the CPU golden
+        // misses self-shadowing from local hills and produces a mism% that
+        // hides whether the atlas applied this check or dropped it. Always
+        // include it when the context provides one.
+        terrainShadowEvaluator: context.terrainShadowEvaluator,
       });
       const cpuSunny = cpuSample.isSunny;
 

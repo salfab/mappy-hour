@@ -1382,7 +1382,11 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 0,
                 shadow.result_copy_size,
             );
-            if shadow.has_horizon {
+            // Terrain readback is needed when EITHER horizon masks OR local
+            // terrain rasters were uploaded, since the shader writes both into
+            // terrain_result_buffer (OR-combined). Previously gated only on
+            // has_horizon, which silently dropped local-DEM ray-march output.
+            if shadow.has_horizon || shadow.has_local_terrain {
                 encoder.copy_buffer_to_buffer(
                     &shadow.terrain_result_buffer,
                     0,
@@ -1437,7 +1441,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             sunny_no_veg_words,
         ) = if let Some(shadow) = &self.shadow_compute {
             let readback = read_shadow_results(device, shadow, sequence)?;
-            let (terrain_count, terrain_words) = if shadow.has_horizon {
+            let (terrain_count, terrain_words) = if shadow.has_horizon || shadow.has_local_terrain {
                 let terrain = read_terrain_results(device, shadow, sequence)?;
                 (Some(terrain.blocked_count), Some(terrain.words))
             } else {
@@ -1626,7 +1630,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let readback_terrain = if shadow.has_horizon {
+        let readback_terrain = if shadow.has_horizon || shadow.has_local_terrain {
             Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("batch-readback-terrain"),
                 size: total_size,
@@ -1704,7 +1708,10 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         for (i, _) in frames.iter().enumerate() {
             // Clear result buffers between frames (same shared buffers, rewritten per frame).
             encoder.clear_buffer(&shadow.result_buffer, 0, Some(shadow.result_copy_size));
-            if shadow.has_horizon {
+            // Terrain output buffer must be cleared whenever the shader will
+            // write to it, i.e. whenever horizon OR local terrain rasters are
+            // active. Same gate as the terrain readback below.
+            if shadow.has_horizon || shadow.has_local_terrain {
                 encoder.clear_buffer(
                     &shadow.terrain_result_buffer,
                     0,

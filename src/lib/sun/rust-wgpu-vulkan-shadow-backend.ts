@@ -462,7 +462,13 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         `Rust/wgpu Vulkan batch point count mismatch: server=${result.pointCount}, expected=${pointCount}`,
       );
     }
-    const hasTerrain = this.serverHorizonHash !== null;
+    // Terrain mask is produced by the GPU when EITHER horizon masks OR local
+    // terrain rasters were uploaded — the shader OR-combines both into
+    // terrainBlockedWords. Previously gated only on horizon, which silently
+    // dropped the local DEM ray-march output (shortcut 2b.11) and forced the
+    // JS hot-loop fallback in sunlight-tile-service.
+    const hasTerrain =
+      this.serverHorizonHash !== null || this.serverTerrainHash !== null;
     const hasVeg = this.serverVegetationHash !== null;
     return result.frames.map((f) => ({
       buildingsMask: Uint32Array.from(f.blockedWords ?? []),

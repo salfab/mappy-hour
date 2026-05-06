@@ -930,7 +930,14 @@ export async function buildPointEvaluationContext(
   // captures distant relief > ~500m) by ray-marching the local DEM out to
   // 500m. Gated to altitudeDeg < 30° inside the evaluator. See ADR-0011 and
   // shortcuts-registry 2b.X (terrain local ray-march).
+  //
+  // Skipped when the GPU backend exposes uploadTerrainRasters: the same
+  // ray-march runs on GPU (shortcut 2b.11) and is already OR'd into
+  // batchTerrainBlockedMask. Building the CPU evaluator here would force the
+  // tile-service hot loop fallback (`hasLocalTerrainEvaluator` disables Phase
+  // E bulk-copy) and re-do work the GPU already did.
   const terrainShadowEvaluator =
+    !sharedSources.terrainShadowHandledByBackend &&
     sharedSources.terrainTiles &&
     sharedSources.terrainTiles.length > 0 &&
     pointElevationMeters !== null &&
