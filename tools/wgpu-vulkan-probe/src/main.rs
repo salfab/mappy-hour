@@ -1067,7 +1067,7 @@ struct DepthShadowEngine {
     render_bind_group: wgpu::BindGroup,
     render_bind_group_layout: wgpu::BindGroupLayout,
     render_pipeline: wgpu::RenderPipeline,
-    shadow_compute: Option<ShadowComputeResources>,
+    shadow_compute: Option<EngineSession>,
     raw_bounds: MeshBounds,
     focus_bounds: Option<FocusBounds>,
     resolution: u32,
@@ -1241,7 +1241,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 });
 
         let shadow_compute = if config.run_shadow_compute {
-            Some(create_shadow_compute_resources(
+            Some(create_engine_session(
                 config.device,
                 config.queue,
                 &depth_view,
@@ -2015,7 +2015,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         queue: &wgpu::Queue,
         points_bin: &Path,
     ) -> Result<u32, String> {
-        let compute = create_shadow_compute_resources(
+        let compute = create_engine_session(
             device,
             queue,
             &self.depth_view,
@@ -2356,24 +2356,68 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
     }
 }
 
-struct ShadowComputeResources {
+/// Holds GPU resources used to evaluate one tile's points against the scene.
+///
+/// **Today (Phase 1A of multi-session refacto)**: this struct mixes three
+/// distinct ownership categories. They're kept inline for now to minimize
+/// churn; future phases will split them into composed sub-structs.
+///
+/// The three categories:
+///
+/// - **PER-SESSION** (rebuilt every `reload_points` because they depend on
+///   the new point count or content): `points_buffer`, `params_buffer`, all
+///   `*_result_buffer` + `*_readback_buffer` outputs (sized for point count),
+///   `horizon_indices_buffer` (one index per outdoor point), `bind_group`.
+///   Counters: `point_count`, `result_word_count`, `result_copy_size`,
+///   `workgroup_count`.
+///
+/// - **SCENE-SHARED** (region-wide rasters; do NOT need to be rebuilt across
+///   tiles in the same focus bucket). `horizon_masks_buffer` + `has_horizon`,
+///   `veg_*` (data, meta, params), `terrain_*` (data, meta, params),
+///   `origin_x`, `origin_y`. Today these get reset to dummies on every
+///   `reload_points` because the whole struct is rebuilt — a known waste
+///   that the multi-session refacto will eliminate.
+///
+/// - **PROCESS-WIDE** (could/should be one instance per Rust process,
+///   not per session): `bind_group_layout`, `pipeline`, `depth_view_ref`.
+///
+/// Phase 1B will extract scene-shared fields into a `SceneResources` struct
+/// owned by `DepthShadowEngine`. Phase 2 will allow N sessions to share one
+/// scene. See ADR-0011 Phase G post-mortem and refactor plan in
+/// `docs/architecture/refactor-multi-session-plan.md`.
+struct EngineSession {
+    // ─── PER-SESSION (point-dependent, rebuilt on reload_points) ───────
     params_buffer: wgpu::Buffer,
     result_buffer: wgpu::Buffer,
     readback_buffer: wgpu::Buffer,
     // Terrain (horizon-based) blocked bitmask output.
     terrain_result_buffer: wgpu::Buffer,
     terrain_readback_buffer: wgpu::Buffer,
-    // Horizon storage inputs. Dummy (4 bytes each) when no horizon has been
+    horizon_indices_buffer: wgpu::Buffer,
+    veg_result_buffer: wgpu::Buffer,
+    veg_readback_buffer: wgpu::Buffer,
+    // Phase E: final sunny bitmasks computed in the shader (derived from
+    // terrain/buildings/vegetation locals, matching the artifact semantic
+    // bit-for-bit so the JS hot loop can drop the per-point combining).
+    sunny_result_buffer: wgpu::Buffer,
+    sunny_readback_buffer: wgpu::Buffer,
+    sunny_no_veg_result_buffer: wgpu::Buffer,
+    sunny_no_veg_readback_buffer: wgpu::Buffer,
+    points_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    point_count: u32,
+    result_word_count: u32,
+    result_copy_size: u64,
+    workgroup_count: u32,
+    // ─── SCENE-SHARED (region-wide; will move to SceneResources) ────────
+    // Horizon storage inputs. Dummy (16 bytes each) when no horizon has been
     // uploaded yet; the shader skips the horizon check in that case via
     // params.has_horizon == 0.
     horizon_masks_buffer: wgpu::Buffer,
-    horizon_indices_buffer: wgpu::Buffer,
     has_horizon: bool,
     // Vegetation ray-march inputs. Dummy until upload_vegetation_rasters.
     veg_tiles_meta_buffer: wgpu::Buffer,
     veg_data_buffer: wgpu::Buffer,
-    veg_result_buffer: wgpu::Buffer,
-    veg_readback_buffer: wgpu::Buffer,
     has_vegetation: bool,
     num_veg_tiles: u32,
     veg_nodata: f32,
@@ -2396,22 +2440,10 @@ struct ShadowComputeResources {
     terrain_step_meters: f32,
     terrain_max_distance_meters: f32,
     terrain_altitude_gate_deg: f32,
-    // Phase E: final sunny bitmasks computed in the shader (derived from
-    // terrain/buildings/vegetation locals, matching the artifact semantic
-    // bit-for-bit so the JS hot loop can drop the per-point combining).
-    sunny_result_buffer: wgpu::Buffer,
-    sunny_readback_buffer: wgpu::Buffer,
-    sunny_no_veg_result_buffer: wgpu::Buffer,
-    sunny_no_veg_readback_buffer: wgpu::Buffer,
-    points_buffer: wgpu::Buffer,
+    // ─── PROCESS-WIDE (will move to DepthShadowEngine) ──────────────────
     depth_view_ref: wgpu::TextureView,
-    bind_group: wgpu::BindGroup,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
-    point_count: u32,
-    result_word_count: u32,
-    result_copy_size: u64,
-    workgroup_count: u32,
 }
 
 struct ShadowReadback {
@@ -2419,7 +2451,7 @@ struct ShadowReadback {
     words: Vec<u32>,
 }
 
-fn create_shadow_compute_resources(
+fn create_engine_session(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     depth_view: &wgpu::TextureView,
@@ -2427,7 +2459,7 @@ fn create_shadow_compute_resources(
     resolution: u32,
     point_count: Option<u32>,
     points_bin: Option<&Path>,
-) -> Result<ShadowComputeResources, String> {
+) -> Result<EngineSession, String> {
     let (points, points_source) = load_query_points(raw_bounds, point_count, points_bin)?;
     let point_count = (points.len() / 4) as u32;
     let point_bytes = bytemuck::cast_slice(&points);
@@ -3035,7 +3067,7 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         point_bytes.len()
     );
 
-    Ok(ShadowComputeResources {
+    Ok(EngineSession {
         params_buffer,
         result_buffer,
         readback_buffer,
@@ -3219,7 +3251,7 @@ fn encode_shadow_params(
 
 fn read_shadow_results(
     device: &wgpu::Device,
-    shadow: &ShadowComputeResources,
+    shadow: &EngineSession,
     iteration: u32,
 ) -> Result<ShadowReadback, String> {
     read_bitmask_buffer(
@@ -3234,7 +3266,7 @@ fn read_shadow_results(
 
 fn read_terrain_results(
     device: &wgpu::Device,
-    shadow: &ShadowComputeResources,
+    shadow: &EngineSession,
     iteration: u32,
 ) -> Result<ShadowReadback, String> {
     read_bitmask_buffer(
