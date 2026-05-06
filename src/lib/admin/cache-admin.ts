@@ -304,23 +304,30 @@ function resolvePrecomputeWorkerCount(tileCount: number): number {
   if (process.env.NODE_ENV === "test") {
     return 1;
   }
+  const shadowMode = process.env.MAPPY_BUILDINGS_SHADOW_MODE?.trim().toLowerCase();
+  const isGpuIpc = shadowMode === "rust-wgpu-vulkan" || shadowMode === "webgpu-compute";
   const fromEnvRaw = process.env.MAPPY_PRECOMPUTE_WORKERS?.trim();
   if (fromEnvRaw) {
     const parsed = Number(fromEnvRaw);
     if (Number.isFinite(parsed)) {
-      return Math.max(1, Math.min(tileCount, Math.floor(parsed)));
+      const requested = Math.max(1, Math.min(tileCount, Math.floor(parsed)));
+      if (isGpuIpc && requested > 1) {
+        // Bench 2026-05-05 (ADR-0019) measured 15-30× perf regression at
+        // workers=2/4 on rust-wgpu-vulkan: each worker forks its own GPU
+        // child, all contend on the same physical GPU. Override is honored
+        // (multi-GPU setups might benefit) but the operator should know.
+        console.warn(
+          `[cache-admin] ⚠️  MAPPY_PRECOMPUTE_WORKERS=${requested} with shadowMode=${shadowMode}: ` +
+            `each worker forks a separate GPU child, all contending on the same physical GPU. ` +
+            `Bench 2026-05-05 measured 15-30× PERF REGRESSION vs workers=1. ` +
+            `Use only on multi-GPU setups. See ADR-0019.`,
+        );
+      }
+      return requested;
     }
   }
-  // Vulkan / WebGPU compute backends spawn 1 GPU child process per worker that
-  // all contend on the same physical GPU. Bench 2026-05-05 measured 15-30×
-  // PERF REGRESSION at workers=2/4 vs workers=1 on rust-wgpu-vulkan
-  // (cold-start × N workers + GPU device contention). The CPU-mode bench from
-  // 2026-03-15 that recommended workers=4 was on detailed/two-level CPU paths,
-  // not GPU-bound. Default to 1 worker for any GPU-IPC backend; user can
-  // still override via MAPPY_PRECOMPUTE_WORKERS=N if they have a multi-GPU
-  // setup or want to experiment.
-  const shadowMode = process.env.MAPPY_BUILDINGS_SHADOW_MODE?.trim().toLowerCase();
-  if (shadowMode === "rust-wgpu-vulkan" || shadowMode === "webgpu-compute") {
+  // Vulkan / WebGPU compute backends: default to 1 worker (ADR-0019).
+  if (isGpuIpc) {
     return 1;
   }
   const cpuCount = os.cpus().length;
@@ -1493,6 +1500,20 @@ export async function precomputeCacheRuns(
         1,
         Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "2"),
       );
+      // Sanity warning: pipelining only overlaps Node-side prep with GPU-IPC
+      // eval. CPU shadow modes (detailed, two-level, prism, gpu-raster) have
+      // no IPC and no separate GPU process — so depth > 1 has zero benefit
+      // and only adds orchestration overhead.
+      const shadowMode = process.env.MAPPY_BUILDINGS_SHADOW_MODE?.trim().toLowerCase();
+      const isGpuIpcShadow = shadowMode === "rust-wgpu-vulkan" || shadowMode === "webgpu-compute";
+      if (PIPELINE_DEPTH > 1 && !isGpuIpcShadow) {
+        console.warn(
+          `[cache-admin] ⚠️  MAPPY_TILE_PIPELINE_DEPTH=${PIPELINE_DEPTH} with shadowMode=${shadowMode || "(unset, CPU)"}: ` +
+            `tile pipelining only helps GPU-IPC backends (rust-wgpu-vulkan, webgpu-compute). ` +
+            `On CPU shadow backends there's no IPC to overlap with prep — depth > 1 only adds overhead. ` +
+            `Falling back to strict-sequential (depth=1) is recommended.`,
+        );
+      }
       const inflight: Array<Promise<unknown>> = [];
 
       const processOneTile = async (tileIndex: number): Promise<void> => {
