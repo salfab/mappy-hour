@@ -1479,8 +1479,24 @@ export async function precomputeCacheRuns(
     }
 
     const runSequentialTiles = async () => {
-      for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
-        throwIfAborted(options.signal);
+      // Pipeline depth: how many tiles can have in-flight processing at the
+      // same time. Default 1 = pure sequential (legacy behavior). With
+      // depth >= 2, the next tile's CPU prep can overlap with the previous
+      // tile's GPU/IPC eval. The IPC client (rust-wgpu-vulkan-server-client)
+      // serializes Rust calls via a FIFO promise-chain mutex — so concurrent
+      // callers don't corrupt the stdin/stdout protocol. The Rust server
+      // still processes 1 request at a time. See ADR-0019 (single Vulkan
+      // process) and the bench data behind this.
+      //
+      // Override via MAPPY_TILE_PIPELINE_DEPTH=2 (or 3, 4, ...). Theoretical
+      // benefit caps at depth=2-3 — beyond that the IPC bottleneck dominates.
+      const PIPELINE_DEPTH = Math.max(
+        1,
+        Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "1"),
+      );
+      const inflight: Array<Promise<unknown>> = [];
+
+      const processOneTile = async (tileIndex: number): Promise<void> => {
         const tile = tiles[tileIndex];
 
         options.onProgress?.({
@@ -1631,7 +1647,20 @@ export async function precomputeCacheRuns(
             currentTileFrameIndex: null,
           });
         }
+      };
+
+      for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
+        throwIfAborted(options.signal);
+        // Maintain at most PIPELINE_DEPTH in-flight tiles. When full, await
+        // the oldest before starting a new one (FIFO ordering preserves
+        // Rust IPC request order naturally — the server processes them in
+        // arrival order on stdin).
+        while (inflight.length >= PIPELINE_DEPTH) {
+          await inflight.shift();
+        }
+        inflight.push(processOneTile(tileIndex));
       }
+      await Promise.all(inflight);
     };
 
     let usedWorkerPool = false;
