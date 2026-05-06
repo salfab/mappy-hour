@@ -1062,8 +1062,6 @@ struct DepthShadowEngine {
     vertex_count: u32,
     vertex_source: String,
     vertex_bytes: usize,
-    _depth_texture: wgpu::Texture,
-    depth_view: wgpu::TextureView,
     render_uniform_buffer: wgpu::Buffer,
     render_bind_group: wgpu::BindGroup,
     render_bind_group_layout: wgpu::BindGroupLayout,
@@ -1124,22 +1122,6 @@ impl DepthShadowEngine {
         });
         config.queue.write_buffer(&vertex_buffer, 0, vertex_bytes);
         config.queue.submit([]);
-
-        let depth_texture = config.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("wgpu-vulkan-probe-depth"),
-            size: wgpu::Extent3d {
-                width: config.resolution,
-                height: config.resolution,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let shader = config
             .device
@@ -1253,7 +1235,6 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             sessions.insert("default".to_string(), create_engine_session(
                 config.device,
                 config.queue,
-                &depth_view,
                 raw_bounds,
                 config.resolution,
                 config.point_count,
@@ -1268,8 +1249,6 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             vertex_count,
             vertex_source,
             vertex_bytes: vertex_bytes.len(),
-            _depth_texture: depth_texture,
-            depth_view,
             render_uniform_buffer,
             render_bind_group,
             render_bind_group_layout: bind_group_layout,
@@ -1292,6 +1271,22 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         altitude_deg: f32,
         sequence: u32,
     ) -> Result<DepthShadowEvaluation, String> {
+        let Some(shadow) = self.sessions.get("default") else {
+            return Ok(DepthShadowEvaluation {
+                elapsed_ms: 0.0,
+                blocked_count: None,
+                blocked_words: None,
+                terrain_blocked_count: None,
+                terrain_blocked_words: None,
+                vegetation_blocked_count: None,
+                vegetation_blocked_words: None,
+                sunny_count: 0,
+                sunny_words: Vec::new(),
+                sunny_no_veg_count: 0,
+                sunny_no_veg_words: Vec::new(),
+            });
+        };
+
         let light_mvp = compute_light_mvp(
             self.raw_bounds,
             self.focus_bounds,
@@ -1303,33 +1298,31 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             0,
             bytemuck::cast_slice(&light_mvp),
         );
-        if let Some(shadow) = self.sessions.get("default") {
-            let shadow_params = encode_shadow_params(
-                light_mvp,
-                self.resolution,
-                shadow.point_count,
-                SHADOW_BIAS,
-                self.scene.has_horizon,
-                azimuth_deg,
-                altitude_deg,
-                self.scene.has_vegetation,
-                self.scene.num_veg_tiles,
-                self.scene.veg_step_meters,
-                self.scene.veg_max_distance_meters,
-                self.scene.veg_min_clearance,
-                self.scene.veg_nodata,
-                self.scene.origin_x,
-                self.scene.origin_y,
-                self.scene.has_local_terrain,
-                self.scene.num_terrain_tiles,
-                self.scene.terrain_step_meters,
-                self.scene.terrain_max_distance_meters,
-                self.scene.terrain_altitude_gate_deg,
-                self.scene.terrain_nodata,
-                self.scene.vegetation_is_raw,
-            );
-            queue.write_buffer(&shadow.params_buffer, 0, &shadow_params);
-        }
+        let shadow_params = encode_shadow_params(
+            light_mvp,
+            self.resolution,
+            shadow.point_count,
+            SHADOW_BIAS,
+            self.scene.has_horizon,
+            azimuth_deg,
+            altitude_deg,
+            self.scene.has_vegetation,
+            self.scene.num_veg_tiles,
+            self.scene.veg_step_meters,
+            self.scene.veg_max_distance_meters,
+            self.scene.veg_min_clearance,
+            self.scene.veg_nodata,
+            self.scene.origin_x,
+            self.scene.origin_y,
+            self.scene.has_local_terrain,
+            self.scene.num_terrain_tiles,
+            self.scene.terrain_step_meters,
+            self.scene.terrain_max_distance_meters,
+            self.scene.terrain_altitude_gate_deg,
+            self.scene.terrain_nodata,
+            self.scene.vegetation_is_raw,
+        );
+        queue.write_buffer(&shadow.params_buffer, 0, &shadow_params);
 
         let started_at = Instant::now();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1341,7 +1334,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 label: Some("wgpu-vulkan-probe-depth-pass"),
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
+                    view: &shadow.depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -1358,79 +1351,77 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             render_pass.draw(0..self.vertex_count, 0..1);
         }
 
-        if let Some(shadow) = self.sessions.get("default") {
-            encoder.clear_buffer(&shadow.result_buffer, 0, Some(shadow.result_copy_size));
-            encoder.clear_buffer(
+        encoder.clear_buffer(&shadow.result_buffer, 0, Some(shadow.result_copy_size));
+        encoder.clear_buffer(
+            &shadow.terrain_result_buffer,
+            0,
+            Some(shadow.result_copy_size),
+        );
+        encoder.clear_buffer(
+            &shadow.veg_result_buffer,
+            0,
+            Some(shadow.result_copy_size),
+        );
+        encoder.clear_buffer(&shadow.sunny_result_buffer, 0, Some(shadow.result_copy_size));
+        encoder.clear_buffer(
+            &shadow.sunny_no_veg_result_buffer,
+            0,
+            Some(shadow.result_copy_size),
+        );
+
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("wgpu-vulkan-probe-shadow-compute-pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(&self.compute_pipeline);
+            compute_pass.set_bind_group(0, &shadow.bind_group, &[]);
+            compute_pass.dispatch_workgroups(shadow.workgroup_count, 1, 1);
+        }
+
+        encoder.copy_buffer_to_buffer(
+            &shadow.result_buffer,
+            0,
+            &shadow.readback_buffer,
+            0,
+            shadow.result_copy_size,
+        );
+        // Terrain readback is needed when EITHER horizon masks OR local
+        // terrain rasters were uploaded, since the shader writes both into
+        // terrain_result_buffer (OR-combined). Previously gated only on
+        // has_horizon, which silently dropped local-DEM ray-march output.
+        if self.scene.has_horizon || self.scene.has_local_terrain {
+            encoder.copy_buffer_to_buffer(
                 &shadow.terrain_result_buffer,
                 0,
-                Some(shadow.result_copy_size),
-            );
-            encoder.clear_buffer(
-                &shadow.veg_result_buffer,
-                0,
-                Some(shadow.result_copy_size),
-            );
-            encoder.clear_buffer(&shadow.sunny_result_buffer, 0, Some(shadow.result_copy_size));
-            encoder.clear_buffer(
-                &shadow.sunny_no_veg_result_buffer,
-                0,
-                Some(shadow.result_copy_size),
-            );
-
-            {
-                let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("wgpu-vulkan-probe-shadow-compute-pass"),
-                    timestamp_writes: None,
-                });
-                compute_pass.set_pipeline(&self.compute_pipeline);
-                compute_pass.set_bind_group(0, &shadow.bind_group, &[]);
-                compute_pass.dispatch_workgroups(shadow.workgroup_count, 1, 1);
-            }
-
-            encoder.copy_buffer_to_buffer(
-                &shadow.result_buffer,
-                0,
-                &shadow.readback_buffer,
-                0,
-                shadow.result_copy_size,
-            );
-            // Terrain readback is needed when EITHER horizon masks OR local
-            // terrain rasters were uploaded, since the shader writes both into
-            // terrain_result_buffer (OR-combined). Previously gated only on
-            // has_horizon, which silently dropped local-DEM ray-march output.
-            if self.scene.has_horizon || self.scene.has_local_terrain {
-                encoder.copy_buffer_to_buffer(
-                    &shadow.terrain_result_buffer,
-                    0,
-                    &shadow.terrain_readback_buffer,
-                    0,
-                    shadow.result_copy_size,
-                );
-            }
-            if self.scene.has_vegetation {
-                encoder.copy_buffer_to_buffer(
-                    &shadow.veg_result_buffer,
-                    0,
-                    &shadow.veg_readback_buffer,
-                    0,
-                    shadow.result_copy_size,
-                );
-            }
-            encoder.copy_buffer_to_buffer(
-                &shadow.sunny_result_buffer,
-                0,
-                &shadow.sunny_readback_buffer,
-                0,
-                shadow.result_copy_size,
-            );
-            encoder.copy_buffer_to_buffer(
-                &shadow.sunny_no_veg_result_buffer,
-                0,
-                &shadow.sunny_no_veg_readback_buffer,
+                &shadow.terrain_readback_buffer,
                 0,
                 shadow.result_copy_size,
             );
         }
+        if self.scene.has_vegetation {
+            encoder.copy_buffer_to_buffer(
+                &shadow.veg_result_buffer,
+                0,
+                &shadow.veg_readback_buffer,
+                0,
+                shadow.result_copy_size,
+            );
+        }
+        encoder.copy_buffer_to_buffer(
+            &shadow.sunny_result_buffer,
+            0,
+            &shadow.sunny_readback_buffer,
+            0,
+            shadow.result_copy_size,
+        );
+        encoder.copy_buffer_to_buffer(
+            &shadow.sunny_no_veg_result_buffer,
+            0,
+            &shadow.sunny_no_veg_readback_buffer,
+            0,
+            shadow.result_copy_size,
+        );
 
         let submission = queue.submit([encoder.finish()]);
         device
@@ -1440,82 +1431,55 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             })
             .map_err(|error| format!("device poll failed at evaluation {sequence}: {error:?}"))?;
 
-        let (
-            blocked_count,
-            blocked_words,
-            terrain_blocked_count,
-            terrain_blocked_words,
-            vegetation_blocked_count,
-            vegetation_blocked_words,
-            sunny_count,
-            sunny_words,
-            sunny_no_veg_count,
-            sunny_no_veg_words,
-        ) = if let Some(shadow) = self.sessions.get("default") {
-            let readback = read_shadow_results(device, shadow, sequence)?;
-            let (terrain_count, terrain_words) = if self.scene.has_horizon || self.scene.has_local_terrain {
-                let terrain = read_terrain_results(device, shadow, sequence)?;
-                (Some(terrain.blocked_count), Some(terrain.words))
-            } else {
-                (None, None)
-            };
-            let (veg_count, veg_words) = if self.scene.has_vegetation {
-                let veg = read_bitmask_buffer(
-                    device,
-                    &shadow.veg_readback_buffer,
-                    shadow.result_copy_size,
-                    shadow.result_word_count,
-                    sequence,
-                    "vegetation",
-                )?;
-                (Some(veg.blocked_count), Some(veg.words))
-            } else {
-                (None, None)
-            };
-            let sunny = read_bitmask_buffer(
-                device,
-                &shadow.sunny_readback_buffer,
-                shadow.result_copy_size,
-                shadow.result_word_count,
-                sequence,
-                "sunny",
-            )?;
-            let sunny_no_veg = read_bitmask_buffer(
-                device,
-                &shadow.sunny_no_veg_readback_buffer,
-                shadow.result_copy_size,
-                shadow.result_word_count,
-                sequence,
-                "sunny-no-veg",
-            )?;
-            (
-                Some(readback.blocked_count),
-                Some(readback.words),
-                terrain_count,
-                terrain_words,
-                veg_count,
-                veg_words,
-                sunny.blocked_count,
-                sunny.words,
-                sunny_no_veg.blocked_count,
-                sunny_no_veg.words,
-            )
+        let readback = read_shadow_results(device, shadow, sequence)?;
+        let (terrain_blocked_count, terrain_blocked_words) = if self.scene.has_horizon || self.scene.has_local_terrain {
+            let terrain = read_terrain_results(device, shadow, sequence)?;
+            (Some(terrain.blocked_count), Some(terrain.words))
         } else {
-            (None, None, None, None, None, None, 0, Vec::new(), 0, Vec::new())
+            (None, None)
         };
+        let (vegetation_blocked_count, vegetation_blocked_words) = if self.scene.has_vegetation {
+            let veg = read_bitmask_buffer(
+                device,
+                &shadow.veg_readback_buffer,
+                shadow.result_copy_size,
+                shadow.result_word_count,
+                sequence,
+                "vegetation",
+            )?;
+            (Some(veg.blocked_count), Some(veg.words))
+        } else {
+            (None, None)
+        };
+        let sunny = read_bitmask_buffer(
+            device,
+            &shadow.sunny_readback_buffer,
+            shadow.result_copy_size,
+            shadow.result_word_count,
+            sequence,
+            "sunny",
+        )?;
+        let sunny_no_veg = read_bitmask_buffer(
+            device,
+            &shadow.sunny_no_veg_readback_buffer,
+            shadow.result_copy_size,
+            shadow.result_word_count,
+            sequence,
+            "sunny-no-veg",
+        )?;
 
         Ok(DepthShadowEvaluation {
             elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
-            blocked_count,
-            blocked_words,
+            blocked_count: Some(readback.blocked_count),
+            blocked_words: Some(readback.words),
             terrain_blocked_count,
             terrain_blocked_words,
             vegetation_blocked_count,
             vegetation_blocked_words,
-            sunny_count,
-            sunny_words,
-            sunny_no_veg_count,
-            sunny_no_veg_words,
+            sunny_count: sunny.blocked_count,
+            sunny_words: sunny.words,
+            sunny_no_veg_count: sunny_no_veg.blocked_count,
+            sunny_no_veg_words: sunny_no_veg.words,
         })
     }
 
@@ -1579,7 +1543,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 device,
                 &self.compute_bind_group_layout,
                 &params_buf,
-                &self.depth_view,
+                &shadow.depth_view,
                 &shadow.points_buffer,
                 &shadow.result_buffer,
                 &self.scene.horizon_masks_buffer,
@@ -1761,7 +1725,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                     label: Some("batch-depth-pass"),
                     color_attachments: &[],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.depth_view,
+                        view: &shadow.depth_view,
                         depth_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Clear(1.0),
                             store: wgpu::StoreOp::Store,
@@ -2028,7 +1992,6 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         let compute = create_engine_session(
             device,
             queue,
-            &self.depth_view,
             self.raw_bounds,
             self.resolution,
             None,
@@ -2119,7 +2082,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             device,
             &self.compute_bind_group_layout,
             &shadow.params_buffer,
-            &self.depth_view,
+            &shadow.depth_view,
             &shadow.points_buffer,
             &shadow.result_buffer,
             &masks_buffer,
@@ -2217,7 +2180,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             device,
             &self.compute_bind_group_layout,
             &shadow.params_buffer,
-            &self.depth_view,
+            &shadow.depth_view,
             &shadow.points_buffer,
             &shadow.result_buffer,
             &self.scene.horizon_masks_buffer,
@@ -2314,7 +2277,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             device,
             &self.compute_bind_group_layout,
             &shadow.params_buffer,
-            &self.depth_view,
+            &shadow.depth_view,
             &shadow.points_buffer,
             &shadow.result_buffer,
             &self.scene.horizon_masks_buffer,
@@ -2439,6 +2402,8 @@ struct SceneResources {
 /// is rebuilt whenever scene buffers change so it always references live data.
 struct EngineSession {
     // ─── PER-SESSION (point-dependent, rebuilt on reload_points) ───────
+    _depth_texture: wgpu::Texture,  // PER-SESSION; owned for RAII, depth_view borrows it
+    depth_view: wgpu::TextureView,
     params_buffer: wgpu::Buffer,
     result_buffer: wgpu::Buffer,
     readback_buffer: wgpu::Buffer,
@@ -2971,7 +2936,6 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
 fn create_engine_session(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    depth_view: &wgpu::TextureView,
     raw_bounds: MeshBounds,
     resolution: u32,
     point_count: Option<u32>,
@@ -2979,6 +2943,22 @@ fn create_engine_session(
     scene: &SceneResources,
     layout: &wgpu::BindGroupLayout,
 ) -> Result<EngineSession, String> {
+    let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("wgpu-vulkan-probe-session-depth"),
+        size: wgpu::Extent3d {
+            width: resolution,
+            height: resolution,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
     let (points, points_source) = load_query_points(raw_bounds, point_count, points_bin)?;
     let point_count = (points.len() / 4) as u32;
     let point_bytes = bytemuck::cast_slice(&points);
@@ -3085,7 +3065,7 @@ fn create_engine_session(
         device,
         layout,
         &params_buffer,
-        depth_view,
+        &depth_view,
         &points_buffer,
         &result_buffer,
         &scene.horizon_masks_buffer,
@@ -3106,6 +3086,8 @@ fn create_engine_session(
     );
 
     Ok(EngineSession {
+        _depth_texture: depth_texture,
+        depth_view,
         params_buffer,
         result_buffer,
         readback_buffer,
