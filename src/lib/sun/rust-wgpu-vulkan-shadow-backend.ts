@@ -396,8 +396,14 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         sunnyNoVegCount: 0,
       }));
     }
+    // Multi-session pre-flight bench instrumentation: split the dispatch
+    // wall into lockWait | upload | serverIpc | decode so we know which
+    // segment dominates and whether multi-session would actually help.
+    // See ADR-0011 Phase G post-mortem.
+    const lockEnterT0 = performance.now();
     return this.withBackendLock(async () => {
-      return this.evaluateBatchFramesWithShadowsLocked(frames, points, pointCount, options);
+      const lockWaitMs = performance.now() - lockEnterT0;
+      return this.evaluateBatchFramesWithShadowsLocked(frames, points, pointCount, options, lockWaitMs);
     });
   }
 
@@ -406,6 +412,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     points: Float32Array,
     pointCount: number,
     options?: Parameters<RustWgpuVulkanShadowBackend["evaluateBatchFramesWithShadows"]>[3],
+    lockWaitMs?: number,
   ): Promise<Awaited<ReturnType<RustWgpuVulkanShadowBackend["evaluateBatchFramesWithShadows"]>>> {
     if (frames.length === 0) return [];
     if (pointCount === 0) {
@@ -419,10 +426,13 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         sunnyNoVegCount: 0,
       }));
     }
+    const ensureT0 = performance.now();
     await this.ensureServer(points, pointCount);
     if (!this.server) {
       throw new Error("Rust/wgpu Vulkan server failed to start.");
     }
+    const ensureMs = performance.now() - ensureT0;
+    const uploadT0 = performance.now();
     if (options?.horizon) {
       await this.uploadHorizonMasks(options.horizon);
     }
@@ -432,6 +442,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     if (options?.terrain) {
       await this.uploadTerrainRasters(options.terrain);
     }
+    const uploadMs = performance.now() - uploadT0;
     this.evaluationId += 1;
     const azimuthsDeg = frames.map((f) => f.azimuthDeg);
     const altitudesDeg = frames.map((f) => f.altitudeDeg);
@@ -454,9 +465,6 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       throw error;
     }
     const ipcMs = performance.now() - ipcT0;
-    console.log(
-      `[rust-ipc] evaluateBatch  ${ipcMs.toFixed(0)}ms  frames=${frames.length}  points=${pointCount}`,
-    );
     if (result.pointCount !== pointCount) {
       throw new Error(
         `Rust/wgpu Vulkan batch point count mismatch: server=${result.pointCount}, expected=${pointCount}`,
@@ -470,7 +478,8 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     const hasTerrain =
       this.serverHorizonHash !== null || this.serverTerrainHash !== null;
     const hasVeg = this.serverVegetationHash !== null;
-    return result.frames.map((f) => ({
+    const decodeT0 = performance.now();
+    const decoded = result.frames.map((f) => ({
       buildingsMask: Uint32Array.from(f.blockedWords ?? []),
       terrainMask: hasTerrain && Array.isArray(f.terrainBlockedWords)
         ? Uint32Array.from(f.terrainBlockedWords)
@@ -485,6 +494,19 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       sunnyCount: Number(f.sunnyPoints ?? 0),
       sunnyNoVegCount: Number(f.sunnyNoVegPoints ?? 0),
     }));
+    const decodeMs = performance.now() - decodeT0;
+    const totalDispatchMs =
+      (lockWaitMs ?? 0) + ensureMs + uploadMs + ipcMs + decodeMs;
+    console.log(
+      `[dispatch-split] frames=${frames.length} points=${pointCount} ` +
+        `lockWait=${(lockWaitMs ?? 0).toFixed(0)}ms ` +
+        `ensure=${ensureMs.toFixed(0)}ms ` +
+        `upload=${uploadMs.toFixed(0)}ms ` +
+        `serverIpc=${ipcMs.toFixed(0)}ms ` +
+        `decode=${decodeMs.toFixed(0)}ms ` +
+        `total=${totalDispatchMs.toFixed(0)}ms`,
+    );
+    return decoded;
   }
 
   private async evaluateBatchInternal(
