@@ -184,7 +184,15 @@ export class RustWgpuVulkanShadowServer {
     this.evaluationTimeoutMs = evaluationTimeoutMs;
     child.stdout.on("data", (chunk: Buffer) => this.onStdoutChunk(chunk));
     child.stderr.on("data", (chunk: Buffer) => {
-      this.stderr += chunk.toString("utf8");
+      const text = chunk.toString("utf8");
+      this.stderr += text;
+      // Forward microbench timing lines to operator stderr so they appear in
+      // the log without polluting the JSON IPC stream on stdout.
+      for (const line of text.split("\n")) {
+        if (line.startsWith("[gpu-timing]")) {
+          process.stderr.write(line + "\n");
+        }
+      }
     });
   }
 

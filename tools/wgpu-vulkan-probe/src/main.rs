@@ -286,10 +286,21 @@ async fn run(config: Config) -> Result<(), String> {
 
     let adapter_limits = adapter.limits();
     let required_limits = negotiate_required_limits(&adapter_limits);
+    // TIMESTAMP_QUERY is opt-in for the multi-session microbench (writes
+    // begin/end timestamps inside render/compute passes) so we can measure
+    // per-engine GPU occupation. Falls back gracefully if the adapter
+    // doesn't expose it (rare on desktop Vulkan).
+    let adapter_features = adapter.features();
+    let mut requested_features = wgpu::Features::empty();
+    if adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+        requested_features |= wgpu::Features::TIMESTAMP_QUERY;
+    } else {
+        eprintln!("[wgpu-vulkan-probe] WARN: adapter does not support TIMESTAMP_QUERY — microbench timings will be omitted");
+    }
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("wgpu-vulkan-probe-device"),
-            required_features: wgpu::Features::empty(),
+            required_features: requested_features,
             required_limits,
             memory_hints: wgpu::MemoryHints::default(),
             trace: wgpu::Trace::Off,
@@ -1653,6 +1664,43 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             label: Some("wgpu-vulkan-probe-batch-encoder"),
         });
 
+        // ── GPU timestamp microbench ────────────────────────────────────────
+        // Layout: 4 timestamps per frame (shadow_begin, shadow_end,
+        // compute_begin, compute_end). Index = 4*i + slot. Total = 4*n.
+        // Resolved into a u64 buffer, copied into a MAP_READ buffer, mapped
+        // after submit. Disabled gracefully if TIMESTAMP_QUERY isn't on.
+        let timing_enabled = device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let timing_count = if timing_enabled { 4 * n as u32 } else { 0 };
+        let timing_set = if timing_enabled {
+            Some(device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("batch-timestamp-set"),
+                ty: wgpu::QueryType::Timestamp,
+                count: timing_count,
+            }))
+        } else {
+            None
+        };
+        let timing_resolve = if timing_enabled {
+            Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("batch-timestamp-resolve"),
+                size: (timing_count as u64) * 8,
+                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }))
+        } else {
+            None
+        };
+        let timing_readback = if timing_enabled {
+            Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("batch-timestamp-readback"),
+                size: (timing_count as u64) * 8,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }))
+        } else {
+            None
+        };
+
         for (i, _) in frames.iter().enumerate() {
             // Clear result buffers between frames (same shared buffers, rewritten per frame).
             encoder.clear_buffer(&shadow.result_buffer, 0, Some(shadow.result_copy_size));
@@ -1677,6 +1725,17 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 Some(shadow.result_copy_size),
             );
 
+            let shadow_ts = timing_set.as_ref().map(|qs| wgpu::RenderPassTimestampWrites {
+                query_set: qs,
+                beginning_of_pass_write_index: Some(4 * i as u32),
+                end_of_pass_write_index: Some(4 * i as u32 + 1),
+            });
+            let compute_ts = timing_set.as_ref().map(|qs| wgpu::ComputePassTimestampWrites {
+                query_set: qs,
+                beginning_of_pass_write_index: Some(4 * i as u32 + 2),
+                end_of_pass_write_index: Some(4 * i as u32 + 3),
+            });
+
             // Depth render pass (clears depth texture via LoadOp::Clear).
             {
                 let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1690,7 +1749,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                         }),
                         stencil_ops: None,
                     }),
-                    timestamp_writes: None,
+                    timestamp_writes: shadow_ts,
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
@@ -1704,7 +1763,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             {
                 let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("batch-shadow-compute-pass"),
-                    timestamp_writes: None,
+                    timestamp_writes: compute_ts,
                 });
                 cp.set_pipeline(&shadow.pipeline);
                 cp.set_bind_group(0, &compute_bgs[i], &[]);
@@ -1754,6 +1813,15 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             );
         }
 
+        // Resolve timestamps + copy to readback buffer (must be on same encoder
+        // as the passes that wrote them).
+        if let (Some(qs), Some(resolve), Some(readback)) =
+            (timing_set.as_ref(), timing_resolve.as_ref(), timing_readback.as_ref())
+        {
+            encoder.resolve_query_set(qs, 0..timing_count, resolve, 0);
+            encoder.copy_buffer_to_buffer(resolve, 0, readback, 0, (timing_count as u64) * 8);
+        }
+
         let submission = queue.submit([encoder.finish()]);
         device
             .poll(wgpu::PollType::Wait {
@@ -1765,6 +1833,60 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             })?;
 
         let gpu_elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+
+        // Decode GPU timestamps (if enabled). Print one summary line per
+        // evaluate_batch on stderr for the microbench. Format:
+        //   [gpu-timing] frames=N shadow=Xms compute=Yms gap=Zms busy=B%
+        if let Some(readback) = timing_readback.as_ref() {
+            let slice = readback.slice(..);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(Duration::from_secs(5)),
+                })
+                .map_err(|e| format!("timing readback poll failed: {e:?}"))?;
+            match receiver.recv() {
+                Ok(Ok(())) => {
+                    let view = slice.get_mapped_range();
+                    let raw: &[u64] = bytemuck::cast_slice(&view);
+                    let period_ns = queue.get_timestamp_period() as f64;
+                    let mut shadow_ns: u64 = 0;
+                    let mut compute_ns: u64 = 0;
+                    let mut gap_ns: u64 = 0; // shadow_end → compute_begin
+                    let mut wall_ns: u64 = 0; // shadow_begin frame 0 → compute_end frame n-1
+                    if raw.len() >= 4 * n {
+                        for i in 0..n {
+                            let sb = raw[4 * i];
+                            let se = raw[4 * i + 1];
+                            let cb = raw[4 * i + 2];
+                            let ce = raw[4 * i + 3];
+                            shadow_ns = shadow_ns.saturating_add(se.saturating_sub(sb));
+                            compute_ns = compute_ns.saturating_add(ce.saturating_sub(cb));
+                            gap_ns = gap_ns.saturating_add(cb.saturating_sub(se));
+                        }
+                        wall_ns = raw[4 * n - 1].saturating_sub(raw[0]);
+                    }
+                    drop(view);
+                    readback.unmap();
+                    let shadow_ms = (shadow_ns as f64) * period_ns / 1_000_000.0;
+                    let compute_ms = (compute_ns as f64) * period_ns / 1_000_000.0;
+                    let gap_ms = (gap_ns as f64) * period_ns / 1_000_000.0;
+                    let wall_ms = (wall_ns as f64) * period_ns / 1_000_000.0;
+                    let busy_ms = shadow_ms + compute_ms;
+                    let busy_pct = if wall_ms > 0.0 { 100.0 * busy_ms / wall_ms } else { 0.0 };
+                    eprintln!(
+                        "[gpu-timing] frames={n} shadow={shadow_ms:.1}ms compute={compute_ms:.1}ms gap={gap_ms:.1}ms gpuWall={wall_ms:.1}ms busy={busy_pct:.1}%  (cpuWall={gpu_elapsed_ms:.1}ms)"
+                    );
+                }
+                _ => {
+                    eprintln!("[gpu-timing] readback failed");
+                }
+            }
+        }
 
         // Map and decode all readback buffers.
         let buildings_per_frame = map_and_split_batch(
