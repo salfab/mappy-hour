@@ -1069,6 +1069,9 @@ struct DepthShadowEngine {
     render_pipeline: wgpu::RenderPipeline,
     // Region-wide rasters shared across sessions (Phase 1B).
     scene: SceneResources,
+    // Process-wide compute resources (Phase 1C): one shader/pipeline per device.
+    compute_bind_group_layout: wgpu::BindGroupLayout,
+    compute_pipeline: wgpu::ComputePipeline,
     shadow_compute: Option<EngineSession>,
     raw_bounds: MeshBounds,
     focus_bounds: Option<FocusBounds>,
@@ -1242,6 +1245,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                     cache: None,
                 });
 
+        let (compute_bind_group_layout, compute_pipeline) = create_compute_pipeline(config.device);
         let scene = create_dummy_scene(config.device);
         let shadow_compute = if config.run_shadow_compute {
             Some(create_engine_session(
@@ -1253,6 +1257,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 config.point_count,
                 config.points_bin,
                 &scene,
+                &compute_bind_group_layout,
             )?)
         } else {
             None
@@ -1270,6 +1275,8 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             render_bind_group_layout: bind_group_layout,
             render_pipeline,
             scene,
+            compute_bind_group_layout,
+            compute_pipeline,
             shadow_compute,
             raw_bounds,
             focus_bounds: config.focus_bounds,
@@ -1375,7 +1382,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                     label: Some("wgpu-vulkan-probe-shadow-compute-pass"),
                     timestamp_writes: None,
                 });
-                compute_pass.set_pipeline(&shadow.pipeline);
+                compute_pass.set_pipeline(&self.compute_pipeline);
                 compute_pass.set_bind_group(0, &shadow.bind_group, &[]);
                 compute_pass.dispatch_workgroups(shadow.workgroup_count, 1, 1);
             }
@@ -1570,9 +1577,9 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             });
             let compute_bg = build_compute_bind_group(
                 device,
-                &shadow.bind_group_layout,
+                &self.compute_bind_group_layout,
                 &params_buf,
-                &shadow.depth_view_ref,
+                &self.depth_view,
                 &shadow.points_buffer,
                 &shadow.result_buffer,
                 &self.scene.horizon_masks_buffer,
@@ -1777,7 +1784,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                     label: Some("batch-shadow-compute-pass"),
                     timestamp_writes: compute_ts,
                 });
-                cp.set_pipeline(&shadow.pipeline);
+                cp.set_pipeline(&self.compute_pipeline);
                 cp.set_bind_group(0, &compute_bgs[i], &[]);
                 cp.dispatch_workgroups(shadow.workgroup_count, 1, 1);
             }
@@ -2029,6 +2036,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             None,
             Some(points_bin),
             &self.scene,
+            &self.compute_bind_group_layout,
         )?;
         let new_count = compute.point_count;
         self.shadow_compute = Some(compute);
@@ -2111,9 +2119,9 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         // Rebuild the bind group with the new buffers.
         let new_bind_group = build_compute_bind_group(
             device,
-            &shadow.bind_group_layout,
+            &self.compute_bind_group_layout,
             &shadow.params_buffer,
-            &shadow.depth_view_ref,
+            &self.depth_view,
             &shadow.points_buffer,
             &shadow.result_buffer,
             &masks_buffer,
@@ -2209,9 +2217,9 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
 
         let new_bind_group = build_compute_bind_group(
             device,
-            &shadow.bind_group_layout,
+            &self.compute_bind_group_layout,
             &shadow.params_buffer,
-            &shadow.depth_view_ref,
+            &self.depth_view,
             &shadow.points_buffer,
             &shadow.result_buffer,
             &self.scene.horizon_masks_buffer,
@@ -2306,9 +2314,9 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
 
         let new_bind_group = build_compute_bind_group(
             device,
-            &shadow.bind_group_layout,
+            &self.compute_bind_group_layout,
             &shadow.params_buffer,
-            &shadow.depth_view_ref,
+            &self.depth_view,
             &shadow.points_buffer,
             &shadow.result_buffer,
             &self.scene.horizon_masks_buffer,
@@ -2455,10 +2463,6 @@ struct EngineSession {
     result_word_count: u32,
     result_copy_size: u64,
     workgroup_count: u32,
-    // ─── PROCESS-WIDE (will move to DepthShadowEngine in Phase 1C) ──────
-    depth_view_ref: wgpu::TextureView,
-    bind_group_layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::ComputePipeline,
 }
 
 struct ShadowReadback {
@@ -2503,124 +2507,11 @@ fn create_dummy_scene(device: &wgpu::Device) -> SceneResources {
     }
 }
 
-/// Create a new `EngineSession` for the given point set.
-///
-/// Scene-shared resources (horizon masks, veg/terrain rasters) live in
-/// `scene` and are referenced by the returned session's bind_group. They
-/// are NOT recreated here — the caller owns `SceneResources` and keeps it
-/// alive across `reload_points` calls.
-fn create_engine_session(
+/// Create the process-wide compute shader and pipeline (Phase 1C).
+/// Called once per `DepthShadowEngine`; shared across all sessions.
+fn create_compute_pipeline(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    depth_view: &wgpu::TextureView,
-    raw_bounds: MeshBounds,
-    resolution: u32,
-    point_count: Option<u32>,
-    points_bin: Option<&Path>,
-    scene: &SceneResources,
-) -> Result<EngineSession, String> {
-    let (points, points_source) = load_query_points(raw_bounds, point_count, points_bin)?;
-    let point_count = (points.len() / 4) as u32;
-    let point_bytes = bytemuck::cast_slice(&points);
-    let points_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-shadow-points"),
-        size: point_bytes.len() as u64,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    queue.write_buffer(&points_buffer, 0, point_bytes);
-
-    let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-shadow-params"),
-        size: SHADOW_PARAMS_SIZE,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let result_word_count = (point_count + 31) / 32;
-    let result_payload_size = u64::from(result_word_count) * 4;
-    let result_copy_size = align_to(result_payload_size.max(4), 256);
-    let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-shadow-results"),
-        size: result_copy_size,
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-shadow-readback"),
-        size: result_copy_size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    // Terrain bitmask (same layout as buildings).
-    let terrain_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-terrain-results"),
-        size: result_copy_size,
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let terrain_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-terrain-readback"),
-        size: result_copy_size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    // Per-session horizon indices dummy (replaced by upload_horizon_masks).
-    let horizon_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-horizon-indices-dummy"),
-        size: 16,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    // Sunny + sunny-no-vegetation bitmask outputs (Phase E).
-    let sunny_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-sunny-results"),
-        size: result_copy_size,
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let sunny_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-sunny-readback"),
-        size: result_copy_size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let sunny_no_veg_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-sunny-no-veg-results"),
-        size: result_copy_size,
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let sunny_no_veg_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-sunny-no-veg-readback"),
-        size: result_copy_size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
-    let veg_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-veg-results"),
-        size: result_copy_size,
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let veg_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgpu-vulkan-probe-veg-readback"),
-        size: result_copy_size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
+) -> (wgpu::BindGroupLayout, wgpu::ComputePipeline) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-shader"),
         source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(
@@ -2899,7 +2790,6 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
 "#,
         )),
     });
-
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("wgpu-vulkan-probe-shadow-compute-bgl"),
         entries: &[
@@ -3055,9 +2945,147 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
             },
         ],
     });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("wgpu-vulkan-probe-shadow-compute-pipeline-layout"),
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("wgpu-vulkan-probe-shadow-compute-pipeline"),
+        layout: Some(&pipeline_layout),
+        module: &shader,
+        entry_point: Some("cs"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    });
+    (bind_group_layout, pipeline)
+}
+
+/// Create a new `EngineSession` for the given point set.
+///
+/// Scene-shared resources (horizon masks, veg/terrain rasters) live in
+/// `scene` and are referenced by the returned session's bind_group. They
+/// are NOT recreated here — the caller owns `SceneResources` and keeps it
+/// alive across `reload_points` calls.
+///
+/// The `layout` is process-wide (owned by `DepthShadowEngine`, Phase 1C)
+/// and is only needed here to build the session's bind_group.
+fn create_engine_session(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    depth_view: &wgpu::TextureView,
+    raw_bounds: MeshBounds,
+    resolution: u32,
+    point_count: Option<u32>,
+    points_bin: Option<&Path>,
+    scene: &SceneResources,
+    layout: &wgpu::BindGroupLayout,
+) -> Result<EngineSession, String> {
+    let (points, points_source) = load_query_points(raw_bounds, point_count, points_bin)?;
+    let point_count = (points.len() / 4) as u32;
+    let point_bytes = bytemuck::cast_slice(&points);
+    let points_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-shadow-points"),
+        size: point_bytes.len() as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&points_buffer, 0, point_bytes);
+
+    let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-shadow-params"),
+        size: SHADOW_PARAMS_SIZE,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let result_word_count = (point_count + 31) / 32;
+    let result_payload_size = u64::from(result_word_count) * 4;
+    let result_copy_size = align_to(result_payload_size.max(4), 256);
+    let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-shadow-results"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-shadow-readback"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    // Terrain bitmask (same layout as buildings).
+    let terrain_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-terrain-results"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let terrain_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-terrain-readback"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    // Per-session horizon indices dummy (replaced by upload_horizon_masks).
+    let horizon_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-horizon-indices-dummy"),
+        size: 16,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    // Sunny + sunny-no-vegetation bitmask outputs (Phase E).
+    let sunny_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-sunny-results"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let sunny_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-sunny-readback"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let sunny_no_veg_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-sunny-no-veg-results"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let sunny_no_veg_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-sunny-no-veg-readback"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let veg_result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-veg-results"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let veg_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgpu-vulkan-probe-veg-readback"),
+        size: result_copy_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
     let bind_group = build_compute_bind_group(
         device,
-        &bind_group_layout,
+        layout,
         &params_buffer,
         depth_view,
         &points_buffer,
@@ -3073,19 +3101,6 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         &scene.terrain_tiles_meta_buffer,
         &scene.terrain_data_buffer,
     );
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("wgpu-vulkan-probe-shadow-compute-pipeline-layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
-        immediate_size: 0,
-    });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("wgpu-vulkan-probe-shadow-compute-pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader,
-        entry_point: Some("cs"),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
-    });
 
     eprintln!(
         "[wgpu-vulkan-probe] shadow-compute-setup-ok source={points_source} points={point_count} point_bytes={} result_words={result_word_count} result_copy_bytes={result_copy_size} resolution={resolution}",
@@ -3106,10 +3121,7 @@ fn cs(@builtin(global_invocation_id) global_id: vec3u) {
         sunny_no_veg_result_buffer,
         sunny_no_veg_readback_buffer,
         points_buffer,
-        depth_view_ref: depth_view.clone(),
         bind_group,
-        bind_group_layout,
-        pipeline,
         point_count,
         result_word_count,
         result_copy_size,
