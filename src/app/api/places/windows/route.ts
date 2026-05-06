@@ -555,7 +555,7 @@ export async function POST(request: Request) {
     const resolveRegionInfo = async (region: PrecomputedRegionName) => {
       const cached = regionInfoCache.get(region);
       if (cached !== undefined) return cached;
-      const hit = await findCachedModelVersionHash({
+      const candidates = await findCachedModelVersionHash({
         region,
         date: parsed.data.date,
         gridStepMeters: CACHE_GRID_STEP,
@@ -563,22 +563,24 @@ export async function POST(request: Request) {
         startLocalTime: parsed.data.startLocalTime,
         endLocalTime: parsed.data.endLocalTime,
       });
-      if (!hit) {
-        regionInfoCache.set(region, null);
-        return null;
-      }
       const clientStart = localTimeToMinutes(parsed.data.startLocalTime);
       const clientEnd = localTimeToMinutes(parsed.data.endLocalTime);
-      const covering = hit.timeWindows.find((tw) => {
-        const twStart = localTimeToMinutes(tw.startLocalTime);
-        const twEnd = localTimeToMinutes(tw.endLocalTime);
-        return twStart <= clientStart && twEnd >= clientEnd;
-      });
-      if (!covering) {
+      let info: { modelVersionHash: string; tw: { startLocalTime: string; endLocalTime: string } } | null = null;
+      for (const hit of candidates) {
+        const covering = hit.timeWindows.find((tw) => {
+          const twStart = localTimeToMinutes(tw.startLocalTime);
+          const twEnd = localTimeToMinutes(tw.endLocalTime);
+          return twStart <= clientStart && twEnd >= clientEnd;
+        });
+        if (covering) {
+          info = { modelVersionHash: hit.modelVersionHash, tw: covering };
+          break;
+        }
+      }
+      if (!info) {
         regionInfoCache.set(region, null);
         return null;
       }
-      const info = { modelVersionHash: hit.modelVersionHash, tw: covering };
       regionInfoCache.set(region, info);
       return info;
     };

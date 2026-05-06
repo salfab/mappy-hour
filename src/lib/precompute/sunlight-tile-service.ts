@@ -2055,8 +2055,10 @@ export async function* streamTilesForBbox(params: {
   let cachedTimeWindows: Array<{ startLocalTime: string; endLocalTime: string }> = [];
   let effectiveStartLocalTime = params.startLocalTime;
   let effectiveEndLocalTime = params.endLocalTime;
+  // Populated in cacheOnly path; reused in the bbox-aware cascade scan below.
+  let hashCandidates: Array<{ modelVersionHash: string; timeWindows: typeof cachedTimeWindows }> = [];
   if (params.cacheOnly) {
-    const cached = await findCachedModelVersionHash({
+    hashCandidates = await findCachedModelVersionHash({
       region,
       date: params.date,
       gridStepMeters: params.gridStepMeters,
@@ -2064,12 +2066,13 @@ export async function* streamTilesForBbox(params: {
       startLocalTime: params.startLocalTime,
       endLocalTime: params.endLocalTime,
     });
-    if (!cached) return null;
-    modelVersionHash = cached.modelVersionHash;
-    cachedTimeWindows = cached.timeWindows;
-    // Use the first time window as default for manifest loading
-    effectiveStartLocalTime = cached.timeWindows[0].startLocalTime;
-    effectiveEndLocalTime = cached.timeWindows[0].endLocalTime;
+    if (hashCandidates.length === 0) return null;
+    // Start with the best candidate; the bbox-aware scan below will cascade
+    // through the remaining ones if this hash has no tiles for the bbox.
+    modelVersionHash = hashCandidates[0].modelVersionHash;
+    cachedTimeWindows = hashCandidates[0].timeWindows;
+    effectiveStartLocalTime = hashCandidates[0].timeWindows[0].startLocalTime;
+    effectiveEndLocalTime = hashCandidates[0].timeWindows[0].endLocalTime;
   } else {
     const modelVersion = await getSunlightModelVersion(region, params.shadowCalibration);
     modelVersionHash = modelVersion.modelVersionHash;
@@ -2101,50 +2104,66 @@ export async function* streamTilesForBbox(params: {
   // tiles actually have an artifact, instead of probing the filesystem for
   // each intersecting tile × each time window (on a Lausanne-wide bbox this
   // was ~700 wasted ENOENT's).
+  //
+  // If the first (best) hash has no tiles for this bbox, cascade through the
+  // remaining candidates — a sparse hash from a partial/test run should not
+  // shadow a complete production hash that covers the area.
   if (params.cacheOnly) {
     const dataPaths = await import("@/lib/storage/data-paths");
     const fsMod = await import("node:fs/promises");
     const pathMod = await import("node:path");
-    const cachedTileIds = new Set<string>();
-    for (const tw of cachedTimeWindows) {
-      const tilesDir = pathMod.join(
-        dataPaths.CACHE_SUNLIGHT_DIR,
-        region, modelVersionHash, `g${params.gridStepMeters}`, `m${params.sampleEveryMinutes}`,
-        params.date, `t${tw.startLocalTime.replace(":", "")}-${tw.endLocalTime.replace(":", "")}`, "tiles",
-      );
-      try {
-        for (const f of await fsMod.readdir(tilesDir)) {
-          if (f.endsWith(".tile.bin.gz")) {
-            cachedTileIds.add(f.slice(0, -".tile.bin.gz".length));
-          } else if (f.endsWith(".json.gz")) {
-            cachedTileIds.add(f.slice(0, -".json.gz".length));
-          }
-        }
-      } catch { /* no tiles for this time window */ }
-    }
-    // Also include tiles covered by the atlas (ADR-0013): atlas is date-agnostic,
-    // so tiles not in the date-keyed dirs may still be served via atlas fallback.
-    // Probe every resolution in the read fallback chain (r0.5 → r0.75 → r1) — otherwise
-    // tiles cached only at r0.75 would be filtered out before loadOneCached's fallback runs.
-    for (const res of ATLAS_READ_FALLBACK_RESOLUTIONS_DEG) {
-      const atlasDir = pathMod.join(
-        dataPaths.CACHE_SUNLIGHT_DIR,
-        region, modelVersionHash, `g${params.gridStepMeters}`, "atlas", `r${res}`,
-      );
-      try {
-        for (const f of await fsMod.readdir(atlasDir)) {
-          if (f.endsWith(".atlas.bin.gz")) {
-            cachedTileIds.add(f.slice(0, -".atlas.bin.gz".length));
-          }
-        }
-      } catch { /* no atlas at this resolution */ }
-    }
 
-    const before = requiredTiles.length;
-    requiredTiles = requiredTiles.filter((t) => cachedTileIds.has(t.tileId));
-    process.stderr.write(
-      `[stream:cache-only] bbox intersects ${before} tiles, ${requiredTiles.length} in cache (skipping ${before - requiredTiles.length} misses)\n`,
-    );
+    // Helper: collect all tile IDs available under a given hash (m15 + atlas).
+    const scanTileIdsForHash = async (hash: string, timeWindows: typeof cachedTimeWindows): Promise<Set<string>> => {
+      const ids = new Set<string>();
+      for (const tw of timeWindows) {
+        const tilesDir = pathMod.join(
+          dataPaths.CACHE_SUNLIGHT_DIR,
+          region, hash, `g${params.gridStepMeters}`, `m${params.sampleEveryMinutes}`,
+          params.date, `t${tw.startLocalTime.replace(":", "")}-${tw.endLocalTime.replace(":", "")}`, "tiles",
+        );
+        try {
+          for (const f of await fsMod.readdir(tilesDir)) {
+            if (f.endsWith(".tile.bin.gz")) ids.add(f.slice(0, -".tile.bin.gz".length));
+            else if (f.endsWith(".json.gz")) ids.add(f.slice(0, -".json.gz".length));
+          }
+        } catch { /* no tiles for this time window */ }
+      }
+      for (const res of ATLAS_READ_FALLBACK_RESOLUTIONS_DEG) {
+        const atlasDir = pathMod.join(
+          dataPaths.CACHE_SUNLIGHT_DIR,
+          region, hash, `g${params.gridStepMeters}`, "atlas", `r${res}`,
+        );
+        try {
+          for (const f of await fsMod.readdir(atlasDir)) {
+            if (f.endsWith(".atlas.bin.gz")) ids.add(f.slice(0, -".atlas.bin.gz".length));
+          }
+        } catch { /* no atlas at this resolution */ }
+      }
+      return ids;
+    };
+
+    let matched = false;
+    for (const candidate of hashCandidates) {
+      const cachedTileIds = await scanTileIdsForHash(candidate.modelVersionHash, candidate.timeWindows);
+      const filtered = requiredTiles.filter((t) => cachedTileIds.has(t.tileId));
+      process.stderr.write(
+        `[stream:cache-only] hash=${candidate.modelVersionHash} bbox_tiles=${requiredTiles.length} in_cache=${filtered.length}\n`,
+      );
+      if (filtered.length > 0) {
+        modelVersionHash = candidate.modelVersionHash;
+        cachedTimeWindows = candidate.timeWindows;
+        effectiveStartLocalTime = candidate.timeWindows[0].startLocalTime;
+        effectiveEndLocalTime = candidate.timeWindows[0].endLocalTime;
+        requiredTiles = filtered;
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      process.stderr.write(`[stream:cache-only] no hash has tiles for this bbox — all ${hashCandidates.length} candidates tried\n`);
+      requiredTiles = [];
+    }
   }
 
   const samples = createUtcSamples(
