@@ -1480,19 +1480,18 @@ export async function precomputeCacheRuns(
 
     const runSequentialTiles = async () => {
       // Pipeline depth: how many tiles can have in-flight processing at the
-      // same time. Default 1 = pure sequential (legacy behavior). With
-      // depth >= 2, the next tile's CPU prep can overlap with the previous
-      // tile's GPU/IPC eval. The IPC client (rust-wgpu-vulkan-server-client)
-      // serializes Rust calls via a FIFO promise-chain mutex — so concurrent
-      // callers don't corrupt the stdin/stdout protocol. The Rust server
-      // still processes 1 request at a time. See ADR-0019 (single Vulkan
-      // process) and the bench data behind this.
+      // same time. With depth=2, the next tile's CPU prep + frameLoop can
+      // overlap with the current tile's GPU/IPC eval. Bench 2026-05-06
+      // measured 2.20× speedup at depth=2 (depth=3 = 2.27×, marginal). The
+      // backend-level lock in RustWgpuVulkanShadowBackend serializes the
+      // server transaction (ensureServer + uploads + evaluate) so concurrent
+      // tiles can't corrupt each other's points/focus state.
       //
-      // Override via MAPPY_TILE_PIPELINE_DEPTH=2 (or 3, 4, ...). Theoretical
-      // benefit caps at depth=2-3 — beyond that the IPC bottleneck dominates.
+      // Default 2. Override via MAPPY_TILE_PIPELINE_DEPTH=N to experiment.
+      // Setting 1 falls back to legacy strict-sequential behavior.
       const PIPELINE_DEPTH = Math.max(
         1,
-        Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "1"),
+        Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "2"),
       );
       const inflight: Array<Promise<unknown>> = [];
 

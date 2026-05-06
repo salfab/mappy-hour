@@ -265,11 +265,16 @@ let webgpuBackendCache: import("@/lib/sun/building-shadow-backend").BatchBuildin
 export function disposeWebGpuBackend(): void {
   if (webgpuBackendCache) {
     webgpuBackendCache.dispose();
-    webgpuBackendCache = null;
+    // Reset to `undefined` so a subsequent getOrCreate re-initializes.
+    // `null` is reserved for "init failed → fallback CPU, do not retry"
+    // (cf the catch block in getOrCreateRustWgpuVulkanBackend).
+    webgpuBackendCache = undefined;
   }
   if (rustWgpuVulkanBackendCache) {
     rustWgpuVulkanBackendCache.dispose();
-    rustWgpuVulkanBackendCache = null;
+    rustWgpuVulkanBackendCache = undefined;
+    rustWgpuVulkanBackendFocusKey = "";
+    rustWgpuVulkanBackendLoading = null;
   }
 }
 
@@ -285,7 +290,15 @@ export async function disposeWebGpuBackendAsync(): Promise<void> {
   }
   if (rustWgpuVulkanBackendCache) {
     const backend = rustWgpuVulkanBackendCache;
-    rustWgpuVulkanBackendCache = null;
+    // Reset to `undefined` (not `null`) so a subsequent
+    // getOrCreateRustWgpuVulkanBackend re-creates the backend instead of
+    // hitting the `cache !== undefined` early-return that would return null.
+    // This was the source of the multi-config freeze: bench scripts call
+    // precomputeCacheRuns N times, each ending with this dispose; the
+    // second config saw cache=null and silently got a null backend.
+    rustWgpuVulkanBackendCache = undefined;
+    rustWgpuVulkanBackendFocusKey = "";
+    rustWgpuVulkanBackendLoading = null;
     if ("shutdown" in backend && typeof backend.shutdown === "function") {
       await (backend.shutdown as () => Promise<void>)();
     } else {

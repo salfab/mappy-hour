@@ -396,6 +396,29 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         sunnyNoVegCount: 0,
       }));
     }
+    return this.withBackendLock(async () => {
+      return this.evaluateBatchFramesWithShadowsLocked(frames, points, pointCount, options);
+    });
+  }
+
+  private async evaluateBatchFramesWithShadowsLocked(
+    frames: Array<{ azimuthDeg: number; altitudeDeg: number }>,
+    points: Float32Array,
+    pointCount: number,
+    options?: Parameters<RustWgpuVulkanShadowBackend["evaluateBatchFramesWithShadows"]>[3],
+  ): Promise<Awaited<ReturnType<RustWgpuVulkanShadowBackend["evaluateBatchFramesWithShadows"]>>> {
+    if (frames.length === 0) return [];
+    if (pointCount === 0) {
+      return frames.map(() => ({
+        buildingsMask: new Uint32Array(0),
+        terrainMask: null,
+        vegetationMask: null,
+        sunnyMask: new Uint32Array(0),
+        sunnyNoVegMask: new Uint32Array(0),
+        sunnyCount: 0,
+        sunnyNoVegCount: 0,
+      }));
+    }
     await this.ensureServer(points, pointCount);
     if (!this.server) {
       throw new Error("Rust/wgpu Vulkan server failed to start.");
@@ -775,6 +798,36 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     this.horizonIndicesBinPath = null;
     this.vegetationMetaBinPath = null;
     this.vegetationDataBinPath = null;
+  }
+
+  // ── Backend-level transaction lock ────────────────────────────────────
+  // Serializes the whole "ensureServer (reload points) + uploads + evaluate
+  // + read response" sequence per tile. The Rust server has global state
+  // (points, focus, masks) — interleaving two tiles' sequences corrupts
+  // results: server=A's points, expected=B's points. The IPC-level mutex
+  // inside RustWgpuVulkanShadowServer.withIpcLock is too narrow (one
+  // writeJson+nextJson pair); it allows interleaving between the reload
+  // points step and the evaluate step. This backend-level lock wraps the
+  // entire transaction.
+  //
+  // Trade-off: with this lock, MAPPY_TILE_PIPELINE_DEPTH=2 only overlaps
+  // CPU prep (next tile) with CPU frameLoop+atlas-merge (current tile),
+  // not with GPU eval. Gain ~15-20% wall-time vs the naive 25% theoretical
+  // (which would require multi-session GPU support in the Rust server).
+  private backendChainTail: Promise<unknown> = Promise.resolve();
+
+  private async withBackendLock<T>(fn: () => Promise<T>): Promise<T> {
+    const myTurn = this.backendChainTail;
+    let release!: () => void;
+    this.backendChainTail = new Promise<void>((r) => {
+      release = r;
+    });
+    await myTurn;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
   }
 
   private async ensureServer(points: Float32Array, pointCount: number): Promise<void> {
