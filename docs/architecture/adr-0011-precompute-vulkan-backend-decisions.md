@@ -203,6 +203,54 @@ Une tentative d'accélérer le precompute via `MAPPY_PRECOMPUTE_WORKERS=2` a ét
 
 À reprendre si : l'orchestration worker pool est refactorée (par exemple partage des caches d'index via SharedArrayBuffer ou mémoire mmap, ou basculement worker threads au lieu de child processes pour partager la module-level cache).
 
+### Phase G — Phase E ré-activée sur le chemin terrain-only (commit `5922b89`, 2026-05-06)
+
+Phase E aurait dû tourner sur les runs Lausanne actuels (config GPU avec terrain rasters mais **sans** horizon masks uploadés). En pratique elle ne s'activait pas — le `frameLoop` retombait en hot-loop CPU à ~7 sec/tuile au lieu des ~0.3 sec attendues. Le bug a été masqué par les benchs ADR initiaux qui tournaient avec horizon ET terrain uploadés.
+
+Trois bugs coordonnés silently-droppaient l'output GPU `terrain_blocked_words` :
+
+1. **Rust** (`tools/wgpu-vulkan-probe/src/main.rs`) : la readback du buffer `terrain_results` était gatée sur `shadow.has_horizon` seul. Le shader OR-combine bien horizon + local DEM dans le même buffer, mais sans horizon uploadé on ne lisait jamais le résultat. Fix : `has_horizon || has_local_terrain` pour buffer alloc, clear, et copy_buffer_to_buffer.
+2. **Node** (`rust-wgpu-vulkan-shadow-backend.ts`) : `hasTerrain = serverHorizonHash !== null` → `terrainMask` revenait `null` même après le fix Rust. Fix : élargir à `serverHorizonHash !== null || serverTerrainHash !== null`.
+3. **`evaluation-context.ts`** : `buildPointEvaluationContext` construisait toujours un `terrainShadowEvaluator` CPU quand des terrain tiles étaient chargés, ignorant `terrainShadowHandledByBackend`. Conséquence : `hasLocalTerrainEvaluator=true` dans `sunlight-tile-service.ts:1494` → Phase E refusée même quand les 5 masques GPU étaient bien là. Fix : appliquer le même pattern que Phase F (vegetation) au terrain — gater la construction sur `!sharedSources.terrainShadowHandledByBackend`.
+
+C'est en fait la **suite naturelle de Phase F** qui n'avait jamais été appliquée pour le terrain.
+
+#### Validation non-régression (CLAUDE.md workflow)
+
+Goldens capturés dans `docs/audits/refactor-baselines/phase-e-terrain-fix-2026-05-06.md`. Tag `baseline/phase-e-terrain-fix-2026-05-06`.
+
+- 4 tuiles Lausanne urbaines (Rumine, St-François, Cathédrale, Bessières, Chauderon) : **atlas SHA256 bit-parity** pre/post-fix (terrain bits = 0 sur plateau plat).
+- Mism% golden tool inchangée : 1.8/1.8/0/1.8/0% (seuil ≤ 2% tenu).
+- Le bug du tool golden lui-même (ne passait pas `terrainShadowEvaluator` au CPU) corrigé dans le même commit.
+- À surveiller au prochain run : tuiles en pente type Ouchy/Pully où le DEM local doit produire un effet visible.
+
+#### Gain mesuré (bench `precompute-tile-pipeline-depth.ts`, 4 tuiles, depth=2 repeat=2)
+
+| Métrique | Pre-fix | Post-fix | Δ |
+|---|---|---|---|
+| Wall-time tile | ~5000 ms | ~820 ms | **6×** |
+| frameLoop | 5-9 sec | 0.2-0.4 sec | **~25×** |
+| tiles/min | 7.32 | 73.0 | **10×** |
+
+#### Bonus — sweet spot pipeline depth bumped 2 → 3 (commit `0e86918`)
+
+Avec frameLoop court, le slack pour overlap revient. Bench post-fix sur depths=1..4 :
+
+| depth | tiles/min |
+|---|---|
+| 1 | 21-40 |
+| 2 | 70-77 |
+| **3** | **88-92** |
+| 4 | 72-85 (régression sur backend lock contention) |
+
+Default `MAPPY_TILE_PIPELINE_DEPTH` bumped de 2 à 3.
+
+#### Ce qui reste
+
+- **Narrow `withBackendLock`** : ne couvrir que les state mutations Rust (reload_points, reload_focus), laisser la GPU dispatch hors lock. Permettrait depth > 3 et estimation +20-30 % wall-time. 1-2 jours.
+- **Multi-session Rust** : chantier majeur (~1-2 semaines, +30-40 %). Ratio coût/bénéfice s'est amélioré post-Phase-G mais reste en réserve derrière le narrow lock.
+- **Atlas-write disk I/O** : 1-2 sec/tile async. À profiler si on veut descendre sous ~600 ms/tile.
+
 ## Conséquences
 
 ### Positives
