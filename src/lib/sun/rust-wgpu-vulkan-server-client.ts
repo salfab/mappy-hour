@@ -268,7 +268,7 @@ export class RustWgpuVulkanShadowServer {
     id: number,
     azimuthsDeg: number[],
     altitudesDeg: number[],
-    options: { includeMask?: boolean } = { includeMask: true },
+    options: { includeMask?: boolean; outputBinPath: string },
   ): Promise<RustWgpuVulkanBatchResultMessage> {
     if (azimuthsDeg.length !== altitudesDeg.length) {
       throw new Error(
@@ -285,10 +285,14 @@ export class RustWgpuVulkanShadowServer {
         azimuthsDeg,
         altitudesDeg,
         includeMask: options.includeMask ?? true,
+        outputBin: options.outputBinPath,
       });
-      const message = await this.nextJson<RustWgpuVulkanBatchResultMessage>(
-        this.evaluationTimeoutMs,
-      );
+      const message = await this.nextJson<RustWgpuVulkanBatchResultMessage & {
+        outputBin: string;
+        wordCount: number;
+        hasTerrain: boolean;
+        hasVegetation: boolean;
+      }>(this.evaluationTimeoutMs);
       if (message.type !== "batch_result") {
         throw new Error(`Unexpected batch result: ${JSON.stringify(message)}`);
       }
@@ -297,6 +301,43 @@ export class RustWgpuVulkanShadowServer {
           `evaluateBatch frame count mismatch: server=${message.frames.length}, expected=${azimuthsDeg.length}`,
         );
       }
+      // The Rust server now writes bitmasks as raw u32 LE bytes to outputBin
+      // instead of inlining them in the JSON response. Decode and merge into
+      // the per-frame structures so the API surface stays unchanged.
+      const fs = await import("node:fs/promises");
+      const buf = await fs.readFile(options.outputBinPath);
+      // Layout: [buildings × N][terrain × N][veg × N][sunny × N][sunnyNoVeg × N],
+      // each block = wordCount u32 LE bytes (4 bytes/u32).
+      const wordCount = message.wordCount;
+      const frameCount = message.frameCount;
+      const wordsPerFrame = wordCount;
+      const bytesPerFrame = wordsPerFrame * 4;
+      const view = new Uint32Array(
+        buf.buffer,
+        buf.byteOffset,
+        Math.floor(buf.byteLength / 4),
+      );
+      const sliceFrame = (blockIndex: number, frameIndex: number): number[] => {
+        const offset = (blockIndex * frameCount + frameIndex) * wordsPerFrame;
+        return Array.from(view.subarray(offset, offset + wordsPerFrame));
+      };
+      for (let i = 0; i < frameCount; i++) {
+        const f = message.frames[i];
+        f.blockedWords = sliceFrame(0, i);
+        f.terrainBlockedWords = message.hasTerrain ? sliceFrame(1, i) : null;
+        f.vegetationBlockedWords = message.hasVegetation ? sliceFrame(2, i) : null;
+        f.sunnyWords = sliceFrame(3, i);
+        f.sunnyNoVegWords = sliceFrame(4, i);
+      }
+      // Best-effort cleanup of the temp file. If unlink fails, it's
+      // recovered on the next run by the runtime dir scrub.
+      try {
+        await fs.unlink(options.outputBinPath);
+      } catch {
+        /* ignore */
+      }
+      // Suppress unused var warning for bytesPerFrame.
+      void bytesPerFrame;
       return message;
     });
   }

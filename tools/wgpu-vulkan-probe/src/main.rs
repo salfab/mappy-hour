@@ -493,6 +493,12 @@ struct ServerRequest {
     azimuths_deg: Option<Vec<f32>>,
     #[serde(default, alias = "altitudesDeg")]
     altitudes_deg: Option<Vec<f32>>,
+    // Path where evaluate_batch dumps the bitmask arrays as raw u32 LE bytes.
+    // The JSON response carries metadata (lengths, counts) but no Words arrays —
+    // serializing/parsing 60 frames × 5 masks × ~1500 u32 in JSON costs ~150 ms
+    // round-trip; raw u32 bytes write+read in <10 ms.
+    #[serde(default, alias = "outputBin")]
+    output_bin: Option<String>,
 }
 
 fn run_shadow_server(
@@ -878,8 +884,64 @@ fn run_shadow_server(
                     .collect();
                 sequence += frames.len() as u32;
                 let base_seq = sequence - frames.len() as u32 + 1;
+                let output_bin_path = match request.output_bin.as_ref() {
+                    Some(p) if !p.is_empty() => p.clone(),
+                    _ => {
+                        write_server_message(serde_json::json!({
+                            "type": "error",
+                            "id": id,
+                            "message": "evaluate_batch requires outputBin (binary IPC for bitmasks)",
+                        }))?;
+                        continue;
+                    }
+                };
                 match engine.evaluate_batch_frames(device, queue, &frames, base_seq) {
                     Ok(results) => {
+                        // Write bitmasks as raw u32 LE bytes: ordered as
+                        // [buildings × N frames][terrain × N][veg × N][sunny × N][sunnyNoVeg × N].
+                        // word_count is identical across all frames (= ceil(outdoor / 32)).
+                        // Terrain / vegetation blocks are zero-filled if the corresponding
+                        // raster wasn't uploaded (consistent layout simplifies the reader).
+                        let word_count = results
+                            .first()
+                            .map(|r| r.blocked_words.len())
+                            .unwrap_or(0);
+                        let frame_count = results.len();
+                        let mut bin = Vec::<u8>::with_capacity(frame_count * 5 * word_count * 4);
+                        let push_words = |bin: &mut Vec<u8>, words: &[u32], len: usize| {
+                            if words.len() == len {
+                                bin.extend_from_slice(bytemuck::cast_slice(words));
+                            } else {
+                                bin.extend_from_slice(bytemuck::cast_slice(&vec![0u32; len]));
+                            }
+                        };
+                        for r in &results {
+                            push_words(&mut bin, &r.blocked_words, word_count);
+                        }
+                        for r in &results {
+                            match r.terrain_blocked_words.as_ref() {
+                                Some(w) => push_words(&mut bin, w, word_count),
+                                None => bin.extend_from_slice(bytemuck::cast_slice(&vec![0u32; word_count])),
+                            }
+                        }
+                        for r in &results {
+                            match r.vegetation_blocked_words.as_ref() {
+                                Some(w) => push_words(&mut bin, w, word_count),
+                                None => bin.extend_from_slice(bytemuck::cast_slice(&vec![0u32; word_count])),
+                            }
+                        }
+                        for r in &results {
+                            push_words(&mut bin, &r.sunny_words, word_count);
+                        }
+                        for r in &results {
+                            push_words(&mut bin, &r.sunny_no_veg_words, word_count);
+                        }
+                        std::fs::write(&output_bin_path, &bin)
+                            .map_err(|e| format!("evaluate_batch outputBin write failed: {e}"))?;
+
+                        let has_terrain = results.iter().any(|r| r.terrain_blocked_words.is_some());
+                        let has_vegetation = results.iter().any(|r| r.vegetation_blocked_words.is_some());
+
                         let frame_msgs: Vec<serde_json::Value> = results
                             .iter()
                             .enumerate()
@@ -888,15 +950,10 @@ fn run_shadow_server(
                                     "azimuthDeg": frames[i].0,
                                     "altitudeDeg": frames[i].1,
                                     "blockedPoints": r.blocked_count,
-                                    "blockedWords": if request.include_mask { r.blocked_words.clone() } else { vec![] },
                                     "terrainBlockedPoints": r.terrain_blocked_count,
-                                    "terrainBlockedWords": if request.include_mask { r.terrain_blocked_words.clone() } else { None },
                                     "vegetationBlockedPoints": r.vegetation_blocked_count,
-                                    "vegetationBlockedWords": if request.include_mask { r.vegetation_blocked_words.clone() } else { None },
                                     "sunnyPoints": r.sunny_count,
-                                    "sunnyWords": if request.include_mask { Some(r.sunny_words.clone()) } else { None },
                                     "sunnyNoVegPoints": r.sunny_no_veg_count,
-                                    "sunnyNoVegWords": if request.include_mask { Some(r.sunny_no_veg_words.clone()) } else { None },
                                 })
                             })
                             .collect();
@@ -904,10 +961,14 @@ fn run_shadow_server(
                             "type": "batch_result",
                             "id": id,
                             "sequenceStart": base_seq,
-                            "frameCount": frames.len(),
+                            "frameCount": frame_count,
                             "elapsedMsPerFrame": round2(results[0].elapsed_ms),
                             "frames": frame_msgs,
                             "pointCount": engine.point_count().unwrap_or(0),
+                            "outputBin": output_bin_path,
+                            "wordCount": word_count,
+                            "hasTerrain": has_terrain,
+                            "hasVegetation": has_vegetation,
                         }))?;
                     }
                     Err(error) => {
