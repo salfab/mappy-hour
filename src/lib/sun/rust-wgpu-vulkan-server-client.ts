@@ -7,7 +7,6 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import readline from "node:readline";
 
 export type RustWgpuVulkanReadyMessage = {
   type: "ready";
@@ -142,14 +141,21 @@ export function ensureRustWgpuVulkanProbeBuilt(
   return defaultRustWgpuVulkanProbeExePath();
 }
 
+type IpcMessage = { json: RustWgpuVulkanMessage; payload: Buffer | null };
+
 export class RustWgpuVulkanShadowServer {
   private child: ChildProcessWithoutNullStreams;
-  private reader: readline.Interface;
-  private lines: string[] = [];
-  private waiters: Array<(line: string) => void> = [];
+  private messages: IpcMessage[] = [];
+  private waiters: Array<(message: IpcMessage) => void> = [];
   private stderr = "";
   private evaluationTimeoutMs: number;
   private closed = false;
+  // Stdout parser state (binary framing: JSON header line + optional payload).
+  private pending: Buffer = Buffer.alloc(0);
+  private payloadRemaining = 0;
+  private currentHeader: RustWgpuVulkanMessage | null = null;
+  private payloadChunks: Buffer[] = [];
+  private parserError: Error | null = null;
 
   // ── IPC lock (FIFO, promise-chain) ───────────────────────────────────
   // Serializes writeJson+nextJson pairs so concurrent callers (e.g. tile N
@@ -176,15 +182,68 @@ export class RustWgpuVulkanShadowServer {
   private constructor(child: ChildProcessWithoutNullStreams, evaluationTimeoutMs: number) {
     this.child = child;
     this.evaluationTimeoutMs = evaluationTimeoutMs;
-    this.reader = readline.createInterface({ input: child.stdout });
-    this.reader.on("line", (line) => {
-      const waiter = this.waiters.shift();
-      if (waiter) waiter(line);
-      else this.lines.push(line);
-    });
+    child.stdout.on("data", (chunk: Buffer) => this.onStdoutChunk(chunk));
     child.stderr.on("data", (chunk: Buffer) => {
       this.stderr += chunk.toString("utf8");
     });
+  }
+
+  // Stream parser: alternates between line-mode (JSON header terminated by \n)
+  // and binary-mode (exactly N raw bytes following the header). N is taken
+  // from the header's `payloadBytes` field; absent or 0 = no payload.
+  private onStdoutChunk(chunk: Buffer): void {
+    if (this.parserError) return;
+    this.pending = this.pending.length === 0 ? chunk : Buffer.concat([this.pending, chunk]);
+    try {
+      while (true) {
+        if (this.payloadRemaining > 0) {
+          if (this.pending.length === 0) return;
+          const take = Math.min(this.payloadRemaining, this.pending.length);
+          this.payloadChunks.push(this.pending.subarray(0, take));
+          this.pending = this.pending.subarray(take);
+          this.payloadRemaining -= take;
+          if (this.payloadRemaining === 0) {
+            const header = this.currentHeader!;
+            const payload = Buffer.concat(this.payloadChunks);
+            this.currentHeader = null;
+            this.payloadChunks = [];
+            this.deliver({ json: header, payload });
+          }
+          continue;
+        }
+        const nlIndex = this.pending.indexOf(0x0a);
+        if (nlIndex === -1) return;
+        const line = this.pending.subarray(0, nlIndex).toString("utf8");
+        this.pending = this.pending.subarray(nlIndex + 1);
+        const json = JSON.parse(line) as RustWgpuVulkanMessage & { payloadBytes?: number };
+        const bytes = typeof json.payloadBytes === "number" ? json.payloadBytes : 0;
+        if (bytes > 0) {
+          this.currentHeader = json;
+          this.payloadRemaining = bytes;
+          this.payloadChunks = [];
+        } else {
+          this.deliver({ json, payload: null });
+        }
+      }
+    } catch (error) {
+      this.parserError = error instanceof Error ? error : new Error(String(error));
+      const err = this.parserError;
+      while (this.waiters.length > 0) {
+        const w = this.waiters.shift()!;
+        // Reject all pending waiters by handing them a synthetic error.
+        // We can't reject directly here (waiters resolve), so push an error
+        // message that will be detected by callers via parserError.
+        void w;
+      }
+      // Propagate via stderr-equivalent
+      this.stderr += `\n[parser-error] ${err.message}`;
+    }
+  }
+
+  private deliver(message: IpcMessage): void {
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(message);
+    else this.messages.push(message);
   }
 
   static async start(params: RustWgpuVulkanShadowServerStartParams): Promise<{
@@ -268,7 +327,7 @@ export class RustWgpuVulkanShadowServer {
     id: number,
     azimuthsDeg: number[],
     altitudesDeg: number[],
-    options: { includeMask?: boolean; outputBinPath: string },
+    options: { includeMask?: boolean } = {},
   ): Promise<RustWgpuVulkanBatchResultMessage> {
     if (azimuthsDeg.length !== altitudesDeg.length) {
       throw new Error(
@@ -285,14 +344,14 @@ export class RustWgpuVulkanShadowServer {
         azimuthsDeg,
         altitudesDeg,
         includeMask: options.includeMask ?? true,
-        outputBin: options.outputBinPath,
       });
-      const message = await this.nextJson<RustWgpuVulkanBatchResultMessage & {
-        outputBin: string;
+      const ipcMessage = await this.nextMessage(this.evaluationTimeoutMs);
+      const message = ipcMessage.json as RustWgpuVulkanBatchResultMessage & {
         wordCount: number;
         hasTerrain: boolean;
         hasVegetation: boolean;
-      }>(this.evaluationTimeoutMs);
+        payloadBytes?: number;
+      };
       if (message.type !== "batch_result") {
         throw new Error(`Unexpected batch result: ${JSON.stringify(message)}`);
       }
@@ -301,25 +360,23 @@ export class RustWgpuVulkanShadowServer {
           `evaluateBatch frame count mismatch: server=${message.frames.length}, expected=${azimuthsDeg.length}`,
         );
       }
-      // The Rust server now writes bitmasks as raw u32 LE bytes to outputBin
-      // instead of inlining them in the JSON response. Decode and merge into
-      // the per-frame structures so the API surface stays unchanged.
-      const fs = await import("node:fs/promises");
-      const buf = await fs.readFile(options.outputBinPath);
+      const payload = ipcMessage.payload;
+      if (!payload) {
+        throw new Error("evaluateBatch: missing binary payload");
+      }
       // Layout: [buildings × N][terrain × N][veg × N][sunny × N][sunnyNoVeg × N],
-      // each block = wordCount u32 LE bytes (4 bytes/u32).
+      // each block = wordCount u32 LE bytes (4 bytes/u32). Buffer comes from
+      // the stdout stream parser — no file I/O on the hot path.
       const wordCount = message.wordCount;
       const frameCount = message.frameCount;
-      const wordsPerFrame = wordCount;
-      const bytesPerFrame = wordsPerFrame * 4;
       const view = new Uint32Array(
-        buf.buffer,
-        buf.byteOffset,
-        Math.floor(buf.byteLength / 4),
+        payload.buffer,
+        payload.byteOffset,
+        Math.floor(payload.byteLength / 4),
       );
       const sliceFrame = (blockIndex: number, frameIndex: number): number[] => {
-        const offset = (blockIndex * frameCount + frameIndex) * wordsPerFrame;
-        return Array.from(view.subarray(offset, offset + wordsPerFrame));
+        const offset = (blockIndex * frameCount + frameIndex) * wordCount;
+        return Array.from(view.subarray(offset, offset + wordCount));
       };
       for (let i = 0; i < frameCount; i++) {
         const f = message.frames[i];
@@ -329,15 +386,6 @@ export class RustWgpuVulkanShadowServer {
         f.sunnyWords = sliceFrame(3, i);
         f.sunnyNoVegWords = sliceFrame(4, i);
       }
-      // Best-effort cleanup of the temp file. If unlink fails, it's
-      // recovered on the next run by the runtime dir scrub.
-      try {
-        await fs.unlink(options.outputBinPath);
-      } catch {
-        /* ignore */
-      }
-      // Suppress unused var warning for bytesPerFrame.
-      void bytesPerFrame;
       return message;
     });
   }
@@ -597,16 +645,17 @@ export class RustWgpuVulkanShadowServer {
   }
 
   private async nextJson<T extends RustWgpuVulkanMessage = RustWgpuVulkanMessage>(timeoutMs = 0): Promise<T> {
-    const line = await this.nextLine(timeoutMs);
-    return JSON.parse(line) as T;
+    const message = await this.nextMessage(timeoutMs);
+    return message.json as T;
   }
 
-  private nextLine(timeoutMs = 0): Promise<string> {
-    const line = this.lines.shift();
-    if (line !== undefined) return Promise.resolve(line);
+  private nextMessage(timeoutMs = 0): Promise<IpcMessage> {
+    if (this.parserError) return Promise.reject(this.parserError);
+    const message = this.messages.shift();
+    if (message !== undefined) return Promise.resolve(message);
     return new Promise((resolve, reject) => {
       let timeout: NodeJS.Timeout | null = null;
-      const cleanup = (waiter: (line: string) => void) => {
+      const cleanup = (waiter: (message: IpcMessage) => void) => {
         if (timeout) clearTimeout(timeout);
         this.child.off("error", onError);
         this.child.off("exit", onExit);
@@ -614,24 +663,24 @@ export class RustWgpuVulkanShadowServer {
         if (waiterIndex !== -1) this.waiters.splice(waiterIndex, 1);
       };
       const onError = (error: Error) => {
-        cleanup(onLine);
+        cleanup(onMessage);
         reject(error);
       };
       const onExit = (code: number | null) => {
-        cleanup(onLine);
-        reject(new Error(`Rust server exited before next line (code=${code}). stderr:\n${this.stderr}`));
+        cleanup(onMessage);
+        reject(new Error(`Rust server exited before next message (code=${code}). stderr:\n${this.stderr}`));
       };
       this.child.once("error", onError);
       this.child.once("exit", onExit);
-      const onLine = (next: string) => {
-        cleanup(onLine);
+      const onMessage = (next: IpcMessage) => {
+        cleanup(onMessage);
         resolve(next);
       };
-      this.waiters.push(onLine);
+      this.waiters.push(onMessage);
       if (timeoutMs > 0) {
         timeout = setTimeout(() => {
-          cleanup(onLine);
-          reject(new Error(`Rust server timed out after ${timeoutMs}ms waiting for a JSON line. stderr:\n${this.stderr}`));
+          cleanup(onMessage);
+          reject(new Error(`Rust server timed out after ${timeoutMs}ms waiting for a JSON message. stderr:\n${this.stderr}`));
         }, timeoutMs);
       }
     });
@@ -680,7 +729,6 @@ export class RustWgpuVulkanShadowServer {
   private closeStreams(): void {
     if (this.closed) return;
     this.closed = true;
-    this.reader.close();
     this.child.stdin.destroy();
     this.child.stdout.destroy();
     this.child.stderr.destroy();

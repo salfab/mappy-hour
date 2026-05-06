@@ -435,21 +435,16 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     this.evaluationId += 1;
     const azimuthsDeg = frames.map((f) => f.azimuthDeg);
     const altitudesDeg = frames.map((f) => f.altitudeDeg);
-    // Binary IPC for the bitmask response: Rust writes Vec<u32> raw bytes to
-    // outputBinPath (~800 KB for 60 frames × 5 masks × 1500 u32) instead of
-    // inlining them in the JSON response. The client decodes the file and
-    // re-attaches the *Words arrays for API parity. ~10× faster than JSON
-    // serialize+parse on the response side (~150 ms saved per tile).
-    const outputBinPath = path.join(
-      this.outputDir,
-      `${process.pid}-${Date.now()}-${crypto.randomUUID()}.batch-output.bin`,
-    );
+    // Binary IPC for the bitmask response: Rust streams Vec<u32> raw bytes
+    // (~800 KB for 60 frames × 5 masks × 1500 u32) directly on stdout after
+    // the JSON header line. The client's stream parser collects the payload
+    // and re-attaches the *Words arrays for API parity. ~10× faster than
+    // JSON serialize+parse, and no temp-file I/O.
     let result;
     const ipcT0 = performance.now();
     try {
       result = await this.server.evaluateBatch(this.evaluationId, azimuthsDeg, altitudesDeg, {
         includeMask: true,
-        outputBinPath,
       });
     } catch (error) {
       // Server timed out or crashed — kill it so ensureServer recreates it next time

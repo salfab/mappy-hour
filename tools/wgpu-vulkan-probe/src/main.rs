@@ -493,12 +493,6 @@ struct ServerRequest {
     azimuths_deg: Option<Vec<f32>>,
     #[serde(default, alias = "altitudesDeg")]
     altitudes_deg: Option<Vec<f32>>,
-    // Path where evaluate_batch dumps the bitmask arrays as raw u32 LE bytes.
-    // The JSON response carries metadata (lengths, counts) but no Words arrays —
-    // serializing/parsing 60 frames × 5 masks × ~1500 u32 in JSON costs ~150 ms
-    // round-trip; raw u32 bytes write+read in <10 ms.
-    #[serde(default, alias = "outputBin")]
-    output_bin: Option<String>,
 }
 
 fn run_shadow_server(
@@ -884,30 +878,20 @@ fn run_shadow_server(
                     .collect();
                 sequence += frames.len() as u32;
                 let base_seq = sequence - frames.len() as u32 + 1;
-                let output_bin_path = match request.output_bin.as_ref() {
-                    Some(p) if !p.is_empty() => p.clone(),
-                    _ => {
-                        write_server_message(serde_json::json!({
-                            "type": "error",
-                            "id": id,
-                            "message": "evaluate_batch requires outputBin (binary IPC for bitmasks)",
-                        }))?;
-                        continue;
-                    }
-                };
                 match engine.evaluate_batch_frames(device, queue, &frames, base_seq) {
                     Ok(results) => {
-                        // Write bitmasks as raw u32 LE bytes: ordered as
-                        // [buildings × N frames][terrain × N][veg × N][sunny × N][sunnyNoVeg × N].
-                        // word_count is identical across all frames (= ceil(outdoor / 32)).
-                        // Terrain / vegetation blocks are zero-filled if the corresponding
-                        // raster wasn't uploaded (consistent layout simplifies the reader).
+                        // Build binary payload directly on stdout (no temp file).
+                        // Layout: [buildings × N][terrain × N][veg × N][sunny × N][sunnyNoVeg × N]
+                        // each block = N frames × wordCount u32 LE bytes.
+                        // Terrain/vegetation blocks zero-filled when the corresponding
+                        // raster wasn't uploaded (constant layout simplifies the reader).
                         let word_count = results
                             .first()
                             .map(|r| r.blocked_words.len())
                             .unwrap_or(0);
                         let frame_count = results.len();
                         let mut bin = Vec::<u8>::with_capacity(frame_count * 5 * word_count * 4);
+                        let zero_words = vec![0u32; word_count];
                         let push_words = |bin: &mut Vec<u8>, words: &[u32], len: usize| {
                             if words.len() == len {
                                 bin.extend_from_slice(bytemuck::cast_slice(words));
@@ -921,13 +905,13 @@ fn run_shadow_server(
                         for r in &results {
                             match r.terrain_blocked_words.as_ref() {
                                 Some(w) => push_words(&mut bin, w, word_count),
-                                None => bin.extend_from_slice(bytemuck::cast_slice(&vec![0u32; word_count])),
+                                None => bin.extend_from_slice(bytemuck::cast_slice(&zero_words)),
                             }
                         }
                         for r in &results {
                             match r.vegetation_blocked_words.as_ref() {
                                 Some(w) => push_words(&mut bin, w, word_count),
-                                None => bin.extend_from_slice(bytemuck::cast_slice(&vec![0u32; word_count])),
+                                None => bin.extend_from_slice(bytemuck::cast_slice(&zero_words)),
                             }
                         }
                         for r in &results {
@@ -936,8 +920,6 @@ fn run_shadow_server(
                         for r in &results {
                             push_words(&mut bin, &r.sunny_no_veg_words, word_count);
                         }
-                        std::fs::write(&output_bin_path, &bin)
-                            .map_err(|e| format!("evaluate_batch outputBin write failed: {e}"))?;
 
                         let has_terrain = results.iter().any(|r| r.terrain_blocked_words.is_some());
                         let has_vegetation = results.iter().any(|r| r.vegetation_blocked_words.is_some());
@@ -957,19 +939,22 @@ fn run_shadow_server(
                                 })
                             })
                             .collect();
-                        write_server_message(serde_json::json!({
-                            "type": "batch_result",
-                            "id": id,
-                            "sequenceStart": base_seq,
-                            "frameCount": frame_count,
-                            "elapsedMsPerFrame": round2(results[0].elapsed_ms),
-                            "frames": frame_msgs,
-                            "pointCount": engine.point_count().unwrap_or(0),
-                            "outputBin": output_bin_path,
-                            "wordCount": word_count,
-                            "hasTerrain": has_terrain,
-                            "hasVegetation": has_vegetation,
-                        }))?;
+                        write_server_message_with_payload(
+                            serde_json::json!({
+                                "type": "batch_result",
+                                "id": id,
+                                "sequenceStart": base_seq,
+                                "frameCount": frame_count,
+                                "elapsedMsPerFrame": round2(results[0].elapsed_ms),
+                                "frames": frame_msgs,
+                                "pointCount": engine.point_count().unwrap_or(0),
+                                "wordCount": word_count,
+                                "hasTerrain": has_terrain,
+                                "hasVegetation": has_vegetation,
+                                "payloadBytes": bin.len(),
+                            }),
+                            &bin,
+                        )?;
                     }
                     Err(error) => {
                         write_server_message(serde_json::json!({
@@ -1018,6 +1003,29 @@ fn write_server_message(message: serde_json::Value) -> Result<(), String> {
     handle
         .flush()
         .map_err(|error| format!("failed to flush JSON response: {error}"))?;
+    Ok(())
+}
+
+/// Write a JSON header line followed by `payload.len()` raw bytes of binary
+/// payload. The header MUST contain `payloadBytes` set to `payload.len()` so
+/// the client knows exactly how many bytes to consume after the newline.
+/// Used by evaluate_batch to ship bitmasks (~1 MB per call) without paying
+/// the JSON serialize/parse cost (~150 ms) — saves ~10× on the IPC return.
+fn write_server_message_with_payload(
+    message: serde_json::Value,
+    payload: &[u8],
+) -> Result<(), String> {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    serde_json::to_writer(&mut handle, &message)
+        .map_err(|error| format!("failed to write JSON header: {error}"))?;
+    writeln!(handle).map_err(|error| format!("failed to write header newline: {error}"))?;
+    handle
+        .write_all(payload)
+        .map_err(|error| format!("failed to write binary payload: {error}"))?;
+    handle
+        .flush()
+        .map_err(|error| format!("failed to flush response: {error}"))?;
     Ok(())
 }
 
