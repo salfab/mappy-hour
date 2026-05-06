@@ -171,6 +171,11 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   private serverTerrainHash: string | null = null;
   private terrainMetaBinPath: string | null = null;
   private terrainDataBinPath: string | null = null;
+  // Incremented every time the server is (re)started. Lets upload methods detect
+  // a server restart that occurred between their server-alive check and their IPC
+  // call (TOCTOU race: file-write awaits yield to other tasks that can kill+restart
+  // the server, invalidating the session's point_count before upload_horizon_masks).
+  private serverGeneration = 0;
 
   private constructor(params: {
     originX: number;
@@ -436,6 +441,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     pointCount: number,
     options?: Parameters<RustWgpuVulkanShadowBackend["evaluateBatchFramesWithShadows"]>[3],
     lockWaitMs?: number,
+    _retryCount = 0,
   ): Promise<Awaited<ReturnType<RustWgpuVulkanShadowBackend["evaluateBatchFramesWithShadows"]>>> {
     if (frames.length === 0) return [];
     if (pointCount === 0) {
@@ -457,7 +463,25 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     const ensureMs = performance.now() - ensureT0;
     const uploadHorizonT0 = performance.now();
     if (options?.horizon) {
-      await this.uploadHorizonMasksForSlot(slot, options.horizon);
+      try {
+        await this.uploadHorizonMasksForSlot(slot, options.horizon);
+      } catch (error) {
+        // STALE_SERVER_RESTART: server was killed+restarted between ensureSlot and here.
+        // Session state is invalid. Retry from ensureSlot (once) to re-establish correct state.
+        if (
+          _retryCount === 0 &&
+          error instanceof Error &&
+          error.message.startsWith("STALE_SERVER_RESTART")
+        ) {
+          console.warn(
+            `[rust-wgpu-vulkan] ${error.message} — retrying from ensureSlot (server restarted during horizon upload)`,
+          );
+          return this.evaluateBatchFramesWithShadowsOnSlot(
+            slot, frames, points, pointCount, options, lockWaitMs, 1,
+          );
+        }
+        throw error;
+      }
     }
     const uploadHorizonMs = performance.now() - uploadHorizonT0;
     const uploadVegT0 = performance.now();
@@ -627,6 +651,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       );
     }
     const hash = hashHorizonPayload(masks, pointMaskIndices);
+    console.log(`[slot-trace] uploadHorizon ${slot.id}: slotPts=${slot.pointCount} indices=${pointMaskIndices.length} hash=${hash.slice(0, 8)} cached=${slot.horizonHash === hash}`);
     if (this.server && slot.horizonHash === hash) {
       return;
     }
@@ -635,6 +660,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         "uploadHorizonMasks called before the Rust server is running. Call evaluateBatch first to spin it up.",
       );
     }
+    const genAtUploadStart = this.serverGeneration;
     const outputDir = this.outputDir;
     await fs.mkdir(outputDir, { recursive: true });
     const runId = `${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
@@ -645,6 +671,13 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       indicesPath,
       Buffer.from(pointMaskIndices.buffer, pointMaskIndices.byteOffset, pointMaskIndices.byteLength),
     );
+    // Detect TOCTOU: server may have been killed+restarted during the async file writes above.
+    // If so, session state is stale — throw a retriable sentinel so the caller redoes ensureSlot.
+    if (this.serverGeneration !== genAtUploadStart) {
+      await this.deleteRuntimeFile(masksPath);
+      await this.deleteRuntimeFile(indicesPath);
+      throw new Error(`STALE_SERVER_RESTART:slot=${slot.id}`);
+    }
     try {
       this.evaluationId += 1;
       await this.server.uploadHorizonMasks(this.evaluationId, masksPath, indicesPath, { sessionId: slot.id });
@@ -962,6 +995,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       s.focusKey = focusKey;
       s.opened = true;
     }
+    this.serverGeneration++;
   }
 
   private async ensureSlot(slot: SessionSlot, points: Float32Array, pointCount: number): Promise<void> {
@@ -991,6 +1025,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     const pointsChanged =
       slot.pointCount !== pointCount || slot.pointsHash !== pointsHash;
     const focusChanged = slot.focusKey !== focusKey;
+    console.log(`[slot-trace] ensureSlot ${slot.id}: reload pts=${pointsChanged}(${slot.pointCount}→${pointCount}) focus=${focusChanged}`);
     try {
       if (focusChanged) {
         await this.reloadFocusOnServer();

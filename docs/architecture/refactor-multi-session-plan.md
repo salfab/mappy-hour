@@ -1,6 +1,6 @@
 # Plan refacto multi-session — backend Rust/wgpu Vulkan
 
-**Statut** : Phase 3 complète + validée + benché. Phases 1A–3 commitées. Sweet spot **N=2 depth=3** (60.5 tiles/min, +83 % vs N=2 depth=1). N=3 testé et écarté (plus lent + instable).
+**Statut** : Phase 3 complète + validée + benché. Phases 1A–3 commitées. Sweet spot **N=2 depth=3** (60.5 tiles/min, +83 % vs N=2 depth=1). N=3 : failure TOCTOU fixée (2026-05-07) — à re-bencher pour valider 67.5 t/min sans failure.
 
 ## Pourquoi
 
@@ -110,7 +110,7 @@ EngineSession {
 - Côté Rust : nouvelles commandes IPC `open_session(id, points_bin)` / `close_session(id)`.
 - Côté Node : `RustWgpuVulkanShadowBackend` orchestre N sessions. `withBackendLock` devient un sémaphore FIFO par-session.
 - `MAPPY_RUST_VULKAN_SESSIONS=N` env var (default = 1, max = 3 sur Intel Arc 8 GB).
-- Bench : sweep N=2 depth=1,2,3 validé. N=3 reste à tester.
+- Bench : sweep N=2 depth=1,2,3 validé. N=3 reste instable (failure sporadique non résolue).
 
 **Effort** : 2-3 jours. **Gain mesuré (N=2, lausanne, 8 tuiles)** :
 
@@ -122,9 +122,13 @@ EngineSession {
 
 Zéro failure à tous les depths. Sweet spot : **N=2 depth=3** (60.5 tiles/min).
 
-**Bench N=3** (2026-05-07) : régression vs N=2 (55.7 tiles/min, −8 %) + 1 failure sporadique
-(`upload_horizon_masks` — condition de course focus×points à 3 sessions). GPU saturé sur Intel Arc 8 GB.
-**N=3 déconseillé** : plus lent et instable. Ne pas corriger (ROI nul).
+**Bench N=3** (2026-05-07) : 55.7 tiles/min + 1 failure sporadique post-fix-FIFO
+(`upload_horizon_masks` — condition de course focus×points à 3 sessions). Root cause identifiée et fixée (2026-05-07).
+Perf warm mesurée à 67.5 t/min sur run propre.
+
+**Root cause TOCTOU** (2026-05-07) : `uploadHorizonMasksForSlot` vérifie `this.server` alive, puis écrit 2 fichiers avec `await`. Pendant ces awaits, le crash handler d'une autre slot peut tuer le serveur + le relancer via `coldStartServer` avec d'autres points → la session "default" du nouveau serveur a un `point_count` différent. L'appel `upload_horizon_masks` Rust arrive sur le nouveau serveur avec `indices_count ≠ point_count` → failure.
+
+**Fix** : compteur `serverGeneration` incrémenté à chaque cold start. Capturé au début de `uploadHorizonMasksForSlot`, re-vérifié après les deux file writes. Si changé → sentinel `STALE_SERVER_RESTART` → retry unique depuis `ensureSlot` dans `evaluateBatchFramesWithShadowsOnSlot`.
 
 **Fixes correctifs 2026-05-07** :
 - Cold start race : `serverStartPromise` mutex (assignation synchrone avant tout await)
