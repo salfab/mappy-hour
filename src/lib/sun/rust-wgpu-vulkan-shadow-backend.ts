@@ -153,11 +153,17 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   private focusBounds: Bounds2d | null = null;
   private maxBuildingHeight: number;
   private server: RustWgpuVulkanShadowServer | null = null;
+  // Serializes cold start: prevents two concurrent ensureSlot calls (on different slots)
+  // from both entering the cold-start path before the first await.
+  private serverStartPromise: Promise<void> | null = null;
   private evaluationId = 0;
   // Multi-session pool: N slots, each with its own per-tile state.
   private readonly sessionCount: number;
   private sessionSlots: SessionSlot[] = [];
-  private slotChains: Promise<unknown>[] = [];
+  // Semaphore state: synchronous claim avoids Promise.race spurious multi-fires.
+  private slotAvailable: boolean[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private slotWaiters: Array<(idx: number) => void> = [];
   // Scene-wide upload state (shared across all sessions on Rust side).
   private serverVegetationHash: string | null = null;
   private vegetationMetaBinPath: string | null = null;
@@ -194,7 +200,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         horizonHash: null, horizonMasksBinPath: null, horizonIndicesBinPath: null,
         pointsBinPath: null, opened: false,
       });
-      this.slotChains.push(Promise.resolve());
+      this.slotAvailable.push(true);
     }
   }
 
@@ -877,27 +883,85 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   // withSessionLock races all slot chains and claims the first free slot.
   // Losing slot chains receive an immediate release to avoid deadlock.
   private withSessionLock<T>(fn: (slot: SessionSlot) => Promise<T>): Promise<T> {
-    const tickets = this.slotChains.map((tail, i) => {
-      let release!: () => void;
-      const newTail = new Promise<void>((r) => { release = r; });
-      const whenFree = tail;
-      this.slotChains[i] = tail.then(() => newTail) as Promise<unknown>;
-      return { i, whenFree, release };
+    // Semaphore: synchronous claim via indexOf avoids Promise.race spurious multi-fires.
+    // (Promise.race does NOT cancel queued microtask callbacks; when N slots are all free,
+    // all N .then callbacks would fire, calling fn() N times on the same slot.)
+    const freeIdx = this.slotAvailable.indexOf(true);
+    if (freeIdx !== -1) {
+      this.slotAvailable[freeIdx] = false;
+      return fn(this.sessionSlots[freeIdx]).finally(() => this.releaseSlot(freeIdx));
+    }
+    // No free slot: queue this work.
+    return new Promise<T>((resolve, reject) => {
+      this.slotWaiters.push((idx: number) => {
+        fn(this.sessionSlots[idx]).then(resolve, reject).finally(() => this.releaseSlot(idx));
+      });
     });
-    return Promise.race(
-      tickets.map(({ i, whenFree, release }) =>
-        whenFree.then(async () => {
-          for (const t of tickets) {
-            if (t.i !== i) t.release();
-          }
-          try {
-            return await fn(this.sessionSlots[i]);
-          } finally {
-            release();
-          }
-        })
-      )
+  }
+
+  private releaseSlot(idx: number): void {
+    if (this.slotWaiters.length > 0) {
+      // Hand the slot directly to the first waiter without marking it free.
+      const next = this.slotWaiters.shift()!;
+      next(idx);
+    } else {
+      this.slotAvailable[idx] = true;
+    }
+  }
+
+  private async coldStartServer(points: Float32Array, pointCount: number, focusKey: string): Promise<void> {
+    const outputDir = this.outputDir;
+    await fs.mkdir(outputDir, { recursive: true });
+    const pointsHash = hashPoints(points, pointCount);
+    const slot0 = this.sessionSlots[0];
+    const pointsBinPath = path.join(outputDir, `${process.pid}-${Date.now()}-${crypto.randomUUID()}.points.bin`);
+    await writeFloat32Bin(pointsBinPath, points.subarray(0, pointCount * 4));
+    slot0.pointsBinPath = pointsBinPath;
+    const focus = this.focusBounds ?? {
+      minX: this.sceneBounds.minX,
+      minY: this.sceneBounds.minY,
+      maxX: this.sceneBounds.maxX,
+      maxY: this.sceneBounds.maxY,
+    };
+    const serverStartT0 = performance.now();
+    const started = await RustWgpuVulkanShadowServer.start({
+      meshBinPath: this.meshBinPath,
+      pointsBinPath,
+      focusBounds: {
+        minX: focus.minX - this.originX,
+        minZ: focus.minY - this.originY,
+        maxX: focus.maxX - this.originX,
+        maxZ: focus.maxY - this.originY,
+      },
+      maxBuildingHeight: this.maxBuildingHeight,
+      resolution: this.resolution,
+      env: makeRustWgpuVulkanEnv(),
+      startupTimeoutMs: 30_000,
+      evaluationTimeoutMs: 180_000,
+    });
+    const serverStartMs = performance.now() - serverStartT0;
+    console.log(
+      `[rust-wgpu-vulkan] Native server started in ${serverStartMs.toFixed(0)}ms (sessions=${this.sessionCount}, triangles=${this.triangleCount})`,
     );
+    this.server = started.server;
+    // Slot 0 is initialized by the server startup (points passed as CLI arg).
+    slot0.pointCount = started.ready.pointCount;
+    slot0.pointsHash = hashPoints(points, started.ready.pointCount);
+    slot0.focusKey = focusKey;
+    slot0.opened = true;
+    // Open additional slots (slot 1..N-1) on the server via open_session IPC.
+    for (let i = 1; i < this.sessionCount; i++) {
+      this.evaluationId += 1;
+      const s = this.sessionSlots[i];
+      const sBinPath = path.join(outputDir, `${process.pid}-${Date.now()}-${crypto.randomUUID()}.points.bin`);
+      await writeFloat32Bin(sBinPath, points.subarray(0, pointCount * 4));
+      s.pointsBinPath = sBinPath;
+      const res = await this.server.openSession(this.evaluationId, s.id, sBinPath);
+      s.pointCount = res.pointCount;
+      s.pointsHash = pointsHash;
+      s.focusKey = focusKey;
+      s.opened = true;
+    }
   }
 
   private async ensureSlot(slot: SessionSlot, points: Float32Array, pointCount: number): Promise<void> {
@@ -905,58 +969,14 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     const focusKey = this.currentFocusKey();
 
     if (!this.server) {
-      // Cold-start: start the Rust process with slot 0 ("default") as the initial session.
-      const outputDir = this.outputDir;
-      await fs.mkdir(outputDir, { recursive: true });
-      const slot0 = this.sessionSlots[0];
-      const pointsBinPath = path.join(outputDir, `${process.pid}-${Date.now()}-${crypto.randomUUID()}.points.bin`);
-      await writeFloat32Bin(pointsBinPath, points.subarray(0, pointCount * 4));
-      slot0.pointsBinPath = pointsBinPath;
-      const focus = this.focusBounds ?? {
-        minX: this.sceneBounds.minX,
-        minY: this.sceneBounds.minY,
-        maxX: this.sceneBounds.maxX,
-        maxY: this.sceneBounds.maxY,
-      };
-      const serverStartT0 = performance.now();
-      const started = await RustWgpuVulkanShadowServer.start({
-        meshBinPath: this.meshBinPath,
-        pointsBinPath,
-        focusBounds: {
-          minX: focus.minX - this.originX,
-          minZ: focus.minY - this.originY,
-          maxX: focus.maxX - this.originX,
-          maxZ: focus.maxY - this.originY,
-        },
-        maxBuildingHeight: this.maxBuildingHeight,
-        resolution: this.resolution,
-        env: makeRustWgpuVulkanEnv(),
-        startupTimeoutMs: 30_000,
-        evaluationTimeoutMs: 180_000,
-      });
-      const serverStartMs = performance.now() - serverStartT0;
-      console.log(
-        `[rust-wgpu-vulkan] Native server started in ${serverStartMs.toFixed(0)}ms (sessions=${this.sessionCount}, triangles=${this.triangleCount})`,
-      );
-      this.server = started.server;
-      // Slot 0 is initialized by the server startup (points passed as CLI arg).
-      slot0.pointCount = started.ready.pointCount;
-      slot0.pointsHash = hashPoints(points, started.ready.pointCount);
-      slot0.focusKey = focusKey;
-      slot0.opened = true;
-      // Open additional slots (slot 1..N-1) on the server via open_session IPC.
-      for (let i = 1; i < this.sessionCount; i++) {
-        this.evaluationId += 1;
-        const s = this.sessionSlots[i];
-        const sBinPath = path.join(outputDir, `${process.pid}-${Date.now()}-${crypto.randomUUID()}.points.bin`);
-        await writeFloat32Bin(sBinPath, points.subarray(0, pointCount * 4));
-        s.pointsBinPath = sBinPath;
-        const res = await this.server.openSession(this.evaluationId, s.id, sBinPath);
-        s.pointCount = res.pointCount;
-        s.pointsHash = pointsHash;
-        s.focusKey = focusKey;
-        s.opened = true;
+      // Serialize cold start: assign the promise SYNCHRONOUSLY before any await so that
+      // a second concurrent ensureSlot call (on a different slot) awaits the same start.
+      if (!this.serverStartPromise) {
+        this.serverStartPromise = this.coldStartServer(points, pointCount, focusKey)
+          .finally(() => { this.serverStartPromise = null; });
       }
+      await this.serverStartPromise;
+      if (!this.server) throw new Error("Rust/wgpu Vulkan server failed to start.");
     }
 
     // Server is up. Check if this slot needs reload.

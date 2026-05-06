@@ -610,7 +610,7 @@ fn run_shadow_server(
                     "sunnyWords": if request.include_mask { Some(result.sunny_words) } else { None },
                     "sunnyNoVegPoints": result.sunny_no_veg_count,
                     "sunnyNoVegWords": if request.include_mask { Some(result.sunny_no_veg_words) } else { None },
-                    "pointCount": engine.point_count().unwrap_or(0),
+                    "pointCount": engine.sessions.get(sid).map(|s| s.point_count).unwrap_or(0),
                 }))?;
             }
             "reload_points" => {
@@ -967,7 +967,7 @@ fn run_shadow_server(
                                 "frameCount": frame_count,
                                 "elapsedMsPerFrame": round2(results[0].elapsed_ms),
                                 "frames": frame_msgs,
-                                "pointCount": engine.point_count().unwrap_or(0),
+                                "pointCount": engine.sessions.get(sid).map(|s| s.point_count).unwrap_or(0),
                                 "wordCount": word_count,
                                 "hasTerrain": has_terrain,
                                 "hasVegetation": has_vegetation,

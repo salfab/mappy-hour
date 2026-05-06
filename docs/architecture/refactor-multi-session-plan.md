@@ -1,6 +1,6 @@
 # Plan refacto multi-session — backend Rust/wgpu Vulkan
 
-**Statut** : Phase 3 complète. Phases 1A–3 commitées. Bench sweep N=1,2,3 à faire.
+**Statut** : Phase 3 complète + validée + benché. Phases 1A–3 commitées. N=2 depth=3 = 1.83× vs N=2 depth=1. N=3 à tester.
 
 ## Pourquoi
 
@@ -105,16 +105,32 @@ EngineSession {
 
 **Effort** : 1 jour. **Gain** : 0. Précondition concurrence.
 
-### Phase 3 — Activation multi-session ✓ commit `862e308`
+### Phase 3 — Activation multi-session ✓ commits `862e308` + fixes `2026-05-07`
 
 - Côté Rust : nouvelles commandes IPC `open_session(id, points_bin)` / `close_session(id)`.
-- Côté Node : `RustWgpuVulkanShadowBackend` orchestre N sessions. `withBackendLock` devient un sémaphore par-session.
+- Côté Node : `RustWgpuVulkanShadowBackend` orchestre N sessions. `withBackendLock` devient un sémaphore FIFO par-session.
 - `MAPPY_RUST_VULKAN_SESSIONS=N` env var (default = 1, max = 3 sur Intel Arc 8 GB).
-- Bench : sweep N=1,2,3,4. Sweet spot probablement N=2 ou N=3.
+- Bench : sweep N=2 depth=1,2,3 validé. N=3 reste à tester.
 
-**Effort** : 2-3 jours. **Gain attendu** : ~15-20 % wall-time (sur les 25 % ciblés ; le reste serait absorbé par le cache thrashing si pas adressé en parallèle).
+**Effort** : 2-3 jours. **Gain mesuré (N=2, lausanne, 8 tuiles)** :
 
-**Validation** : atlas bit-parity sur 10+ tuiles, dont 2-3 en pente (Ouchy) pour stresser le DEM ray-march.
+| depth | tiles/min | speedup |
+|---|---|---|
+| 1 | 33.02 | 1.00× |
+| 2 | 56.76 | 1.72× |
+| 3 | 60.48 | 1.83× |
+
+Zéro failure à tous les depths. Sweet spot provisoire : **N=2 depth=3** (60.48 tiles/min).
+
+**Fixes correctifs 2026-05-07** :
+- Cold start race : `serverStartPromise` mutex (assignation synchrone avant tout await)
+- Promise.race spurious multi-fire : remplacé par sémaphore FIFO (`slotAvailable[]` + `slotWaiters`)
+- Rust `engine.point_count()` retournait toujours la session `"default"` : corrigé en `sessions.get(sid).map(|s| s.point_count)` dans les handlers `evaluate` et `evaluate_batch`
+
+**Validation 2026-05-06** : check-vulkan-vs-gpuraster (lausanne e2538000_n1152500_s250, 200 pts, 57 frames) :
+- Vulkan vs gpu-raster : **0.00%** (bit-parity parfaite)
+- Phase E (sunnyMask == !buildingsMask) : **0.00%**
+- Full pipeline vs CPU (horizon+veg) : **0.43%** (seuil ≤ 2 %)
 
 ### Phase 4 (optionnelle) — Cache multi-entry Node
 
