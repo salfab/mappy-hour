@@ -1742,6 +1742,16 @@ export async function precomputeCacheRuns(
   // triggers Intel Arc driver hangs)
   await disposeSunlightTileEvaluationBackends();
 
+  // Flush any in-flight async atlas writes before returning. Required since
+  // computeAndMergeAtlasForTile fires-and-forgets the disk write to overlap
+  // I/O with the next tile's GPU compute.
+  {
+    const { awaitAllPendingAtlasWrites } = await import(
+      "@/lib/precompute/atlas-tile-service"
+    );
+    await awaitAllPendingAtlasWrites();
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     region: request.region,

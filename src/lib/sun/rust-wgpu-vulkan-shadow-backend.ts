@@ -413,6 +413,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     const azimuthsDeg = frames.map((f) => f.azimuthDeg);
     const altitudesDeg = frames.map((f) => f.altitudeDeg);
     let result;
+    const ipcT0 = performance.now();
     try {
       result = await this.server.evaluateBatch(this.evaluationId, azimuthsDeg, altitudesDeg, {
         includeMask: true,
@@ -424,6 +425,10 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       this.server = null;
       throw error;
     }
+    const ipcMs = performance.now() - ipcT0;
+    console.log(
+      `[rust-ipc] evaluateBatch  ${ipcMs.toFixed(0)}ms  frames=${frames.length}  points=${pointCount}`,
+    );
     if (result.pointCount !== pointCount) {
       throw new Error(
         `Rust/wgpu Vulkan batch point count mismatch: server=${result.pointCount}, expected=${pointCount}`,

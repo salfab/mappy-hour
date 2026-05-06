@@ -19,6 +19,7 @@ import {
   writePrecomputedTileAtlas,
   writeTileAtlasIndex,
   type AtlasBucketEntry,
+  type BinaryTileAtlas,
   type TileAtlasIndex,
   type TileAtlasMetadata,
 } from "./sunlight-cache-atlas";
@@ -52,6 +53,72 @@ function atlasSkipCacheKey(params: {
 
 export function clearAtlasSkipCache(): void {
   atlasSkipCache.clear();
+}
+
+// ── Async atlas-write queue ────────────────────────────────────────────
+// Decouples disk I/O (~440 ms per tile: gzip + write of 30-50 MB) from the
+// GPU compute pipeline. Atlas writes used to block the next tile's compute,
+// leaving the GPU idle. Now they fire-and-forget in a bounded queue,
+// letting the GPU start the next tile immediately while the disk catches up.
+// Backpressure caps pending writes to avoid memory pressure from accumulated
+// buffers when disk is slower than compute.
+const MAX_PENDING_ATLAS_WRITES = 4;
+const pendingAtlasWrites = new Map<string, Promise<void>>();
+
+function pendingWriteKey(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  tileId: string;
+  resolutionDeg: number;
+}): string {
+  return `${params.region}|${params.modelVersionHash}|${params.gridStepMeters}|${params.tileId}|${params.resolutionDeg}`;
+}
+
+async function kickoffAtlasWrite(
+  merged: BinaryTileAtlas,
+  params: {
+    region: PrecomputedRegionName;
+    modelVersionHash: string;
+    gridStepMeters: number;
+    tileId: string;
+    resolutionDeg: number;
+  },
+): Promise<void> {
+  const key = pendingWriteKey(params);
+  // Backpressure: wait for a slot if too many writes pending
+  while (pendingAtlasWrites.size >= MAX_PENDING_ATLAS_WRITES) {
+    await Promise.race(Array.from(pendingAtlasWrites.values()));
+  }
+  const writeT0 = performance.now();
+  const promise = (async () => {
+    await writePrecomputedTileAtlas(merged, params);
+    const writeMs = performance.now() - writeT0;
+    console.log(
+      `[atlas-write] ${params.tileId}  ${writeMs.toFixed(0)}ms  buckets=${merged.bucketCount}  (async)`,
+    );
+  })();
+  pendingAtlasWrites.set(
+    key,
+    promise.finally(() => {
+      pendingAtlasWrites.delete(key);
+    }),
+  );
+}
+
+/**
+ * Await all in-flight async atlas writes. MUST be called at the end of a run
+ * before the process exits to ensure no writes are lost. Called by
+ * `precomputeCacheRuns` after the last tile is done.
+ */
+export async function awaitAllPendingAtlasWrites(): Promise<void> {
+  if (pendingAtlasWrites.size === 0) return;
+  const pending = pendingAtlasWrites.size;
+  console.log(`[atlas-write] flushing ${pending} pending write(s)...`);
+  const flushT0 = performance.now();
+  await Promise.all(Array.from(pendingAtlasWrites.values()));
+  const flushMs = performance.now() - flushT0;
+  console.log(`[atlas-write] flush done in ${flushMs.toFixed(0)}ms (was holding ${pending} writes)`);
 }
 
 function indexToCachedSkipInfo(index: TileAtlasIndex): CachedAtlasSkipInfo {
@@ -540,6 +607,7 @@ export async function computeAndMergeAtlasForTile(
     pointLv95Northing,
   };
 
+  const atlasMergeT0 = performance.now();
   const merged = mergeBucketsIntoAtlas({
     existing: existingAtlas,
     meta,
@@ -556,25 +624,32 @@ export async function computeAndMergeAtlasForTile(
     pointFlags,
     newBuckets,
   });
-
-  const atlasWriteT0 = performance.now();
-  await writePrecomputedTileAtlas(merged, {
-    region: params.region,
-    modelVersionHash: params.modelVersionHash,
-    gridStepMeters: params.gridStepMeters,
-    tileId: params.tile.tileId,
-    resolutionDeg,
-  });
-  const atlasWriteMs = performance.now() - atlasWriteT0;
+  const atlasMergeMs = performance.now() - atlasMergeT0;
   console.log(
-    `[atlas-write] ${params.tile.tileId}  ${atlasWriteMs.toFixed(0)}ms  buckets=${merged.bucketCount}`,
+    `[atlas-merge] ${params.tile.tileId}  ${atlasMergeMs.toFixed(0)}ms  newBuckets=${newBuckets.length}  totalBuckets=${merged.bucketCount}  existing=${existingAtlas != null}`,
   );
 
+  // Update in-memory skip cache immediately — independent of the disk write.
+  // This must happen synchronously so the next day's tile lookup sees the
+  // freshly merged buckets.
   atlasSkipCache.set(skipKey, {
     keys: getAtlasBucketKeySet(merged),
     pointCount,
     outdoorPointCount,
     bucketCount: merged.bucketCount,
+  });
+
+  // Fire-and-forget the disk write (with backpressure-bounded queue). The GPU
+  // can start computing the next tile while gzip + disk I/O happens in
+  // parallel. The await here only blocks if the queue is full (typically not).
+  // The orchestrator (precomputeCacheRuns) calls awaitAllPendingAtlasWrites()
+  // before returning, ensuring every write completes before the run ends.
+  await kickoffAtlasWrite(merged, {
+    region: params.region,
+    modelVersionHash: params.modelVersionHash,
+    gridStepMeters: params.gridStepMeters,
+    tileId: params.tile.tileId,
+    resolutionDeg,
   });
 
   return {
