@@ -1,6 +1,6 @@
 # Plan refacto multi-session — backend Rust/wgpu Vulkan
 
-**Statut** : Phase 3 complète + validée + benché. Phases 1A–3 commitées. N=2 depth=3 = 1.83× vs N=2 depth=1. N=3 à tester.
+**Statut** : Phase 3 complète + validée + benché. Phases 1A–3 commitées. Sweet spot **N=2 depth=3** (60.5 tiles/min, +83 % vs N=2 depth=1). N=3 testé et écarté (plus lent + instable).
 
 ## Pourquoi
 
@@ -120,7 +120,11 @@ EngineSession {
 | 2 | 56.76 | 1.72× |
 | 3 | 60.48 | 1.83× |
 
-Zéro failure à tous les depths. Sweet spot provisoire : **N=2 depth=3** (60.48 tiles/min).
+Zéro failure à tous les depths. Sweet spot : **N=2 depth=3** (60.5 tiles/min).
+
+**Bench N=3** (2026-05-07) : régression vs N=2 (55.7 tiles/min, −8 %) + 1 failure sporadique
+(`upload_horizon_masks` — condition de course focus×points à 3 sessions). GPU saturé sur Intel Arc 8 GB.
+**N=3 déconseillé** : plus lent et instable. Ne pas corriger (ROI nul).
 
 **Fixes correctifs 2026-05-07** :
 - Cold start race : `serverStartPromise` mutex (assignation synchrone avant tout await)
