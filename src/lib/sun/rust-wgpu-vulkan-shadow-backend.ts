@@ -463,10 +463,15 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         includeMask: true,
       });
     } catch (error) {
-      // Server timed out or crashed — kill it so ensureServer recreates it next time
+      // Server timed out or crashed — kill it so ensureServer recreates it next time.
+      // Also reset all server-state hashes: the new server will start with empty GPU
+      // buffers and must re-upload everything before the next evaluate.
       console.error(`[rust-wgpu-vulkan] evaluateBatch failed, killing server: ${error instanceof Error ? error.message : error}`);
       try { await this.server.forceKill(); } catch { /* best effort */ }
       this.server = null;
+      this.serverHorizonHash = null;
+      this.serverVegetationHash = null;
+      this.serverTerrainHash = null;
       throw error;
     }
     const ipcMs = performance.now() - ipcT0;
@@ -821,6 +826,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     this.serverFocusKey = null;
     this.serverHorizonHash = null;
     this.serverVegetationHash = null;
+    this.serverTerrainHash = null;
     if (server) {
       console.log("[rust-wgpu-vulkan] Shutting down native server");
       await server.shutdownWithTimeout();
@@ -831,11 +837,15 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     await this.deleteRuntimeFile(this.horizonIndicesBinPath);
     await this.deleteRuntimeFile(this.vegetationMetaBinPath);
     await this.deleteRuntimeFile(this.vegetationDataBinPath);
+    await this.deleteRuntimeFile(this.terrainMetaBinPath);
+    await this.deleteRuntimeFile(this.terrainDataBinPath);
     this.pointsBinPath = null;
     this.horizonMasksBinPath = null;
     this.horizonIndicesBinPath = null;
     this.vegetationMetaBinPath = null;
     this.vegetationDataBinPath = null;
+    this.terrainMetaBinPath = null;
+    this.terrainDataBinPath = null;
   }
 
   // ── Backend-level transaction lock ────────────────────────────────────
@@ -992,13 +1002,15 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     const previous = this.pointsBinPath;
     this.pointsBinPath = newPath;
     if (previous) await this.deleteRuntimeFile(previous);
-    // reload_points recreates the shadow-compute resources on the server
-    // side, so any horizon/vegetation/terrain data previously uploaded is
-    // gone. Invalidate our cached hashes; callers must re-upload before
-    // relying on terrain / vegetation / horizon masks.
+    // Phase 1B: reload_points preserves SceneResources (veg/terrain GPU buffers)
+    // on the Rust side. Keep serverVegetationHash and serverTerrainHash so that
+    // uploadVegetationRasters / uploadTerrainRasters skip re-upload when data +
+    // origin haven't changed. The bin files are no longer needed on disk once
+    // the Rust server has loaded them into GPU memory.
+    //
+    // horizon_indices_buffer is PER-SESSION (one u32 per outdoor point) and is
+    // reset to a dummy on reload_points; must always re-upload.
     this.serverHorizonHash = null;
-    this.serverVegetationHash = null;
-    this.serverTerrainHash = null;
     const prevMasks = this.horizonMasksBinPath;
     const prevIndices = this.horizonIndicesBinPath;
     const prevVegMeta = this.vegetationMetaBinPath;
