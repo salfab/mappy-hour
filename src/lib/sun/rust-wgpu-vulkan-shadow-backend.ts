@@ -432,17 +432,22 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       throw new Error("Rust/wgpu Vulkan server failed to start.");
     }
     const ensureMs = performance.now() - ensureT0;
-    const uploadT0 = performance.now();
+    const uploadHorizonT0 = performance.now();
     if (options?.horizon) {
       await this.uploadHorizonMasks(options.horizon);
     }
+    const uploadHorizonMs = performance.now() - uploadHorizonT0;
+    const uploadVegT0 = performance.now();
     if (options?.vegetation) {
       await this.uploadVegetationRasters(options.vegetation);
     }
+    const uploadVegMs = performance.now() - uploadVegT0;
+    const uploadTerrainT0 = performance.now();
     if (options?.terrain) {
       await this.uploadTerrainRasters(options.terrain);
     }
-    const uploadMs = performance.now() - uploadT0;
+    const uploadTerrainMs = performance.now() - uploadTerrainT0;
+    const uploadMs = uploadHorizonMs + uploadVegMs + uploadTerrainMs;
     this.evaluationId += 1;
     const azimuthsDeg = frames.map((f) => f.azimuthDeg);
     const altitudesDeg = frames.map((f) => f.altitudeDeg);
@@ -501,7 +506,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
       `[dispatch-split] frames=${frames.length} points=${pointCount} ` +
         `lockWait=${(lockWaitMs ?? 0).toFixed(0)}ms ` +
         `ensure=${ensureMs.toFixed(0)}ms ` +
-        `upload=${uploadMs.toFixed(0)}ms ` +
+        `upload=${uploadMs.toFixed(0)}ms[h=${uploadHorizonMs.toFixed(0)}/v=${uploadVegMs.toFixed(0)}/t=${uploadTerrainMs.toFixed(0)}] ` +
         `serverIpc=${ipcMs.toFixed(0)}ms ` +
         `decode=${decodeMs.toFixed(0)}ms ` +
         `total=${totalDispatchMs.toFixed(0)}ms`,
