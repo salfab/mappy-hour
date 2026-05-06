@@ -1,6 +1,6 @@
 # Plan refacto multi-session — backend Rust/wgpu Vulkan
 
-**Statut** : Phase 1A en cours (commit à venir). Tag de retour : `baseline/end-of-session-2026-05-06`.
+**Statut** : Phase 3 complète. Phases 1A–3 commitées. Bench sweep N=1,2,3 à faire.
 
 ## Pourquoi
 
@@ -56,12 +56,11 @@ EngineSession {
 
 ## Phasage
 
-### Phase 1A — Renaming + comments (commit en cours)
+### Phase 1A — Renaming + comments ✓ commit `53edc87`
 
 - ✓ `ShadowComputeResources` → `EngineSession`
 - ✓ `create_shadow_compute_resources` → `create_engine_session`
 - ✓ Champs commentés en 3 catégories : PER-SESSION, SCENE-SHARED, PROCESS-WIDE
-- Pas de changement comportemental. Atlas bit-parity garantie.
 
 **Effort** : 30 min. **Gain** : 0. **Bénéfice** : balise architecturale visible dans le code.
 
@@ -106,7 +105,7 @@ EngineSession {
 
 **Effort** : 1 jour. **Gain** : 0. Précondition concurrence.
 
-### Phase 3 — Activation multi-session
+### Phase 3 — Activation multi-session ✓ commit `862e308`
 
 - Côté Rust : nouvelles commandes IPC `open_session(id, points_bin)` / `close_session(id)`.
 - Côté Node : `RustWgpuVulkanShadowBackend` orchestre N sessions. `withBackendLock` devient un sémaphore par-session.
