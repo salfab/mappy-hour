@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -1072,7 +1073,7 @@ struct DepthShadowEngine {
     // Process-wide compute resources (Phase 1C): one shader/pipeline per device.
     compute_bind_group_layout: wgpu::BindGroupLayout,
     compute_pipeline: wgpu::ComputePipeline,
-    shadow_compute: Option<EngineSession>,
+    sessions: HashMap<String, EngineSession>,
     raw_bounds: MeshBounds,
     focus_bounds: Option<FocusBounds>,
     resolution: u32,
@@ -1247,8 +1248,9 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
 
         let (compute_bind_group_layout, compute_pipeline) = create_compute_pipeline(config.device);
         let scene = create_dummy_scene(config.device);
-        let shadow_compute = if config.run_shadow_compute {
-            Some(create_engine_session(
+        let mut sessions = HashMap::new();
+        if config.run_shadow_compute {
+            sessions.insert("default".to_string(), create_engine_session(
                 config.device,
                 config.queue,
                 &depth_view,
@@ -1258,10 +1260,8 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
                 config.points_bin,
                 &scene,
                 &compute_bind_group_layout,
-            )?)
-        } else {
-            None
-        };
+            )?);
+        }
 
         Ok(Self {
             vertex_buffer,
@@ -1277,7 +1277,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             scene,
             compute_bind_group_layout,
             compute_pipeline,
-            shadow_compute,
+            sessions,
             raw_bounds,
             focus_bounds: config.focus_bounds,
             resolution: config.resolution,
@@ -1303,7 +1303,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             0,
             bytemuck::cast_slice(&light_mvp),
         );
-        if let Some(shadow) = &self.shadow_compute {
+        if let Some(shadow) = self.sessions.get("default") {
             let shadow_params = encode_shadow_params(
                 light_mvp,
                 self.resolution,
@@ -1358,7 +1358,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             render_pass.draw(0..self.vertex_count, 0..1);
         }
 
-        if let Some(shadow) = &self.shadow_compute {
+        if let Some(shadow) = self.sessions.get("default") {
             encoder.clear_buffer(&shadow.result_buffer, 0, Some(shadow.result_copy_size));
             encoder.clear_buffer(
                 &shadow.terrain_result_buffer,
@@ -1451,7 +1451,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             sunny_words,
             sunny_no_veg_count,
             sunny_no_veg_words,
-        ) = if let Some(shadow) = &self.shadow_compute {
+        ) = if let Some(shadow) = self.sessions.get("default") {
             let readback = read_shadow_results(device, shadow, sequence)?;
             let (terrain_count, terrain_words) = if self.scene.has_horizon || self.scene.has_local_terrain {
                 let terrain = read_terrain_results(device, shadow, sequence)?;
@@ -1540,9 +1540,9 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             return Ok(Vec::new());
         }
         let shadow = self
-            .shadow_compute
-            .as_ref()
-            .ok_or_else(|| "evaluate_batch_frames: no active shadow compute".to_string())?;
+            .sessions
+            .get("default")
+            .ok_or_else(|| "evaluate_batch_frames: no active session 'default'".to_string())?;
 
         let n = frames.len();
         let frame_size = shadow.result_copy_size;
@@ -2007,9 +2007,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
     }
 
     fn point_count(&self) -> Option<u32> {
-        self.shadow_compute
-            .as_ref()
-            .map(|shadow| shadow.point_count)
+        self.sessions.get("default").map(|shadow| shadow.point_count)
     }
 
     /// Replace the focus bounds used for light MVP projection.
@@ -2039,7 +2037,7 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
             &self.compute_bind_group_layout,
         )?;
         let new_count = compute.point_count;
-        self.shadow_compute = Some(compute);
+        self.sessions.insert("default".to_string(), compute);
         // horizon_indices_buffer is per-session (one entry per outdoor point);
         // it must be re-uploaded after every reload_points.  Reset has_horizon
         // so evaluate correctly skips the horizon check until re-upload.
@@ -2062,9 +2060,9 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         indices_bin: &Path,
     ) -> Result<(u32, u32), String> {
         let shadow = self
-            .shadow_compute
-            .as_mut()
-            .ok_or_else(|| "upload_horizon_masks: no active shadow compute".to_string())?;
+            .sessions
+            .get_mut("default")
+            .ok_or_else(|| "upload_horizon_masks: no active session 'default'".to_string())?;
 
         // Read mask file
         let masks_bytes = std::fs::read(masks_bin)
@@ -2172,9 +2170,9 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         is_raw: bool,
     ) -> Result<(u32, u64), String> {
         let shadow = self
-            .shadow_compute
-            .as_mut()
-            .ok_or_else(|| "upload_vegetation_rasters: no active shadow compute".to_string())?;
+            .sessions
+            .get_mut("default")
+            .ok_or_else(|| "upload_vegetation_rasters: no active session 'default'".to_string())?;
 
         let meta_bytes = std::fs::read(meta_bin)
             .map_err(|e| format!("failed to read veg meta {}: {e}", meta_bin.display()))?;
@@ -2269,9 +2267,9 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         origin_y: f32,
     ) -> Result<(u32, u64), String> {
         let shadow = self
-            .shadow_compute
-            .as_mut()
-            .ok_or_else(|| "upload_terrain_rasters: no active shadow compute".to_string())?;
+            .sessions
+            .get_mut("default")
+            .ok_or_else(|| "upload_terrain_rasters: no active session 'default'".to_string())?;
 
         let meta_bytes = std::fs::read(meta_bin)
             .map_err(|e| format!("failed to read terrain meta {}: {e}", meta_bin.display()))?;
