@@ -1487,18 +1487,22 @@ export async function precomputeCacheRuns(
 
     const runSequentialTiles = async () => {
       // Pipeline depth: how many tiles can have in-flight processing at the
-      // same time. With depth=2, the next tile's CPU prep + frameLoop can
-      // overlap with the current tile's GPU/IPC eval. Bench 2026-05-06
-      // measured 2.20× speedup at depth=2 (depth=3 = 2.27×, marginal). The
-      // backend-level lock in RustWgpuVulkanShadowBackend serializes the
-      // server transaction (ensureServer + uploads + evaluate) so concurrent
-      // tiles can't corrupt each other's points/focus state.
+      // same time. With depth=N, up to N tiles' CPU prep + frameLoop can
+      // overlap with the current tile's GPU/IPC eval. The backend-level lock
+      // in RustWgpuVulkanShadowBackend serializes the server transaction so
+      // concurrent tiles can't corrupt each other's points/focus state.
       //
-      // Default 2. Override via MAPPY_TILE_PIPELINE_DEPTH=N to experiment.
+      // Sweet spot (bench 2026-05-06, post-Phase-E-fix, 4 Lausanne tiles):
+      //   depth=1  →  ~21-40 tiles/min  (1×    baseline, no pipelining)
+      //   depth=2  →  ~70-77 tiles/min  (2.7×)
+      //   depth=3  →  ~88-92 tiles/min  (3.2×) ← best
+      //   depth=4  →  ~72-85 tiles/min  (2.8×, regresses on lock contention)
+      //
+      // Default 3. Override via MAPPY_TILE_PIPELINE_DEPTH=N to experiment.
       // Setting 1 falls back to legacy strict-sequential behavior.
       const PIPELINE_DEPTH = Math.max(
         1,
-        Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "2"),
+        Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "3"),
       );
       // Sanity warning: pipelining only overlaps Node-side prep with GPU-IPC
       // eval. CPU shadow modes (detailed, two-level, prism, gpu-raster) have
