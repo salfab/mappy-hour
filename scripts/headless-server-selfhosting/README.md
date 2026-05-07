@@ -72,42 +72,27 @@ Ce dossier est le point d'entrée projet pour MappyHour — il appelle ce repo, 
 
 ---
 
-## Étape 1 — Préparer une clé SSH sur la machine de développement
+## Étapes 1–3 — Préparer la machine de développement
 
-Si vous n'avez pas encore de clé SSH :
-
-```powershell
-ssh-keygen -t ed25519 -C "votre-email@exemple.com"
-# Appuyez sur Entree pour accepter le chemin par defaut (~/.ssh/id_ed25519)
-# Choisissez une passphrase (recommande)
-```
-
-Affichez votre clé publique :
+Un seul script fait tout : génère la clé SSH si absente, la copie dans le presse-papier, ouvre GitHub pour l'ajouter, et vérifie Tailscale.
 
 ```powershell
-Get-Content "$env:USERPROFILE\.ssh\id_ed25519.pub"
+.\setup-dev-machine.ps1
 ```
 
----
+Ou avec votre email en paramètre pour éviter la question :
 
-## Étape 2 — Ajouter la clé publique à GitHub
+```powershell
+.\setup-dev-machine.ps1 -Email votre@email.com
+```
 
-1. Copiez la sortie de `id_ed25519.pub` (commence par `ssh-ed25519 …`)
-2. Allez sur [github.com/settings/keys](https://github.com/settings/keys)
-3. Cliquez **New SSH key**, collez la clé, donnez-lui un nom (ex: "Dev machine")
+Le script :
+1. Vérifie ou génère une clé SSH ed25519 dans `~/.ssh/`
+2. Affiche la clé publique et la copie dans le presse-papier
+3. Ouvre [github.com/settings/keys](https://github.com/settings/keys) pour que vous la colliez
+4. Vérifie que Tailscale est installé et connecté
 
-Le bootstrap récupérera automatiquement cette clé pour autoriser votre connexion au serveur.
-
----
-
-## Étape 3 — Installer et connecter Tailscale sur la machine de développement
-
-1. Téléchargez et installez [Tailscale](https://tailscale.com/download)
-2. Connectez-vous à votre compte Tailscale
-3. Vérifiez que vous êtes dans votre réseau :
-   ```powershell
-   tailscale status
-   ```
+> Si Tailscale n'est pas installé, téléchargez-le sur [tailscale.com/download](https://tailscale.com/download) et connectez-vous à votre réseau avant de continuer.
 
 ---
 
