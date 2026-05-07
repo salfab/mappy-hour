@@ -50,7 +50,7 @@ function Find-Exe {
 
 Write-Host ""
 Write-Host "============================================================"
-Write-Host "  MappyHour — Preflight serveur headless"
+Write-Host "  MappyHour  - Preflight serveur headless"
 Write-Host "  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "============================================================"
 

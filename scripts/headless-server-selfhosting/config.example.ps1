@@ -1,7 +1,7 @@
-# config.example.ps1 — Template de configuration pour le bootstrap headless MappyHour
+# config.example.ps1  - Template de configuration pour le bootstrap headless MappyHour
 #
 # Usage : copier ce fichier en config.local.ps1 et remplir les valeurs.
-# config.local.ps1 est ignore par git — ne le commitez jamais.
+# config.local.ps1 est ignore par git  - ne le commitez jamais.
 #
 #   Copy-Item config.example.ps1 config.local.ps1
 #   notepad config.local.ps1
@@ -29,6 +29,6 @@ $BootstrapRepoOwner = "salfab"
 $BootstrapRepoName  = "tailscale-bootstrap-windows"
 
 # Ref Git a utiliser pour telecharger bootstrap.ps1 (branche, tag, ou SHA complet).
-# "main" est pratique mais mutable — pour un usage en production, privilegiez
+# "main" est pratique mais mutable  - pour un usage en production, privilegiez
 # un tag de release ou un SHA complet pour garantir la reproductibilite.
 $BootstrapRef = "main"
