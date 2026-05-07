@@ -110,10 +110,12 @@ if ($null -eq $foundKey) {
 
     $keyPath = Join-Path $sshDir "id_ed25519"
     Write-Info "Génération de la clé dans $keyPath ..."
-    Write-Info "(Vous pouvez entrer une passphrase ou appuyer sur Entrée pour ne pas en mettre)"
-    Write-Host ""
 
-    & ssh-keygen.exe -t ed25519 -C $Email -f $keyPath
+    # PS5.1 supprime les chaînes vides passées aux exécutables natifs (-N "").
+    # ssh-keygen lit la passphrase depuis la console Windows, pas depuis stdin.
+    # On passe par cmd.exe qui transmet correctement -N "" comme chaîne vide.
+    $cmdLine = "ssh-keygen.exe -t ed25519 -q -C `"$Email`" -f `"$keyPath`" -N `"`""
+    & cmd.exe /c $cmdLine
 
     if (-not (Test-Path "$keyPath.pub")) {
         Write-Host "    [KO] La génération a échoué." -ForegroundColor Red
@@ -153,10 +155,7 @@ try {
 
 Write-Step "Ajout de la clé sur GitHub"
 Write-Info "La clé publique est dans le presse-papier."
-Write-Info "La page GitHub va s'ouvrir dans votre navigateur."
-Write-Host ""
-
-$open = Read-Host "    Appuyez sur Entrée pour ouvrir github.com/settings/keys (Ctrl+C pour ignorer)"
+Write-Info "Ouverture de github.com/settings/keys dans le navigateur..."
 
 Start-Process "https://github.com/settings/keys"
 
