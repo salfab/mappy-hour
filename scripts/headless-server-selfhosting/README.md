@@ -204,6 +204,29 @@ Voir [`deploy-notes.md`](deploy-notes.md) pour l'architecture cible.
 
 ---
 
+## Ajouter une nouvelle machine de développement
+
+Si une deuxième machine doit pouvoir se connecter au serveur headless :
+
+1. Sur la nouvelle machine, générez une clé SSH et ajoutez-la sur GitHub :
+   ```powershell
+   .\setup-dev-machine.ps1 -Email votre@email.com
+   ```
+
+2. Une fois la clé ajoutée sur GitHub, depuis **n'importe quelle machine déjà autorisée**, rafraîchissez les clés sur le serveur :
+   ```powershell
+   ssh devops@petbox "powershell -Command ""(Invoke-WebRequest https://github.com/salfab.keys -UseBasicParsing).Content | Set-Content 'C:\ProgramData\ssh\administrators_authorized_keys'"""
+   ```
+
+   Ou directement **sur le serveur** (via écran/clavier ou session SSH existante) :
+   ```powershell
+   (Invoke-WebRequest https://github.com/salfab.keys -UseBasicParsing).Content | Set-Content 'C:\ProgramData\ssh\administrators_authorized_keys'
+   ```
+
+Cette commande resynchronise `administrators_authorized_keys` avec toutes les clés publiques du compte GitHub `salfab`. Elle est **idempotente** — vous pouvez la relancer à tout moment.
+
+---
+
 ## Dépannage
 
 | Symptôme | Cause probable | Solution |
