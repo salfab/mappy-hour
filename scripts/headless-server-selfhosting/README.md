@@ -115,15 +115,22 @@ Le bootstrap récupérera automatiquement cette clé pour autoriser votre connex
 
 > **Vous avez besoin d'un écran et d'un clavier branchés sur le serveur pour cette étape uniquement.**
 
-### Récupérer les scripts sur le serveur
+### Option A — Démarrage direct depuis internet (recommandé)
 
-Copiez ce dossier sur le serveur (clé USB, partage réseau, ou GitHub) puis naviguez dedans :
+Pas besoin de copier de fichiers au préalable. Collez cette ligne dans une fenêtre PowerShell **en tant qu'Administrateur**, en remplaçant les quatre valeurs par les vôtres :
 
 ```powershell
-cd scripts\headless-server-selfhosting
+$s="$env:TEMP\mappy-bootstrap.ps1"; Invoke-WebRequest https://raw.githubusercontent.com/salfab/mappy-hour/main/scripts/headless-server-selfhosting/bootstrap-headless-access.ps1 -OutFile $s -UseBasicParsing; notepad $s; powershell -ExecutionPolicy Bypass -File $s -GitHubUser VOTRE_GITHUB -MachineName VOTRE_MACHINE -SshUser devops -ProjectRoot C:\sources\mappy-hour
 ```
 
-### Préparer la configuration
+Ce que ça fait, dans l'ordre :
+1. Télécharge `bootstrap-headless-access.ps1` dans `%TEMP%`
+2. L'ouvre dans Notepad — lisez-le, fermez quand vous êtes prêt
+3. Le lance avec vos paramètres (téléchargera à son tour `bootstrap.ps1` depuis `salfab/tailscale-bootstrap-windows`, avec une nouvelle étape Notepad)
+
+### Option B — Depuis le repo cloné
+
+Si vous avez déjà ce dossier sur le serveur (clé USB, partage réseau…) :
 
 ```powershell
 Copy-Item config.example.ps1 config.local.ps1
@@ -139,19 +146,18 @@ $SshUser     = "devops"               # compte admin SSH a creer
 $ProjectRoot = "C:\sources\mappy-hour"
 ```
 
-Enregistrez et fermez Notepad.
-
-### Lancer le bootstrap
+Enregistrez et fermez Notepad, puis :
 
 ```powershell
 PowerShell.exe -ExecutionPolicy Bypass -File .\bootstrap-headless-access.ps1
 ```
 
-Le script va :
-1. Télécharger `bootstrap.ps1` depuis `salfab/tailscale-bootstrap-windows`
-2. L'ouvrir dans Notepad pour que vous puissiez le lire
-3. Vous demander confirmation avant de l'exécuter
-4. Installer Tailscale, OpenSSH, créer le compte SSH, configurer les clés
+### Ce que fait le bootstrap
+
+1. Télécharge `bootstrap.ps1` depuis `salfab/tailscale-bootstrap-windows`
+2. L'ouvre dans Notepad pour que vous puissiez le lire
+3. Vous demande confirmation avant de l'exécuter
+4. Installe Tailscale, OpenSSH, crée le compte SSH, configure les clés
 
 ### Connecter Tailscale
 
