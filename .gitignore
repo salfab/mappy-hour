@@ -68,3 +68,6 @@ next-env.d.ts
 
 # local assistant/session metadata
 .claude/
+
+# Self-hosting local config (contains machine-specific values, must not be committed)
+scripts/headless-server-selfhosting/config.local.ps1
