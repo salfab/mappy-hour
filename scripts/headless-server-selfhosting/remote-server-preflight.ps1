@@ -65,7 +65,31 @@ Write-Row "PowerShell"       $PSVersionTable.PSVersion.ToString()
 Write-Row "Windows"          ([System.Environment]::OSVersion.VersionString)
 
 # ---------------------------------------------------------------------------
-# Tailscale
+# Outils systeme
+# ---------------------------------------------------------------------------
+
+Write-Section "Outils systeme"
+
+$wingetExe = Find-Exe "winget.exe"
+if ($null -ne $wingetExe) {
+    $wingetVer = & winget.exe --version 2>&1
+    Write-Row "winget" ($wingetVer -join "").Trim() "ok"
+} else {
+    Write-Row "winget" "non disponible (Windows 10 < 1709 ou App Installer manquant)" "warn"
+}
+
+$tailscaleCheck = Find-Exe "tailscale.exe"
+if ($null -eq $tailscaleCheck) {
+    $tailscaleCheck = if (Test-Path "C:\Program Files\Tailscale\tailscale.exe") { "C:\Program Files\Tailscale\tailscale.exe" } else { $null }
+}
+if ($null -ne $tailscaleCheck) {
+    Write-Row "tailscale" "installe" "ok"
+} else {
+    Write-Row "tailscale" "non installe" "warn"
+}
+
+# ---------------------------------------------------------------------------
+# Tailscale (detail)
 # ---------------------------------------------------------------------------
 
 Write-Section "Tailscale"
