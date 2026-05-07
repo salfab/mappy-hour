@@ -12,9 +12,6 @@
 #     -GitHubUser salfab -MachineName petbox -SshUser devops -ProjectRoot C:\sources\mappy-hour
 
 #Requires -Version 5.1
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
-
 param(
     [string]$GitHubUser        = "",
     [string]$MachineName       = "",
@@ -24,6 +21,9 @@ param(
     [string]$BootstrapRepoName  = "tailscale-bootstrap-windows",
     [string]$BootstrapRef       = "main"
 )
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
 # ---------------------------------------------------------------------------
 # Fonctions utilitaires

@@ -9,9 +9,6 @@
 #   .\verify-ssh-access.ps1 -MachineName petbox -SshUser devops -TailscaleIp 100.64.0.42
 
 #Requires -Version 5.1
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "SilentlyContinue"
-
 param(
     [Parameter(Mandatory = $true)]
     [string]$MachineName,
@@ -21,6 +18,9 @@ param(
 
     [string]$TailscaleIp = ""
 )
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "SilentlyContinue"
 
 # ---------------------------------------------------------------------------
 # Fonctions utilitaires
