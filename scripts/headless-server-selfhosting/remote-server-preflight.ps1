@@ -1,4 +1,4 @@
-# remote-server-preflight.ps1
+﻿# remote-server-preflight.ps1
 #
 # A copier sur le serveur headless via SCP, puis executer via SSH.
 # Produit un rapport d'etat de la machine. Ne modifie rien.
@@ -137,7 +137,7 @@ if ($null -ne $fwRules -and $fwRules.Count -gt 0) {
         Write-Row "Regle pare-feu: $($rule.DisplayName)" $rule.Action $ruleStatus
     }
 } else {
-    Write-Row "Regles pare-feu SSH" "aucune trouvee" "warn"
+    Write-Row "Regles pare-feu SSH" "aucune trouvée" "warn"
 }
 
 # ---------------------------------------------------------------------------
@@ -172,7 +172,7 @@ if ($null -ne $dockerExe) {
     if ($LASTEXITCODE -eq 0) {
         Write-Row "Docker daemon" "accessible" "ok"
     } else {
-        Write-Row "Docker daemon" "non accessible (daemon arrete ?)" "warn"
+        Write-Row "Docker daemon" "non accessible (daemon arrêté ?)" "warn"
     }
 } else {
     Write-Row "docker CLI" "non installe" "warn"
@@ -201,8 +201,8 @@ if (Test-Path $dockerDesktopPath) {
 
 Write-Host ""
 Write-Host "============================================================"
-Write-Host "  Fin du preflight."
-Write-Host "  Les elements marques [warn] ou [KO] sont a traiter"
-Write-Host "  avant le deploiement de l'application."
+Write-Host "  Fin du préflight."
+Write-Host "  Les éléments marqués [warn] ou [KO] sont à traiter"
+Write-Host "  avant le déploiement de l'application."
 Write-Host "============================================================"
 Write-Host ""

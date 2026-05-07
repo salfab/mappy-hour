@@ -1,4 +1,4 @@
-# verify-ssh-access.ps1
+﻿# verify-ssh-access.ps1
 #
 # A executer sur votre machine de developpement apres le bootstrap.
 # Verifie que Tailscale est actif et que la connexion SSH vers le serveur headless fonctionne.
@@ -57,10 +57,10 @@ function Test-SshHost {
     $result = & ssh -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=accept-new `
                     "$User@$Host" "hostname" 2>&1
     if ($LASTEXITCODE -eq 0) {
-        Write-OK "Connexion SSH reussie. Hostname retourne : $result"
+        Write-OK "Connexion SSH réussie. Hostname retourne : $result"
         return $true
     } else {
-        Write-Fail "Connexion SSH echouee."
+        Write-Fail "Connexion SSH échouée."
         Write-Host "    Sortie : $result"
         return $false
     }
@@ -70,7 +70,7 @@ function Test-SshHost {
 # 1. Verifier que Tailscale est disponible et actif
 # ---------------------------------------------------------------------------
 
-Write-Step "Verification de Tailscale sur cette machine"
+Write-Step "Vérification de Tailscale sur cette machine"
 
 $tailscaleExe = Get-Command "tailscale.exe" -ErrorAction SilentlyContinue
 if (-not $tailscaleExe) {
@@ -82,7 +82,7 @@ if (-not $tailscaleExe) {
         Write-OK "Tailscale actif."
         Write-Host "    $tsStatus" | Select-Object -First 5
     } else {
-        Write-Fail "Tailscale ne repond pas ou n'est pas connecte."
+        Write-Fail "Tailscale ne répond pas ou n'est pas connecte."
         Write-Hint "Ouvrez l'application Tailscale et connectez-vous."
         Write-Hint "Commande : tailscale.exe up"
     }
@@ -95,9 +95,9 @@ if (-not $tailscaleExe) {
 $sshByName = Test-SshHost -Host $MachineName -User $SshUser -Label "nom Tailscale ($MachineName)"
 
 if (-not $sshByName) {
-    Write-Hint "Tailscale MagicDNS peut mettre quelques minutes a se propager."
-    Write-Hint "Verifiez que '$MachineName' apparait dans : tailscale status"
-    Write-Hint "Verifiez que MagicDNS est active dans votre admin Tailscale."
+    Write-Hint "Tailscale MagicDNS peut mettre quelques minutes à se propager."
+    Write-Hint "Vérifiez que '$MachineName' apparait dans : tailscale status"
+    Write-Hint "Vérifiez que MagicDNS est active dans votre admin Tailscale."
     Write-Hint "Si la cle SSH GitHub n'est pas encore propagee, attendez 1 minute."
     Write-Hint "En cas de 'Permission denied (publickey)' : votre cle SSH publique"
     Write-Hint "  doit etre sur https://github.com/$SshUser.keys (ou le GitHubUser configure)."
@@ -111,7 +111,7 @@ if (-not $sshByName) {
 if ($TailscaleIp -ne "") {
     $sshByIp = Test-SshHost -Host $TailscaleIp -User $SshUser -Label "IP Tailscale ($TailscaleIp)"
     if (-not $sshByIp) {
-        Write-Hint "Verifiez que l'IP $TailscaleIp est bien celle de $MachineName dans : tailscale status"
+        Write-Hint "Vérifiez que l'IP $TailscaleIp est bien celle de $MachineName dans : tailscale status"
         Write-Hint "Si le nom fonctionne mais pas l'IP, c'est probablement un probleme de routage."
     }
 }
@@ -123,11 +123,11 @@ if ($TailscaleIp -ne "") {
 Write-Host ""
 Write-Host "------------------------------------------------------------"
 if ($sshByName) {
-    Write-Host "  SSH operationnel. Vous pouvez debrancher ecran et clavier." -ForegroundColor Green
+    Write-Host "  SSH opérationnel. Vous pouvez débrancher écran et clavier." -ForegroundColor Green
     Write-Host "  Connexion : ssh $SshUser@$MachineName"
 } else {
     Write-Host "  SSH non fonctionnel. Consultez les hints ci-dessus." -ForegroundColor Red
-    Write-Host "  Si le probleme persiste, reconnectez ecran/clavier et relancez le bootstrap."
+    Write-Host "  Si le probleme persiste, reconnectez écran/clavier et relancez le bootstrap."
 }
 Write-Host "------------------------------------------------------------"
 Write-Host ""
