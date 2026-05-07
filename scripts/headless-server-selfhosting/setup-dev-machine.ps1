@@ -78,7 +78,7 @@ Write-OK "ssh-keygen.exe disponible."
 Write-Step "Recherche d'une clé SSH existante"
 
 $sshDir     = Join-Path $env:USERPROFILE ".ssh"
-$keyFiles   = @("id_ed25519", "id_ecdsa", "id_rsa")
+$keyFiles   = @("id_tailscale", "id_ed25519", "id_ecdsa", "id_rsa")
 $foundKey   = $null
 $foundPub   = $null
 
@@ -108,7 +108,7 @@ if ($null -eq $foundKey) {
         $Email = Read-Host "    Votre adresse email (pour identifier la clé)"
     }
 
-    $keyPath = Join-Path $sshDir "id_ed25519"
+    $keyPath = Join-Path $sshDir "id_tailscale"
     Write-Info "Génération de la clé dans $keyPath ..."
 
     # PS5.1 supprime les chaînes vides passées aux exécutables natifs (-N "").
@@ -150,10 +150,33 @@ try {
 }
 
 # ---------------------------------------------------------------------------
-# 5. Ouverture de GitHub pour ajouter la clé
+# 5. Entrée SSH config pour utiliser cette clé automatiquement
 # ---------------------------------------------------------------------------
 
-Write-Step "Ajout de la clé sur GitHub"
+Write-Step "Configuration SSH (~/.ssh/config)"
+
+$sshConfigPath = Join-Path $sshDir "config"
+$sshConfigEntry = @"
+
+# MappyHour headless server - ajouté par setup-dev-machine.ps1
+Host *.ts.net *
+    IdentityFile ~/.ssh/id_tailscale
+    IdentitiesOnly yes
+"@
+
+$existingConfig = if (Test-Path $sshConfigPath) { Get-Content $sshConfigPath -Raw } else { "" }
+if ($existingConfig -notmatch "id_tailscale") {
+    Add-Content -Path $sshConfigPath -Value $sshConfigEntry
+    Write-OK "Entrée ajoutée dans $sshConfigPath"
+} else {
+    Write-OK "Entrée id_tailscale déjà présente dans $sshConfigPath"
+}
+
+# ---------------------------------------------------------------------------
+# 6. Ouverture de GitHub pour ajouter la clé
+# ---------------------------------------------------------------------------
+
+Write-Step "Ajout de la clé sur GitHub (étape 6)"
 Write-Info "La clé publique est dans le presse-papier."
 Write-Info "Ouverture de github.com/settings/keys dans le navigateur..."
 
@@ -170,7 +193,7 @@ Write-Info "  4. Cliquez 'Add SSH key'"
 # 6. Vérification de Tailscale
 # ---------------------------------------------------------------------------
 
-Write-Step "Vérification de Tailscale"
+Write-Step "Vérification de Tailscale (étape 7)"
 
 $tsExe = Get-Command "tailscale.exe" -ErrorAction SilentlyContinue
 if ($null -eq $tsExe) {
