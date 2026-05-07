@@ -53,6 +53,40 @@ function Fail {
     exit 1
 }
 
+function Ensure-Winget {
+    if (Get-Command "winget.exe" -ErrorAction SilentlyContinue) {
+        Write-OK "winget deja disponible."
+        return
+    }
+
+    Write-Host "    winget absent - tentative d'installation..." -ForegroundColor Yellow
+
+    $vcLibsUrl  = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
+    $wingetUrl  = "https://github.com/microsoft/winget-cli/releases/latest/download/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
+    $vcLibsPath = Join-Path $env:TEMP "VCLibs.x64.appx"
+    $wingetPath = Join-Path $env:TEMP "AppInstaller.msixbundle"
+
+    try {
+        Write-Host "    Telechargement de VCLibs..." -ForegroundColor Gray
+        Invoke-WebRequest $vcLibsUrl -OutFile $vcLibsPath -UseBasicParsing
+        Write-Host "    Telechargement de winget..." -ForegroundColor Gray
+        Invoke-WebRequest $wingetUrl -OutFile $wingetPath -UseBasicParsing
+
+        Add-AppxPackage $vcLibsPath -ErrorAction Stop
+        Add-AppxPackage $wingetPath -ErrorAction Stop
+
+        if (Get-Command "winget.exe" -ErrorAction SilentlyContinue) {
+            Write-OK "winget installe avec succes."
+        } else {
+            Write-Warn "winget installe mais pas encore visible - redemarrez PowerShell si besoin."
+        }
+    } catch {
+        Write-Warn "Installation automatique de winget echouee : $_"
+        Write-Warn "Sur Windows Server, installez App Installer manuellement ou utilisez une autre methode."
+        Write-Warn "Le bootstrap Tailscale peut continuer sans winget si bootstrap.ps1 le gere autrement."
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Verification des droits administrateur
 # ---------------------------------------------------------------------------
@@ -120,6 +154,13 @@ if ($BootstrapRef -eq "main" -or $BootstrapRef -eq "master") {
     Write-Warn "preferez un tag de release ou un SHA complet dans config.local.ps1."
     Write-Warn "Exemple : `$BootstrapRef = 'v1.2.0'  ou  `$BootstrapRef = 'a3f9c1d...'"
 }
+
+# ---------------------------------------------------------------------------
+# Verification / installation de winget
+# ---------------------------------------------------------------------------
+
+Write-Step "Verification de winget"
+Ensure-Winget
 
 # ---------------------------------------------------------------------------
 # Telechargement du script de bootstrap
