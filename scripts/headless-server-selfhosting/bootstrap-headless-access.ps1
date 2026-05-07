@@ -75,9 +75,6 @@ if (Test-Path $configPath) {
     Write-Step "Chargement de config.local.ps1"
     . $configPath
     Write-OK "Configuration chargee depuis $configPath"
-} else {
-    Write-Warn "config.local.ps1 introuvable  - utilisation des parametres passes en argument."
-    Write-Warn "Conseil : copiez config.example.ps1 en config.local.ps1 et remplissez les valeurs."
 }
 
 # ---------------------------------------------------------------------------
