@@ -3,6 +3,8 @@ import { promisify } from "node:util";
 import { gzip as gzipCb, gunzip as gunzipCb } from "node:zlib";
 import path from "node:path";
 
+import { compress as zstdCompress, decompress as zstdDecompress } from "@mongodb-js/zstd";
+
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 import { getSunlightCacheStorage } from "./sunlight-cache-storage";
 import type { PrecomputedRegionName, RegionTileSpec } from "./sunlight-cache";
@@ -10,6 +12,44 @@ import { recordAtlasDrift } from "./atlas-drift-sink";
 
 const gzip = promisify(gzipCb);
 const gunzip = promisify(gunzipCb);
+
+// Atlas compression: zstd is 3-5× faster to decompress than gzip for ~similar
+// ratio. Old atlases on disk are still gzip — the reader detects the format
+// via magic bytes (gzip: 1F 8B / zstd: 28 B5 2F FD) so existing files keep
+// working until next overwrite. Override via MAPPY_ATLAS_COMPRESSION=gzip|zstd.
+function getAtlasCompressionMode(): "zstd" | "gzip" {
+  const raw = (process.env.MAPPY_ATLAS_COMPRESSION ?? "").trim().toLowerCase();
+  return raw === "gzip" ? "gzip" : "zstd";
+}
+
+async function compressAtlasPayload(bin: Buffer): Promise<Buffer> {
+  if (getAtlasCompressionMode() === "gzip") {
+    return (await gzip(bin, { level: 1 })) as Buffer;
+  }
+  // zstd level 3: default sweet spot. Bench (130 MB raw atlas) shows ~50ms
+  // compress + ~400ms decompress vs gzip-1's 89ms / 2400ms. Wall-time win is
+  // dominated by decompress (read-heavy hot path).
+  return await zstdCompress(bin, 3);
+}
+
+async function decompressAtlasPayload(buf: Buffer): Promise<Buffer> {
+  // Magic bytes: gzip = 1F 8B, zstd = 28 B5 2F FD
+  if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
+    return (await gunzip(buf)) as Buffer;
+  }
+  if (
+    buf.length >= 4 &&
+    buf[0] === 0x28 &&
+    buf[1] === 0xb5 &&
+    buf[2] === 0x2f &&
+    buf[3] === 0xfd
+  ) {
+    return await zstdDecompress(buf);
+  }
+  throw new Error(
+    `[atlas-decompress] unknown compression format (first bytes ${[...buf.slice(0, 4)].map((b) => b.toString(16).padStart(2, "0")).join(" ")})`,
+  );
+}
 
 /**
  * Atomic write: writes to a temporary file then renames into place. On POSIX
@@ -524,10 +564,9 @@ export async function writePrecomputedTileAtlas(
 ): Promise<void> {
   const targetPath = getAtlasPath(params);
   const bin = encodeTileAtlasToBinary(atlas);
-  // level 1: bench (scripts/diag/bench-atlas-compression.ts) shows 89ms vs
-  // 359ms for level 6 on ~130MB raw atlas. A/B on Geneva 4-tile run: 80ms
-  // vs 130ms median [atlas-write], file grows 780KB→1.3MB. CPU>>disk here.
-  const compressed = (await gzip(bin, { level: 1 })) as Buffer;
+  // Compression mode toggle (zstd default, gzip fallback via env). zstd level 3
+  // is the default sweet spot — see compressAtlasPayload for rationale.
+  const compressed = await compressAtlasPayload(bin);
   // Atlas first, then sidecar. Order matters for crash consistency: a stale
   // sidecar under-reports coverage → safe fallback to full atlas load. The
   // inverse (sidecar claiming buckets missing from atlas) would silently
@@ -547,7 +586,7 @@ export async function loadPrecomputedTileAtlas(params: {
   const targetPath = getAtlasPath(params);
   try {
     const compressed = await storage.readBuffer(targetPath);
-    const raw = (await gunzip(compressed)) as Buffer;
+    const raw = await decompressAtlasPayload(compressed);
     return decodeTileAtlasFromBinary(raw);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
