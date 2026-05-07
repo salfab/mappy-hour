@@ -1492,17 +1492,24 @@ export async function precomputeCacheRuns(
       // in RustWgpuVulkanShadowBackend serializes the server transaction so
       // concurrent tiles can't corrupt each other's points/focus state.
       //
-      // Sweet spot (bench 2026-05-06, post-Phase-E-fix, 4 Lausanne tiles):
-      //   depth=1  →  ~21-40 tiles/min  (1×    baseline, no pipelining)
-      //   depth=2  →  ~70-77 tiles/min  (2.7×)
-      //   depth=3  →  ~88-92 tiles/min  (3.2×) ← best
-      //   depth=4  →  ~72-85 tiles/min  (2.8×, regresses on lock contention)
+      // Sweet spot (bench 2026-05-07, post-bucket-cache-revert, 296 Lausanne
+      // tiles 1 day):
+      //   depth=3  →  346.7 s wall  (ref)
+      //   depth=4  →  320.9 s wall  (-7.4 %)
+      //   depth=5  →  313.8 s wall  (-9.5 %)  ← best
+      //   depth=6  →  318.3 s wall  (-8.2 %, slight regression vs 5)
       //
-      // Default 3. Override via MAPPY_TILE_PIPELINE_DEPTH=N to experiment.
+      // The pre-revert sweet spot was depth=3 because the 1km bucket cache
+      // forced 4× larger veg/terrain payloads per upload, saturating the GPU
+      // lock at depth>3. With the bucket cache reverted (commit db9ab97),
+      // payloads are smaller and the pipeline supports more concurrency
+      // before contention.
+      //
+      // Default 5. Override via MAPPY_TILE_PIPELINE_DEPTH=N to experiment.
       // Setting 1 falls back to legacy strict-sequential behavior.
       const PIPELINE_DEPTH = Math.max(
         1,
-        Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "3"),
+        Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "5"),
       );
       // Sanity warning: pipelining only overlaps Node-side prep with GPU-IPC
       // eval. CPU shadow modes (detailed, two-level, prism, gpu-raster) have
