@@ -4,6 +4,10 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { buildGridFromBbox } from "@/lib/geo/grid";
+import { wgs84ToLv95Precise } from "@/lib/geo/projection";
+import { getSunlightModelVersion } from "@/lib/precompute/model-version";
+import { resolveRegionForBbox } from "@/lib/precompute/sunlight-tile-service";
+import { loadTileGridMetadata } from "@/lib/precompute/tile-grid-metadata";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
@@ -12,7 +16,7 @@ import { zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
 export const runtime = "nodejs";
 
-const MAX_RAW_GRID_POINTS = 20_000;
+const MAX_RAW_GRID_POINTS = 20_000_000;
 
 const querySchema = z
   .object({
@@ -211,6 +215,56 @@ export async function GET(request: Request) {
           });
           await yieldToEventLoop();
 
+          // Pre-load grid-metadata for all tiles covering the request bbox.
+          // Lets us answer indoor/outdoor per point via O(1) map lookup
+          // instead of having buildPointEvaluationContext recreate shared
+          // sources (terrain tiles + buildings index) on every call.
+          const region = resolveRegionForBbox({
+            minLon: query.minLon, minLat: query.minLat,
+            maxLon: query.maxLon, maxLat: query.maxLat,
+          });
+          type IndoorLookup = (easting: number, northing: number) => boolean;
+          let indoorLookup: IndoorLookup = () => false;
+          if (region) {
+            const modelVersion = await getSunlightModelVersion(region, shadowCalibration);
+            const sw = wgs84ToLv95Precise(query.minLon, query.minLat);
+            const ne = wgs84ToLv95Precise(query.maxLon, query.maxLat);
+            const minE = Math.min(sw.easting, ne.easting);
+            const maxE = Math.max(sw.easting, ne.easting);
+            const minN = Math.min(sw.northing, ne.northing);
+            const maxN = Math.max(sw.northing, ne.northing);
+            const TS = 250;
+            const loads: Array<Promise<void>> = [];
+            const metaByTile = new Map<string, Awaited<ReturnType<typeof loadTileGridMetadata>>>();
+            for (let e = Math.floor(minE / TS) * TS; e <= maxE; e += TS) {
+              for (let n = Math.floor(minN / TS) * TS; n <= maxN; n += TS) {
+                const tileId = `e${e}_n${n}_s${TS}`;
+                loads.push(
+                  loadTileGridMetadata(region, modelVersion.gridMetadataHash, 1, tileId).then(
+                    (md) => { if (md) metaByTile.set(tileId, md); },
+                  ),
+                );
+              }
+            }
+            await Promise.all(loads);
+            if (metaByTile.size > 0) {
+              indoorLookup = (easting, northing) => {
+                const tileE = Math.floor(easting / TS) * TS;
+                const tileN = Math.floor(northing / TS) * TS;
+                const md = metaByTile.get(`e${tileE}_n${tileN}_s${TS}`);
+                if (!md) return false;
+                const ix = Math.floor(easting) - tileE;
+                const iy = Math.floor(northing) - tileN;
+                if (ix < 0 || ix >= TS || iy < 0 || iy >= TS) return false;
+                return md.indoor[iy * TS + ix] ?? false;
+              };
+            } else {
+              warnings.push(
+                `No precomputed grid-metadata for region=${region} in bbox; indoor/outdoor detection unavailable — all points treated as outdoor.`,
+              );
+            }
+          }
+
           const pointsBatch: Array<{
             id: string;
             lat: number;
@@ -239,6 +293,10 @@ export async function GET(request: Request) {
               skipTerrainSamplingWhenIndoor: true,
               terrainHorizonOverride: terrainHorizonOverride ?? undefined,
               shadowCalibration,
+              // Indoor check runs inline against the pre-loaded grid-metadata
+              // map (see indoorLookup above). Avoids buildSharedPointEvaluationSources
+              // doing an async load per point.
+              skipIndoorCheck: true,
             });
             terrainMethod = context.terrainHorizonMethod;
             buildingsMethod = context.buildingsShadowMethod;
@@ -246,7 +304,12 @@ export async function GET(request: Request) {
             warnings.push(...context.warnings);
             processedRawPoints += 1;
 
-            if (context.insideBuilding) {
+            const pointIsIndoor = indoorLookup(
+              context.pointLv95.easting,
+              context.pointLv95.northing,
+            );
+            const insideBuildingForPoint = pointIsIndoor || context.insideBuilding;
+            if (insideBuildingForPoint) {
               indoorPointsExcluded += 1;
             } else {
               outdoorPointCount += 1;
@@ -270,6 +333,7 @@ export async function GET(request: Request) {
                 horizonMask: context.horizonMask,
                 buildingShadowEvaluator: context.buildingShadowEvaluator,
                 vegetationShadowEvaluator: context.vegetationShadowEvaluator,
+                terrainShadowEvaluator: context.terrainShadowEvaluator,
               });
 
               pointsBatch.push({

@@ -6,6 +6,9 @@ import { LAUSANNE_CENTER } from "@/lib/config/lausanne";
 import { NYON_CENTER } from "@/lib/config/nyon";
 import { precomputeCacheRuns } from "@/lib/admin/cache-admin";
 import { buildRegionTiles, type PrecomputedRegionName } from "@/lib/precompute/sunlight-cache";
+import { getSunlightModelVersion } from "@/lib/precompute/model-version";
+import { clearAtlasSkipCache } from "@/lib/precompute/atlas-tile-service";
+import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 
 interface ParsedArgs {
   region: PrecomputedRegionName;
@@ -200,6 +203,18 @@ async function main() {
     `[benchmark:precompute-workers] region=${args.region} date=${args.startDate} days=${args.days} tileCount=${tiles.length} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} repeats=${args.repeats} workers=${args.workers.join(",")}`,
   );
 
+  // Compute the modelVersionHash once so we can purge the cache dir between
+  // configs (otherwise the first config writes atlases that subsequent configs
+  // implicitly skip — even with skipExisting=false — because the buckets they
+  // would compute are already covered).
+  const modelVersion = await getSunlightModelVersion(args.region, {
+    buildingHeightBiasMeters: 0.001,
+  });
+  const cacheDir = path.join(CACHE_SUNLIGHT_DIR, args.region, modelVersion.modelVersionHash);
+  console.log(
+    `[benchmark:precompute-workers] cache dir to purge between configs: ${cacheDir}`,
+  );
+
   try {
     process.env.MAPPY_PRECOMPUTE_WORKERS_STRICT = "1";
     for (let repeat = 1; repeat <= args.repeats; repeat += 1) {
@@ -210,6 +225,9 @@ async function main() {
       );
 
       for (const workerCount of runOrder) {
+        // Purge cache dir + in-memory skip cache so each config starts cold.
+        await fs.rm(cacheDir, { recursive: true, force: true });
+        clearAtlasSkipCache();
         process.env.MAPPY_PRECOMPUTE_WORKERS = String(workerCount);
         const startedAt = performance.now();
         const result = await precomputeCacheRuns(
@@ -224,7 +242,10 @@ async function main() {
             endLocalTime: args.endLocalTime,
             tileIds: selectedTileIds,
             skipExisting: false,
-            buildingHeightBiasMeters: 0,
+            // Non-zero bias forces a fresh modelVersionHash → new cache dir →
+            // real compute (atlases under the prod hash already cover the
+            // sun-angle buckets we'd hit, so a 0-bias bench would skip).
+            buildingHeightBiasMeters: 0.001,
           },
           {},
         );

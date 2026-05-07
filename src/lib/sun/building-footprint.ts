@@ -1,3 +1,5 @@
+import polygonClipping from "polygon-clipping";
+
 export interface FootprintPoint {
   x: number;
   y: number;
@@ -208,6 +210,33 @@ function acuteInteriorAnglesCount(points: FootprintPoint[], thresholdDeg: number
   return count;
 }
 
+function repairSelfIntersecting(ring: FootprintPoint[]): FootprintPoint[] | null {
+  try {
+    // Convert to polygon-clipping format: [[[x,y], [x,y], ...]]
+    const coords: [number, number][] = ring.map(p => [p.x, p.y]);
+    // Close the ring if not closed
+    if (coords.length > 0 && (coords[0][0] !== coords[coords.length - 1][0] || coords[0][1] !== coords[coords.length - 1][1])) {
+      coords.push([coords[0][0], coords[0][1]]);
+    }
+    // Union with self resolves self-intersections
+    const result = polygonClipping.union([[coords]]);
+    if (!result || result.length === 0 || result[0].length === 0) return null;
+    // Take the largest polygon (by vertex count) from the result
+    let bestRing: [number, number][] | null = null;
+    for (const poly of result) {
+      for (const r of poly) {
+        if (!bestRing || r.length > bestRing.length) bestRing = r;
+      }
+    }
+    if (!bestRing || bestRing.length < 4) return null; // 4 = 3 vertices + closing
+    // Convert back, remove closing vertex
+    const repaired = bestRing.slice(0, -1).map(([x, y]) => ({ x, y }));
+    return repaired.length >= 3 ? repaired : null;
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeBuildingFootprint(points: FootprintPoint[]): {
   footprint: FootprintPoint[] | null;
   usedConvexHullFallback: boolean;
@@ -223,8 +252,14 @@ export function normalizeBuildingFootprint(points: FootprintPoint[]): {
 
   let usedConvexHullFallback = false;
   if (!isSimplePolygon(ring)) {
-    ring = convexHull(ring);
-    usedConvexHullFallback = true;
+    // Try to repair self-intersecting polygon via union-with-self
+    const repaired = repairSelfIntersecting(ring);
+    if (repaired && repaired.length >= 3 && isSimplePolygon(repaired)) {
+      ring = repaired;
+    } else {
+      ring = convexHull(ring);
+      usedConvexHullFallback = true;
+    }
   }
 
   if (ring.length < 3) {

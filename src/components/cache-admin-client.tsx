@@ -132,7 +132,7 @@ interface CachePrecomputeJob {
     completedTiles: number;
     totalTiles: number;
     percent: number;
-    currentTileState: "running" | "computed" | "skipped" | "failed";
+    currentTileState: "running" | "computed" | "skipped" | "failed" | "day-skipped";
     currentTilePhase?: "prepare-context" | "prepare-points" | "evaluate-frames" | null;
     currentTileProgressPercent?: number | null;
     currentTilePointCountTotal?: number | null;
@@ -249,6 +249,9 @@ function formatTileState(state: NonNullable<CachePrecomputeJob["progress"]>["cur
   }
   if (state === "skipped") {
     return "ignorée (cache)";
+  }
+  if (state === "day-skipped") {
+    return "jour déjà précalculé";
   }
   return "échec";
 }

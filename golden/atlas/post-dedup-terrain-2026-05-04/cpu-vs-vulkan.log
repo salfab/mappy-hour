@@ -1,0 +1,41 @@
+[check-atlas-vs-cpu-multi] modelHash override active: bff55b407db8426b (default d43fe24cbb9190af ignored)
+Multi-tile / multi-date atlas-vs-CPU audit
+
+  target                         tile                        date        match%  mism  miss  dir(C=SUN/A=SHAD | C=SHAD/A=SUN)
+  ─────────────────────────────  ──────────────────────────  ──────────  ──────  ────  ────  ────────────────────────────────
+[swiss-terrain] dedup 2072 → 775 TIFs (max-year-best-res-v1)
+[vegetation-shadow] tile kinds after dedup (shader-compose=off): vhm_raw=0, vhm_composed=644, dsm=120
+[evaluation-context] Spatial filter: 35367/168257 obstacles within 5000m of focus
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2538086-1154012-35367): 2168648 triangles in 74.64ms
+[evaluation-context] GPU raster backend ready: gpu-shadowmap-4096 (ANGLE), 2168648 triangles
+[indoor-check] Loaded zenith indoor mask for e2537500_n1152000_s250 (15417 indoor)
+  LAU Rumine ouest               e2538000_n1152500_s250      2026-04-29   96.5%     2     0     0         |    2
+[evaluation-context] GPU focus changed (2538,1153 → 2538,1152), recreating backend...
+[evaluation-context] Spatial filter: 35118/168257 obstacles within 5000m of focus
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2538164-1153833-35118): 2156259 triangles in 75.66ms
+[evaluation-context] GPU raster backend ready: gpu-shadowmap-4096 (ANGLE), 2156259 triangles
+[indoor-check] Loaded zenith indoor mask for e2537500_n1151750_s250 (23452 indoor)
+  LAU St-François N              e2538000_n1152250_s250      2026-04-29  100.0%     0     0     0         |    0
+[evaluation-context] GPU focus changed (2538,1152 → 2538,1153), recreating backend...
+[evaluation-context] Spatial filter: 35049/168257 obstacles within 5000m of focus
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2538323-1153943-35049): 2150735 triangles in 84.5ms
+[evaluation-context] GPU raster backend ready: gpu-shadowmap-4096 (ANGLE), 2150735 triangles
+[indoor-check] Loaded zenith indoor mask for e2537750_n1152250_s250 (14682 indoor)
+  LAU Cathédrale N               e2538250_n1152750_s250      2026-04-29   98.2%     1     0     0         |    1
+[indoor-check] Loaded zenith indoor mask for e2537750_n1152000_s250 (28578 indoor)
+  LAU Pont Bessières             e2538250_n1152500_s250      2026-04-29   98.2%     1     0     0         |    1
+[indoor-check] Loaded zenith indoor mask for e2537000_n1152500_s250 (21628 indoor)
+  LAU Chauderon                  e2537500_n1153000_s250      2026-04-29  100.0%     0     0     0         |    0
+
+══════════════════ AGGREGATE PER TARGET ══════════════════
+  target                         total  mism  miss  mism%   dir(C=SUN/A=SHAD | C=SHAD/A=SUN)
+  LAU Rumine ouest                  57     2     0    3.5%     0         |    2
+  LAU St-François N                 57     0     0    0.0%     0         |    0
+  LAU Cathédrale N                  57     1     0    1.8%     0         |    1
+  LAU Pont Bessières                57     1     0    1.8%     0         |    1
+  LAU Chauderon                     57     0     0    0.0%     0         |    0
+
+Interprétation :
+  - mism% > 10% sur plusieurs dates → corruption systémique pour ce point
+  - "C=SHAD / A=SUN" nombreux → atlas rate les ombres de bâtiment (cas Rumine avant regen)
+  - "C=SUN / A=SHAD" nombreux → atlas sur-ombre (calibration ou géométrie trop conservatrice)

@@ -1,0 +1,145 @@
+{
+  "capturedAt": "2026-05-04T17:42:11.984751+00:00",
+  "purpose": "Baseline before dedup-terrain refactor (2026-05-04)",
+  "selectionFile": "data/processed/precompute/golden-dedup-terrain-2026-05-04.json",
+  "regionModelHashes": {
+    "lausanne": "d43fe24cbb9190af",
+    "morges": "c9de8e41eb148fe8",
+    "nyon": "7bf203237ff6647b",
+    "geneve": "16657d851e53a837",
+    "vevey": "7958337d601590db"
+  },
+  "summary": {
+    "totalTiles": 7,
+    "atlasesFound": 7,
+    "atlasesMissing": 0
+  },
+  "captures": [
+    {
+      "region": "morges",
+      "tileId": "e2527000_n1150750_s250",
+      "label": "morges-west-StSulpice-north",
+      "modelVersionHash": "c9de8e41eb148fe8",
+      "atlasBin": {
+        "path": "data/cache/sunlight/morges/c9de8e41eb148fe8/g1/atlas/r0.75/e2527000_n1150750_s250.atlas.bin.gz",
+        "sha256": "3f42eb5cdd018fc98b590a141115b247f56fb0469985682457f1e55e34d91937",
+        "size": 45081173,
+        "mtime": "2026-05-04T14:02:13.043040+00:00"
+      },
+      "atlasIdx": {
+        "path": "data/cache/sunlight/morges/c9de8e41eb148fe8/g1/atlas/r0.75/e2527000_n1150750_s250.atlas.idx",
+        "sha256": "efe5b9e65c4eb172b3a0a31e74540988e1babb9f3de63dd9ad2b90a6abbb2d93",
+        "size": 27296,
+        "mtime": "2026-05-04T14:02:13.043040+00:00"
+      }
+    },
+    {
+      "region": "morges",
+      "tileId": "e2530500_n1151000_s250",
+      "label": "morges-Preverenges-plage",
+      "modelVersionHash": "c9de8e41eb148fe8",
+      "atlasBin": {
+        "path": "data/cache/sunlight/morges/c9de8e41eb148fe8/g1/atlas/r0.75/e2530500_n1151000_s250.atlas.bin.gz",
+        "sha256": "6fc70f6aa1e47ebb9c61af57e4b49a7cb6299969bcadb7e33c83efc5409fd81b",
+        "size": 17302760,
+        "mtime": "2026-04-27T13:27:35.188896+00:00"
+      },
+      "atlasIdx": {
+        "path": "data/cache/sunlight/morges/c9de8e41eb148fe8/g1/atlas/r0.75/e2530500_n1151000_s250.atlas.idx",
+        "sha256": "e093c1818211d6f1f8ddf38dd2d498e28bd30c6a2dec23fd9a6de378da4b5c3c",
+        "size": 27316,
+        "mtime": "2026-04-27T13:27:35.192538+00:00"
+      }
+    },
+    {
+      "region": "lausanne",
+      "tileId": "e2536750_n1152000_s250",
+      "label": "lausanne-Montriond",
+      "modelVersionHash": "d43fe24cbb9190af",
+      "atlasBin": {
+        "path": "data/cache/sunlight/lausanne/d43fe24cbb9190af/g1/atlas/r0.75/e2536750_n1152000_s250.atlas.bin.gz",
+        "sha256": "7b9d943a94c56145c3a55317ed4c577fdc91349a5f051624573e59986bc34506",
+        "size": 58086152,
+        "mtime": "2026-04-27T07:12:20.524428+00:00"
+      },
+      "atlasIdx": {
+        "path": "data/cache/sunlight/lausanne/d43fe24cbb9190af/g1/atlas/r0.75/e2536750_n1152000_s250.atlas.idx",
+        "sha256": "674440523b2f3030c0d175dfe37d63edca03d80a1d3b4284457820a319b99f3d",
+        "size": 27504,
+        "mtime": "2026-04-27T07:12:20.529516+00:00"
+      }
+    },
+    {
+      "region": "lausanne",
+      "tileId": "e2533000_n1153000_s250",
+      "label": "lausanne-west-Renens",
+      "modelVersionHash": "d43fe24cbb9190af",
+      "atlasBin": {
+        "path": "data/cache/sunlight/lausanne/d43fe24cbb9190af/g1/atlas/r0.75/e2533000_n1153000_s250.atlas.bin.gz",
+        "sha256": "735fd9ee36b996ba9339a716ce2b63502026df7d7ad7c6e5b85f3d63c3703ae6",
+        "size": 856062,
+        "mtime": "2026-05-04T17:37:33.638049+00:00"
+      },
+      "atlasIdx": {
+        "path": "data/cache/sunlight/lausanne/d43fe24cbb9190af/g1/atlas/r0.75/e2533000_n1153000_s250.atlas.idx",
+        "sha256": "58d70276ffc7c939159593fb98e1ad5a8529f84ee5f2c93e40e4e81f6524108b",
+        "size": 32,
+        "mtime": "2026-05-04T17:37:33.641841+00:00"
+      }
+    },
+    {
+      "region": "geneve",
+      "tileId": "e2499000_n1118000_s250",
+      "label": "geneve-Rive",
+      "modelVersionHash": "16657d851e53a837",
+      "atlasBin": {
+        "path": "data/cache/sunlight/geneve/16657d851e53a837/g1/atlas/r0.75/e2499000_n1118000_s250.atlas.bin.gz",
+        "sha256": "475d947b4b4fcf7afcd7d2b233b52b6ec6ba0f65da91a5c5f03c716018526bc4",
+        "size": 5321954,
+        "mtime": "2026-05-04T17:15:16.798322+00:00"
+      },
+      "atlasIdx": {
+        "path": "data/cache/sunlight/geneve/16657d851e53a837/g1/atlas/r0.75/e2499000_n1118000_s250.atlas.idx",
+        "sha256": "b51d294f10133ffd28391a990a1ea1322c9ae581985d54aa75fe0800a5ba4826",
+        "size": 3044,
+        "mtime": "2026-05-04T17:15:16.799355+00:00"
+      }
+    },
+    {
+      "region": "geneve",
+      "tileId": "e2499000_n1116000_s250",
+      "label": "geneve-Carouge-sud",
+      "modelVersionHash": "16657d851e53a837",
+      "atlasBin": {
+        "path": "data/cache/sunlight/geneve/16657d851e53a837/g1/atlas/r0.75/e2499000_n1116000_s250.atlas.bin.gz",
+        "sha256": "38e8e6f58c47127da396229440888bc02fb1d93303a6bf3085acf9f223c80a81",
+        "size": 4814320,
+        "mtime": "2026-05-04T17:14:43.505016+00:00"
+      },
+      "atlasIdx": {
+        "path": "data/cache/sunlight/geneve/16657d851e53a837/g1/atlas/r0.75/e2499000_n1116000_s250.atlas.idx",
+        "sha256": "2c796b50fb1420634d40f62dff1f0f151c9ea2c8491682aa967605df000202e1",
+        "size": 3060,
+        "mtime": "2026-05-04T17:14:43.505016+00:00"
+      }
+    },
+    {
+      "region": "vevey",
+      "tileId": "e2549000_n1147000_s250",
+      "label": "vevey-Lavaux-est",
+      "modelVersionHash": "7958337d601590db",
+      "atlasBin": {
+        "path": "data/cache/sunlight/vevey/7958337d601590db/g1/atlas/r0.75/e2549000_n1147000_s250.atlas.bin.gz",
+        "sha256": "28a6ffcaae8bf2de2d0ce99275ccbb52e20cd3638c8b8346c470f272a3bde559",
+        "size": 730000,
+        "mtime": "2026-05-04T17:41:55.433537+00:00"
+      },
+      "atlasIdx": {
+        "path": "data/cache/sunlight/vevey/7958337d601590db/g1/atlas/r0.75/e2549000_n1147000_s250.atlas.idx",
+        "sha256": "8ab295f1f15eeb1a4deba8e894a17b344117f4e13f18aef3ac40585b6250ea4b",
+        "size": 32,
+        "mtime": "2026-05-04T17:41:55.439535+00:00"
+      }
+    }
+  ]
+}

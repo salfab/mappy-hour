@@ -1,0 +1,331 @@
+{
+  "generatedAt": "2026-04-04T06:27:35.125Z",
+  "params": {
+    "region": "lausanne",
+    "date": "2026-03-08",
+    "timezone": "Europe/Zurich",
+    "sampleEveryMinutes": 30,
+    "gridStepMeters": 5,
+    "startLocalTime": "10:00",
+    "endLocalTime": "11:00",
+    "tileCount": 4,
+    "maxPointsPerTile": 0
+  },
+  "modelVersionHash": "a8ab747f201ee1bd",
+  "buildingsShadowMode": "gpu-raster",
+  "selectedTileIds": [
+    "e2538000_n1152250_s250",
+    "e2538000_n1152000_s250",
+    "e2537750_n1152250_s250",
+    "e2538250_n1152250_s250"
+  ],
+  "aggregate": {
+    "counts": {
+      "gridPoints": 9988,
+      "outdoorPoints": 5438,
+      "indoorPoints": 4550,
+      "utcSamples": 2,
+      "evaluations": 10876
+    },
+    "phaseMs": {
+      "adaptiveHorizon": 18254.875,
+      "sharedSources": 40944.075,
+      "pointContexts": 84.084,
+      "evaluations": 388.725,
+      "total": 59736.891
+    },
+    "phasePctOfTotal": {
+      "adaptiveHorizon": 30.559,
+      "sharedSources": 68.541,
+      "pointContexts": 0.141,
+      "evaluations": 0.651
+    },
+    "instantProfilerMs": {
+      "total": 383.559,
+      "solarPosition": 4.06,
+      "terrain": 1.238,
+      "buildings": 354.216,
+      "vegetation": 11.973,
+      "finalize": 8.626
+    },
+    "instantProfilerPctOfEvalLoop": {
+      "total": 98.671,
+      "solarPosition": 1.044,
+      "terrain": 0.318,
+      "buildings": 91.123,
+      "vegetation": 3.08,
+      "finalize": 2.219
+    },
+    "instantProfilerCounts": {
+      "evaluations": 10876,
+      "totalMs": 383.55899999999997,
+      "solarPositionMs": 4.06,
+      "terrainMs": 1.238,
+      "buildingsMs": 354.21599999999995,
+      "vegetationMs": 11.972999999999999,
+      "finalizeMs": 8.626,
+      "belowAstronomicalHorizonCount": 0,
+      "terrainCheckNeededCount": 0,
+      "terrainBlockedCount": 0,
+      "secondarySkippedByTerrainCount": 0,
+      "buildingsEvaluatorCalls": 10876,
+      "vegetationEvaluatorCalls": 10876
+    },
+    "perEvaluationMicros": {
+      "total": 35.267,
+      "solarPosition": 0.373,
+      "terrain": 0.114,
+      "buildings": 32.569,
+      "vegetation": 1.101,
+      "finalize": 0.793
+    },
+    "shadowEvaluators": {
+      "buildingCalls": 10876,
+      "buildingBlockedCalls": 5771,
+      "buildingCheckedObstaclesTotal": 0,
+      "buildingTwoLevelCalls": 0,
+      "buildingTwoLevelBasePassesTotal": 0,
+      "buildingTwoLevelNearThresholdHits": 0,
+      "buildingDetailedVerifierCalls": 0,
+      "buildingDetailedVerifierBlocked": 0,
+      "buildingDetailedVerifierCleared": 0,
+      "buildingTwoLevelFallbackPasses": 0,
+      "vegetationCalls": 10876,
+      "vegetationBlockedCalls": 8260,
+      "vegetationCheckedSamplesTotal": 194230,
+      "avgCheckedObstaclesPerBuildingCall": 0,
+      "avgTwoLevelBasePassesPerBuildingCall": 0,
+      "detailedVerifierCallRatePerBuildingCall": 0,
+      "detailedVerifierClearRate": 0,
+      "avgCheckedVegetationSamplesPerCall": 17.859
+    },
+    "blockerOutcomes": {
+      "terrainBlocked": 0,
+      "buildingsBlocked": 5771,
+      "vegetationBlocked": 8260,
+      "sunny": 2519
+    }
+  },
+  "tiles": [
+    {
+      "tileId": "e2538000_n1152250_s250",
+      "gridPointCount": 2497,
+      "outdoorPointCount": 1248,
+      "indoorPointCount": 1249,
+      "sampleCount": 2,
+      "evaluationCount": 2496,
+      "phaseMs": {
+        "adaptiveHorizon": 18145.899,
+        "sharedSources": 38667.528,
+        "pointContexts": 31.175,
+        "evaluations": 161.624,
+        "total": 57051.58
+      },
+      "instantProfiler": {
+        "evaluations": 2496,
+        "totalMs": 159.813,
+        "solarPositionMs": 2.272,
+        "terrainMs": 0.488,
+        "buildingsMs": 150.191,
+        "vegetationMs": 3.577,
+        "finalizeMs": 2.32,
+        "belowAstronomicalHorizonCount": 0,
+        "terrainCheckNeededCount": 0,
+        "terrainBlockedCount": 0,
+        "secondarySkippedByTerrainCount": 0,
+        "buildingsEvaluatorCalls": 2496,
+        "vegetationEvaluatorCalls": 2496
+      },
+      "shadowEvaluators": {
+        "buildingCalls": 2496,
+        "buildingBlockedCalls": 1804,
+        "buildingCheckedObstaclesTotal": 0,
+        "buildingTwoLevelCalls": 0,
+        "buildingTwoLevelBasePassesTotal": 0,
+        "buildingTwoLevelNearThresholdHits": 0,
+        "buildingDetailedVerifierCalls": 0,
+        "buildingDetailedVerifierBlocked": 0,
+        "buildingDetailedVerifierCleared": 0,
+        "buildingTwoLevelFallbackPasses": 0,
+        "vegetationCalls": 2496,
+        "vegetationBlockedCalls": 2070,
+        "vegetationCheckedSamplesTotal": 36878
+      },
+      "blockerOutcomes": {
+        "terrainBlocked": 0,
+        "buildingsBlocked": 1804,
+        "vegetationBlocked": 2070,
+        "sunny": 404
+      },
+      "adaptiveHorizon": {
+        "strategy": "shared",
+        "warnings": []
+      }
+    },
+    {
+      "tileId": "e2538000_n1152000_s250",
+      "gridPointCount": 2497,
+      "outdoorPointCount": 1304,
+      "indoorPointCount": 1193,
+      "sampleCount": 2,
+      "evaluationCount": 2608,
+      "phaseMs": {
+        "adaptiveHorizon": 44.065,
+        "sharedSources": 2272.011,
+        "pointContexts": 17.496,
+        "evaluations": 81.353,
+        "total": 2422.982
+      },
+      "instantProfiler": {
+        "evaluations": 2608,
+        "totalMs": 80.588,
+        "solarPositionMs": 0.602,
+        "terrainMs": 0.301,
+        "buildingsMs": 72.884,
+        "vegetationMs": 4.036,
+        "finalizeMs": 2.053,
+        "belowAstronomicalHorizonCount": 0,
+        "terrainCheckNeededCount": 0,
+        "terrainBlockedCount": 0,
+        "secondarySkippedByTerrainCount": 0,
+        "buildingsEvaluatorCalls": 2608,
+        "vegetationEvaluatorCalls": 2608
+      },
+      "shadowEvaluators": {
+        "buildingCalls": 2608,
+        "buildingBlockedCalls": 1641,
+        "buildingCheckedObstaclesTotal": 0,
+        "buildingTwoLevelCalls": 0,
+        "buildingTwoLevelBasePassesTotal": 0,
+        "buildingTwoLevelNearThresholdHits": 0,
+        "buildingDetailedVerifierCalls": 0,
+        "buildingDetailedVerifierBlocked": 0,
+        "buildingDetailedVerifierCleared": 0,
+        "buildingTwoLevelFallbackPasses": 0,
+        "vegetationCalls": 2608,
+        "vegetationBlockedCalls": 1996,
+        "vegetationCheckedSamplesTotal": 46664
+      },
+      "blockerOutcomes": {
+        "terrainBlocked": 0,
+        "buildingsBlocked": 1641,
+        "vegetationBlocked": 1996,
+        "sunny": 589
+      },
+      "adaptiveHorizon": {
+        "strategy": "shared",
+        "warnings": []
+      }
+    },
+    {
+      "tileId": "e2537750_n1152250_s250",
+      "gridPointCount": 2496,
+      "outdoorPointCount": 1752,
+      "indoorPointCount": 744,
+      "sampleCount": 2,
+      "evaluationCount": 3504,
+      "phaseMs": {
+        "adaptiveHorizon": 45.053,
+        "sharedSources": 2.273,
+        "pointContexts": 15.571,
+        "evaluations": 75.178,
+        "total": 144.153
+      },
+      "instantProfiler": {
+        "evaluations": 3504,
+        "totalMs": 73.33,
+        "solarPositionMs": 0.684,
+        "terrainMs": 0.264,
+        "buildingsMs": 66.585,
+        "vegetationMs": 2.465,
+        "finalizeMs": 2.363,
+        "belowAstronomicalHorizonCount": 0,
+        "terrainCheckNeededCount": 0,
+        "terrainBlockedCount": 0,
+        "secondarySkippedByTerrainCount": 0,
+        "buildingsEvaluatorCalls": 3504,
+        "vegetationEvaluatorCalls": 3504
+      },
+      "shadowEvaluators": {
+        "buildingCalls": 3504,
+        "buildingBlockedCalls": 1176,
+        "buildingCheckedObstaclesTotal": 0,
+        "buildingTwoLevelCalls": 0,
+        "buildingTwoLevelBasePassesTotal": 0,
+        "buildingTwoLevelNearThresholdHits": 0,
+        "buildingDetailedVerifierCalls": 0,
+        "buildingDetailedVerifierBlocked": 0,
+        "buildingDetailedVerifierCleared": 0,
+        "buildingTwoLevelFallbackPasses": 0,
+        "vegetationCalls": 3504,
+        "vegetationBlockedCalls": 2733,
+        "vegetationCheckedSamplesTotal": 55913
+      },
+      "blockerOutcomes": {
+        "terrainBlocked": 0,
+        "buildingsBlocked": 1176,
+        "vegetationBlocked": 2733,
+        "sunny": 737
+      },
+      "adaptiveHorizon": {
+        "strategy": "shared",
+        "warnings": []
+      }
+    },
+    {
+      "tileId": "e2538250_n1152250_s250",
+      "gridPointCount": 2498,
+      "outdoorPointCount": 1134,
+      "indoorPointCount": 1364,
+      "sampleCount": 2,
+      "evaluationCount": 2268,
+      "phaseMs": {
+        "adaptiveHorizon": 19.858,
+        "sharedSources": 2.263,
+        "pointContexts": 19.842,
+        "evaluations": 70.57,
+        "total": 118.176
+      },
+      "instantProfiler": {
+        "evaluations": 2268,
+        "totalMs": 69.828,
+        "solarPositionMs": 0.502,
+        "terrainMs": 0.185,
+        "buildingsMs": 64.556,
+        "vegetationMs": 1.895,
+        "finalizeMs": 1.89,
+        "belowAstronomicalHorizonCount": 0,
+        "terrainCheckNeededCount": 0,
+        "terrainBlockedCount": 0,
+        "secondarySkippedByTerrainCount": 0,
+        "buildingsEvaluatorCalls": 2268,
+        "vegetationEvaluatorCalls": 2268
+      },
+      "shadowEvaluators": {
+        "buildingCalls": 2268,
+        "buildingBlockedCalls": 1150,
+        "buildingCheckedObstaclesTotal": 0,
+        "buildingTwoLevelCalls": 0,
+        "buildingTwoLevelBasePassesTotal": 0,
+        "buildingTwoLevelNearThresholdHits": 0,
+        "buildingDetailedVerifierCalls": 0,
+        "buildingDetailedVerifierBlocked": 0,
+        "buildingDetailedVerifierCleared": 0,
+        "buildingTwoLevelFallbackPasses": 0,
+        "vegetationCalls": 2268,
+        "vegetationBlockedCalls": 1461,
+        "vegetationCheckedSamplesTotal": 54775
+      },
+      "blockerOutcomes": {
+        "terrainBlocked": 0,
+        "buildingsBlocked": 1150,
+        "vegetationBlocked": 1461,
+        "sunny": 789
+      },
+      "adaptiveHorizon": {
+        "strategy": "shared",
+        "warnings": []
+      }
+    }
+  ]
+}

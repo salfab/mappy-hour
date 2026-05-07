@@ -10,6 +10,7 @@ import type {
   TileLayer,
 } from "leaflet";
 import type { CacheRunDetailResponse } from "@/lib/admin/cache-run-detail";
+import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
 
 type AreaMode = "instant" | "daily";
 type BaseMapStyle = "map" | "satellite";
@@ -117,24 +118,6 @@ interface AreaApiResponse {
   };
 }
 
-interface BuildingPolygon {
-  id: string;
-  footprint: Array<{
-    lat: number;
-    lon: number;
-  }>;
-}
-
-interface BuildingsAreaApiResponse {
-  count: number;
-  buildings: BuildingPolygon[];
-  warnings: string[];
-  stats: {
-    elapsedMs: number;
-    rawIntersectingCount: number;
-  };
-}
-
 type FoodVenueType = "restaurant" | "bar" | "snack" | "foodtruck" | "other";
 
 interface SunlitPlaceEntry {
@@ -179,6 +162,34 @@ interface TimelineFrame {
   sunMaskNoVegetationBase64?: string;
 }
 
+/** Pre-decoded masks from gzip-concat-v1 blob — stored directly as Uint8Array */
+interface DecodedTileMasks {
+  outdoor: Uint8Array;
+  frames: Array<{ sun: Uint8Array; sunNoVeg: Uint8Array }>;
+}
+
+interface TileGrid {
+  minIx: number;
+  maxIx: number;
+  minIy: number;
+  maxIy: number;
+  width: number;
+  height: number;
+}
+
+interface LatLon { lat: number; lon: number; }
+
+interface TimelineTile {
+  tileId: string;
+  grid?: TileGrid;
+  outdoorMaskBase64?: string;
+  decodedMasks?: DecodedTileMasks;
+  points: TimelinePoint[];
+  frames: TimelineFrame[];
+  tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
+  tileCorners?: { nw: LatLon; ne: LatLon; sw: LatLon; se: LatLon };
+}
+
 interface DailyTimelineState {
   date: string;
   timezone: string;
@@ -190,8 +201,10 @@ interface DailyTimelineState {
   gridPointCount: number;
   indoorPointsExcluded: number;
   frameCount: number;
+  tiles: TimelineTile[];
   points: TimelinePoint[];
   frames: TimelineFrame[];
+  overlayBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
   model: {
     terrainHorizonMethod: string;
     buildingsShadowMethod: string;
@@ -226,12 +239,24 @@ interface DailyExposureCell {
   totalFrames: number;
 }
 
+function formatDuration(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, "0")}m${String(s).padStart(2, "0")}s`;
+  if (m > 0) return `${m}m${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
+}
+
 interface TimelineProgress {
   phase: string;
   done: number;
   total: number;
   percent: number;
   etaSeconds: number | null;
+  elapsedMs?: number;
+  tileIndex?: number;
+  totalTiles?: number;
 }
 
 interface InstantStreamStartPayload {
@@ -886,26 +911,6 @@ function destinationPointByAzimuth(
   };
 }
 
-function computeFootprintCenter(
-  footprint: BuildingPolygon["footprint"],
-): { lat: number; lon: number } | null {
-  if (footprint.length === 0) {
-    return null;
-  }
-
-  let sumLat = 0;
-  let sumLon = 0;
-  for (const vertex of footprint) {
-    sumLat += vertex.lat;
-    sumLon += vertex.lon;
-  }
-
-  return {
-    lat: sumLat / footprint.length,
-    lon: sumLon / footprint.length,
-  };
-}
-
 function classifyTerrainSource(
   response: PointInstantApiResponse,
 ): "DEM local (colline du terrain de la ville)" | "montagnes" | null {
@@ -1089,20 +1094,6 @@ function mergePolygons(polygons: Polygon[]): MultiPolygon {
   }
 }
 
-function subtractPolygons(base: MultiPolygon, mask: MultiPolygon): MultiPolygon {
-  if (base.length === 0 || mask.length === 0) {
-    return base;
-  }
-
-  try {
-    const difference = polygonClipping.difference(base, mask);
-    return Array.isArray(difference) ? (difference as MultiPolygon) : [];
-  } catch {
-    // Keep base as fallback instead of crashing rendering.
-    return base;
-  }
-}
-
 function parsePointsForContours(response: AreaApiResponse): ParsedPoint[] {
   if (response.mode === "instant") {
     return (response.points as AreaInstantPoint[])
@@ -1213,6 +1204,364 @@ function buildSunAndShadowContours(response: AreaApiResponse): {
   };
 }
 
+const CANVAS_OVERLAY_THRESHOLD = 10_000;
+
+// RGBA colors for canvas pixels
+const SUNNY_RGBA = [250, 204, 21, 180] as const; // yellow-400 @ 70%
+const SHADOW_RGBA = [100, 116, 139, 160] as const; // slate-500 @ 63%
+
+interface SunShadowGrid {
+  /** Pixel coordinates for each tile's outdoor points (tile index → array of {x, y, outdoorIndex}) */
+  tilePixelMaps: Array<{ x: number; y: number }[]>;
+  width: number;
+  height: number;
+  bounds: [[number, number], [number, number]];
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+}
+
+interface PerTileOverlay {
+  tileId: string;
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  overlay: L.ImageOverlay;
+  width: number;
+  height: number;
+  bounds: [[number, number], [number, number]];
+}
+
+function prepareSunShadowGrid(
+  timeline: DailyTimelineState,
+): SunShadowGrid | null {
+  if (timeline.tiles.length === 0) return null;
+
+  // Use grid bounds from tiles (new format) or parse point IDs (legacy)
+  const hasGridFormat = timeline.tiles.some(t => t.grid);
+
+  let minRow = Infinity;
+  let maxRow = -Infinity;
+  let minCol = Infinity;
+  let maxCol = -Infinity;
+
+  // For grid format: tilePixelMaps are not needed (paintSunShadowFrame
+  // reads grid-indexed masks directly). We still need global col/row.
+  // For legacy format: build pixel maps from parsed point IDs.
+  const tilePixelMaps: Array<{ x: number; y: number }[]> = [];
+
+  if (hasGridFormat) {
+    for (const tile of timeline.tiles) {
+      if (!tile.grid) continue;
+      if (tile.grid.minIx < minCol) minCol = tile.grid.minIx;
+      if (tile.grid.maxIx > maxCol) maxCol = tile.grid.maxIx;
+      if (tile.grid.minIy < minRow) minRow = tile.grid.minIy;
+      if (tile.grid.maxIy > maxRow) maxRow = tile.grid.maxIy;
+      tilePixelMaps.push([]); // placeholder — grid format uses direct indexing
+    }
+  } else {
+    for (const tile of timeline.tiles) {
+      const parsed: Array<{ row: number; col: number }> = [];
+      for (const p of tile.points) {
+        const id = parseGridPointId(p.id);
+        if (!id) continue;
+        parsed.push({ row: id.row, col: id.col });
+        if (id.row < minRow) minRow = id.row;
+        if (id.row > maxRow) maxRow = id.row;
+        if (id.col < minCol) minCol = id.col;
+        if (id.col > maxCol) maxCol = id.col;
+      }
+      tilePixelMaps.push(parsed.map((p) => ({ x: p.col - minCol, y: maxRow - p.row })));
+    }
+  }
+
+  const colRange = maxCol - minCol;
+  const rowRange = maxRow - minRow;
+  if (colRange <= 0 || rowRange <= 0) return null;
+
+  const width = colRange + 1;
+  const height = rowRange + 1;
+  if (width > 10000 || height > 10000) return null;
+
+  // Use overlayBounds from the done event (server-computed via lv95ToWgs84).
+  // Before done arrives, use approximate bounds from grid extent.
+  if (!timeline.overlayBounds) {
+    // No bounds yet — cannot create overlay (wait for done event)
+    return null;
+  }
+  const boundsS = timeline.overlayBounds.minLat;
+  const boundsN = timeline.overlayBounds.maxLat;
+  const boundsW = timeline.overlayBounds.minLon;
+  const boundsE = timeline.overlayBounds.maxLon;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  return {
+    tilePixelMaps,
+    width,
+    height,
+    bounds: [
+      [boundsS, boundsW],
+      [boundsN, boundsE],
+    ] as [[number, number], [number, number]],
+    canvas,
+    ctx,
+  };
+}
+
+function paintSunShadowFrame(
+  grid: SunShadowGrid,
+  timeline: DailyTimelineState,
+  frameIndex: number,
+  decodedMaskCache: Map<string, Uint8Array>,
+  ignoreVegetation: boolean,
+): void {
+  const { width, height, ctx, tilePixelMaps } = grid;
+  const imageData = ctx.createImageData(width, height);
+  const data = imageData.data;
+
+  const safeIndex = Math.max(0, Math.min(frameIndex, (timeline.tiles[0]?.frames.length ?? 1) - 1));
+
+  // Extract global minCol/maxRow from the grid dimensions
+  // The grid object stores tilePixelMaps but for grid-indexed tiles
+  // we need the global offsets. Compute from the first tile with grid data.
+  let globalMinCol = Infinity, globalMaxRow = -Infinity;
+  for (const tile of timeline.tiles) {
+    if (tile.grid) {
+      if (tile.grid.minIx < globalMinCol) globalMinCol = tile.grid.minIx;
+      if (tile.grid.maxIy > globalMaxRow) globalMaxRow = tile.grid.maxIy;
+    }
+  }
+
+  for (let tileIdx = 0; tileIdx < timeline.tiles.length; tileIdx++) {
+    const tile = timeline.tiles[tileIdx];
+    const mask = getTileMask(tile, safeIndex, ignoreVegetation, decodedMaskCache);
+    if (!mask) continue;
+
+    if (tile.grid) {
+      // Grid-indexed format: each bit = 1 grid cell, ordered iy asc then ix asc.
+      // Map grid cells to canvas pixels using the tile's grid bounds.
+      const tileW = tile.grid.width;
+      const outdoorMask = getTileOutdoorMask(tile, decodedMaskCache);
+      const cellCount = tileW * tile.grid.height;
+      for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
+        // Only paint outdoor cells
+        if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) continue;
+        const isSunny = ((mask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
+        const tileRow: number = tile.grid.minIy + Math.floor(cellIdx / tileW);
+        const tileCol: number = tile.grid.minIx + (cellIdx % tileW);
+        const x: number = tileCol - globalMinCol;
+        const y: number = globalMaxRow - tileRow;
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+        const offset = (y * width + x) * 4;
+        const rgba = isSunny ? SUNNY_RGBA : SHADOW_RGBA;
+        data[offset] = rgba[0];
+        data[offset + 1] = rgba[1];
+        data[offset + 2] = rgba[2];
+        data[offset + 3] = rgba[3];
+      }
+    } else {
+      // Legacy format: use pixel maps
+      const pixelMap = tilePixelMaps[tileIdx];
+      for (let i = 0; i < pixelMap.length; i++) {
+        const isSunny = ((mask[i >> 3] >> (i & 7)) & 1) === 1;
+        const { x, y } = pixelMap[i];
+        const offset = (y * width + x) * 4;
+        const rgba = isSunny ? SUNNY_RGBA : SHADOW_RGBA;
+        data[offset] = rgba[0];
+        data[offset + 1] = rgba[1];
+        data[offset + 2] = rgba[2];
+        data[offset + 3] = rgba[3];
+      }
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+}
+
+/**
+ * Marching squares contour extraction from a grid mask.
+ * Produces a small number of polygon rings (~20-50) that trace the
+ * boundaries between sunny and shadow regions. O(N) time.
+ * Each vertex is positioned via bilinear interpolation from the tile's
+ * 4 corners → precise lat/lon, no alignment error.
+ */
+// d3-contour produces MultiPolygon GeoJSON with proper holes
+import { contours as d3Contours } from "d3-contour";
+
+function buildTileContourPolygons(
+  tile: TimelineTile,
+  frameIndex: number,
+  decodedMaskCache: Map<string, Uint8Array>,
+  ignoreVegetation: boolean,
+): { sunnyPolygons: Array<[number, number][][]>; shadowPolygons: Array<[number, number][][]>; buildingPolygons: Array<[number, number][][]> } {
+  const empty = { sunnyPolygons: [], shadowPolygons: [], buildingPolygons: [] };
+  if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) return empty;
+
+  const grid = tile.grid;
+  const tileW = grid.width;
+  const tileH = grid.height;
+  const mask = getTileMask(tile, frameIndex, ignoreVegetation, decodedMaskCache);
+  if (!mask) return empty;
+
+  const outdoorMask = getTileOutdoorMask(tile, decodedMaskCache);
+
+  // Bilinear interpolation from tile corners for vertex positioning
+  const { nw, ne, sw, se } = tile.tileCorners;
+  const toLatLon = (fx: number, fy: number): [number, number] => {
+    // d3-contour uses x=col (0→tileW), y=row (0→tileH) where y=0 is top
+    // Our grid: iy=0 is south, iy=tileH-1 is north
+    // d3-contour y=0 is the first row in the flat array = iy=0 = south
+    const tx = tileW > 0 ? fx / tileW : 0.5;
+    const ty = tileH > 0 ? fy / tileH : 0.5;
+    // ty=0 → south, ty=1 → north
+    const lat = sw.lat * (1 - tx) * (1 - ty) + se.lat * tx * (1 - ty) + nw.lat * (1 - tx) * ty + ne.lat * tx * ty;
+    const lon = sw.lon * (1 - tx) * (1 - ty) + se.lon * tx * (1 - ty) + nw.lon * (1 - tx) * ty + ne.lon * tx * ty;
+    return [lat, lon];
+  };
+
+  // Build zero-padded grid for d3-contour. Indoor cells are set to
+  // their nearest outdoor neighbor's value (sunny=1 or shadow=1) so
+  // that d3-contour does NOT create a boundary at building edges.
+  // The building footprint comes from the outdoor mask (separate layer),
+  // not from contour edges — this prevents the 0.5m smoothing artifact
+  // that made building outlines appear shifted.
+  const padW = tileW + 2;
+  const padH = tileH + 2;
+  const sunnyGrid = new Float64Array(padW * padH);
+  const shadowGrid = new Float64Array(padW * padH);
+  // First pass: set outdoor cells normally
+  for (let iy = 0; iy < tileH; iy++) {
+    for (let ix = 0; ix < tileW; ix++) {
+      const cellIdx = iy * tileW + ix;
+      const isOutdoor = outdoorMask ? ((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1 : true;
+      const isSunny = isOutdoor && ((mask![cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
+      const padIdx = (iy + 1) * padW + (ix + 1);
+      if (isOutdoor) {
+        sunnyGrid[padIdx] = isSunny ? 1 : 0;
+        shadowGrid[padIdx] = isSunny ? 0 : 1;
+      }
+      // Indoor cells stay 0 for now, filled in second pass
+    }
+  }
+  // Second pass: fill indoor cells by flood-filling from nearest outdoor neighbor.
+  // This makes contours extend smoothly through buildings without edge artifacts.
+  for (let iy = 0; iy < tileH; iy++) {
+    for (let ix = 0; ix < tileW; ix++) {
+      const cellIdx = iy * tileW + ix;
+      const isOutdoor = outdoorMask ? ((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1 : true;
+      if (isOutdoor) continue;
+      const padIdx = (iy + 1) * padW + (ix + 1);
+      // Check 4-connected neighbors for an outdoor value to copy
+      for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+        const nx = ix + dx, ny = iy + dy;
+        if (nx < 0 || nx >= tileW || ny < 0 || ny >= tileH) continue;
+        const nIdx = ny * tileW + nx;
+        const nOutdoor = outdoorMask ? ((outdoorMask[nIdx >> 3] >> (nIdx & 7)) & 1) === 1 : true;
+        if (nOutdoor) {
+          const nPadIdx = (ny + 1) * padW + (nx + 1);
+          sunnyGrid[padIdx] = sunnyGrid[nPadIdx];
+          shadowGrid[padIdx] = shadowGrid[nPadIdx];
+          break;
+        }
+      }
+    }
+  }
+
+  const contourGen = d3Contours().size([padW, padH]).thresholds([0.5]);
+
+  // Shift by -0.5: d3-contour places isolines between cells, so the
+  // transition at padded col 0→1 is at x=0.5. Shifting maps it to x=0
+  // (exact tile edge). Same for the far edge.
+  function convertContour(contour: { coordinates: number[][][][] }): Array<[number, number][][]> {
+    return contour.coordinates.map((polygon: number[][][]) =>
+      polygon.map((ring: number[][]) =>
+        ring.map((pt: number[]) => toLatLon(pt[0] - 0.5, pt[1] - 0.5))
+      )
+    );
+  }
+
+  // Buildings grid: indoor=1, outdoor=0 (inverse of outdoor mask)
+  const buildingsGrid = new Float64Array(padW * padH);
+  for (let iy = 0; iy < tileH; iy++) {
+    for (let ix = 0; ix < tileW; ix++) {
+      const cellIdx = iy * tileW + ix;
+      const isOutdoor = outdoorMask ? ((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1 : true;
+      buildingsGrid[(iy + 1) * padW + (ix + 1)] = isOutdoor ? 0 : 1;
+    }
+  }
+
+  const sunnyContours = contourGen(Array.from(sunnyGrid));
+  const shadowContours = contourGen(Array.from(shadowGrid));
+  const buildingContours = contourGen(Array.from(buildingsGrid));
+
+  return {
+    sunnyPolygons: sunnyContours.length > 0 ? convertContour(sunnyContours[0]) : [],
+    shadowPolygons: shadowContours.length > 0 ? convertContour(shadowContours[0]) : [],
+    buildingPolygons: buildingContours.length > 0 ? convertContour(buildingContours[0]) : [],
+  };
+}
+
+function paintTileCanvas(
+  tile: TimelineTile,
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  frameIndex: number,
+  decodedMaskCache: Map<string, Uint8Array>,
+  ignoreVegetation: boolean,
+  mode: "sunShadow" | "heatmap",
+): void {
+  if (!tile.grid) return;
+  const imageData = ctx.createImageData(width, height);
+  const data = imageData.data;
+  const tileW = tile.grid.width;
+  const cellCount = tileW * tile.grid.height;
+
+  const outdoorMask = getTileOutdoorMask(tile, decodedMaskCache);
+
+  if (mode === "sunShadow") {
+    const mask = getTileMask(tile, frameIndex, ignoreVegetation, decodedMaskCache);
+    if (!mask) { ctx.putImageData(imageData, 0, 0); return; }
+    for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
+      if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) continue;
+      const isSunny = ((mask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
+      const iy = Math.floor(cellIdx / tileW);
+      const ix = cellIdx % tileW;
+      const x = ix;
+      const y = height - 1 - iy; // flip Y: north = top
+      const offset = (y * width + x) * 4;
+      const rgba = isSunny ? SUNNY_RGBA : SHADOW_RGBA;
+      data[offset] = rgba[0]; data[offset + 1] = rgba[1]; data[offset + 2] = rgba[2]; data[offset + 3] = rgba[3];
+    }
+  } else {
+    // Heatmap: count sunny frames per cell
+    const totalFrames = tile.frames.length;
+    if (totalFrames === 0) { ctx.putImageData(imageData, 0, 0); return; }
+    const sunnyFrames = new Uint16Array(cellCount);
+    for (let fi = 0; fi < tile.frames.length; fi++) {
+      const mask = getTileMask(tile, fi, ignoreVegetation, decodedMaskCache);
+      if (!mask) continue;
+      for (let i = 0; i < cellCount; i++) {
+        if (((mask[i >> 3] >> (i & 7)) & 1) === 1) sunnyFrames[i] += 1;
+      }
+    }
+    for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
+      if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) continue;
+      const iy = Math.floor(cellIdx / tileW);
+      const ix = cellIdx % tileW;
+      const x = ix;
+      const y = height - 1 - iy;
+      const offset = (y * width + x) * 4;
+      const rgba = exposureRatioToRGBA(sunnyFrames[cellIdx] / totalFrames);
+      data[offset] = rgba[0]; data[offset + 1] = rgba[1]; data[offset + 2] = rgba[2]; data[offset + 3] = rgba[3];
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
 function buildInstantBlockedContours(
   response: AreaApiResponse | null,
   predicate: (point: AreaInstantPoint) => boolean,
@@ -1315,25 +1664,8 @@ function buildInstantBlockedContours(
   return mergePolygons(blockedCells);
 }
 
-function buildBuildingsContours(buildings: BuildingsAreaApiResponse | null): MultiPolygon {
-  if (!buildings || buildings.buildings.length === 0) {
-    return [];
-  }
-
-  const polygons: Polygon[] = [];
-  for (const building of buildings.buildings) {
-    if (building.footprint.length < 3) {
-      continue;
-    }
-    polygons.push([
-      closeRing(
-        building.footprint.map((vertex) => [vertex.lon, vertex.lat] as XY),
-      ),
-    ]);
-  }
-
-  return mergePolygons(polygons);
-}
+// buildBuildingsContours removed — instant mode no longer uses convex hull footprints.
+// Daily mode uses zenith shadow map (outdoor mask) from tile grid metadata instead.}
 
 function timelineMaskCacheKey(frameIndex: number, ignoreVegetation: boolean): string {
   return `${frameIndex}:${ignoreVegetation ? "no-veg" : "full"}`;
@@ -1347,6 +1679,44 @@ function selectTimelineMaskBase64(
     return frame.sunMaskNoVegetationBase64;
   }
   return frame.sunMaskBase64;
+}
+
+/** Resolve a frame mask from pre-decoded blob or fall back to base64 decode + cache. */
+function getTileMask(
+  tile: TimelineTile,
+  frameIndex: number,
+  ignoreVegetation: boolean,
+  cache: Map<string, Uint8Array>,
+): Uint8Array | null {
+  const safeIdx = Math.max(0, Math.min(frameIndex, tile.frames.length - 1));
+  if (tile.decodedMasks) {
+    const dm = tile.decodedMasks.frames[safeIdx];
+    return dm ? (ignoreVegetation ? dm.sunNoVeg : dm.sun) : null;
+  }
+  const frame = tile.frames[safeIdx];
+  if (!frame) return null;
+  const cacheKey = `${tile.tileId}:${frame.index}:${ignoreVegetation ? "nv" : "f"}`;
+  let mask = cache.get(cacheKey);
+  if (!mask) {
+    mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
+    cache.set(cacheKey, mask);
+  }
+  return mask;
+}
+
+/** Resolve the outdoor mask from pre-decoded blob or fall back to base64 decode + cache. */
+function getTileOutdoorMask(
+  tile: TimelineTile,
+  cache: Map<string, Uint8Array>,
+): Uint8Array | undefined {
+  if (tile.decodedMasks) return tile.decodedMasks.outdoor;
+  const cacheKey = `${tile.tileId}:outdoor`;
+  let mask = cache.get(cacheKey);
+  if (!mask && tile.outdoorMaskBase64) {
+    mask = decodeBase64ToBytes(tile.outdoorMaskBase64);
+    cache.set(cacheKey, mask);
+  }
+  return mask;
 }
 
 function isPointSunnyIgnoringVegetation(point: AreaInstantPoint): boolean {
@@ -1377,34 +1747,32 @@ function toInstantAreaResponseFromTimeline(
   decodedMaskCache: Map<string, Uint8Array>,
   ignoreVegetation: boolean,
 ): AreaApiResponse | null {
-  if (timeline.frames.length === 0 || timeline.points.length === 0) {
+  if (timeline.tiles.length === 0) {
     return null;
   }
 
-  const safeIndex = Math.max(0, Math.min(frameIndex, timeline.frames.length - 1));
-  const frame = timeline.frames[safeIndex];
-  const cacheKey = timelineMaskCacheKey(frame.index, ignoreVegetation);
-  let mask = decodedMaskCache.get(cacheKey);
-  if (!mask) {
-    mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-    decodedMaskCache.set(cacheKey, mask);
-  }
+  const safeIndex = Math.max(0, Math.min(frameIndex, (timeline.tiles[0]?.frames.length ?? 1) - 1));
 
-  const points: AreaInstantPoint[] = timeline.points.map((point, index) => {
-    const isSunny = ((mask[index >> 3] >> (index & 7)) & 1) === 1;
-    return {
-      id: point.id,
-      lat: point.lat,
-      lon: point.lon,
-      isSunny,
-      terrainBlocked: false,
-      buildingsBlocked: false,
-      vegetationBlocked: false,
-      altitudeDeg: 0,
-      azimuthDeg: 0,
-      pointElevationMeters: null,
-    };
-  });
+  const points: AreaInstantPoint[] = [];
+  for (const tile of timeline.tiles) {
+    const mask = getTileMask(tile, safeIndex, ignoreVegetation, decodedMaskCache);
+    if (!mask) continue;
+    for (let i = 0; i < tile.points.length; i++) {
+      const isSunny = ((mask[i >> 3] >> (i & 7)) & 1) === 1;
+      points.push({
+        id: tile.points[i].id,
+        lat: tile.points[i].lat,
+        lon: tile.points[i].lon,
+        isSunny,
+        terrainBlocked: false,
+        buildingsBlocked: false,
+        vegetationBlocked: false,
+        altitudeDeg: 0,
+        azimuthDeg: 0,
+        pointElevationMeters: null,
+      });
+    }
+  }
 
   const stats = timeline.stats;
   return {
@@ -1428,37 +1796,41 @@ function buildDailyExposurePoints(
   decodedMaskCache: Map<string, Uint8Array>,
   ignoreVegetation: boolean,
 ): DailyExposurePoint[] {
-  if (timeline.points.length === 0 || timeline.frames.length === 0) {
+  if (timeline.tiles.length === 0) {
     return [];
   }
 
-  const sunnyFrames = new Uint16Array(timeline.points.length);
-  for (const frame of timeline.frames) {
-    const cacheKey = timelineMaskCacheKey(frame.index, ignoreVegetation);
-    let mask = decodedMaskCache.get(cacheKey);
-    if (!mask) {
-      mask = decodeBase64ToBytes(selectTimelineMaskBase64(frame, ignoreVegetation));
-      decodedMaskCache.set(cacheKey, mask);
-    }
-    for (let pointIndex = 0; pointIndex < timeline.points.length; pointIndex += 1) {
-      if (((mask[pointIndex >> 3] >> (pointIndex & 7)) & 1) === 1) {
-        sunnyFrames[pointIndex] += 1;
+  const totalFrames = timeline.tiles[0]?.frames.length ?? 0;
+  if (totalFrames === 0) {
+    return [];
+  }
+
+  const result: DailyExposurePoint[] = [];
+  for (const tile of timeline.tiles) {
+    const sunnyFrames = new Uint16Array(tile.points.length);
+    for (let fi = 0; fi < tile.frames.length; fi++) {
+      const mask = getTileMask(tile, fi, ignoreVegetation, decodedMaskCache);
+      if (!mask) continue;
+      for (let i = 0; i < tile.points.length; i++) {
+        if (((mask[i >> 3] >> (i & 7)) & 1) === 1) {
+          sunnyFrames[i] += 1;
+        }
       }
+    }
+    for (let i = 0; i < tile.points.length; i++) {
+      const pointSunnyFrames = sunnyFrames[i] ?? 0;
+      result.push({
+        id: tile.points[i].id,
+        lat: tile.points[i].lat,
+        lon: tile.points[i].lon,
+        sunnyFrames: pointSunnyFrames,
+        totalFrames,
+        exposureRatio: totalFrames === 0 ? 0 : pointSunnyFrames / totalFrames,
+      });
     }
   }
 
-  return timeline.points.map((point, index) => {
-    const totalFrames = timeline.frames.length;
-    const pointSunnyFrames = sunnyFrames[index] ?? 0;
-    return {
-      id: point.id,
-      lat: point.lat,
-      lon: point.lon,
-      sunnyFrames: pointSunnyFrames,
-      totalFrames,
-      exposureRatio: totalFrames === 0 ? 0 : pointSunnyFrames / totalFrames,
-    };
-  });
+  return result;
 }
 
 function buildDailyExposureCells(
@@ -1572,6 +1944,94 @@ function exposureRatioToColor(exposureRatio: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
+function exposureRatioToRGBA(ratio: number): [number, number, number, number] {
+  const clamped = Math.max(0, Math.min(1, ratio));
+  const cold = { r: 37, g: 99, b: 235 }; // blue
+  const hot = { r: 239, g: 68, b: 68 }; // red
+  return [
+    Math.round(cold.r + (hot.r - cold.r) * clamped),
+    Math.round(cold.g + (hot.g - cold.g) * clamped),
+    Math.round(cold.b + (hot.b - cold.b) * clamped),
+    180, // ~70% opacity
+  ];
+}
+
+function paintHeatmapCanvas(
+  grid: SunShadowGrid,
+  timeline: DailyTimelineState,
+  decodedMaskCache: Map<string, Uint8Array>,
+  ignoreVegetation: boolean,
+): void {
+  const { width, height, ctx, tilePixelMaps } = grid;
+  const imageData = ctx.createImageData(width, height);
+  const data = imageData.data;
+  const totalFrames = timeline.tiles[0]?.frames.length ?? 0;
+  if (totalFrames === 0) return;
+
+  let globalMinCol = Infinity, globalMaxRow = -Infinity;
+  for (const tile of timeline.tiles) {
+    if (tile.grid) {
+      if (tile.grid.minIx < globalMinCol) globalMinCol = tile.grid.minIx;
+      if (tile.grid.maxIy > globalMaxRow) globalMaxRow = tile.grid.maxIy;
+    }
+  }
+
+  for (let tileIdx = 0; tileIdx < timeline.tiles.length; tileIdx++) {
+    const tile = timeline.tiles[tileIdx];
+
+    if (tile.grid) {
+      const tileW = tile.grid.width;
+      const cellCount = tileW * tile.grid.height;
+      const outdoorMask = getTileOutdoorMask(tile, decodedMaskCache);
+      const sunnyFrames = new Uint16Array(cellCount);
+      for (let fi = 0; fi < tile.frames.length; fi++) {
+        const mask = getTileMask(tile, fi, ignoreVegetation, decodedMaskCache);
+        if (!mask) continue;
+        for (let i = 0; i < cellCount; i++) {
+          if (((mask[i >> 3] >> (i & 7)) & 1) === 1) sunnyFrames[i] += 1;
+        }
+      }
+      for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
+        if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) continue;
+        const tileRow: number = tile.grid.minIy + Math.floor(cellIdx / tileW);
+        const tileCol: number = tile.grid.minIx + (cellIdx % tileW);
+        const x: number = tileCol - globalMinCol;
+        const y: number = globalMaxRow - tileRow;
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+        const ratio = sunnyFrames[cellIdx] / totalFrames;
+        const offset = (y * width + x) * 4;
+        const rgba = exposureRatioToRGBA(ratio);
+        data[offset] = rgba[0];
+        data[offset + 1] = rgba[1];
+        data[offset + 2] = rgba[2];
+        data[offset + 3] = rgba[3];
+      }
+    } else {
+      const pixelMap = tilePixelMaps[tileIdx];
+      const sunnyFrames = new Uint16Array(tile.points.length);
+      for (let fi = 0; fi < tile.frames.length; fi++) {
+        const mask = getTileMask(tile, fi, ignoreVegetation, decodedMaskCache);
+        if (!mask) continue;
+        for (let i = 0; i < tile.points.length; i++) {
+          if (((mask[i >> 3] >> (i & 7)) & 1) === 1) sunnyFrames[i] += 1;
+        }
+      }
+      for (let i = 0; i < pixelMap.length; i++) {
+        const ratio = sunnyFrames[i] / totalFrames;
+        const { x, y } = pixelMap[i];
+        const offset = (y * width + x) * 4;
+        const rgba = exposureRatioToRGBA(ratio);
+        data[offset] = rgba[0];
+        data[offset + 1] = rgba[1];
+        data[offset + 2] = rgba[2];
+        data[offset + 3] = rgba[3];
+      }
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+}
+
 function venueTypeBadgeLabel(venueType: FoodVenueType): string {
   switch (venueType) {
     case "restaurant":
@@ -1637,9 +2097,19 @@ export function SunlightMapClient() {
   const baseMapStyleRef = useRef<BaseMapStyle>("map");
   const instantStreamRef = useRef<EventSource | null>(null);
   const instantCancelledRef = useRef(false);
-  const timelineStreamRef = useRef<EventSource | null>(null);
+  const timelineAbortRef = useRef<AbortController | null>(null);
   const timelineCancelledRef = useRef(false);
   const decodedTimelineMaskCacheRef = useRef<Map<string, Uint8Array>>(new Map());
+  const pendingTilesRef = useRef<TimelineTile[]>([]);
+  const pendingStatsRef = useRef<{ gridPointCount: number; indoorPointsExcluded: number }>({ gridPointCount: 0, indoorPointsExcluded: 0 });
+  const lastTileFlushRef = useRef<number>(0);
+  const sunShadowGridRef = useRef<SunShadowGrid | null>(null);
+  const sunShadowOverlayRef = useRef<L.ImageOverlay | null>(null);
+  const heatmapCanvasRef = useRef<SunShadowGrid | null>(null);
+  const heatmapOverlayRef = useRef<L.ImageOverlay | null>(null);
+  const perTileOverlaysRef = useRef<Map<string, PerTileOverlay>>(new Map());
+  const perTileHeatmapOverlaysRef = useRef<Map<string, PerTileOverlay>>(new Map());
+  const contourLayerRef = useRef<L.LayerGroup | null>(null);
   const ignoreVegetationShadowRef = useRef(false);
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
@@ -1650,7 +2120,6 @@ export function SunlightMapClient() {
   const heatmapLayerRef = useRef<LayerGroup | null>(null);
   const placesLayerRef = useRef<LayerGroup | null>(null);
   const clickHighlightLayerRef = useRef<LayerGroup | null>(null);
-  const lastBuildingsRef = useRef<BuildingsAreaApiResponse | null>(null);
   const leafletModuleRef = useRef<typeof import("leaflet") | null>(null);
   const placesRequestIdRef = useRef(0);
   const focusRunLoadedTokenRef = useRef<string | null>(null);
@@ -1685,9 +2154,6 @@ export function SunlightMapClient() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<AreaApiResponse | null>(null);
-  const [lastBuildings, setLastBuildings] = useState<BuildingsAreaApiResponse | null>(
-    null,
-  );
   const [sunlitPlaces, setSunlitPlaces] = useState<SunlitPlaceEntry[]>([]);
   const [placesWarnings, setPlacesWarnings] = useState<string[]>([]);
   const [placesError, setPlacesError] = useState<string | null>(null);
@@ -1700,7 +2166,6 @@ export function SunlightMapClient() {
     null,
   );
   const [dailyProgress, setDailyProgress] = useState<TimelineProgress | null>(null);
-  const [buildingWarnings, setBuildingWarnings] = useState<string[]>([]);
   const [showSunny, setShowSunny] = useState(true);
   const [showShadow, setShowShadow] = useState(true);
   const [showVegetation, setShowVegetation] = useState(true);
@@ -1708,6 +2173,7 @@ export function SunlightMapClient() {
   const [showTerrain, setShowTerrain] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showPlaces, setShowPlaces] = useState(true);
+  const [cacheOnly, setCacheOnly] = useState(false);
   const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
   const [isMapReady, setIsMapReady] = useState(false);
   const [focusRunParamsFromUrl, setFocusRunParamsFromUrl] =
@@ -1739,15 +2205,16 @@ export function SunlightMapClient() {
   }, []);
 
   useEffect(() => {
-    lastBuildingsRef.current = lastBuildings;
-  }, [lastBuildings]);
-
-  useEffect(() => {
     baseMapStyleRef.current = baseMapStyle;
   }, [baseMapStyle]);
 
   const visualAreaResponse = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
+      // For large grids, skip building the full AreaApiResponse —
+      // the canvas overlay useEffect handles rendering directly.
+      if (dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD) {
+        return null;
+      }
       return toInstantAreaResponseFromTimeline(
         dailyTimeline,
         dailyFrameIndex,
@@ -1774,8 +2241,14 @@ export function SunlightMapClient() {
       mode !== "daily" ||
       !dailyTimeline ||
       !dailyTimeline.stats ||
-      dailyTimeline.frames.length === 0
+      dailyTimeline.tiles.length === 0
     ) {
+      return null;
+    }
+
+    // For large grids, skip building exposure points array — the canvas
+    // heatmap useEffect computes exposure directly on the pixel grid.
+    if (dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD) {
       return null;
     }
 
@@ -1806,33 +2279,39 @@ export function SunlightMapClient() {
   const activeWarnings = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
       return Array.from(
-        new Set([...dailyTimeline.warnings, ...buildingWarnings, ...placesWarnings]),
+        new Set([...dailyTimeline.warnings, ...placesWarnings]),
       );
     }
 
     return Array.from(
-      new Set([...(lastResult?.warnings ?? []), ...buildingWarnings, ...placesWarnings]),
+      new Set([...(lastResult?.warnings ?? []), ...placesWarnings]),
     );
-  }, [buildingWarnings, dailyTimeline, lastResult, mode, placesWarnings]);
+  }, [dailyTimeline, lastResult, mode, placesWarnings]);
 
   const activeFrameTime = useMemo(() => {
-    if (!dailyTimeline || dailyTimeline.frames.length === 0) {
+    if (!dailyTimeline || dailyTimeline.tiles.length === 0) {
       return null;
     }
 
+    const firstTileFrames = dailyTimeline.tiles[0]?.frames ?? [];
+    if (firstTileFrames.length === 0) return null;
     const safeIndex = Math.max(
       0,
-      Math.min(dailyFrameIndex, dailyTimeline.frames.length - 1),
+      Math.min(dailyFrameIndex, firstTileFrames.length - 1),
     );
-    return dailyTimeline.frames[safeIndex]?.localTime ?? null;
+    return firstTileFrames[safeIndex]?.localTime ?? null;
   }, [dailyFrameIndex, dailyTimeline]);
 
   const canShowHeatmap = useMemo(
     () =>
       mode === "daily" &&
       Boolean(dailyTimeline?.stats) &&
-      Boolean(dailyExposureCells && dailyExposureCells.length > 0),
-    [dailyExposureCells, dailyTimeline?.stats, mode],
+      Boolean(
+        (dailyExposureCells && dailyExposureCells.length > 0) ||
+          ((dailyTimeline?.pointCount ?? 0) >= CANVAS_OVERLAY_THRESHOLD &&
+            (dailyTimeline?.tiles.length ?? 0) > 0),
+      ),
+    [dailyExposureCells, dailyTimeline?.pointCount, dailyTimeline?.stats, dailyTimeline?.tiles.length, mode],
   );
 
   const isDailyRangeInvalid = useMemo(() => {
@@ -1850,34 +2329,32 @@ export function SunlightMapClient() {
   const helperText = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
       const stats = dailyTimeline.stats;
-      const base = `${dailyTimeline.pointCount} points, frames: ${dailyTimeline.frames.length}/${dailyTimeline.frameCount}, plage: ${dailyTimeline.startLocalTime}-${dailyTimeline.endLocalTime}, indoor exclus: ${dailyTimeline.indoorPointsExcluded}, terrasses soleil: ${sunlitPlaces.length}, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m`;
+      const base = `${dailyTimeline.pointCount} points, tiles: ${dailyTimeline.tiles.length}, frames: ${dailyTimeline.frameCount}, plage: ${dailyTimeline.startLocalTime}-${dailyTimeline.endLocalTime}, indoor exclus: ${dailyTimeline.indoorPointsExcluded}, terrasses soleil: ${sunlitPlaces.length}, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m`;
       if (!stats) {
         return `${base}, calcul timeline en cours...`;
       }
 
+      const elapsed = formatDuration(Math.round(stats.elapsedMs / 1000));
       if (!dailyExposureHotspot) {
-        return `${base}, ${stats.elapsedMs} ms, evaluations: ${stats.totalEvaluations}`;
+        return `${base}, ${elapsed}, evaluations: ${stats.totalEvaluations}`;
       }
 
       const exposurePercent = Math.round(dailyExposureHotspot.exposureRatio * 100);
-      return `${base}, ${stats.elapsedMs} ms, evaluations: ${stats.totalEvaluations}, hotspot: ${exposurePercent}% (${dailyExposureHotspot.lat.toFixed(5)}, ${dailyExposureHotspot.lon.toFixed(5)})`;
+      return `${base}, ${elapsed}, evaluations: ${stats.totalEvaluations}, hotspot: ${exposurePercent}% (${dailyExposureHotspot.lat.toFixed(5)}, ${dailyExposureHotspot.lon.toFixed(5)})`;
     }
 
     if (!lastResult) {
       return "Aucun calcul encore lancé.";
     }
     const warningCount = Array.from(
-      new Set([...(lastResult.warnings ?? []), ...buildingWarnings, ...placesWarnings]),
+      new Set([...(lastResult.warnings ?? []), ...placesWarnings]),
     ).length;
     const excludedIndoor = lastResult.stats.indoorPointsExcluded ?? 0;
-    const buildingCount = lastBuildings?.count ?? 0;
-    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, bâtiments: ${buildingCount}, terrasses soleil: ${sunlitPlaces.length}, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m, warnings: ${warningCount}`;
+    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, terrasses soleil: ${sunlitPlaces.length}, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m, warnings: ${warningCount}`;
   }, [
-    buildingWarnings,
     buildingHeightBiasMeters,
     dailyExposureHotspot,
     dailyTimeline,
-    lastBuildings?.count,
     lastResult,
     mode,
     placesWarnings,
@@ -1958,42 +2435,6 @@ export function SunlightMapClient() {
       };
 
       if (params.primarySource === "bâtiment") {
-        const blockerId =
-          params.response.sample.buildingBlockerId ??
-          params.response.pointContext.indoorBuildingId;
-        const building =
-          blockerId === null
-            ? null
-            : (lastBuildingsRef.current?.buildings.find(
-                (item) => item.id === blockerId,
-              ) ?? null);
-
-        if (building && building.footprint.length >= 3) {
-          const ring = building.footprint.map(
-            (vertex) => [vertex.lat, vertex.lon] as [number, number],
-          );
-          L.polygon(ring, {
-            color: "#c2410c",
-            fillColor: "#fb923c",
-            weight: 2.6,
-            opacity: 0.95,
-            fillOpacity: 0.28,
-          })
-            .addTo(highlightLayer)
-            .bindTooltip(`Bloqueur bâtiment: ${blockerId}`, { sticky: true });
-
-          const center = computeFootprintCenter(building.footprint);
-          if (center) {
-            drawRayToTarget(
-              center.lat,
-              center.lon,
-              "#ea580c",
-              "Rayon vers le bâtiment bloqueur",
-            );
-          }
-          return;
-        }
-
         const distance = params.response.sample.buildingBlockerDistanceMeters;
         if (distance !== null && Number.isFinite(distance) && distance > 0) {
           const fallbackPoint = destinationPointByAzimuth(
@@ -2526,6 +2967,18 @@ export function SunlightMapClient() {
         active: initialBaseMapStyle,
       };
 
+      L.control.layers(
+        { "Carte": streetLayer, "Satellite": satelliteLayer },
+        {},
+        { position: "topright", collapsed: true },
+      ).addTo(map);
+
+      map.on("baselayerchange", (event: L.LayersControlEvent) => {
+        const newStyle = event.name === "Satellite" ? "satellite" : "map";
+        baseMapStyleRef.current = newStyle;
+        setBaseMapStyle(newStyle as BaseMapStyle);
+      });
+
       sunnyLayerRef.current = L.layerGroup().addTo(map);
       shadowLayerRef.current = L.layerGroup().addTo(map);
       vegetationLayerRef.current = L.layerGroup().addTo(map);
@@ -2570,10 +3023,10 @@ export function SunlightMapClient() {
         instantStreamRef.current.close();
         instantStreamRef.current = null;
       }
-      if (timelineStreamRef.current) {
+      if (timelineAbortRef.current) {
         timelineCancelledRef.current = true;
-        timelineStreamRef.current.close();
-        timelineStreamRef.current = null;
+        timelineAbortRef.current.abort();
+        timelineAbortRef.current = null;
       }
       if (mapRef.current) {
         mapRef.current.remove();
@@ -2622,7 +3075,6 @@ export function SunlightMapClient() {
   const renderLayers = useCallback(
     (
       response: AreaApiResponse | null,
-      buildings: BuildingsAreaApiResponse | null,
       places: SunlitPlaceEntry[],
       dailyExposureCellsInput: DailyExposureCell[] | null,
       visibility: {
@@ -2665,21 +3117,27 @@ export function SunlightMapClient() {
       heatmapLayer.clearLayers();
       placesLayer.clearLayers();
 
-      const { sunnyContours, shadowContours } = response
+      const useCanvasOverlay =
+        response && response.pointCount >= CANVAS_OVERLAY_THRESHOLD;
+
+      // Canvas overlay for large grids is managed by a separate useEffect
+      // (sunShadowGridRef + sunShadowOverlayRef) for fast slider updates.
+
+      // For smaller grids, use vector polygon contours
+      const { sunnyContours, shadowContours } = !useCanvasOverlay && response
         ? buildSunAndShadowContours(response)
         : { sunnyContours: [], shadowContours: [] };
-      const buildingsContours = buildBuildingsContours(buildings);
-      const sunnyOutdoorContours = subtractPolygons(sunnyContours, buildingsContours);
-      const shadowOutdoorContours = subtractPolygons(shadowContours, buildingsContours);
       const vegetationContours = visibility.ignoreVegetationShadow
         ? []
-        : buildInstantBlockedContours(
-            response,
-            (point) => point.vegetationBlocked === true,
-          );
+        : useCanvasOverlay
+          ? []
+          : buildInstantBlockedContours(
+              response,
+              (point) => point.vegetationBlocked === true,
+            );
 
-      if (visibility.sunny) {
-        for (const polygon of sunnyOutdoorContours) {
+      if (visibility.sunny && !useCanvasOverlay) {
+        for (const polygon of sunnyContours) {
           const latLngRings = polygon.map((ring) =>
             ring.map(([lon, lat]) => [lat, lon] as [number, number]),
           );
@@ -2693,8 +3151,8 @@ export function SunlightMapClient() {
         }
       }
 
-      if (visibility.shadow) {
-        for (const polygon of shadowOutdoorContours) {
+      if (visibility.shadow && !useCanvasOverlay) {
+        for (const polygon of shadowContours) {
           const latLngRings = polygon.map((ring) =>
             ring.map(([lon, lat]) => [lat, lon] as [number, number]),
           );
@@ -2708,20 +3166,8 @@ export function SunlightMapClient() {
         }
       }
 
-      if (visibility.buildings) {
-        for (const polygon of buildingsContours) {
-          const latLngRings = polygon.map((ring) =>
-            ring.map(([lon, lat]) => [lat, lon] as [number, number]),
-          );
-          L.polygon(latLngRings, {
-            color: "#2563eb",
-            fillColor: "#2563eb",
-            weight: 0.9,
-            opacity: 0.58,
-            fillOpacity: 0.24,
-          }).addTo(buildingsLayer);
-        }
-      }
+      // Buildings layer in instant mode: cleared only (no convex hull footprints).
+      // Daily mode renders buildings via the tile contour layer (zenith outdoor mask).
 
       if (visibility.vegetation) {
         for (const polygon of vegetationContours) {
@@ -2738,7 +3184,7 @@ export function SunlightMapClient() {
         }
       }
 
-      if (visibility.heatmap && dailyExposureCellsInput && dailyExposureCellsInput.length > 0) {
+      if (visibility.heatmap && !useCanvasOverlay && dailyExposureCellsInput && dailyExposureCellsInput.length > 0) {
         for (const cell of dailyExposureCellsInput) {
           const latLngRing = cell.ring.map(([lon, lat]) => [lat, lon] as [number, number]);
           const color = exposureRatioToColor(cell.exposureRatio);
@@ -2875,20 +3321,30 @@ export function SunlightMapClient() {
   );
 
   useEffect(() => {
-    renderLayers(visualAreaResponse, lastBuildings, sunlitPlaces, dailyExposureCells, {
-      sunny: showSunny,
-      shadow: showShadow,
-      vegetation: showVegetation,
-      buildings: showBuildings,
-      terrain: showTerrain,
-      heatmap: showHeatmap,
-      places: showPlaces,
-      ignoreVegetationShadow,
-    });
+    // In daily mode, the tile contour layer handles sunny/shadow/buildings
+    // rendering using the outdoor mask from grid metadata (zenith shadow map).
+    // Don't render the instant layers which use convex hull footprints.
+    const isDailyMode = mode === "daily" && dailyTimeline && dailyTimeline.tiles.length > 0;
+    renderLayers(
+      isDailyMode ? null : visualAreaResponse,
+      sunlitPlaces,
+      dailyExposureCells,
+      {
+        sunny: isDailyMode ? false : showSunny,
+        shadow: isDailyMode ? false : showShadow,
+        vegetation: isDailyMode ? false : showVegetation,
+        buildings: isDailyMode ? false : showBuildings,
+        terrain: isDailyMode ? false : showTerrain,
+        heatmap: showHeatmap,
+        places: showPlaces,
+        ignoreVegetationShadow,
+      },
+    );
   }, [
     dailyExposureCells,
+    dailyTimeline,
     ignoreVegetationShadow,
-    lastBuildings,
+    mode,
     renderLayers,
     showBuildings,
     showHeatmap,
@@ -2900,6 +3356,318 @@ export function SunlightMapClient() {
     sunlitPlaces,
     visualAreaResponse,
   ]);
+
+  // Canvas overlay for large grids — fast slider updates
+  useEffect(() => {
+    if (!isMapReady || !dailyTimeline || mode !== "daily") {
+      if (sunShadowOverlayRef.current) {
+        sunShadowOverlayRef.current.remove();
+        sunShadowOverlayRef.current = null;
+      }
+      if (contourLayerRef.current) {
+        contourLayerRef.current.clearLayers();
+      }
+      for (const ov of perTileOverlaysRef.current.values()) {
+        const customImg = (ov.overlay as unknown as { _customImg?: HTMLElement })._customImg;
+        if (customImg) customImg.remove();
+        ov.overlay.remove();
+      }
+      perTileOverlaysRef.current.clear();
+      sunShadowGridRef.current = null;
+      return;
+    }
+    const L = leafletModuleRef.current;
+    if (!L) return;
+
+    const useCanvas = dailyTimeline.tiles.length > 0 && dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD;
+    const hasGridTiles = dailyTimeline.tiles.some(t => t.grid);
+    const overlayVisible = useCanvas && (showSunny || showShadow);
+
+    if (!overlayVisible || !hasGridTiles) {
+      // Clean up per-tile overlays
+      for (const ov of perTileOverlaysRef.current.values()) {
+        const customImg = (ov.overlay as unknown as { _customImg?: HTMLElement })._customImg;
+        if (customImg) customImg.remove();
+        ov.overlay.remove();
+      }
+      perTileOverlaysRef.current.clear();
+      if (contourLayerRef.current) {
+        contourLayerRef.current.clearLayers();
+      }
+      if (sunShadowOverlayRef.current) {
+        sunShadowOverlayRef.current.remove();
+        sunShadowOverlayRef.current = null;
+      }
+      sunShadowGridRef.current = null;
+      return;
+    }
+
+    const map = mapRef.current;
+    if (!map) return;
+
+    // Vectorial contour rendering: marching squares produces ~20-50 polygons
+    // per tile, positioned vertex-by-vertex via bilinear interpolation from
+    // tile corners → pixel-perfect alignment, no canvas stretching artifacts.
+    const useVectorial = dailyTimeline.tiles.some(t => t.tileCorners);
+
+    if (useVectorial) {
+      // Clean up canvas overlays
+      for (const ov of perTileOverlaysRef.current.values()) {
+        const customImg = (ov.overlay as unknown as { _customImg?: HTMLElement })._customImg;
+        if (customImg) customImg.remove();
+        ov.overlay.remove();
+      }
+      perTileOverlaysRef.current.clear();
+
+      // Create or reuse contour layer
+      if (!contourLayerRef.current) {
+        contourLayerRef.current = L.layerGroup().addTo(map);
+      }
+      contourLayerRef.current.clearLayers();
+
+      for (const tile of dailyTimeline.tiles) {
+        if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) continue;
+        const contours = buildTileContourPolygons(
+          tile, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow,
+        );
+        if (showSunny && showShadow) {
+          // Both layers: yellow sunny polygons + gray shadow polygons
+          for (const polygon of contours.sunnyPolygons) {
+            const latLngRings = polygon.map(ring =>
+              ring.map(([lat, lon]) => [lat, lon] as [number, number])
+            );
+            L.polygon(latLngRings, {
+              color: "#eab308",
+              fillColor: "#facc15",
+              weight: 0,
+              fillOpacity: 0.4,
+            }).addTo(contourLayerRef.current!);
+          }
+          for (const polygon of contours.shadowPolygons) {
+            const latLngRings = polygon.map(ring =>
+              ring.map(([lat, lon]) => [lat, lon] as [number, number])
+            );
+            L.polygon(latLngRings, {
+              color: "#475569",
+              fillColor: "#334155",
+              weight: 0,
+              fillOpacity: 0.35,
+            }).addTo(contourLayerRef.current!);
+          }
+        } else if (showSunny) {
+          for (const polygon of contours.sunnyPolygons) {
+            const latLngRings = polygon.map(ring =>
+              ring.map(([lat, lon]) => [lat, lon] as [number, number])
+            );
+            L.polygon(latLngRings, {
+              color: "#eab308",
+              fillColor: "#facc15",
+              weight: 0,
+              fillOpacity: 0.4,
+            }).addTo(contourLayerRef.current!);
+          }
+        } else if (showShadow) {
+          for (const polygon of contours.shadowPolygons) {
+            const latLngRings = polygon.map(ring =>
+              ring.map(([lat, lon]) => [lat, lon] as [number, number])
+            );
+            L.polygon(latLngRings, {
+              color: "#475569",
+              fillColor: "#334155",
+              weight: 0,
+              fillOpacity: 0.35,
+            }).addTo(contourLayerRef.current!);
+          }
+        }
+
+        // Building footprints from zenith outdoor mask (not convex hull)
+        if (showBuildings) {
+          for (const polygon of contours.buildingPolygons) {
+            const latLngRings = polygon.map(ring =>
+              ring.map(([lat, lon]) => [lat, lon] as [number, number])
+            );
+            L.polygon(latLngRings, {
+              color: "#2563eb",
+              fillColor: "#2563eb",
+              weight: 0.5,
+              opacity: 0.5,
+              fillOpacity: 0.2,
+            }).addTo(contourLayerRef.current!);
+          }
+        }
+      }
+      return; // skip canvas path
+    }
+
+    // Fallback: per-tile canvas overlays (when tileCorners not available)
+    if (contourLayerRef.current) {
+      contourLayerRef.current.clearLayers();
+    }
+    const existingOverlays = perTileOverlaysRef.current;
+    const activeTileIds = new Set(dailyTimeline.tiles.map(t => t.tileId));
+
+    // Remove overlays for tiles no longer present
+    for (const [id, ov] of existingOverlays) {
+      if (!activeTileIds.has(id)) {
+        const customImg = (ov.overlay as unknown as { _customImg?: HTMLElement })._customImg;
+        if (customImg) customImg.remove();
+        ov.overlay.remove();
+        existingOverlays.delete(id);
+      }
+    }
+
+    for (const tile of dailyTimeline.tiles) {
+      if (!tile.grid || tile.frames.length === 0) continue;
+
+      let ov = existingOverlays.get(tile.tileId);
+      if (!ov) {
+        // Create canvas + overlay for this tile
+        const w = tile.grid.width;
+        const h = tile.grid.height;
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+
+        if (!tile.tileCorners && !tile.tileBounds) continue;
+
+        let overlay: L.ImageOverlay;
+        let bounds: [[number, number], [number, number]];
+
+        if (tile.tileCorners) {
+          // Use affine transform via CSS matrix for precise positioning.
+          // Canvas coords: (0,0)=NW, (w,0)=NE, (0,h)=SW
+          // Map coords: convert corners to layer points
+          const nwPt = map.latLngToLayerPoint([tile.tileCorners.nw.lat, tile.tileCorners.nw.lon]);
+          const nePt = map.latLngToLayerPoint([tile.tileCorners.ne.lat, tile.tileCorners.ne.lon]);
+          const swPt = map.latLngToLayerPoint([tile.tileCorners.sw.lat, tile.tileCorners.sw.lon]);
+
+          // CSS matrix(a,b,c,d,e,f): x'=a*x+c*y+e, y'=b*x+d*y+f
+          const a = (nePt.x - nwPt.x) / w;
+          const b = (nePt.y - nwPt.y) / w;
+          const c = (swPt.x - nwPt.x) / h;
+          const d = (swPt.y - nwPt.y) / h;
+
+          // Create a plain img element positioned via CSS transform
+          const img = document.createElement("img");
+          img.style.position = "absolute";
+          img.style.left = "0";
+          img.style.top = "0";
+          img.style.transformOrigin = "0 0";
+          img.style.transform = `matrix(${a},${b},${c},${d},${nwPt.x},${nwPt.y})`;
+          img.style.imageRendering = "pixelated";
+          img.style.pointerEvents = "none";
+          img.src = canvas.toDataURL();
+
+          const mapPane = map.getPane("overlayPane");
+          if (mapPane) mapPane.appendChild(img);
+
+          // Wrap in a dummy overlay for cleanup — store the img ref
+          bounds = tile.tileBounds
+            ? [[tile.tileBounds.minLat, tile.tileBounds.minLon], [tile.tileBounds.maxLat, tile.tileBounds.maxLon]]
+            : [[tile.tileCorners.sw.lat, tile.tileCorners.sw.lon], [tile.tileCorners.ne.lat, tile.tileCorners.ne.lon]];
+          // Use a minimal L.imageOverlay just for lifecycle management
+          overlay = L.imageOverlay(canvas.toDataURL(), bounds, { opacity: 0, interactive: false }).addTo(map);
+          // Hide the leaflet overlay and keep our custom img
+          const leafletImg = (overlay as unknown as { _image?: HTMLElement })._image;
+          if (leafletImg) leafletImg.style.display = "none";
+          // Store custom img ref for updates
+          (overlay as unknown as { _customImg: HTMLImageElement })._customImg = img;
+          (overlay as unknown as { _tileCorners: typeof tile.tileCorners })._tileCorners = tile.tileCorners;
+        } else {
+          bounds = [[tile.tileBounds!.minLat, tile.tileBounds!.minLon], [tile.tileBounds!.maxLat, tile.tileBounds!.maxLon]];
+          overlay = L.imageOverlay(canvas.toDataURL(), bounds, { opacity: 1, interactive: false }).addTo(map);
+          const imgEl = (overlay as unknown as { _image?: HTMLElement })._image;
+          if (imgEl) imgEl.style.imageRendering = "pixelated";
+        }
+
+        ov = { tileId: tile.tileId, canvas, ctx, overlay, width: w, height: h, bounds };
+        existingOverlays.set(tile.tileId, ov);
+      }
+
+      // Paint the current frame on this tile's canvas
+      paintTileCanvas(tile, ov.ctx, ov.width, ov.height, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow, "sunShadow");
+      const dataUrl = ov.canvas.toDataURL();
+      const customImg = (ov.overlay as unknown as { _customImg?: HTMLImageElement })._customImg;
+      if (customImg) {
+        customImg.src = dataUrl;
+        // Update transform in case map was panned/zoomed
+        const corners = (ov.overlay as unknown as { _tileCorners?: { nw: LatLon; ne: LatLon; sw: LatLon } })._tileCorners;
+        if (corners) {
+          const nwPt = map.latLngToLayerPoint([corners.nw.lat, corners.nw.lon]);
+          const nePt = map.latLngToLayerPoint([corners.ne.lat, corners.ne.lon]);
+          const swPt = map.latLngToLayerPoint([corners.sw.lat, corners.sw.lon]);
+          const a = (nePt.x - nwPt.x) / ov.width;
+          const b = (nePt.y - nwPt.y) / ov.width;
+          const c = (swPt.x - nwPt.x) / ov.height;
+          const d = (swPt.y - nwPt.y) / ov.height;
+          customImg.style.transform = `matrix(${a},${b},${c},${d},${nwPt.x},${nwPt.y})`;
+        }
+      } else {
+        ov.overlay.setUrl(dataUrl);
+      }
+    }
+  }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showShadow, showSunny]);
+
+  // Canvas heatmap for large grids
+  useEffect(() => {
+    if (!isMapReady || !dailyTimeline || mode !== "daily") {
+      if (heatmapOverlayRef.current) {
+        heatmapOverlayRef.current.remove();
+        heatmapOverlayRef.current = null;
+      }
+      heatmapCanvasRef.current = null;
+      return;
+    }
+    const L = leafletModuleRef.current;
+    if (!L) return;
+
+    const useCanvas = dailyTimeline.tiles.length > 0 && dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD && dailyTimeline.stats;
+    if (!useCanvas || !showHeatmap) {
+      if (heatmapOverlayRef.current) {
+        heatmapOverlayRef.current.remove();
+        heatmapOverlayRef.current = null;
+      }
+      return;
+    }
+
+    // Reuse the sun/shadow grid or build a new one
+    if (!heatmapCanvasRef.current || heatmapCanvasRef.current.tilePixelMaps.length !== dailyTimeline.tiles.length) {
+      if (heatmapOverlayRef.current) {
+        heatmapOverlayRef.current.remove();
+        heatmapOverlayRef.current = null;
+      }
+      heatmapCanvasRef.current = prepareSunShadowGrid(dailyTimeline);
+    }
+
+    const grid = heatmapCanvasRef.current;
+    if (!grid) return;
+
+    paintHeatmapCanvas(
+      grid,
+      dailyTimeline,
+      decodedTimelineMaskCacheRef.current,
+      ignoreVegetationShadow,
+    );
+
+    const map = mapRef.current;
+    if (!map) return;
+    const dataUrl = grid.canvas.toDataURL();
+    if (!heatmapOverlayRef.current) {
+      heatmapOverlayRef.current = L.imageOverlay(
+        dataUrl,
+        grid.bounds,
+        { opacity: 1, interactive: false },
+      ).addTo(map);
+      const imgEl = (heatmapOverlayRef.current as unknown as { _image?: HTMLElement })._image;
+      if (imgEl) {
+        imgEl.style.imageRendering = "pixelated";
+      }
+    } else {
+      heatmapOverlayRef.current.setUrl(dataUrl);
+    }
+  }, [dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showHeatmap]);
 
   useEffect(() => {
     if (!isMapReady) {
@@ -2955,10 +3723,10 @@ export function SunlightMapClient() {
       return;
     }
 
-    if (timelineStreamRef.current) {
+    if (timelineAbortRef.current) {
       timelineCancelledRef.current = true;
-      timelineStreamRef.current.close();
-      timelineStreamRef.current = null;
+      timelineAbortRef.current.abort();
+      timelineAbortRef.current = null;
       setIsLoading(false);
     }
   }, [mode]);
@@ -2969,10 +3737,10 @@ export function SunlightMapClient() {
     }
 
     timelineCancelledRef.current = true;
-    if (timelineStreamRef.current) {
+    if (timelineAbortRef.current) {
       timelineCancelledRef.current = true;
-      timelineStreamRef.current.close();
-      timelineStreamRef.current = null;
+      timelineAbortRef.current.abort();
+      timelineAbortRef.current = null;
     }
     timelineCancelledRef.current = false;
     setIsLoading(false);
@@ -2984,40 +3752,6 @@ export function SunlightMapClient() {
       etaSeconds: null,
     }));
   }, [mode]);
-
-  const loadBuildingsLayer = useCallback(async (bbox: [number, number, number, number]) => {
-    const buildingsPayload = {
-      bbox,
-      maxBuildings: 6000,
-    };
-
-    const buildingsResponse = await fetch("/api/buildings/area", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(buildingsPayload),
-    });
-
-    if (buildingsResponse.ok) {
-      return (await buildingsResponse.json()) as BuildingsAreaApiResponse;
-    }
-
-    const buildingError = (await buildingsResponse.json().catch(() => null)) as
-      | { error?: string; detail?: string }
-      | null;
-    return {
-      count: 0,
-      buildings: [],
-      warnings: [
-        buildingError?.detail ?? buildingError?.error ?? "Buildings layer unavailable.",
-      ],
-      stats: {
-        elapsedMs: 0,
-        rawIntersectingCount: 0,
-      },
-    } satisfies BuildingsAreaApiResponse;
-  }, []);
 
   const loadSunlitPlaces = useCallback(
     async (bbox: [number, number, number, number]) => {
@@ -3109,10 +3843,10 @@ export function SunlightMapClient() {
           ];
         })();
 
-    if (timelineStreamRef.current) {
+    if (timelineAbortRef.current) {
       timelineCancelledRef.current = true;
-      timelineStreamRef.current.close();
-      timelineStreamRef.current = null;
+      timelineAbortRef.current.abort();
+      timelineAbortRef.current = null;
     }
     if (instantStreamRef.current) {
       instantCancelledRef.current = true;
@@ -3122,7 +3856,6 @@ export function SunlightMapClient() {
 
     setIsLoading(true);
     setError(null);
-    setBuildingWarnings([]);
     setPlacesWarnings([]);
     setPlacesError(null);
     setSunlitPlaces([]);
@@ -3170,33 +3903,13 @@ export function SunlightMapClient() {
       });
 
       let streamFinished = false;
-      let buildingsFinished = false;
       let streamFailed = false;
 
       const finalizeIfDone = () => {
-        if (streamFinished && buildingsFinished) {
+        if (streamFinished) {
           setIsLoading(false);
         }
       };
-
-      void loadBuildingsLayer(bbox)
-        .then((buildingsJson) => {
-          setLastBuildings(buildingsJson);
-          setBuildingWarnings(
-            buildingsJson.warnings.map((warning) => `buildings: ${warning}`),
-          );
-        })
-        .catch((buildingError) => {
-          setError(
-            buildingError instanceof Error
-              ? buildingError.message
-              : "Buildings layer request failed.",
-          );
-        })
-        .finally(() => {
-          buildingsFinished = true;
-          finalizeIfDone();
-        });
 
       const query = new URLSearchParams({
         minLon: String(bbox[0]),
@@ -3207,7 +3920,7 @@ export function SunlightMapClient() {
         timezone: "Europe/Zurich",
         localTime,
         gridStepMeters: String(gridStepMeters),
-        maxPoints: "6000",
+        maxPoints: "2000000",
         buildingHeightBiasMeters: String(buildingHeightBiasMeters),
       });
 
@@ -3349,50 +4062,13 @@ export function SunlightMapClient() {
     });
 
     let streamFinished = false;
-    let buildingsFinished = false;
     let streamFailed = false;
 
     const finalizeIfDone = () => {
-      if (streamFinished && buildingsFinished) {
+      if (streamFinished) {
         setIsLoading(false);
       }
     };
-
-    void loadBuildingsLayer(bbox)
-      .then((buildingsJson) => {
-        setLastBuildings(buildingsJson);
-        const prefixedWarnings = buildingsJson.warnings.map(
-          (warning) => `buildings: ${warning}`,
-        );
-        setBuildingWarnings(prefixedWarnings);
-        if (buildingsJson.warnings.length > 0) {
-          setDailyTimeline((previous) => {
-            if (!previous) {
-              return previous;
-            }
-            return {
-              ...previous,
-              warnings: Array.from(
-                new Set([
-                  ...previous.warnings,
-                  ...prefixedWarnings,
-                ]),
-              ),
-            };
-          });
-        }
-      })
-      .catch((buildingError) => {
-        setError(
-          buildingError instanceof Error
-            ? buildingError.message
-            : "Buildings layer request failed.",
-        );
-      })
-      .finally(() => {
-        buildingsFinished = true;
-        finalizeIfDone();
-      });
 
     const query = new URLSearchParams({
       minLon: String(bbox[0]),
@@ -3405,166 +4081,276 @@ export function SunlightMapClient() {
       endLocalTime: dailyEndLocalTime,
       sampleEveryMinutes: String(sampleEveryMinutes),
       gridStepMeters: String(gridStepMeters),
-      maxPoints: "6000",
+      maxPoints: "2000000",
       buildingHeightBiasMeters: String(buildingHeightBiasMeters),
+      ...(cacheOnly ? { cacheOnly: "true" } : {}),
     });
 
     timelineCancelledRef.current = false;
-    const timelineStream = new EventSource(
-      `/api/sunlight/timeline/stream?${query.toString()}`,
-    );
-    timelineStreamRef.current = timelineStream;
+    const abortController = new AbortController();
+    timelineAbortRef.current = abortController;
 
-    timelineStream.addEventListener("start", (event) => {
-      if (timelineCancelledRef.current) {
-        return;
-      }
-      const data = JSON.parse((event as MessageEvent).data) as {
-        date: string;
-        timezone: string;
-        startLocalTime: string;
-        endLocalTime: string;
-        sampleEveryMinutes: number;
-        gridStepMeters: number;
-        pointCount: number;
-        gridPointCount: number;
-        indoorPointsExcluded: number;
-        frameCount: number;
-        points: TimelinePoint[];
-        model?: NonNullable<AreaApiResponse["model"]>;
-        warnings: string[];
-      };
-
+    const flushPendingTiles = () => {
+      const pending = pendingTilesRef.current;
+      if (pending.length === 0) return;
+      const pendingStats = pendingStatsRef.current;
+      const tilesToFlush = pending.splice(0);
+      const statsToFlush = { ...pendingStats };
+      pendingStatsRef.current = { gridPointCount: 0, indoorPointsExcluded: 0 };
       decodedTimelineMaskCacheRef.current.clear();
-      setDailyTimeline({
-        date: data.date,
-        timezone: data.timezone,
-        startLocalTime: data.startLocalTime,
-        endLocalTime: data.endLocalTime,
-        sampleEveryMinutes: data.sampleEveryMinutes,
-        gridStepMeters: data.gridStepMeters,
-        pointCount: data.pointCount,
-        gridPointCount: data.gridPointCount,
-        indoorPointsExcluded: data.indoorPointsExcluded,
-        frameCount: data.frameCount,
-        points: data.points,
-        frames: [],
-        model: data.model ?? null,
-        warnings: data.warnings,
-        stats: null,
-      });
-      setDailyFrameIndex(0);
-    });
-
-    timelineStream.addEventListener("progress", (event) => {
-      if (timelineCancelledRef.current) {
-        return;
-      }
-      const data = JSON.parse((event as MessageEvent).data) as TimelineProgress;
-      setDailyProgress(data);
-    });
-
-    timelineStream.addEventListener("frame", (event) => {
-      if (timelineCancelledRef.current) {
-        return;
-      }
-      const data = JSON.parse((event as MessageEvent).data) as TimelineFrame;
       setDailyTimeline((previous) => {
-        if (!previous) {
-          return previous;
-        }
-
-        const nextFrames = [...previous.frames, data];
+        if (!previous) return previous;
+        const existingIds = new Set(previous.tiles.map((t) => t.tileId));
+        const newTiles = tilesToFlush.filter((t) => !existingIds.has(t.tileId));
+        if (newTiles.length === 0) return previous;
+        const mergedTiles = [...previous.tiles, ...newTiles];
+        const allPoints = mergedTiles.flatMap((t) => t.points);
         return {
           ...previous,
-          frames: nextFrames,
+          tiles: mergedTiles,
+          points: allPoints,
+          pointCount: previous.pointCount + statsToFlush.gridPointCount - statsToFlush.indoorPointsExcluded,
+          gridPointCount: previous.gridPointCount + statsToFlush.gridPointCount,
+          indoorPointsExcluded: previous.indoorPointsExcluded + statsToFlush.indoorPointsExcluded,
         };
       });
-      setDailyFrameIndex(data.index);
-    });
+      lastTileFlushRef.current = performance.now();
+    };
 
-    timelineStream.addEventListener("done", (event) => {
-      if (timelineCancelledRef.current) {
-        timelineStream.close();
-        if (timelineStreamRef.current === timelineStream) {
-          timelineStreamRef.current = null;
-        }
-        setIsLoading(false);
-        return;
-      }
-      const data = JSON.parse((event as MessageEvent).data) as {
-        stats: NonNullable<DailyTimelineState["stats"]>;
-        warnings: string[];
-      };
-      setDailyTimeline((previous) => {
-        if (!previous) {
-          return previous;
-        }
+    // Dispatch a parsed SSE event to the appropriate handler
+    // Track pending blob decompressions — resolved in parallel, applied before done
+    const pendingBlobDecodes: Array<Promise<void>> = [];
+    let doneData: { stats: NonNullable<DailyTimelineState["stats"]>; overlayBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number }; warnings: string[] } | null = null;
 
-        return {
-          ...previous,
-          stats: data.stats,
-          warnings: Array.from(new Set([...previous.warnings, ...data.warnings])),
+    const handleSseEvent = (eventType: string, jsonData: string) => {
+      if (timelineCancelledRef.current) return;
+
+      if (eventType === "start") {
+        const data = JSON.parse(jsonData) as {
+          date: string;
+          timezone: string;
+          startLocalTime: string;
+          endLocalTime: string;
+          sampleEveryMinutes: number;
+          gridStepMeters: number;
+          totalTiles: number;
+          frameCount: number;
+          model?: NonNullable<AreaApiResponse["model"]>;
         };
-      });
-      setDailyProgress({
-        phase: "done",
-        done: data.stats.totalEvaluations,
-        total: data.stats.totalEvaluations,
-        percent: 100,
-        etaSeconds: 0,
-      });
-      timelineStream.close();
-      if (timelineStreamRef.current === timelineStream) {
-        timelineStreamRef.current = null;
-      }
-      streamFinished = true;
-      finalizeIfDone();
-    });
-
-    timelineStream.addEventListener("error", (event) => {
-      if (timelineCancelledRef.current) {
-        timelineStream.close();
-        if (timelineStreamRef.current === timelineStream) {
-          timelineStreamRef.current = null;
-        }
-        setIsLoading(false);
-        return;
-      }
-      if (streamFailed || streamFinished) {
-        return;
-      }
-      streamFailed = true;
-      const errorPayload = (() => {
-        try {
-          return JSON.parse((event as MessageEvent).data) as {
-            error?: string;
-            details?: string;
+        decodedTimelineMaskCacheRef.current.clear();
+        pendingTilesRef.current = [];
+        pendingStatsRef.current = { gridPointCount: 0, indoorPointsExcluded: 0 };
+        lastTileFlushRef.current = performance.now();
+        setDailyTimeline((previous) => {
+          const canMerge =
+            previous &&
+            previous.date === data.date &&
+            previous.gridStepMeters === data.gridStepMeters &&
+            previous.tiles.length > 0;
+          return {
+            date: data.date,
+            timezone: data.timezone,
+            startLocalTime: data.startLocalTime,
+            endLocalTime: data.endLocalTime,
+            sampleEveryMinutes: data.sampleEveryMinutes,
+            gridStepMeters: data.gridStepMeters,
+            pointCount: canMerge ? previous.pointCount : 0,
+            gridPointCount: canMerge ? previous.gridPointCount : 0,
+            indoorPointsExcluded: canMerge ? previous.indoorPointsExcluded : 0,
+            frameCount: data.frameCount,
+            tiles: canMerge ? previous.tiles : [],
+            points: canMerge ? previous.points : [],
+            frames: [],
+            model: data.model ?? null,
+            warnings: [],
+            stats: null,
           };
-        } catch {
-          return null;
+        });
+        setDailyFrameIndex((prev) => prev || 0);
+      } else if (eventType === "tile") {
+        const data = JSON.parse(jsonData) as {
+          tileId: string;
+          tileIndex: number;
+          totalTiles: number;
+          pointCount: number;
+          gridPointCount: number;
+          indoorPointsExcluded: number;
+          grid?: TileGrid;
+          masksEncoding?: string;
+          masksBase64?: string;
+          outdoorMaskBase64?: string;
+          tileBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
+          tileCorners?: { nw: LatLon; ne: LatLon; sw: LatLon; se: LatLon };
+          points?: Array<{ id: string; lat?: number; lon?: number }>;
+          frames: TimelineFrame[];
+        };
+
+        // Push tile immediately; decompress blob in parallel
+        const tileEntry: TimelineTile = {
+          tileId: data.tileId,
+          grid: data.grid,
+          outdoorMaskBase64: data.outdoorMaskBase64,
+          tileBounds: data.tileBounds,
+          tileCorners: data.tileCorners,
+          points: (data.points ?? []) as TimelinePoint[],
+          frames: data.frames,
+        };
+        if (data.masksEncoding === "gzip-concat-v1" && data.masksBase64 && data.grid) {
+          const blob = data.masksBase64;
+          const maskBytes = Math.ceil(data.grid.width * data.grid.height / 8);
+          const frameCount = data.frames.length;
+          pendingBlobDecodes.push(
+            decodeTileMasksBlob(blob, maskBytes, frameCount).then((decoded) => {
+              tileEntry.decodedMasks = decoded;
+            }),
+          );
         }
-      })();
-      setError(
-        errorPayload?.details ??
-          errorPayload?.error ??
-          "Timeline streaming failed.",
-      );
-      timelineStream.close();
-      if (timelineStreamRef.current === timelineStream) {
-        timelineStreamRef.current = null;
+        pendingTilesRef.current.push(tileEntry);
+        pendingStatsRef.current.gridPointCount += data.gridPointCount;
+        pendingStatsRef.current.indoorPointsExcluded += data.indoorPointsExcluded;
+        const msSinceFlush = performance.now() - lastTileFlushRef.current;
+        if (msSinceFlush > 3000 || pendingTilesRef.current.length >= 5) {
+          flushPendingTiles();
+        }
+      } else if (eventType === "progress") {
+        const data = JSON.parse(jsonData) as TimelineProgress;
+        setDailyProgress(data);
+      } else if (eventType === "done") {
+        // Store done data — actual finalization happens in runFetchStream
+        // after all blob decompressions complete.
+        doneData = JSON.parse(jsonData) as {
+          stats: NonNullable<DailyTimelineState["stats"]>;
+          overlayBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
+          warnings: string[];
+        };
+      } else if (eventType === "error") {
+        streamFailed = true;
+        const errorPayload = (() => {
+          try {
+            return JSON.parse(jsonData) as { error?: string; details?: string };
+          } catch {
+            return null;
+          }
+        })();
+        setError(
+          errorPayload?.details ?? errorPayload?.error ?? "Timeline streaming failed.",
+        );
+        timelineAbortRef.current = null;
+        streamFinished = true;
+        finalizeIfDone();
       }
-      streamFinished = true;
-      finalizeIfDone();
-    });
+    };
+
+    // fetch + ReadableStream: gzip-decompressed natively by the browser,
+    // then we parse SSE events manually — much faster than EventSource for large payloads.
+    const runFetchStream = async () => {
+      try {
+        const response = await fetch(
+          `/api/sunlight/timeline/stream?${query.toString()}`,
+          { signal: abortController.signal },
+        );
+        if (!response.ok || !response.body) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let currentEvent = "";
+
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // Parse SSE events: "event: <type>\ndata: <json>\n\n"
+          let boundary = buffer.indexOf("\n\n");
+          while (boundary !== -1) {
+            const block = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            let eventType = "message";
+            let dataLine = "";
+            for (const line of block.split("\n")) {
+              if (line.startsWith("event: ")) {
+                eventType = line.slice(7);
+              } else if (line.startsWith("data: ")) {
+                dataLine = line.slice(6);
+              }
+            }
+            if (dataLine) {
+              handleSseEvent(eventType, dataLine);
+            }
+            boundary = buffer.indexOf("\n\n");
+          }
+        }
+        // Wait for all blob decompressions to complete
+        if (pendingBlobDecodes.length > 0) {
+          await Promise.all(pendingBlobDecodes);
+        }
+
+        // Now finalize with decoded masks available
+        if (doneData && !streamFinished && !streamFailed) {
+          const pendingToFlush = pendingTilesRef.current.splice(0);
+          const pendingStatsToFlush = { ...pendingStatsRef.current };
+          pendingStatsRef.current = { gridPointCount: 0, indoorPointsExcluded: 0 };
+          decodedTimelineMaskCacheRef.current.clear();
+          const data = doneData;
+          setDailyTimeline((previous) => {
+            if (!previous) return previous;
+            const existingIds = new Set(previous.tiles.map((t) => t.tileId));
+            const newTiles = pendingToFlush.filter((t) => !existingIds.has(t.tileId));
+            const mergedTiles = newTiles.length > 0 ? [...previous.tiles, ...newTiles] : previous.tiles;
+            const allPoints = newTiles.length > 0 ? mergedTiles.flatMap((t) => t.points) : previous.points;
+            return {
+              ...previous,
+              tiles: mergedTiles,
+              points: allPoints,
+              pointCount: previous.pointCount + pendingStatsToFlush.gridPointCount - pendingStatsToFlush.indoorPointsExcluded,
+              gridPointCount: previous.gridPointCount + pendingStatsToFlush.gridPointCount,
+              indoorPointsExcluded: previous.indoorPointsExcluded + pendingStatsToFlush.indoorPointsExcluded,
+              stats: data.stats,
+              overlayBounds: data.overlayBounds ?? previous.overlayBounds,
+              warnings: Array.from(new Set([...previous.warnings, ...data.warnings])),
+            };
+          });
+          setDailyProgress({
+            phase: "done",
+            done: data.stats.totalEvaluations,
+            total: data.stats.totalEvaluations,
+            percent: 100,
+            etaSeconds: 0,
+            elapsedMs: data.stats.elapsedMs,
+          });
+          timelineAbortRef.current = null;
+          streamFinished = true;
+          finalizeIfDone();
+        } else if (!streamFinished && !streamFailed) {
+          streamFinished = true;
+          finalizeIfDone();
+        }
+      } catch (err) {
+        if (abortController.signal.aborted) return;
+        if (!streamFailed && !streamFinished) {
+          streamFailed = true;
+          setError(err instanceof Error ? err.message : "Timeline streaming failed.");
+          streamFinished = true;
+          finalizeIfDone();
+        }
+      } finally {
+        if (timelineAbortRef.current === abortController) {
+          timelineAbortRef.current = null;
+        }
+      }
+    };
+
+    void runFetchStream();
   }, [
     buildingHeightBiasMeters,
+    cacheOnly,
     date,
     dailyEndLocalTime,
     dailyStartLocalTime,
     gridStepMeters,
     isDailyRangeInvalid,
-    loadBuildingsLayer,
     loadSunlitPlaces,
     localTime,
     mode,
@@ -3873,6 +4659,16 @@ export function SunlightMapClient() {
             ignorer ombre végétation
           </span>
         </label>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={cacheOnly}
+            onChange={(event) => setCacheOnly(event.target.checked)}
+          />
+          <span className="rounded bg-violet-700 px-2 py-0.5 text-white">
+            cache uniquement
+          </span>
+        </label>
       </div>
 
       {mode === "daily" ? (
@@ -3884,18 +4680,18 @@ export function SunlightMapClient() {
           <input
             type="range"
             min={0}
-            max={Math.max(0, (dailyTimeline?.frames.length ?? 1) - 1)}
+            max={Math.max(0, (dailyTimeline?.frameCount ?? 1) - 1)}
             step={1}
             value={Math.min(
               dailyFrameIndex,
-              Math.max(0, (dailyTimeline?.frames.length ?? 1) - 1),
+              Math.max(0, (dailyTimeline?.frameCount ?? 1) - 1),
             )}
             onChange={(event) => setDailyFrameIndex(Number(event.target.value))}
-            disabled={!dailyTimeline || dailyTimeline.frames.length === 0}
+            disabled={!dailyTimeline || dailyTimeline.tiles.length === 0}
           />
           <p className="text-xs text-slate-300">
-            Frames reçues: {dailyTimeline?.frames.length ?? 0}/
-            {dailyTimeline?.frameCount ?? 0}
+            Tuiles reçues: {dailyTimeline?.tiles.length ?? 0},
+            {" "}{dailyTimeline?.pointCount ?? 0} points
           </p>
           {canShowHeatmap ? (
             <p className="text-xs text-rose-200">
@@ -3912,16 +4708,37 @@ export function SunlightMapClient() {
             <div className="grid gap-1">
               <div className="h-2 w-full overflow-hidden rounded bg-slate-700/70">
                 <div
-                  className="h-full rounded bg-yellow-300 transition-[width] duration-150"
-                  style={{ width: `${Math.min(100, Math.max(0, dailyProgress.percent))}%` }}
+                  className={`h-full rounded bg-yellow-300 transition-[width] duration-150${
+                    dailyProgress.phase === "loading-scene" || dailyProgress.phase === "loading-cache" || dailyProgress.phase === "reconnecting" ? " animate-pulse w-full opacity-40" : ""
+                  }`}
+                  style={dailyProgress.phase !== "loading-scene" && dailyProgress.phase !== "loading-cache" && dailyProgress.phase !== "reconnecting" ? { width: `${Math.min(100, Math.max(0, dailyProgress.percent))}%` } : undefined}
                 />
               </div>
               <p className="text-xs text-slate-300">
-                {dailyProgress.phase} - {dailyProgress.percent.toFixed(1)}% (
-                {dailyProgress.done}/{dailyProgress.total}), ETA:{" "}
-                {dailyProgress.etaSeconds === null
-                  ? "-"
-                  : `${dailyProgress.etaSeconds}s`}
+                {dailyProgress.phase === "loading-scene"
+                  ? "Chargement de la sc\u00e8ne\u2026"
+                  : dailyProgress.phase === "loading-cache"
+                    ? "Chargement du cache\u2026"
+                    : dailyProgress.phase === "reconnecting"
+                      ? "Reconnexion\u2026"
+                      : dailyProgress.phase === "tile-computation"
+                        ? `Calcul des tuiles${
+                            dailyProgress.tileIndex && dailyProgress.totalTiles
+                              ? ` (${dailyProgress.tileIndex}/${dailyProgress.totalTiles})`
+                              : ""
+                          }`
+                        : dailyProgress.phase === "cache-playback"
+                          ? "Lecture du cache"
+                          : dailyProgress.phase}
+                {dailyProgress.phase !== "loading-scene" && dailyProgress.phase !== "loading-cache" && dailyProgress.phase !== "reconnecting" && (
+                  <>
+                    {" "}&mdash; {dailyProgress.percent.toFixed(1)}%
+                    {" "}&mdash; ETA: {dailyProgress.etaSeconds === null ? "-" : formatDuration(dailyProgress.etaSeconds)}
+                    {dailyProgress.elapsedMs != null
+                      ? ` \u2014 ${formatDuration(Math.round(dailyProgress.elapsedMs / 1000))} \u00e9coul\u00e9`
+                      : ""}
+                  </>
+                )}
               </p>
             </div>
           ) : null}
@@ -3937,11 +4754,15 @@ export function SunlightMapClient() {
             />
           </div>
           <p className="text-xs text-slate-300">
-            {instantProgress.phase} - {instantProgress.percent.toFixed(1)}% (
-            {instantProgress.done}/{instantProgress.total}), ETA:{" "}
-            {instantProgress.etaSeconds === null
-              ? "-"
-              : `${instantProgress.etaSeconds}s`}
+            {instantProgress.phase}
+            {instantProgress.tileIndex && instantProgress.totalTiles
+              ? ` (tuile ${instantProgress.tileIndex}/${instantProgress.totalTiles})`
+              : ""}
+            {" "}&mdash; {instantProgress.percent.toFixed(1)}%
+            {" "}&mdash; ETA: {instantProgress.etaSeconds === null ? "-" : formatDuration(instantProgress.etaSeconds)}
+            {instantProgress.elapsedMs != null
+              ? ` \u2014 ${formatDuration(Math.round(instantProgress.elapsedMs / 1000))} \u00e9coul\u00e9`
+              : ""}
           </p>
         </div>
       ) : null}

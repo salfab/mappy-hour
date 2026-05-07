@@ -8,7 +8,7 @@ import {
 import { getZonedDayRangeUtc } from "@/lib/time/zoned-date";
 
 const RAD_TO_DEG = 180 / Math.PI;
-const TERRAIN_HORIZON_SKIP_MARGIN_DEG = 0.25;
+export const TERRAIN_HORIZON_SKIP_MARGIN_DEG = 0.25;
 const horizonMaxAngleCache = new WeakMap<HorizonMask, number>();
 
 export interface PointSunlightInput {
@@ -48,6 +48,16 @@ export interface PointSunlightInput {
     blockerAltitudeAngleDeg: number | null;
     blockerSurfaceElevationMeters: number | null;
     blockerClearanceMeters: number | null;
+    checkedSamplesCount: number;
+  };
+  terrainShadowEvaluator?: (sample: {
+    azimuthDeg: number;
+    altitudeDeg: number;
+  }) => {
+    blocked: boolean;
+    blockerDistanceMeters: number | null;
+    blockerAltitudeAngleDeg: number | null;
+    blockerSurfaceElevationMeters: number | null;
     checkedSamplesCount: number;
   };
 }
@@ -97,7 +107,9 @@ export interface InstantSunlightInput {
   horizonMask: HorizonMask | null;
   buildingShadowEvaluator?: PointSunlightInput["buildingShadowEvaluator"];
   vegetationShadowEvaluator?: PointSunlightInput["vegetationShadowEvaluator"];
+  terrainShadowEvaluator?: PointSunlightInput["terrainShadowEvaluator"];
   evaluateAllBlockers?: boolean;
+  solarPositionOverride?: { altitudeDeg: number; azimuthDeg: number };
   profiler?: InstantSunlightProfiler;
 }
 
@@ -151,7 +163,7 @@ function safeFormatDateTimeLocal(date: Date, timeZone: string): string | null {
   return formatDateTimeLocal(date, timeZone);
 }
 
-function getMaxHorizonAngle(horizonMask: HorizonMask): number {
+export function getMaxHorizonAngle(horizonMask: HorizonMask): number {
   const cached = horizonMaxAngleCache.get(horizonMask);
   if (cached !== undefined) {
     return cached;
@@ -219,10 +231,16 @@ export function evaluateInstantSunlight(
   input: InstantSunlightInput,
 ): SunSample {
   if (!input.profiler) {
-    const position = SunCalc.getPosition(input.utcDate, input.lat, input.lon);
-
-    const altitudeDeg = position.altitude * RAD_TO_DEG;
-    const azimuthDeg = normalizeAzimuthDegrees(position.azimuth * RAD_TO_DEG);
+    let altitudeDeg: number;
+    let azimuthDeg: number;
+    if (input.solarPositionOverride) {
+      altitudeDeg = input.solarPositionOverride.altitudeDeg;
+      azimuthDeg = input.solarPositionOverride.azimuthDeg;
+    } else {
+      const position = SunCalc.getPosition(input.utcDate, input.lat, input.lon);
+      altitudeDeg = position.altitude * RAD_TO_DEG;
+      azimuthDeg = normalizeAzimuthDegrees(position.azimuth * RAD_TO_DEG);
+    }
     const aboveAstronomicalHorizon = altitudeDeg > 0;
     const horizonAngleDeg = input.horizonMask
       ? getHorizonAngleForAzimuth(input.horizonMask, azimuthDeg)
@@ -232,10 +250,15 @@ export function evaluateInstantSunlight(
       input.horizonMask !== null &&
       altitudeDeg <=
         getMaxHorizonAngle(input.horizonMask) + TERRAIN_HORIZON_SKIP_MARGIN_DEG;
-    const terrainBlocked =
+    const horizonBlocked =
       terrainCheckNeeded &&
       input.horizonMask !== null &&
       isTerrainBlockedByHorizon(input.horizonMask, azimuthDeg, altitudeDeg);
+    const localTerrainBlocked =
+      !horizonBlocked && aboveAstronomicalHorizon && input.terrainShadowEvaluator
+        ? input.terrainShadowEvaluator({ azimuthDeg, altitudeDeg }).blocked
+        : false;
+    const terrainBlocked = horizonBlocked || localTerrainBlocked;
     const evaluateSecondaryBlockers =
       aboveAstronomicalHorizon &&
       (input.evaluateAllBlockers === true || !terrainBlocked);
@@ -323,12 +346,18 @@ export function evaluateInstantSunlight(
       getMaxHorizonAngle(input.horizonMask) + TERRAIN_HORIZON_SKIP_MARGIN_DEG
     );
   })();
-  const terrainBlocked = (() => {
-    if (!terrainCheckNeeded || input.horizonMask === null) {
-      return false;
-    }
-    return isTerrainBlockedByHorizon(input.horizonMask, azimuthDeg, altitudeDeg);
-  })();
+  const horizonBlocked =
+    terrainCheckNeeded && input.horizonMask !== null
+      ? isTerrainBlockedByHorizon(input.horizonMask, azimuthDeg, altitudeDeg)
+      : false;
+  // Local DEM self-shadowing (e.g. hillside casting shadow on its own foot at
+  // low sun angles). Complements the horizon mask which only sees distant
+  // relief. Evaluator is internally gated to altitudeDeg < 30°.
+  const localTerrainBlocked =
+    !horizonBlocked && aboveAstronomicalHorizon && input.terrainShadowEvaluator
+      ? input.terrainShadowEvaluator({ azimuthDeg, altitudeDeg }).blocked
+      : false;
+  const terrainBlocked = horizonBlocked || localTerrainBlocked;
   const terrainElapsedMs = performance.now() - terrainStarted;
   const evaluateSecondaryBlockers =
     aboveAstronomicalHorizon &&

@@ -9,15 +9,20 @@ import {
   loadPrecomputedSunlightManifest,
   loadPrecomputedSunlightTile,
   writePrecomputedSunlightManifest,
-  writePrecomputedSunlightTile,
   type PrecomputedRegionName,
   type PrecomputedSunlightManifest,
   type RegionTileSpec,
 } from "@/lib/precompute/sunlight-cache";
 import { getSunlightModelVersion, SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "@/lib/precompute/model-version";
-import { computeSunlightTileArtifact } from "@/lib/precompute/sunlight-tile-service";
+import {
+  disposeSunlightTileEvaluationBackends,
+} from "@/lib/precompute/sunlight-tile-service";
 import { getSunlightCacheStorage } from "@/lib/precompute/sunlight-cache-storage";
 import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
+import {
+  consumeAtlasDriftRecords,
+  enableAtlasDriftSink,
+} from "@/lib/precompute/atlas-drift-sink";
 import { buildOutlineRingsFromTileIds } from "@/lib/admin/cache-run-outline";
 import type {
   CacheRunCanonicalRef,
@@ -135,6 +140,8 @@ export interface CachePrecomputeRequest {
   tileIds?: string[];
   skipExisting?: boolean;
   buildingHeightBiasMeters?: number;
+  /** Angular bucket size in degrees for the atlas (ADR-0013). Defaults to 0.75°. */
+  atlasResolutionDeg?: number;
 }
 
 export interface CachePrecomputeResult {
@@ -156,6 +163,13 @@ export interface CachePrecomputeResult {
     complete: boolean;
     elapsedMs: number;
   }>;
+  /**
+   * Atlas drift records collected during this run. Non-empty when
+   * `mergeBucketsIntoAtlas` had to gracefully invalidate stale atlases due to
+   * outdoor-count drift (see atlas-drift-sink.ts). The orchestrator writes a
+   * patch script from these records so the operator can fill the gaps.
+   */
+  atlasDriftRecords: import("@/lib/precompute/atlas-drift-sink").AtlasDriftRecord[];
 }
 
 export interface CachePrecomputeProgress {
@@ -168,13 +182,24 @@ export interface CachePrecomputeProgress {
   completedTiles: number;
   totalTiles: number;
   percent: number;
-  currentTileState: "running" | "computed" | "skipped" | "failed";
+  currentTileState:
+    | "running"
+    | "computed"
+    | "skipped"
+    | "failed"
+    | "day-skipped"
+    | "warming"
+    | "warming-done";
   currentTilePhase?: "prepare-context" | "prepare-points" | "evaluate-frames" | null;
   currentTileProgressPercent?: number | null;
   currentTilePointCountTotal?: number | null;
   currentTilePointCountOutdoor?: number | null;
   currentTileFrameCountTotal?: number | null;
   currentTileFrameIndex?: number | null;
+  warmLoaded?: number;
+  warmTotal?: number;
+  warmMigrated?: number;
+  warmElapsedMs?: number;
 }
 
 interface WorkerPoolTileTask {
@@ -223,6 +248,18 @@ type WorkerPoolMessage =
       error?: string;
     };
 
+type WorkerPoolCommand =
+  | {
+      type: "run";
+      task: WorkerPoolTaskPayload;
+    }
+  | {
+      type: "cancel";
+    }
+  | {
+      type: "shutdown";
+    };
+
 interface WorkerPoolRunResult {
   succeededTileIds: string[];
   skippedTileIds: string[];
@@ -237,6 +274,29 @@ function clampRatio(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function formatPrecomputeTileError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack || error.message;
+  }
+  if (typeof error === "object" && error !== null) {
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return String(error);
+}
+
+function formatPrecomputeTileFailureLog(params: {
+  region: PrecomputedRegionName;
+  date: string;
+  tileId: string;
+  error: string;
+}): string {
+  return JSON.stringify(params);
+}
+
 function resolvePrecomputeWorkerCount(tileCount: number): number {
   if (tileCount <= 1) {
     return 1;
@@ -244,12 +304,31 @@ function resolvePrecomputeWorkerCount(tileCount: number): number {
   if (process.env.NODE_ENV === "test") {
     return 1;
   }
+  const shadowMode = process.env.MAPPY_BUILDINGS_SHADOW_MODE?.trim().toLowerCase();
+  const isGpuIpc = shadowMode === "rust-wgpu-vulkan" || shadowMode === "webgpu-compute";
   const fromEnvRaw = process.env.MAPPY_PRECOMPUTE_WORKERS?.trim();
   if (fromEnvRaw) {
     const parsed = Number(fromEnvRaw);
     if (Number.isFinite(parsed)) {
-      return Math.max(1, Math.min(tileCount, Math.floor(parsed)));
+      const requested = Math.max(1, Math.min(tileCount, Math.floor(parsed)));
+      if (isGpuIpc && requested > 1) {
+        // Bench 2026-05-05 (ADR-0019) measured 15-30× perf regression at
+        // workers=2/4 on rust-wgpu-vulkan: each worker forks its own GPU
+        // child, all contend on the same physical GPU. Override is honored
+        // (multi-GPU setups might benefit) but the operator should know.
+        console.warn(
+          `[cache-admin] ⚠️  MAPPY_PRECOMPUTE_WORKERS=${requested} with shadowMode=${shadowMode}: ` +
+            `each worker forks a separate GPU child, all contending on the same physical GPU. ` +
+            `Bench 2026-05-05 measured 15-30× PERF REGRESSION vs workers=1. ` +
+            `Use only on multi-GPU setups. See ADR-0019.`,
+        );
+      }
+      return requested;
     }
+  }
+  // Vulkan / WebGPU compute backends: default to 1 worker (ADR-0019).
+  if (isGpuIpc) {
+    return 1;
   }
   const cpuCount = os.cpus().length;
   const suggested = Math.min(4, Math.max(2, cpuCount - 1));
@@ -257,7 +336,9 @@ function resolvePrecomputeWorkerCount(tileCount: number): number {
 }
 
 function getPrecomputeTileWorkerPath(): string {
-  return path.join(process.cwd(), "scripts", "precompute", "cache-precompute-tile-worker.ts");
+  // path.join with spread to prevent Turbopack from statically resolving the worker script
+  const segments = ["scripts", "precompute", "cache-precompute-tile-worker.ts"];
+  return path.join(process.cwd(), ...segments);
 }
 
 async function runDateTilesWithWorkerPool(params: {
@@ -393,10 +474,11 @@ async function runDateTilesWithWorkerPool(params: {
       skipExisting: params.skipExisting,
     };
     slot.currentTaskId = task.taskId;
-    slot.worker.send?.({
+    const command: WorkerPoolCommand = {
       type: "run",
       task: payload,
-    });
+    };
+    slot.worker.send?.(command);
     params.onProgress?.({
       stage: "running",
       date: params.date,
@@ -420,7 +502,19 @@ async function runDateTilesWithWorkerPool(params: {
     });
   };
 
-  const terminateWorkers = async () => {
+  const sendWorkerCommand = (worker: ChildProcess, command: WorkerPoolCommand): boolean => {
+    if (!worker.connected) {
+      return false;
+    }
+    try {
+      worker.send(command);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const shutdownWorkers = async () => {
     await Promise.all(
       workers.map(async (slot) => {
         try {
@@ -429,17 +523,92 @@ async function runDateTilesWithWorkerPool(params: {
             return;
           }
           await new Promise<void>((resolve) => {
-            const onExit = () => resolve();
-            worker.once("exit", onExit);
-            worker.kill("SIGTERM");
+            let resolved = false;
+            let forceKillTimer: NodeJS.Timeout | null = null;
+            const finish = () => {
+              if (resolved) return;
+              resolved = true;
+              if (forceKillTimer) clearTimeout(forceKillTimer);
+              resolve();
+            };
+
+            worker.once("exit", finish);
+
+            const sentShutdown = sendWorkerCommand(worker, { type: "shutdown" });
+            if (!sentShutdown) {
+              try {
+                worker.kill("SIGTERM");
+              } catch {
+                // Ignore shutdown signal failures.
+              }
+            }
+
+            forceKillTimer = setTimeout(() => {
+              try {
+                if (worker.exitCode === null && !worker.killed) {
+                  worker.kill("SIGTERM");
+                }
+              } catch {
+                // Ignore forced shutdown failures.
+              }
+              setTimeout(() => {
+                try {
+                  if (worker.exitCode === null && !worker.killed) {
+                    worker.kill("SIGKILL");
+                  }
+                } catch {
+                  // Ignore hard-stop failures.
+                }
+                finish();
+              }, 1000);
+            }, 5000);
+            forceKillTimer.unref?.();
+          });
+        } catch {
+          // Ignore worker shutdown failures.
+        }
+      }),
+    );
+  };
+
+  const cancelWorkers = async () => {
+    for (const slot of workers) {
+      sendWorkerCommand(slot.worker, { type: "cancel" });
+    }
+    await Promise.all(
+      workers.map(async (slot) => {
+        try {
+          const worker = slot.worker;
+          if (worker.exitCode !== null || worker.killed) {
+            return;
+          }
+          await new Promise<void>((resolve) => {
+            let resolved = false;
+            const finish = () => {
+              if (resolved) return;
+              resolved = true;
+              resolve();
+            };
+            worker.once("exit", finish);
             setTimeout(() => {
               try {
-                worker.kill("SIGKILL");
+                if (worker.exitCode === null && !worker.killed) {
+                  worker.kill("SIGTERM");
+                }
+              } catch {
+                // Ignore worker cancel failures.
+              }
+            }, 1000);
+            setTimeout(() => {
+              try {
+                if (worker.exitCode === null && !worker.killed) {
+                  worker.kill("SIGKILL");
+                }
               } catch {
                 // Ignore hard-stop failures.
               }
-              resolve();
-            }, 1000);
+              finish();
+            }, 5000);
           });
         } catch {
           // Ignore worker shutdown failures.
@@ -520,6 +689,14 @@ async function runDateTilesWithWorkerPool(params: {
           succeededTileIds.push(task.tile.tileId);
         } else if (message.state === "failed") {
           failedTileIds.push(task.tile.tileId);
+          console.warn(
+            `[cache-admin] tile precompute failed ${formatPrecomputeTileFailureLog({
+              region: params.region,
+              date: params.date,
+              tileId: task.tile.tileId,
+              error: message.error ?? "Unknown worker error.",
+            })}`,
+          );
         } else if (message.state === "cancelled") {
           if (params.signal?.aborted) {
             if (!settled) {
@@ -529,6 +706,14 @@ async function runDateTilesWithWorkerPool(params: {
             return;
           }
           failedTileIds.push(task.tile.tileId);
+          console.warn(
+            `[cache-admin] tile precompute cancelled ${formatPrecomputeTileFailureLog({
+              region: params.region,
+              date: params.date,
+              tileId: task.tile.tileId,
+              error: message.error ?? "Precompute cancelled.",
+            })}`,
+          );
         }
 
         emitDoneProgress(task, message);
@@ -565,16 +750,16 @@ async function runDateTilesWithWorkerPool(params: {
 
   const abortHandler = () => {
     for (const slot of workers) {
-      slot.worker.send?.({
-        type: "cancel",
-      });
+      sendWorkerCommand(slot.worker, { type: "cancel" });
     }
   };
 
   params.signal?.addEventListener("abort", abortHandler);
 
+  let runSucceeded = false;
   try {
     await runPromise;
+    runSucceeded = true;
     return {
       succeededTileIds,
       skippedTileIds,
@@ -583,7 +768,11 @@ async function runDateTilesWithWorkerPool(params: {
     };
   } finally {
     params.signal?.removeEventListener("abort", abortHandler);
-    await terminateWorkers();
+    if (runSucceeded && !params.signal?.aborted) {
+      await shutdownWorkers();
+    } else {
+      await cancelWorkers();
+    }
   }
 }
 
@@ -951,17 +1140,17 @@ export async function verifyCacheRuns(
         }
 
         const expectedMaskSize = expectedMaskByteLength(outdoorPointCount);
-        const maskEntries: Array<{ name: string; base64: string }> = [
-          { name: "sunMaskBase64", base64: frame.sunMaskBase64 },
-          { name: "sunMaskNoVegetationBase64", base64: frame.sunMaskNoVegetationBase64 },
-          { name: "terrainBlockedMaskBase64", base64: frame.terrainBlockedMaskBase64 },
-          { name: "buildingsBlockedMaskBase64", base64: frame.buildingsBlockedMaskBase64 },
-          { name: "vegetationBlockedMaskBase64", base64: frame.vegetationBlockedMaskBase64 },
+        const maskEntries: Array<{ name: string; bytes: Uint8Array }> = [
+          { name: "sunMask", bytes: frame.sunMask },
+          { name: "sunMaskNoVegetation", bytes: frame.sunMaskNoVegetation },
+          { name: "terrainBlockedMask", bytes: frame.terrainBlockedMask },
+          { name: "buildingsBlockedMask", bytes: frame.buildingsBlockedMask },
+          { name: "vegetationBlockedMask", bytes: frame.vegetationBlockedMask },
         ];
 
         for (const maskEntry of maskEntries) {
           expectedMaskSizeChecks += 1;
-          const byteLength = Buffer.from(maskEntry.base64, "base64").length;
+          const byteLength = maskEntry.bytes.length;
           if (byteLength !== expectedMaskSize) {
             problems.push(
               `Tile ${tileId} frame ${frame.index} ${maskEntry.name} byteLength=${byteLength}, expected=${expectedMaskSize}.`,
@@ -1058,6 +1247,10 @@ export async function precomputeCacheRuns(
     signal?: AbortSignal;
   } = {},
 ): Promise<CachePrecomputeResult> {
+  // Enable the atlas drift sink for this run. Any graceful invalidation in
+  // mergeBucketsIntoAtlas will be recorded and consumed at the end so the
+  // orchestrator can produce a patch script.
+  enableAtlasDriftSink();
   const tileSizeMeters = CANONICAL_PRECOMPUTE_TILE_SIZE_METERS;
   const shadowCalibration = normalizeShadowCalibration({
     buildingHeightBiasMeters: request.buildingHeightBiasMeters,
@@ -1083,11 +1276,146 @@ export async function precomputeCacheRuns(
   if (tiles.length === 0) {
     throw new Error("No tiles selected for precompute.");
   }
+
+  // Fail fast if any selected tile is missing grid-metadata. The per-tile compute
+  // would otherwise throw deep in buildSharedPointEvaluationSources after paying
+  // startup cost on every failing tile. We surface the exact command to regenerate.
+  // Skipped in rust-wgpu-vulkan mode: the runtime now computes zenith masks on
+  // the fly via batch dispatch (or short-circuits to outdoor when the focus zone
+  // contains no obstacles), so missing metadata is no longer a hard error.
+  if ((process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "").trim().toLowerCase() !== "rust-wgpu-vulkan") {
+    const { getTileGridMetadataPath } = await import("@/lib/precompute/tile-grid-metadata");
+    const missing: string[] = [];
+    for (const tile of tiles) {
+      const p = getTileGridMetadataPath(
+        request.region,
+        modelVersion.modelVersionHash,
+        request.gridStepMeters,
+        tile.tileId,
+      );
+      try {
+        await fs.access(p);
+      } catch {
+        missing.push(tile.tileId);
+      }
+    }
+    if (missing.length > 0) {
+      const preview = missing.slice(0, 5).join(", ");
+      const more = missing.length > 5 ? ` (+${missing.length - 5} more)` : "";
+      const selectionArg = request.tileIds && request.tileIds.length > 0
+        ? " --tile-selection-file=<your-selection-file>"
+        : "";
+      throw new Error(
+        `Missing tile grid metadata for ${missing.length}/${tiles.length} tile(s) in region ${request.region} ` +
+          `(model ${modelVersion.modelVersionHash}, grid ${request.gridStepMeters}m): ${preview}${more}. ` +
+          `Run:\n  cross-env MAPPY_BUILDINGS_SHADOW_MODE=gpu-raster pnpm tsx scripts/precompute/precompute-tile-grid-metadata.ts ` +
+          `--region=${request.region} --grid-step-meters=${request.gridStepMeters}${selectionArg}`,
+      );
+    }
+  }
+
+  // Sort tiles by spatial focus zone (1km grid) to minimize GPU backend
+  // recreations. Tiles in the same zone share the same shadow-map mesh,
+  // so grouping them avoids costly dispose+rebuild cycles.
+  tiles.sort((a, b) => {
+    const aKey = Math.round((a.minEasting + a.maxEasting) / 2 / 1000) * 10000 +
+                 Math.round((a.minNorthing + a.maxNorthing) / 2 / 1000);
+    const bKey = Math.round((b.minEasting + b.maxEasting) / 2 / 1000) * 10000 +
+                 Math.round((b.minNorthing + b.maxNorthing) / 2 / 1000);
+    return aKey - bKey;
+  });
+
   const dates: CachePrecomputeResult["dates"] = [];
   const totalTiles = tiles.length * request.days;
   let completedTiles = 0;
   const workerCount = resolvePrecomputeWorkerCount(tiles.length);
   const strictMultithread = process.env.MAPPY_PRECOMPUTE_WORKERS_STRICT === "1";
+
+  // Parallel warm-up of the atlas skip cache: reads each tile's
+  // `.atlas.idx` sidecar (~2 KB uncompressed) so `canSkipAllTilesForDay`
+  // can fire on day 1 of the run. On first run after upgrade, tiles
+  // without a sidecar fall back to loading the full atlas and writing
+  // a sidecar — one-time migration cost per tile.
+  if (skipExisting) {
+    const { warmAtlasSkipCache } = await import(
+      "@/lib/precompute/atlas-tile-service"
+    );
+    const warmStartedAt = performance.now();
+    options.onProgress?.({
+      stage: "running",
+      date: request.startDate,
+      dayIndex: 0,
+      daysTotal: request.days,
+      tileIndex: 0,
+      tilesTotal: tiles.length,
+      completedTiles: 0,
+      totalTiles,
+      percent: 0,
+      currentTileState: "warming",
+      currentTilePhase: null,
+      currentTileProgressPercent: 0,
+      currentTilePointCountTotal: null,
+      currentTilePointCountOutdoor: null,
+      currentTileFrameCountTotal: null,
+      currentTileFrameIndex: null,
+      warmLoaded: 0,
+      warmTotal: tiles.length,
+      warmMigrated: 0,
+    });
+    const warmResult = await warmAtlasSkipCache({
+      region: request.region,
+      modelVersionHash: modelVersion.modelVersionHash,
+      gridStepMeters: request.gridStepMeters,
+      tiles,
+      resolutionDeg: request.atlasResolutionDeg,
+      onProgress: (loaded, total, migrated) => {
+        options.onProgress?.({
+          stage: "running",
+          date: request.startDate,
+          dayIndex: 0,
+          daysTotal: request.days,
+          tileIndex: loaded,
+          tilesTotal: total,
+          completedTiles: 0,
+          totalTiles,
+          percent: 0,
+          currentTileState: "warming",
+          currentTilePhase: null,
+          currentTileProgressPercent: total === 0 ? 100 : Math.round((loaded / total) * 1000) / 10,
+          currentTilePointCountTotal: null,
+          currentTilePointCountOutdoor: null,
+          currentTileFrameCountTotal: null,
+          currentTileFrameIndex: null,
+          warmLoaded: loaded,
+          warmTotal: total,
+          warmMigrated: migrated,
+        });
+      },
+    });
+    const warmElapsedMs = Math.round(performance.now() - warmStartedAt);
+    options.onProgress?.({
+      stage: "running",
+      date: request.startDate,
+      dayIndex: 0,
+      daysTotal: request.days,
+      tileIndex: warmResult.loaded,
+      tilesTotal: tiles.length,
+      completedTiles: 0,
+      totalTiles,
+      percent: 0,
+      currentTileState: "warming-done",
+      currentTilePhase: null,
+      currentTileProgressPercent: 100,
+      currentTilePointCountTotal: null,
+      currentTilePointCountOutdoor: null,
+      currentTileFrameCountTotal: null,
+      currentTileFrameIndex: null,
+      warmLoaded: warmResult.loaded,
+      warmTotal: tiles.length,
+      warmMigrated: warmResult.migrated,
+      warmElapsedMs,
+    });
+  }
 
   for (let dayOffset = 0; dayOffset < request.days; dayOffset += 1) {
     throwIfAborted(options.signal);
@@ -1096,10 +1424,105 @@ export async function precomputeCacheRuns(
     const succeededTileIds: string[] = [];
     const failedTileIds: string[] = [];
     const skippedTileIds: string[] = [];
+
+    // Fast path: atlas bucket-key sets are cached in memory after the first
+    // day touches each tile. On subsequent days, we can prove all tiles are
+    // already covered without loading a single atlas from disk or emitting
+    // 301 per-tile progress events. If the cache is cold (day 1) or any tile
+    // has a coverage gap, this returns false and we fall through.
+    if (skipExisting) {
+      const { canSkipAllTilesForDay } = await import(
+        "@/lib/precompute/atlas-tile-service"
+      );
+      const canFastSkip = canSkipAllTilesForDay({
+        region: request.region,
+        modelVersionHash: modelVersion.modelVersionHash,
+        gridStepMeters: request.gridStepMeters,
+        date,
+        timezone: request.timezone,
+        sampleEveryMinutes: request.sampleEveryMinutes,
+        startLocalTime: request.startLocalTime,
+        endLocalTime: request.endLocalTime,
+        tiles,
+        resolutionDeg: request.atlasResolutionDeg,
+      });
+      if (canFastSkip) {
+        for (const tile of tiles) {
+          skippedTileIds.push(tile.tileId);
+          succeededTileIds.push(tile.tileId);
+        }
+        completedTiles += tiles.length;
+        options.onProgress?.({
+          stage: "running",
+          date,
+          dayIndex: dayOffset + 1,
+          daysTotal: request.days,
+          tileIndex: tiles.length,
+          tilesTotal: tiles.length,
+          completedTiles,
+          totalTiles,
+          percent:
+            totalTiles === 0
+              ? 100
+              : Math.round((completedTiles / totalTiles) * 1000) / 10,
+          currentTileState: "day-skipped",
+          currentTilePhase: null,
+          currentTileProgressPercent: 100,
+          currentTilePointCountTotal: null,
+          currentTilePointCountOutdoor: null,
+          currentTileFrameCountTotal: null,
+          currentTileFrameIndex: null,
+        });
+        dates.push({
+          date,
+          succeededTiles: succeededTileIds.length,
+          skippedTiles: skippedTileIds.length,
+          failedTiles: 0,
+          complete: true,
+          elapsedMs: Math.round((performance.now() - startedAt) * 1000) / 1000,
+        });
+        continue;
+      }
+    }
+
     const runSequentialTiles = async () => {
-      for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
-        throwIfAborted(options.signal);
+      // Pipeline depth: how many tiles can have in-flight processing at the
+      // same time. With depth=N, up to N tiles' CPU prep + frameLoop can
+      // overlap with the current tile's GPU/IPC eval. The backend-level lock
+      // in RustWgpuVulkanShadowBackend serializes the server transaction so
+      // concurrent tiles can't corrupt each other's points/focus state.
+      //
+      // Sweet spot (bench 2026-05-06, post-Phase-E-fix, 4 Lausanne tiles):
+      //   depth=1  →  ~21-40 tiles/min  (1×    baseline, no pipelining)
+      //   depth=2  →  ~70-77 tiles/min  (2.7×)
+      //   depth=3  →  ~88-92 tiles/min  (3.2×) ← best
+      //   depth=4  →  ~72-85 tiles/min  (2.8×, regresses on lock contention)
+      //
+      // Default 3. Override via MAPPY_TILE_PIPELINE_DEPTH=N to experiment.
+      // Setting 1 falls back to legacy strict-sequential behavior.
+      const PIPELINE_DEPTH = Math.max(
+        1,
+        Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "3"),
+      );
+      // Sanity warning: pipelining only overlaps Node-side prep with GPU-IPC
+      // eval. CPU shadow modes (detailed, two-level, prism, gpu-raster) have
+      // no IPC and no separate GPU process — so depth > 1 has zero benefit
+      // and only adds orchestration overhead.
+      const shadowMode = process.env.MAPPY_BUILDINGS_SHADOW_MODE?.trim().toLowerCase();
+      const isGpuIpcShadow = shadowMode === "rust-wgpu-vulkan" || shadowMode === "webgpu-compute";
+      if (PIPELINE_DEPTH > 1 && !isGpuIpcShadow) {
+        console.warn(
+          `[cache-admin] ⚠️  MAPPY_TILE_PIPELINE_DEPTH=${PIPELINE_DEPTH} with shadowMode=${shadowMode || "(unset, CPU)"}: ` +
+            `tile pipelining only helps GPU-IPC backends (rust-wgpu-vulkan, webgpu-compute). ` +
+            `On CPU shadow backends there's no IPC to overlap with prep — depth > 1 only adds overhead. ` +
+            `Falling back to strict-sequential (depth=1) is recommended.`,
+        );
+      }
+      const inflight: Array<Promise<unknown>> = [];
+
+      const processOneTile = async (tileIndex: number): Promise<void> => {
         const tile = tiles[tileIndex];
+
         options.onProgress?.({
           stage: "running",
           date,
@@ -1121,49 +1544,23 @@ export async function precomputeCacheRuns(
           currentTileFrameCountTotal: null,
           currentTileFrameIndex: null,
         });
-
-        if (skipExisting) {
-          throwIfAborted(options.signal);
-          const existing = await loadPrecomputedSunlightTile({
-            region: request.region,
-            modelVersionHash: modelVersion.modelVersionHash,
-            date,
-            gridStepMeters: request.gridStepMeters,
-            sampleEveryMinutes: request.sampleEveryMinutes,
-            startLocalTime: request.startLocalTime,
-            endLocalTime: request.endLocalTime,
-            tileId: tile.tileId,
-          });
-          if (existing) {
-            skippedTileIds.push(tile.tileId);
-            succeededTileIds.push(tile.tileId);
-            completedTiles += 1;
-            options.onProgress?.({
-              stage: "running",
-              date,
-              dayIndex: dayOffset + 1,
-              daysTotal: request.days,
-              tileIndex: tileIndex + 1,
-              tilesTotal: tiles.length,
-              completedTiles,
-              totalTiles,
-              percent:
-                totalTiles === 0
-                  ? 100
-                  : Math.round((completedTiles / totalTiles) * 1000) / 10,
-              currentTileState: "skipped",
-              currentTilePhase: null,
-              currentTileProgressPercent: 100,
-              currentTilePointCountTotal: existing.stats.gridPointCount,
-              currentTilePointCountOutdoor: existing.stats.pointCount,
-              currentTileFrameCountTotal: existing.frames.length,
-              currentTileFrameIndex: existing.frames.length,
-            });
-            continue;
-          }
-        }
         try {
-          const artifact = await computeSunlightTileArtifact({
+          // Load pre-computed grid metadata (zenith indoor mask + elevations)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let gridMetadata: any;
+          try {
+            const { loadTileGridMetadata } = await import("@/lib/precompute/tile-grid-metadata");
+            gridMetadata = await loadTileGridMetadata(
+              request.region, modelVersion.gridMetadataHash, request.gridStepMeters, tile.tileId,
+            );
+          } catch {
+            // grid metadata not available — proceed without
+          }
+
+          const { computeAndMergeAtlasForTile } = await import(
+            "@/lib/precompute/atlas-tile-service"
+          );
+          const atlasResult = await computeAndMergeAtlasForTile({
             region: request.region,
             modelVersionHash: modelVersion.modelVersionHash,
             algorithmVersion: modelVersion.algorithmVersion,
@@ -1175,8 +1572,11 @@ export async function precomputeCacheRuns(
             endLocalTime: request.endLocalTime,
             tile,
             shadowCalibration,
-            cooperativeYieldEveryPoints: 50,
+            resolutionDeg: request.atlasResolutionDeg,
+            cooperativeYieldEveryPoints: 5000,
             signal: options.signal,
+            gridMetadata,
+            skipExisting,
             onProgress: (tileProgress) => {
               const tileFraction =
                 tileProgress.total <= 0
@@ -1209,7 +1609,9 @@ export async function precomputeCacheRuns(
               });
             },
           });
-          await writePrecomputedSunlightTile(artifact);
+          if (atlasResult.state === "skipped") {
+            skippedTileIds.push(tile.tileId);
+          }
           succeededTileIds.push(tile.tileId);
           completedTiles += 1;
           options.onProgress?.({
@@ -1225,19 +1627,27 @@ export async function precomputeCacheRuns(
               totalTiles === 0
                 ? 100
                 : Math.round((completedTiles / totalTiles) * 1000) / 10,
-            currentTileState: "computed",
+            currentTileState: atlasResult.state === "skipped" ? "skipped" : "computed",
             currentTilePhase: null,
             currentTileProgressPercent: 100,
-            currentTilePointCountTotal: artifact.stats.gridPointCount,
-            currentTilePointCountOutdoor: artifact.stats.pointCount,
-            currentTileFrameCountTotal: artifact.frames.length,
-            currentTileFrameIndex: artifact.frames.length,
+            currentTilePointCountTotal: atlasResult.pointCountTotal,
+            currentTilePointCountOutdoor: atlasResult.pointCountOutdoor,
+            currentTileFrameCountTotal: atlasResult.bucketCountTotal,
+            currentTileFrameIndex: atlasResult.bucketCountTotal,
           });
         } catch (error) {
           if (options.signal?.aborted) {
             throw error;
           }
           failedTileIds.push(tile.tileId);
+          console.warn(
+            `[cache-admin] tile precompute failed ${formatPrecomputeTileFailureLog({
+              region: request.region,
+              date,
+              tileId: tile.tileId,
+              error: formatPrecomputeTileError(error),
+            })}`,
+          );
           completedTiles += 1;
           options.onProgress?.({
             stage: "running",
@@ -1261,7 +1671,20 @@ export async function precomputeCacheRuns(
             currentTileFrameIndex: null,
           });
         }
+      };
+
+      for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
+        throwIfAborted(options.signal);
+        // Maintain at most PIPELINE_DEPTH in-flight tiles. When full, await
+        // the oldest before starting a new one (FIFO ordering preserves
+        // Rust IPC request order naturally — the server processes them in
+        // arrival order on stdin).
+        while (inflight.length >= PIPELINE_DEPTH) {
+          await inflight.shift();
+        }
+        inflight.push(processOneTile(tileIndex));
       }
+      await Promise.all(inflight);
     };
 
     let usedWorkerPool = false;
@@ -1367,6 +1790,21 @@ export async function precomputeCacheRuns(
     });
   }
 
+  // Dispose once after all days are processed (keeps the Vulkan server alive
+  // across the entire precompute run — avoids repeated spawn/destroy which
+  // triggers Intel Arc driver hangs)
+  await disposeSunlightTileEvaluationBackends();
+
+  // Flush any in-flight async atlas writes before returning. Required since
+  // computeAndMergeAtlasForTile fires-and-forgets the disk write to overlap
+  // I/O with the next tile's GPU compute.
+  {
+    const { awaitAllPendingAtlasWrites } = await import(
+      "@/lib/precompute/atlas-tile-service"
+    );
+    await awaitAllPendingAtlasWrites();
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     region: request.region,
@@ -1388,5 +1826,6 @@ export async function precomputeCacheRuns(
       buildingHeightBiasMeters: shadowCalibration.buildingHeightBiasMeters,
     },
     dates,
+    atlasDriftRecords: consumeAtlasDriftRecords(),
   };
 }

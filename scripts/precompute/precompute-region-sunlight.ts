@@ -1,5 +1,9 @@
-import { precomputeCacheRuns, type CachePrecomputeProgress } from "../../src/lib/admin/cache-admin";
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
+import { buildRegionTiles, getIntersectingTileIds } from "../../src/lib/precompute/sunlight-cache";
+import { loadTileSelectionForRegion } from "../../src/lib/precompute/tile-selection-file";
+import { getHorizonCacheStats } from "../../src/lib/sun/adaptive-horizon-sharing";
+
+type ExperimentalBuildingsShadowMode = "gpu-raster" | "rust-wgpu-vulkan";
 
 interface ParsedArgs {
   region: PrecomputedRegionName;
@@ -12,6 +16,11 @@ interface ParsedArgs {
   endLocalTime: string;
   buildingHeightBiasMeters: number;
   skipExisting: boolean;
+  bbox: [number, number, number, number] | null;
+  tileSelectionFile: string | null;
+  groupFilter: "top-priority" | "other" | "all";
+  buildingsShadowMode: ExperimentalBuildingsShadowMode | null;
+  atlasResolutionDeg: number;
 }
 
 const DEFAULT_ARGS: ParsedArgs = {
@@ -25,6 +34,11 @@ const DEFAULT_ARGS: ParsedArgs = {
   endLocalTime: "23:59",
   buildingHeightBiasMeters: 0,
   skipExisting: true,
+  bbox: null,
+  tileSelectionFile: null,
+  groupFilter: "all",
+  buildingsShadowMode: null,
+  atlasResolutionDeg: 0.75,
 };
 
 function parseBoolean(value: string): boolean | null {
@@ -38,13 +52,36 @@ function parseBoolean(value: string): boolean | null {
   return null;
 }
 
+function parseBuildingsShadowMode(value: string): ExperimentalBuildingsShadowMode {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "gpu-raster" || normalized === "rust-wgpu-vulkan") {
+    return normalized;
+  }
+  throw new Error(
+    `Invalid --buildings-shadow-mode=${value}. Expected gpu-raster or rust-wgpu-vulkan.`,
+  );
+}
+
 function parseArgs(argv: string[]): ParsedArgs {
   const result: ParsedArgs = { ...DEFAULT_ARGS };
   for (const arg of argv) {
     if (arg.startsWith("--region=")) {
       const region = arg.slice("--region=".length);
-      if (region === "lausanne" || region === "nyon") {
+      if (
+        region === "lausanne" ||
+        region === "nyon" ||
+        region === "morges" ||
+        region === "geneve" ||
+        region === "vevey"
+      ) {
         result.region = region;
+      } else {
+        // Fail fast on unknown region — prior behaviour silently fell back to
+        // the default "lausanne" and the misrouted run looked successful but
+        // produced no atlas under the intended region cache dir.
+        throw new Error(
+          `Unknown --region=${region}. Expected lausanne|nyon|morges|geneve|vevey.`,
+        );
       }
       continue;
     }
@@ -103,50 +140,236 @@ function parseArgs(argv: string[]): ParsedArgs {
       }
       continue;
     }
+    if (arg.startsWith("--bbox=")) {
+      const parts = arg.slice("--bbox=".length).split(",").map(Number);
+      if (parts.length === 4 && parts.every(Number.isFinite)) {
+        result.bbox = parts as [number, number, number, number];
+      }
+      continue;
+    }
+    if (arg.startsWith("--tile-selection-file=")) {
+      result.tileSelectionFile = arg.slice("--tile-selection-file=".length);
+      continue;
+    }
+    if (arg.startsWith("--group-filter=")) {
+      const v = arg.slice("--group-filter=".length);
+      if (v !== "top-priority" && v !== "other" && v !== "all") {
+        throw new Error(`Invalid --group-filter=${v}. Expected top-priority|other|all.`);
+      }
+      result.groupFilter = v;
+      continue;
+    }
+    if (arg.startsWith("--buildings-shadow-mode=")) {
+      result.buildingsShadowMode = parseBuildingsShadowMode(
+        arg.slice("--buildings-shadow-mode=".length),
+      );
+      continue;
+    }
+    if (arg.startsWith("--atlas-resolution-deg=")) {
+      const parsed = Number(arg.slice("--atlas-resolution-deg=".length));
+      if (Number.isFinite(parsed) && parsed > 0 && parsed <= 10) {
+        result.atlasResolutionDeg = parsed;
+      } else {
+        throw new Error(
+          `Invalid --atlas-resolution-deg=${arg.slice("--atlas-resolution-deg=".length)}. Expected a positive number <= 10.`,
+        );
+      }
+      continue;
+    }
   }
   return result;
 }
 
-function shouldLogProgress(
-  current: CachePrecomputeProgress,
-  previous: CachePrecomputeProgress | null,
-): boolean {
-  if (!previous) {
-    return true;
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "--";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600)
+    return `${Math.floor(seconds / 60)}m${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
+  if (seconds < 86400) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return `${h}h${String(m).padStart(2, "0")}m`;
   }
-  if (current.date !== previous.date) {
-    return true;
-  }
-  if (current.currentTileState !== previous.currentTileState) {
-    return true;
-  }
-  if (current.currentTilePhase !== previous.currentTilePhase) {
-    return true;
-  }
-  if (current.tileIndex !== previous.tileIndex) {
-    if (
-      current.tileIndex <= 3 ||
-      current.tileIndex === current.tilesTotal ||
-      current.tileIndex % 100 === 0
-    ) {
-      return true;
-    }
-  }
-  return false;
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${d}j${String(h).padStart(2, "0")}h${String(m).padStart(2, "0")}m`;
+}
+
+function progressBar(percent: number, width = 24): string {
+  const filled = Math.max(0, Math.min(width, Math.round((percent / 100) * width)));
+  return "█".repeat(filled) + "░".repeat(width - filled);
+}
+
+function computeEta(stats: {
+  computedCount: number;
+  computedMs: number;
+  totalTiles: number;
+  completedTiles: number;
+  currentTileRunningFrac: number;
+  currentTileRunningMs: number;
+}): number | null {
+  const effectiveComputed = stats.computedCount + stats.currentTileRunningFrac;
+  const effectiveMs = stats.computedMs + stats.currentTileRunningMs;
+  if (effectiveComputed < 0.05 || effectiveMs <= 0) return null;
+
+  const avgMs = effectiveMs / effectiveComputed;
+  // Treat every remaining tile as needing full computation.
+  // Pessimistic but converges fast: cached days zip through and
+  // reduce `remaining` without inflating the compute average.
+  const remaining = Math.max(stats.totalTiles - stats.completedTiles - stats.currentTileRunningFrac, 0);
+  return Math.max(0, Math.round((avgMs * remaining) / 1000));
+}
+
+// ── multi-worker live display helpers ───────────────────────────────────────
+interface RunningSlot {
+  tileIndex: number;
+  phase: string;
+  tilePercent: number;
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.buildingsShadowMode) {
+    process.env.MAPPY_BUILDINGS_SHADOW_MODE = args.buildingsShadowMode;
+  }
+  const { precomputeCacheRuns } = await import("../../src/lib/admin/cache-admin");
+  const shadowMode = process.env.MAPPY_BUILDINGS_SHADOW_MODE?.trim().toLowerCase();
+  const isGpuIpcBackend = shadowMode === "rust-wgpu-vulkan" || shadowMode === "webgpu-compute";
   const workers =
     process.env.MAPPY_PRECOMPUTE_WORKERS?.trim() ||
-    "(auto: min(4, max(2, cpu-1)))";
+    (isGpuIpcBackend
+      ? "(auto: 1, GPU-IPC backend forces single-worker — see ADR-0019)"
+      : "(auto: min(4, max(2, cpu-1)))");
 
+  // Resolve bbox to tile IDs if specified
+  let tileIds: string[] | undefined;
+  if (args.tileSelectionFile) {
+    const selection = await loadTileSelectionForRegion({
+      filePath: args.tileSelectionFile,
+      region: args.region,
+      groupFilter: args.groupFilter,
+    });
+    tileIds = selection.tileIds;
+    console.log(
+      `[precompute] tileSelectionFile=${selection.filePath} generatedAt=${selection.generatedAt} groupFilter=${args.groupFilter} → ${selection.tileIds.length} tiles`,
+    );
+  }
+  if (args.bbox) {
+    const [minLon, minLat, maxLon, maxLat] = args.bbox;
+    const tileSizeMeters = 250;
+    const bboxTileIds = getIntersectingTileIds({
+      region: args.region,
+      tileSizeMeters,
+      bbox: { minLon, minLat, maxLon, maxLat },
+    });
+    tileIds = tileIds
+      ? tileIds.filter((tileId) => bboxTileIds.includes(tileId))
+      : bboxTileIds;
+    console.log(
+      `[precompute] bbox=[${args.bbox.join(",")}] → ${bboxTileIds.length} tiles (${tileIds.length} after filters)`,
+    );
+  }
+
+  if (tileIds && tileIds.length === 0) {
+    // Empty result is a benign no-op when this script is called as part of
+    // a 2-pass × N-region matrix by precompute-all-regions: most cells of
+    // the matrix have no tiles for the (region, group-filter) combo, and
+    // throwing here surfaced as a misleading `✗ a échoué (exit 1)` line in
+    // the parent log even though nothing was wrong.
+    console.log(
+      `[precompute] no tiles selected after applying tile-selection-file/bbox/group filters — exiting cleanly.`,
+    );
+    return;
+  }
+
+  const allTiles = buildRegionTiles(args.region, 250);
+  const tileCount = tileIds ? tileIds.length : allTiles.length;
+
+  const shadowModeLabel = process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "(unset, default cpu)";
   console.log(
-    `[precompute] engine=cache-admin workers=${workers} region=${args.region} startDate=${args.startDate} days=${args.days} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} skipExisting=${args.skipExisting}`,
+    `[precompute] engine=cache-admin shadowMode=${shadowModeLabel} workers=${workers} region=${args.region} startDate=${args.startDate} days=${args.days} gridStep=${args.gridStepMeters}m sampleEvery=${args.sampleEveryMinutes}min window=${args.startLocalTime}-${args.endLocalTime} atlasRes=${args.atlasResolutionDeg}° skipExisting=${args.skipExisting} tiles=${tileCount}`,
   );
+  if (shadowMode === "rust-wgpu-vulkan") {
+    console.warn(
+      `[precompute] EXPERIMENTAL buildingsShadowMode=rust-wgpu-vulkan cachePolicy=shared-contract skipExisting=${args.skipExisting}`,
+    );
+    if (args.skipExisting) {
+      console.warn(
+        "[precompute] skip-existing=true réutilise volontairement les tuiles déjà calculées avec gpu-raster si elles partagent le même modèle de cache.",
+      );
+    }
+  }
 
-  let lastProgress: CachePrecomputeProgress | null = null;
+  // ── display state ────────────────────────────────────────────────────────
+  let lastDayIndex = -1;
+  let skipAccumCount = 0;
+  const runningSlots = new Map<number, RunningSlot>();
+  let liveLineCount = 0;
+
+  // ETA tracking: only count time spent actually computing tiles
+  let computedTileCount = 0;
+  let computedTileMs = 0;
+  let firstTileStartMs = 0;
+  let currentComputeTileIndex = -1;
+  let currentTileStartMs = 0;
+
+  // Day context for live zone
+  let currentDayLabel = "";
+
+  function eraseLiveZone(): void {
+    if (liveLineCount === 0) return;
+    process.stdout.write(`\x1b[${liveLineCount}A\x1b[J`);
+    liveLineCount = 0;
+  }
+
+  function renderLiveZone(globalBar: string, globalPct: number, etaStr: string): void {
+    const cols = process.stdout.columns || 120;
+    const slots = Array.from(runningSlots.values()).sort((a, b) => a.tileIndex - b.tileIndex);
+    const out: string[] = [];
+    if (skipAccumCount > 0) {
+      out.push(`  ⟿ ${skipAccumCount} tuile(s) ignorée(s) (cache existant)`);
+    }
+    // Always show global progress with day context
+    const dayCtx = currentDayLabel ? `  ${currentDayLabel}` : "";
+    out.push(`  ⟳${dayCtx}  [${globalBar}] ${globalPct.toFixed(1).padStart(5)}%  ETA ${etaStr}`);
+    for (const slot of slots) {
+      const tileBar = progressBar(slot.tilePercent, 12);
+      out.push(
+        `    t${String(slot.tileIndex).padStart(3)}  [${tileBar}] ${String(Math.round(slot.tilePercent)).padStart(3)}%  ${slot.phase}`,
+      );
+    }
+    // Truncate to terminal width + clear-to-EOL to prevent wrapping artefacts
+    process.stdout.write(out.map((l) => l.slice(0, cols) + "\x1b[K").join("\n") + "\n");
+    liveLineCount = out.length;
+  }
+
+  function printPermanent(line: string): void {
+    eraseLiveZone();
+    process.stdout.write(line + "\n");
+  }
+
+  function flushSkips(): void {
+    if (skipAccumCount === 0) return;
+    const count = skipAccumCount;
+    skipAccumCount = 0;
+    printPermanent(`  ⟿ ${count} tuile(s) ignorée(s) (cache existant)`);
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   const startedAt = Date.now();
+
+  // Intercept console.log/warn so that log lines from internal modules
+  // (evaluation-context, gpu-mesh-loader, etc.) go through printPermanent
+  // instead of breaking the ANSI live zone cursor tracking.
+  const _origLog = console.log;
+  const _origWarn = console.warn;
+  console.log = (...args: unknown[]) => {
+    printPermanent(args.map(String).join(" "));
+  };
+  console.warn = (...args: unknown[]) => {
+    printPermanent(args.map(String).join(" "));
+  };
 
   const result = await precomputeCacheRuns(
     {
@@ -160,27 +383,229 @@ async function main() {
       endLocalTime: args.endLocalTime,
       skipExisting: args.skipExisting,
       buildingHeightBiasMeters: args.buildingHeightBiasMeters,
+      atlasResolutionDeg: args.atlasResolutionDeg,
+      tileIds,
     },
     {
       onProgress: (progress) => {
-        if (!shouldLogProgress(progress, lastProgress)) {
+        // ── track compute-only ETA metrics ─────────────────────────────
+        const now = Date.now();
+        let currentTileRunningFrac = 0;
+        let currentTileRunningMs = 0;
+
+        if (progress.currentTileState === "running") {
+          if (progress.tileIndex !== currentComputeTileIndex) {
+            currentComputeTileIndex = progress.tileIndex;
+            currentTileStartMs = now;
+            if (firstTileStartMs === 0) firstTileStartMs = now;
+          }
+          currentTileRunningFrac =
+            typeof progress.currentTileProgressPercent === "number"
+              ? Math.max(0, Math.min(1, progress.currentTileProgressPercent / 100))
+              : 0;
+          currentTileRunningMs = now - currentTileStartMs;
+        } else if (progress.currentTileState === "computed") {
+          if (currentComputeTileIndex >= 0) {
+            computedTileMs += now - currentTileStartMs;
+          }
+          computedTileCount++;
+          currentComputeTileIndex = -1;
+        }
+
+        const eta = computeEta({
+          computedCount: computedTileCount,
+          computedMs: computedTileMs,
+          totalTiles: progress.totalTiles,
+          completedTiles: progress.completedTiles,
+          currentTileRunningFrac,
+          currentTileRunningMs,
+        });
+        const etaStr = eta != null ? formatDuration(eta) : "--";
+        const globalBar = progressBar(progress.percent, 24);
+
+        // ── warming (préchargement parallèle des sidecars .atlas.idx) ─────
+        if (progress.currentTileState === "warming") {
+          eraseLiveZone();
+          const loaded = progress.warmLoaded ?? 0;
+          const total = progress.warmTotal ?? progress.tilesTotal;
+          const migrated = progress.warmMigrated ?? 0;
+          const pct = total === 0 ? 100 : (loaded / total) * 100;
+          const bar = progressBar(pct, 24);
+          const migSuffix = migrated > 0 ? `  (${migrated} migré${migrated > 1 ? "s" : ""})` : "";
+          process.stdout.write(
+            `  ⚡ Warm-up cache atlas  [${bar}] ${pct.toFixed(1).padStart(5)}%  ${loaded}/${total}${migSuffix}\x1b[K\n`,
+          );
+          liveLineCount = 1;
           return;
         }
-        lastProgress = progress;
-        console.log(
-          `[precompute] date=${progress.date} day=${progress.dayIndex}/${progress.daysTotal} tile=${progress.tileIndex}/${progress.tilesTotal} state=${progress.currentTileState} phase=${progress.currentTilePhase ?? "none"} progress=${progress.percent.toFixed(1)}% tileProgress=${(progress.currentTileProgressPercent ?? 0).toFixed(1)}%`,
-        );
+        if (progress.currentTileState === "warming-done") {
+          eraseLiveZone();
+          const loaded = progress.warmLoaded ?? 0;
+          const total = progress.warmTotal ?? progress.tilesTotal;
+          const migrated = progress.warmMigrated ?? 0;
+          const elapsedStr = progress.warmElapsedMs != null
+            ? (progress.warmElapsedMs < 1000
+                ? `${progress.warmElapsedMs}ms`
+                : formatDuration(progress.warmElapsedMs / 1000))
+            : "";
+          const migSuffix = migrated > 0 ? `, ${migrated} migré${migrated > 1 ? "s" : ""}` : "";
+          printPermanent(
+            `  ⚡ Warm-up cache atlas terminé  ${loaded}/${total} tuile(s)${migSuffix}  (${elapsedStr})`,
+          );
+          return;
+        }
+
+        // ── day-skipped (toutes les tuiles du jour déjà en cache) ─────────
+        if (progress.currentTileState === "day-skipped") {
+          flushSkips();
+          runningSlots.clear();
+          eraseLiveZone();
+          printPermanent(
+            `  ⏭  Jour ${progress.dayIndex}/${progress.daysTotal}  ${progress.date}  déjà précalculé (${progress.tilesTotal} tuiles)  [${globalBar}] ${progress.percent.toFixed(1).padStart(5)}%  ETA ${etaStr}`,
+          );
+          lastDayIndex = progress.dayIndex;
+          renderLiveZone(globalBar, progress.percent, etaStr);
+          return;
+        }
+
+        // ── new day header ────────────────────────────────────────────────
+        if (progress.dayIndex !== lastDayIndex) {
+          flushSkips();
+          currentDayLabel = `Jour ${progress.dayIndex}/${progress.daysTotal}  ${progress.date}`;
+          printPermanent(`\n  ── ${currentDayLabel} ──`);
+          lastDayIndex = progress.dayIndex;
+        }
+
+        // ── skipped ───────────────────────────────────────────────────────
+        if (progress.currentTileState === "skipped") {
+          runningSlots.delete(progress.tileIndex);
+          skipAccumCount++;
+          eraseLiveZone();
+          renderLiveZone(globalBar, progress.percent, etaStr);
+          return;
+        }
+
+        // ── running ───────────────────────────────────────────────────────
+        if (progress.currentTileState === "running") {
+          runningSlots.set(progress.tileIndex, {
+            tileIndex: progress.tileIndex,
+            phase: progress.currentTilePhase ?? "...",
+            tilePercent: progress.currentTileProgressPercent ?? 0,
+          });
+          eraseLiveZone();
+          renderLiveZone(globalBar, progress.percent, etaStr);
+          return;
+        }
+
+        // ── computed / failed ─────────────────────────────────────────────
+        flushSkips();
+        runningSlots.delete(progress.tileIndex);
+
+        if (progress.currentTileState === "computed") {
+          const pts =
+            progress.currentTilePointCountOutdoor != null
+              ? `  ${progress.currentTilePointCountOutdoor.toLocaleString()} pts outdoor`
+              : "";
+          printPermanent(
+            `  ✓ t${progress.tileIndex}/${progress.tilesTotal}${pts}  [${globalBar}] ${progress.percent.toFixed(1).padStart(5)}%  ETA ${etaStr}`,
+          );
+        } else if (progress.currentTileState === "failed") {
+          printPermanent(`  ✗ t${progress.tileIndex}/${progress.tilesTotal}  ÉCHEC`);
+        }
+
+        eraseLiveZone();
+        renderLiveZone(globalBar, progress.percent, etaStr);
       },
     },
   );
 
+  // Flush any trailing live zone
+  flushSkips();
+  eraseLiveZone();
+
+  // Restore original console methods for final summary
+  console.log = _origLog;
+  console.warn = _origWarn;
+
   const elapsedMs = Date.now() - startedAt;
   console.log(
-    `[precompute] completed region=${result.region} model=${result.modelVersionHash} totalDates=${result.totalDates} totalTiles=${result.totalTiles} elapsedMs=${elapsedMs}`,
+    `\n[precompute] ✓ terminé  region=${result.region}  model=${result.modelVersionHash}  totalDates=${result.totalDates}  totalTiles=${result.totalTiles}  durée=${formatDuration(elapsedMs / 1000)}`,
   );
-  for (const day of result.dates) {
+
+  // ── Diagnostic summary: cold-start, inter-tile gap, horizon cache ────
+  // Turns "somme des logs [tile]" vs "wall-time script" into an explicit
+  // breakdown so we can see where optim headroom lives.
+  const coldStartMs = firstTileStartMs > 0 ? firstTileStartMs - startedAt : 0;
+  const sumTileMs = computedTileMs;
+  const gapMs = Math.max(0, elapsedMs - coldStartMs - sumTileMs);
+  const coldPct = elapsedMs > 0 ? (coldStartMs / elapsedMs) * 100 : 0;
+  const tilePct = elapsedMs > 0 ? (sumTileMs / elapsedMs) * 100 : 0;
+  const gapPct = elapsedMs > 0 ? (gapMs / elapsedMs) * 100 : 0;
+  console.log(
+    `[precompute] breakdown  cold-start ${formatDuration(coldStartMs / 1000)} (${coldPct.toFixed(0)}%)` +
+      `  tiles ${formatDuration(sumTileMs / 1000)} (${tilePct.toFixed(0)}%)` +
+      `  gap ${formatDuration(gapMs / 1000)} (${gapPct.toFixed(0)}%)`,
+  );
+  const hs = getHorizonCacheStats();
+  const hsTotal = hs.hits + hs.misses;
+  if (hsTotal > 0) {
     console.log(
-      `[precompute] date=${day.date} ok=${day.succeededTiles} skipped=${day.skippedTiles} failed=${day.failedTiles} complete=${day.complete} elapsedMs=${day.elapsedMs}`,
+      `[precompute] horizon-cache  ${hs.hits}/${hsTotal} hits (${(hs.hitRatio * 100).toFixed(0)}%)` +
+        `  builds=${hs.misses} (${formatDuration(hs.totalBuildMs / 1000)})` +
+        `  lookup=${formatDuration(hs.totalHitLookupMs / 1000)}`,
+    );
+  }
+
+  for (const day of result.dates) {
+    const icon = day.complete ? "✓" : day.failedTiles > 0 ? "✗" : "~";
+    console.log(
+      `  ${icon} ${day.date}  ok=${day.succeededTiles}  skip=${day.skippedTiles}  fail=${day.failedTiles}  durée=${formatDuration(day.elapsedMs / 1000)}`,
+    );
+  }
+
+  // Atlas drift recovery: if mergeBucketsIntoAtlas had to gracefully invalidate
+  // any stale atlas during this run (Option A), generate a patch script the
+  // operator can run to fill the gaps.
+  if (result.atlasDriftRecords.length > 0) {
+    const { writeAtlasDriftPatchScript } = await import(
+      "../../src/lib/precompute/atlas-drift-patch-script"
+    );
+    const scriptPath = await writeAtlasDriftPatchScript({
+      records: result.atlasDriftRecords,
+      run: {
+        region: args.region,
+        startDate: args.startDate,
+        days: args.days,
+        timezone: args.timezone,
+        sampleEveryMinutes: args.sampleEveryMinutes,
+        gridStepMeters: args.gridStepMeters,
+        startLocalTime: args.startLocalTime,
+        endLocalTime: args.endLocalTime,
+        buildingHeightBiasMeters: args.buildingHeightBiasMeters,
+        buildingsShadowMode: args.buildingsShadowMode,
+        atlasResolutionDeg: args.atlasResolutionDeg,
+      },
+    });
+    console.warn("");
+    console.warn(
+      `⚠️  Atlas drift detected on ${result.atlasDriftRecords.length} tile(s) during this run.`,
+    );
+    console.warn(
+      `   Stale atlases were gracefully invalidated; per-day tile artifacts for these tiles`,
+    );
+    console.warn(
+      `   are now incoherent with the fresh atlases and should be regenerated.`,
+    );
+    console.warn("");
+    console.warn(`   Run the following to fill the gaps (idempotent):`);
+    console.warn("");
+    console.warn(`       bash ${scriptPath}`);
+    console.warn("");
+    console.warn(
+      `   Affected tiles: ${result.atlasDriftRecords
+        .slice(0, 5)
+        .map((r) => `${r.region}/${r.tileId}`)
+        .join(", ")}${result.atlasDriftRecords.length > 5 ? ", ..." : ""}`,
     );
   }
 }

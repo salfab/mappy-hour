@@ -1,10 +1,11 @@
-import { computeSunlightTileArtifact } from "../../src/lib/precompute/sunlight-tile-service";
 import {
-  loadPrecomputedSunlightTile,
-  writePrecomputedSunlightTile,
-  type RegionTileSpec,
+  computeAndMergeAtlasForTile,
+} from "../../src/lib/precompute/atlas-tile-service";
+import { disposeSunlightTileEvaluationBackends } from "../../src/lib/precompute/sunlight-tile-service";
+import type {
+  PrecomputedRegionName,
+  RegionTileSpec,
 } from "../../src/lib/precompute/sunlight-cache";
-import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 import type { ShadowCalibration } from "../../src/lib/sun/shadow-calibration";
 
 type WorkerTask = {
@@ -23,16 +24,10 @@ type WorkerTask = {
   skipExisting: boolean;
 };
 
-type WorkerRunMessage = {
-  type: "run";
-  task: WorkerTask;
-};
-
-type WorkerCancelMessage = {
-  type: "cancel";
-};
-
-type WorkerInboundMessage = WorkerRunMessage | WorkerCancelMessage;
+type WorkerRunMessage = { type: "run"; task: WorkerTask };
+type WorkerCancelMessage = { type: "cancel" };
+type WorkerShutdownMessage = { type: "shutdown" };
+type WorkerInboundMessage = WorkerRunMessage | WorkerCancelMessage | WorkerShutdownMessage;
 
 type WorkerProgressMessage = {
   type: "progress";
@@ -58,6 +53,8 @@ type WorkerDoneMessage = {
 
 let activeAbortController: AbortController | null = null;
 let activeTaskId: string | null = null;
+let shutdownRequested = false;
+let shutdownStarted = false;
 
 function postMessage(message: WorkerProgressMessage | WorkerDoneMessage): void {
   if (typeof process.send === "function") {
@@ -65,7 +62,42 @@ function postMessage(message: WorkerProgressMessage | WorkerDoneMessage): void {
   }
 }
 
+async function shutdownWorker(): Promise<void> {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  try {
+    await disposeSunlightTileEvaluationBackends();
+  } catch (error) {
+    console.error(
+      `[cache-precompute-worker] backend cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+  } finally {
+    if (process.connected) process.disconnect();
+    process.exit();
+  }
+}
+
+function requestShutdown(): void {
+  shutdownRequested = true;
+  activeAbortController?.abort();
+  if (!activeTaskId) void shutdownWorker();
+}
+
 async function runTask(task: WorkerTask): Promise<void> {
+  if (shutdownRequested) {
+    postMessage({
+      type: "done",
+      taskId: task.taskId,
+      state: "cancelled",
+      pointCountTotal: null,
+      pointCountOutdoor: null,
+      frameCountTotal: null,
+      error: "Worker shutdown requested.",
+    });
+    return;
+  }
+
   const abortController = new AbortController();
   activeAbortController = abortController;
   activeTaskId = task.taskId;
@@ -73,31 +105,7 @@ async function runTask(task: WorkerTask): Promise<void> {
   let lastProgressStage: WorkerProgressMessage["stage"] | null = null;
 
   try {
-    if (task.skipExisting) {
-      const existing = await loadPrecomputedSunlightTile({
-        region: task.region,
-        modelVersionHash: task.modelVersionHash,
-        date: task.date,
-        gridStepMeters: task.gridStepMeters,
-        sampleEveryMinutes: task.sampleEveryMinutes,
-        startLocalTime: task.startLocalTime,
-        endLocalTime: task.endLocalTime,
-        tileId: task.tile.tileId,
-      });
-      if (existing) {
-        postMessage({
-          type: "done",
-          taskId: task.taskId,
-          state: "skipped",
-          pointCountTotal: existing.stats.gridPointCount,
-          pointCountOutdoor: existing.stats.pointCount,
-          frameCountTotal: existing.frames.length,
-        });
-        return;
-      }
-    }
-
-    const artifact = await computeSunlightTileArtifact({
+    const result = await computeAndMergeAtlasForTile({
       region: task.region,
       modelVersionHash: task.modelVersionHash,
       algorithmVersion: task.algorithmVersion,
@@ -109,6 +117,11 @@ async function runTask(task: WorkerTask): Promise<void> {
       endLocalTime: task.endLocalTime,
       tile: task.tile,
       shadowCalibration: task.shadowCalibration,
+      // Bug fix 2026-05-05: previously omitted, fell back to default `true`,
+      // making `skipExisting=false` silently ignored when the worker pool was
+      // active. Sequential path (cache-admin.ts:1523) was correct; only the
+      // multi-worker path was leaking the wrong default.
+      skipExisting: task.skipExisting,
       cooperativeYieldEveryPoints: 50,
       signal: abortController.signal,
       onProgress: (progress) => {
@@ -117,9 +130,7 @@ async function runTask(task: WorkerTask): Promise<void> {
           progress.completed === progress.total ||
           progress.stage !== lastProgressStage ||
           now - lastProgressSentAt >= 250;
-        if (!shouldEmit) {
-          return;
-        }
+        if (!shouldEmit) return;
         lastProgressSentAt = now;
         lastProgressStage = progress.stage;
         postMessage({
@@ -136,14 +147,13 @@ async function runTask(task: WorkerTask): Promise<void> {
       },
     });
 
-    await writePrecomputedSunlightTile(artifact);
     postMessage({
       type: "done",
       taskId: task.taskId,
-      state: "computed",
-      pointCountTotal: artifact.stats.gridPointCount,
-      pointCountOutdoor: artifact.stats.pointCount,
-      frameCountTotal: artifact.frames.length,
+      state: result.state,
+      pointCountTotal: result.pointCountTotal,
+      pointCountOutdoor: result.pointCountOutdoor,
+      frameCountTotal: result.bucketCountTotal,
     });
   } catch (error) {
     if (abortController.signal.aborted) {
@@ -172,6 +182,7 @@ async function runTask(task: WorkerTask): Promise<void> {
       activeAbortController = null;
       activeTaskId = null;
     }
+    if (shutdownRequested) void shutdownWorker();
   }
 }
 
@@ -182,5 +193,13 @@ process.on("message", (message: WorkerInboundMessage) => {
   }
   if (message.type === "run") {
     void runTask(message.task);
+    return;
+  }
+  if (message.type === "shutdown") {
+    requestShutdown();
   }
 });
+
+process.once("disconnect", requestShutdown);
+process.once("SIGTERM", requestShutdown);
+process.once("SIGINT", requestShutdown);

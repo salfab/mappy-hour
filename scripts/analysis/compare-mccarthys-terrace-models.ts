@@ -4,7 +4,7 @@ import path from "node:path";
 import AdmZip from "adm-zip";
 import SunCalc from "suncalc";
 
-import { wgs84ToLv95 } from "@/lib/geo/projection";
+import { wgs84ToLv95Precise } from "@/lib/geo/projection";
 import { evaluateBuildingsShadow } from "@/lib/sun/buildings-shadow";
 import {
   loadTerrainTilesForBounds,
@@ -420,7 +420,7 @@ function buildGridPoints(): GridPoint[] {
       const lat =
         ANALYSIS.bbox.minLat +
         ((row + 0.5) / ANALYSIS.grid.rows) * (ANALYSIS.bbox.maxLat - ANALYSIS.bbox.minLat);
-      const lv95 = wgs84ToLv95(lon, lat);
+      const lv95 = wgs84ToLv95Precise(lon, lat);
       points.push({
         id: `r${row}c${col}`,
         row,
@@ -675,10 +675,10 @@ async function main() {
   const utcDate = zonedDateTimeToUtc(ANALYSIS.date, ANALYSIS.localTime, ANALYSIS.timezone);
   const points = buildGridPoints();
   const corners = [
-    wgs84ToLv95(ANALYSIS.bbox.minLon, ANALYSIS.bbox.minLat),
-    wgs84ToLv95(ANALYSIS.bbox.minLon, ANALYSIS.bbox.maxLat),
-    wgs84ToLv95(ANALYSIS.bbox.maxLon, ANALYSIS.bbox.minLat),
-    wgs84ToLv95(ANALYSIS.bbox.maxLon, ANALYSIS.bbox.maxLat),
+    wgs84ToLv95Precise(ANALYSIS.bbox.minLon, ANALYSIS.bbox.minLat),
+    wgs84ToLv95Precise(ANALYSIS.bbox.minLon, ANALYSIS.bbox.maxLat),
+    wgs84ToLv95Precise(ANALYSIS.bbox.maxLon, ANALYSIS.bbox.minLat),
+    wgs84ToLv95Precise(ANALYSIS.bbox.maxLon, ANALYSIS.bbox.maxLat),
   ];
   const terrainTiles = await loadTerrainTilesForBounds({
     minX: Math.min(...corners.map((point) => point.easting)) - 30,

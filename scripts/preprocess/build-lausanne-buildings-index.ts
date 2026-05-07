@@ -3,7 +3,6 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 
 import AdmZip from "adm-zip";
-import { normalizeBuildingFootprint } from "../../src/lib/sun/building-footprint";
 
 import {
   PROCESSED_BUILDINGS_INDEX_PATH,
@@ -33,8 +32,6 @@ interface BuildingObstacle {
   centerX: number;
   centerY: number;
   halfDiagonal: number;
-  footprint: Point2D[];
-  footprintArea: number;
   sourceZip: string;
 }
 
@@ -77,7 +74,11 @@ function cross(o: Point2D, a: Point2D, b: Point2D): number {
   return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
 }
 
-function convexHull(points: Point2D[]): Point2D[] {
+// Footprint/convex hull functions removed — indoor detection uses zenith shadow map.
+// See git history (before this commit) for: convexHull, polygonArea, dedupePoints,
+// isSimplePolygon, collectGroundVertices, simplifyFootprintGeometry,
+// extractGroundFootprint, chooseFootprint.
+function __REMOVED_convexHull(points: Point2D[]): Point2D[] {
   if (points.length <= 1) {
     return points;
   }
@@ -365,10 +366,8 @@ function chooseFootprint(vertices: Point3D[], minZ: number): Point2D[] | null {
 }
 
 function obstacleKey(obstacle: BuildingObstacle): string {
-  const footprintKey = obstacle.footprint
-    .map((point) => `${round1(point.x)},${round1(point.y)}`)
-    .join(";");
-  return `${footprintKey}|${round1(obstacle.maxZ)}`;
+  // Use bbox + height as dedup key (footprint removed from index)
+  return `${round1(obstacle.minX)},${round1(obstacle.minY)},${round1(obstacle.maxX)},${round1(obstacle.maxY)}|${round1(obstacle.maxZ)}`;
 }
 
 function buildCellKey(cellX: number, cellY: number): string {
@@ -553,12 +552,9 @@ function polylineToObstacle(
     return null;
   }
 
-  const footprint = chooseFootprint(polyline.vertices, minZ);
-  if (!footprint || footprint.length < 3) {
-    return null;
-  }
-  const area = polygonArea(footprint);
-  if (area < 4) {
+  // Filter tiny buildings by bbox area (no footprint needed)
+  const bboxArea = width * depth;
+  if (bboxArea < 4) {
     return null;
   }
 
@@ -578,11 +574,6 @@ function polylineToObstacle(
     centerX: round3(centerX),
     centerY: round3(centerY),
     halfDiagonal: round3(halfDiagonal),
-    footprint: footprint.map((point) => ({
-      x: round3(point.x),
-      y: round3(point.y),
-    })),
-    footprintArea: round3(area),
     sourceZip: path.basename(sourceZip),
   };
 }

@@ -1,0 +1,194 @@
+
+> mappy-hour@0.1.0 precompute:all-regions:vulkan C:\sources\MappyHour
+> cross-env MAPPY_PRECOMPUTE_WORKERS=1 tsx scripts/precompute/precompute-all-regions-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan "--" "--tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json" "--start-date=2026-05-01" "--days=1" "--start-local-time=12:00" "--end-local-time=12:15" "--skip-existing=true"
+
+
+╔═══════════════════════════════════════════════════════════════════════╗
+║                    PRECOMPUTE RUN RECAP                               ║
+╚═══════════════════════════════════════════════════════════════════════╝
+  Tile selection   : data/processed/precompute/golden-dedup-terrain-2026-05-04.json
+  Total tiles      : 7
+  Regions (4)      : lausanne → morges → vevey → geneve
+
+  Passe 1/2 — Top priority (0 tuiles) :
+  Passe 2/2 — Couverture étendue (7 tuiles) :
+    • lausanne       2 tiles  █████████
+    • morges         2 tiles  █████████
+    • vevey          1 tiles  ████
+    • geneve         2 tiles  █████████
+
+  Date range       : 2026-05-01 (+ 1 day)
+  Local time win.  : 12:00 → 12:15, every 15 min
+  Buildings mode   : rust-wgpu-vulkan
+  Grid step        : 1 m
+  Skip existing    : true
+───────────────────────────────────────────────────────────────────────
+
+[precompute-all] EXPERIMENTAL cachePolicy=shared-contract : les caches gpu-raster compatibles peuvent être réutilisés/skippés.
+
+[precompute-all] ▶ preflight grid-metadata : 4 région(s), grid=1m, fichier=data/processed/precompute/golden-dedup-terrain-2026-05-04.json
+[precompute-all]   · grid-metadata région=lausanne
+[grid-metadata] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z → 2 tiles
+[grid-metadata] region=lausanne model=d43fe24cbb9190af tiles=2 grid=1m
+[grid-metadata] tile 1/2 e2536750_n1152000_s250 — cached (47980 outdoor, 14520 indoor)
+[grid-metadata] tile 2/2 e2533000_n1153000_s250 — cached (57401 outdoor, 5099 indoor)
+[grid-metadata] done: 2 tiles, 105381 outdoor, 19619 indoor in 0.0s
+[precompute-all]   · grid-metadata région=morges
+[grid-metadata] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z → 2 tiles
+[grid-metadata] region=morges model=c9de8e41eb148fe8 tiles=2 grid=1m
+[grid-metadata] tile 1/2 e2527000_n1150750_s250 — cached (59750 outdoor, 2750 indoor)
+[grid-metadata] tile 2/2 e2530500_n1151000_s250 — cached (62140 outdoor, 360 indoor)
+[grid-metadata] done: 2 tiles, 121890 outdoor, 3110 indoor in 0.0s
+[precompute-all]   · grid-metadata région=vevey
+[grid-metadata] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z → 1 tiles
+[grid-metadata] region=vevey model=7958337d601590db tiles=1 grid=1m
+[grid-metadata] tile 1/1 e2549000_n1147000_s250 — cached (62500 outdoor, 0 indoor)
+[grid-metadata] done: 1 tiles, 62500 outdoor, 0 indoor in 0.0s
+[precompute-all]   · grid-metadata région=geneve
+[grid-metadata] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z → 2 tiles
+[grid-metadata] region=geneve model=16657d851e53a837 tiles=2 grid=1m
+[grid-metadata] tile 1/2 e2499000_n1116000_s250 — cached (36337 outdoor, 26163 indoor)
+[grid-metadata] tile 2/2 e2499000_n1118000_s250 — cached (40355 outdoor, 22145 indoor)
+[grid-metadata] done: 2 tiles, 76692 outdoor, 48308 indoor in 0.0s
+[precompute-all] ✓ preflight grid-metadata terminé en 11.1s
+
+
+[precompute-all] ▶▶ Passe 1/2 Top-priority (places-density)
+
+[precompute-all] ▶ pass=top-priority région=lausanne  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=true --region=lausanne --group-filter=top-priority
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=top-priority → 0 tiles
+[precompute] fatal: No tiles selected after applying tile-selection-file/bbox filters.
+[precompute-all] ✗ pass=top-priority région=lausanne a échoué (exit 1)
+
+[precompute-all] ▶ pass=top-priority région=morges  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=true --region=morges --group-filter=top-priority
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=top-priority → 0 tiles
+[precompute] fatal: No tiles selected after applying tile-selection-file/bbox filters.
+[precompute-all] ✗ pass=top-priority région=morges a échoué (exit 1)
+
+[precompute-all] ▶ pass=top-priority région=vevey  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=true --region=vevey --group-filter=top-priority
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=top-priority → 0 tiles
+[precompute] fatal: No tiles selected after applying tile-selection-file/bbox filters.
+[precompute-all] ✗ pass=top-priority région=vevey a échoué (exit 1)
+
+[precompute-all] ▶ pass=top-priority région=geneve  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=true --region=geneve --group-filter=top-priority
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=top-priority → 0 tiles
+[precompute] fatal: No tiles selected after applying tile-selection-file/bbox filters.
+[precompute-all] ✗ pass=top-priority région=geneve a échoué (exit 1)
+
+[precompute-all] ▶▶ Passe 2/2 Couverture étendue
+
+[precompute-all] ▶ pass=other région=lausanne  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=true --region=lausanne --group-filter=other
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=other → 2 tiles
+[precompute] engine=cache-admin shadowMode=rust-wgpu-vulkan workers=1 region=lausanne startDate=2026-05-01 days=1 gridStep=1m sampleEvery=15min window=12:00-12:15 atlasRes=0.75° skipExisting=true tiles=2
+[precompute] EXPERIMENTAL buildingsShadowMode=rust-wgpu-vulkan cachePolicy=shared-contract skipExisting=true
+[precompute] skip-existing=true réutilise volontairement les tuiles déjà calculées avec gpu-raster si elles partagent le même modèle de cache.
+  ⚡ Warm-up cache atlas  [░░░░░░░░░░░░░░░░░░░░░░░░]   0.0%  0/2[K
+[1A[J  ⚡ Warm-up cache atlas  [████████████░░░░░░░░░░░░]  50.0%  1/2[K
+[1A[J  ⚡ Warm-up cache atlas  [████████████████████████] 100.0%  2/2[K
+[1A[J  ⚡ Warm-up cache atlas terminé  2/2 tuile(s)  (5ms)
+  ⏭  Jour 1/1  2026-05-01  déjà précalculé (2 tuiles)  [████████████████████████] 100.0%  ETA --
+  ⟳  [████████████████████████] 100.0%  ETA --[K
+[1A[J
+[precompute] ✓ terminé  region=lausanne  model=d43fe24cbb9190af  totalDates=1  totalTiles=2  durée=1s
+[precompute] breakdown  cold-start 0s (0%)  tiles 0s (0%)  gap 1s (100%)
+  ✓ 2026-05-01  ok=2  skip=2  fail=0  durée=0s
+[precompute-all] ✓ pass=other région=lausanne terminée
+
+[precompute-all] ▶ pass=other région=morges  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=true --region=morges --group-filter=other
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=other → 2 tiles
+[precompute] engine=cache-admin shadowMode=rust-wgpu-vulkan workers=1 region=morges startDate=2026-05-01 days=1 gridStep=1m sampleEvery=15min window=12:00-12:15 atlasRes=0.75° skipExisting=true tiles=2
+[precompute] EXPERIMENTAL buildingsShadowMode=rust-wgpu-vulkan cachePolicy=shared-contract skipExisting=true
+[precompute] skip-existing=true réutilise volontairement les tuiles déjà calculées avec gpu-raster si elles partagent le même modèle de cache.
+  ⚡ Warm-up cache atlas  [░░░░░░░░░░░░░░░░░░░░░░░░]   0.0%  0/2[K
+[1A[J  ⚡ Warm-up cache atlas  [████████████░░░░░░░░░░░░]  50.0%  1/2[K
+[1A[J  ⚡ Warm-up cache atlas  [████████████████████████] 100.0%  2/2[K
+[1A[J  ⚡ Warm-up cache atlas terminé  2/2 tuile(s)  (6ms)
+  ⏭  Jour 1/1  2026-05-01  déjà précalculé (2 tuiles)  [████████████████████████] 100.0%  ETA --
+  ⟳  [████████████████████████] 100.0%  ETA --[K
+[1A[J
+[precompute] ✓ terminé  region=morges  model=c9de8e41eb148fe8  totalDates=1  totalTiles=2  durée=1s
+[precompute] breakdown  cold-start 0s (0%)  tiles 0s (0%)  gap 1s (100%)
+  ✓ 2026-05-01  ok=2  skip=2  fail=0  durée=0s
+[precompute-all] ✓ pass=other région=morges terminée
+
+[precompute-all] ▶ pass=other région=vevey  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=true --region=vevey --group-filter=other
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=other → 1 tiles
+[precompute] engine=cache-admin shadowMode=rust-wgpu-vulkan workers=1 region=vevey startDate=2026-05-01 days=1 gridStep=1m sampleEvery=15min window=12:00-12:15 atlasRes=0.75° skipExisting=true tiles=1
+[precompute] EXPERIMENTAL buildingsShadowMode=rust-wgpu-vulkan cachePolicy=shared-contract skipExisting=true
+[precompute] skip-existing=true réutilise volontairement les tuiles déjà calculées avec gpu-raster si elles partagent le même modèle de cache.
+  ⚡ Warm-up cache atlas  [░░░░░░░░░░░░░░░░░░░░░░░░]   0.0%  0/1[K
+[1A[J  ⚡ Warm-up cache atlas  [████████████████████████] 100.0%  1/1[K
+[1A[J  ⚡ Warm-up cache atlas terminé  1/1 tuile(s)  (1ms)
+
+  ── Jour 1/1  2026-05-01 ──
+  ⟳  Jour 1/1  2026-05-01  [░░░░░░░░░░░░░░░░░░░░░░░░]   0.0%  ETA --[K
+    t  1  [░░░░░░░░░░░░]   0%  prepare-context[K
+[2A[J[vegetation-shadow] tile kinds after dedup (shader-compose=off): vhm_raw=0, vhm_composed=644, dsm=120
+[evaluation-context] Rust/wgpu Vulkan spatial filter: 614/168257 obstacles within 500m of 1km focus bucket
+[gpu-mesh-loader] Binary cache saved (gpu-mesh-2549062-1147580-614): 37878 triangles
+[evaluation-context] Rust/wgpu Vulkan backend ready: rust-wgpu-vulkan-4096, 37878 triangles
+[indoor-check] Loaded zenith indoor mask for e2549000_n1147000_s250 (0 indoor)
+  ⟳  Jour 1/1  2026-05-01  [██░░░░░░░░░░░░░░░░░░░░░░]   8.0%  ETA 8m00s[K
+    t  1  [█░░░░░░░░░░░]   8%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████░░░░░░░░░░░░░░░░░░░░]  16.0%  ETA 3m39s[K
+    t  1  [██░░░░░░░░░░]  16%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████░░░░░░░░░░░░░░░░░░]  24.0%  ETA 2m12s[K
+    t  1  [███░░░░░░░░░]  24%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████░░░░░░░░░░░░░░░░]  32.0%  ETA 1m29s[K
+    t  1  [████░░░░░░░░]  32%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████████░░░░░░░░░░░░░░]  40.0%  ETA 1m03s[K
+    t  1  [█████░░░░░░░]  40%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  48.0%  ETA 45s[K
+    t  1  [██████░░░░░░]  48%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████████░░░░░░░░░░░]  56.0%  ETA 33s[K
+    t  1  [███████░░░░░]  56%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████░░░░░░░░░]  64.0%  ETA 24s[K
+    t  1  [████████░░░░]  64%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████████████░░░░░░░]  72.0%  ETA 16s[K
+    t  1  [█████████░░░]  72%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████████░░░░░]  80.0%  ETA 10s[K
+    t  1  [██████████░░]  80%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████████████████░░░]  88.0%  ETA 6s[K
+    t  1  [███████████░]  88%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████████████░]  96.0%  ETA 2s[K
+    t  1  [████████████]  96%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+    t  1  [████████████] 100%  prepare-points[K
+    Finished `release` profile [optimized] target(s) in 0.23s
+[2A[J[rust-wgpu-vulkan] Native server started in 607ms (pointCount=62500, triangles=37878)
+  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+    t  1  [████████████] 100%  evaluate-frames[K
+[2A[J[tile e2549000_n1147000_s250] 43.7s total (cpu 138%) — horizon 29.1s, sources 12.6s, points 0.1s [ctx 1ms, loop 97ms for 62500 pts (0 in, 62500 out)], eval 1.9s [setup 1.86s (pts 5ms, horiz 0ms, veg 5ms, perFrame 0ms), dispatch 1.82s, frameLoop 0.01s], other 0.07s [pre 0.07s, post-horizon 0.00s, post-sources 0.00s, post-points 0.00s, post-eval 0.00s] (62500 evals, 30 µs/eval) — 62500 grid pts, 62500 outdoor, 0 indoor
+[atlas-write] e2549000_n1147000_s250  118ms  buckets=1
+  ✓ t1/1  62’500 pts outdoor  [████████████████████████] 100.0%  ETA 0s
+  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+[1A[J  ✓ t1/1  [████████████████████████] 100.0%  ETA 0s
+  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+[1A[J[rust-wgpu-vulkan] Shutting down native server
+
+[precompute] ✓ terminé  region=vevey  model=7958337d601590db  totalDates=1  totalTiles=1  durée=45s
+[precompute] breakdown  cold-start 1s (3%)  tiles 44s (97%)  gap 0s (0%)
+[precompute] horizon-cache  0/2 hits (0%)  builds=2 (58s)  lookup=0s
+  ✓ 2026-05-01  ok=1  skip=0  fail=0  durée=44s
+[rust-wgpu-vulkan] Native server stopped
+[precompute-all] ✓ pass=other région=vevey terminée
+
+[precompute-all] ▶ pass=other région=geneve  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=true --region=geneve --group-filter=other
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=other → 2 tiles
+[precompute] engine=cache-admin shadowMode=rust-wgpu-vulkan workers=1 region=geneve startDate=2026-05-01 days=1 gridStep=1m sampleEvery=15min window=12:00-12:15 atlasRes=0.75° skipExisting=true tiles=2
+[precompute] EXPERIMENTAL buildingsShadowMode=rust-wgpu-vulkan cachePolicy=shared-contract skipExisting=true
+[precompute] skip-existing=true réutilise volontairement les tuiles déjà calculées avec gpu-raster si elles partagent le même modèle de cache.
+  ⚡ Warm-up cache atlas  [░░░░░░░░░░░░░░░░░░░░░░░░]   0.0%  0/2[K
+[1A[J  ⚡ Warm-up cache atlas  [████████████░░░░░░░░░░░░]  50.0%  1/2[K
+[1A[J  ⚡ Warm-up cache atlas  [████████████████████████] 100.0%  2/2[K
+[1A[J  ⚡ Warm-up cache atlas terminé  2/2 tuile(s)  (2ms)
+  ⏭  Jour 1/1  2026-05-01  déjà précalculé (2 tuiles)  [████████████████████████] 100.0%  ETA --
+  ⟳  [████████████████████████] 100.0%  ETA --[K
+[1A[J
+[precompute] ✓ terminé  region=geneve  model=16657d851e53a837  totalDates=1  totalTiles=2  durée=2s
+[precompute] breakdown  cold-start 0s (0%)  tiles 0s (0%)  gap 2s (100%)
+  ✓ 2026-05-01  ok=2  skip=2  fail=0  durée=0s
+[precompute-all] ✓ pass=other région=geneve terminée
+
+[precompute-all] Une ou plusieurs passes/régions ont échoué.
+ ELIFECYCLE  Command failed with exit code 1.
