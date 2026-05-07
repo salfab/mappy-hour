@@ -86,15 +86,24 @@ if (Test-Path $configPath) {
 
 Write-Step "Validation de la configuration"
 
-$missing = @()
-if ([string]::IsNullOrWhiteSpace($GitHubUser))  { $missing += "GitHubUser" }
-if ([string]::IsNullOrWhiteSpace($MachineName))  { $missing += "MachineName" }
-if ([string]::IsNullOrWhiteSpace($SshUser))      { $missing += "SshUser" }
-if ([string]::IsNullOrWhiteSpace($ProjectRoot))  { $missing += "ProjectRoot" }
+if ([string]::IsNullOrWhiteSpace($GitHubUser)) {
+    $GitHubUser = Read-Host "  Votre nom d'utilisateur GitHub (pour recuperer vos cles SSH)"
+}
+if ([string]::IsNullOrWhiteSpace($MachineName)) {
+    $MachineName = Read-Host "  Nom court de cette machine (ex: petbox)"
+}
+if ([string]::IsNullOrWhiteSpace($SshUser)) {
+    $SshUser = Read-Host "  Nom du compte SSH a creer (ex: devops)"
+}
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    $ProjectRoot = Read-Host "  Dossier racine du projet (ex: C:\sources\mappy-hour)"
+}
 
-if ($missing.Count -gt 0) {
-    Fail ("Valeurs manquantes : " + ($missing -join ", ") + "`n" +
-          "Remplissez config.local.ps1 ou passez ces valeurs en parametres.")
+if ([string]::IsNullOrWhiteSpace($GitHubUser) -or
+    [string]::IsNullOrWhiteSpace($MachineName) -or
+    [string]::IsNullOrWhiteSpace($SshUser)     -or
+    [string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    Fail "Des valeurs obligatoires sont vides. Relancez le script et remplissez tous les champs."
 }
 
 Write-OK "GitHubUser  : $GitHubUser"
