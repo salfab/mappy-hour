@@ -120,7 +120,7 @@ Le bootstrap récupérera automatiquement cette clé pour autoriser votre connex
 Pas besoin de copier de fichiers au préalable. Collez cette ligne dans une fenêtre PowerShell **en tant qu'Administrateur**, en remplaçant les quatre valeurs par les vôtres :
 
 ```powershell
-$s="$env:TEMP\mappy-bootstrap.ps1"; Invoke-WebRequest https://raw.githubusercontent.com/salfab/mappy-hour/main/scripts/headless-server-selfhosting/bootstrap-headless-access.ps1 -OutFile $s -UseBasicParsing; notepad $s; powershell -ExecutionPolicy Bypass -File $s -GitHubUser VOTRE_GITHUB -MachineName VOTRE_MACHINE -SshUser devops -ProjectRoot C:\sources\mappy-hour
+$s="$env:TEMP\mappy-bootstrap.ps1"; Remove-Item $s -Force -ErrorAction SilentlyContinue; Invoke-WebRequest https://raw.githubusercontent.com/salfab/mappy-hour/main/scripts/headless-server-selfhosting/bootstrap-headless-access.ps1 -OutFile $s -UseBasicParsing; notepad $s; powershell -ExecutionPolicy Bypass -File $s -GitHubUser VOTRE_GITHUB -MachineName VOTRE_MACHINE -SshUser devops -ProjectRoot C:\sources\mappy-hour
 ```
 
 Ce que ça fait, dans l'ordre :
