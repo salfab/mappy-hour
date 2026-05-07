@@ -536,46 +536,6 @@ async function getOrCreateWebGpuBackend(
   return webgpuBackendLoading;
 }
 
-// ── Focus-bucket cache for terrain/vegetation tile lists ─────────────
-// Each precompute tile runs `buildSharedPointEvaluationSources` with its
-// own 250 m × 250 m bounds, which previously caused the spatial-filtered
-// list of veg/terrain tiles to differ per tile. That made the Rust IPC
-// hash differ per tile too, forcing re-upload of ~30-80 MB of rasters
-// every tile (since `serverVegetationHash` would not match across tiles).
-//
-// Caching the loader result at 1 km bucket granularity means all tiles
-// inside a focus bucket see the same (superset) list of rasters. Same
-// hash → cache hit → single upload per bucket. The shader filters tiles
-// spatially per-step anyway, so loading a slightly larger list has only
-// a tiny per-step lookup overhead (negligible on GPU).
-const TILE_BUCKET_METERS = 1000;
-const terrainTilesByBucket = new Map<
-  string,
-  Promise<Awaited<ReturnType<typeof loadTerrainTilesForBounds>>>
->();
-const vegetationTilesByBucket = new Map<
-  string,
-  Promise<Awaited<ReturnType<typeof loadVegetationSurfaceTilesForBounds>>>
->();
-function bucketAlignBounds(
-  bounds: { minX: number; minY: number; maxX: number; maxY: number },
-  searchRadiusMeters: number,
-): { key: string; bounds: { minX: number; minY: number; maxX: number; maxY: number } } {
-  const bMinX = Math.floor(bounds.minX / TILE_BUCKET_METERS) * TILE_BUCKET_METERS;
-  const bMinY = Math.floor(bounds.minY / TILE_BUCKET_METERS) * TILE_BUCKET_METERS;
-  const bMaxX = Math.ceil(bounds.maxX / TILE_BUCKET_METERS) * TILE_BUCKET_METERS;
-  const bMaxY = Math.ceil(bounds.maxY / TILE_BUCKET_METERS) * TILE_BUCKET_METERS;
-  return {
-    key: `${bMinX},${bMinY},${bMaxX},${bMaxY},r${searchRadiusMeters}`,
-    bounds: {
-      minX: bMinX - searchRadiusMeters,
-      minY: bMinY - searchRadiusMeters,
-      maxX: bMaxX + searchRadiusMeters,
-      maxY: bMaxY + searchRadiusMeters,
-    },
-  };
-}
-
 export async function buildSharedPointEvaluationSources(
   options: BuildSharedPointEvaluationSourcesOptions = {},
 ): Promise<SharedPointEvaluationSources> {
@@ -588,31 +548,34 @@ export async function buildSharedPointEvaluationSources(
   // reaches this function without an override and no dynamic builder,
   // the warning at the bottom of buildPointEvaluationContext flags it.
   const horizonMask = options.terrainHorizonOverride ?? null;
-  let terrainTiles: TerrainTileSource[] | null = null;
-  if (options.lv95Bounds) {
-    const { key, bounds } = bucketAlignBounds(options.lv95Bounds, 0);
-    let p = terrainTilesByBucket.get(key);
-    if (!p) {
-      p = loadTerrainTilesForBounds(bounds);
-      terrainTilesByBucket.set(key, p);
-    }
-    terrainTiles = await p;
-  }
-  let vegetationSurfaceTiles: Awaited<
-    ReturnType<typeof loadVegetationSurfaceTilesForBounds>
-  > = null;
-  if (options.lv95Bounds) {
-    const radius =
-      options.vegetationSearchDistanceMeters ??
-      DEFAULT_VEGETATION_SHADOW_MAX_DISTANCE_METERS;
-    const { key, bounds } = bucketAlignBounds(options.lv95Bounds, radius);
-    let p = vegetationTilesByBucket.get(key);
-    if (!p) {
-      p = loadVegetationSurfaceTilesForBounds(bounds);
-      vegetationTilesByBucket.set(key, p);
-    }
-    vegetationSurfaceTiles = await p;
-  }
+  const terrainTiles = options.lv95Bounds
+    ? await loadTerrainTilesForBounds({
+        minX: options.lv95Bounds.minX,
+        minY: options.lv95Bounds.minY,
+        maxX: options.lv95Bounds.maxX,
+        maxY: options.lv95Bounds.maxY,
+      })
+    : null;
+  const vegetationSurfaceTiles = options.lv95Bounds
+    ? await loadVegetationSurfaceTilesForBounds({
+        minX:
+          options.lv95Bounds.minX -
+          (options.vegetationSearchDistanceMeters ??
+            DEFAULT_VEGETATION_SHADOW_MAX_DISTANCE_METERS),
+        minY:
+          options.lv95Bounds.minY -
+          (options.vegetationSearchDistanceMeters ??
+            DEFAULT_VEGETATION_SHADOW_MAX_DISTANCE_METERS),
+        maxX:
+          options.lv95Bounds.maxX +
+          (options.vegetationSearchDistanceMeters ??
+            DEFAULT_VEGETATION_SHADOW_MAX_DISTANCE_METERS),
+        maxY:
+          options.lv95Bounds.maxY +
+          (options.vegetationSearchDistanceMeters ??
+            DEFAULT_VEGETATION_SHADOW_MAX_DISTANCE_METERS),
+      })
+    : null;
 
   // ── GPU raster backend (optional, cached at module level) ──────────
   let gpuShadowBackend: SharedPointEvaluationSources["gpuShadowBackend"] = undefined;
