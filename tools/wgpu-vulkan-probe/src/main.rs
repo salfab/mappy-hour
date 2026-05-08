@@ -1701,7 +1701,21 @@ fn vs(@location(0) position: vec3f) -> VertexOut {
         // compute_begin, compute_end). Index = 4*i + slot. Total = 4*n.
         // Resolved into a u64 buffer, copied into a MAP_READ buffer, mapped
         // after submit. Disabled gracefully if TIMESTAMP_QUERY isn't on.
-        let timing_enabled = device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        //
+        // wgpu QuerySet hard limit = 4096 entries per set. With 4 timestamps
+        // per frame, that maps to ≤1024 frames per dispatch. tile-first
+        // multi-date routinely exceeds this (Lausanne 365 days unions ~2000
+        // buckets per tile). We disable timing for oversized batches rather
+        // than splitting into multiple QuerySets — the microbench is an
+        // operator diagnostic, not load-bearing for results.
+        const MAX_TIMING_FRAMES: usize = 1024;
+        let timing_enabled = device.features().contains(wgpu::Features::TIMESTAMP_QUERY)
+            && n <= MAX_TIMING_FRAMES;
+        if device.features().contains(wgpu::Features::TIMESTAMP_QUERY) && n > MAX_TIMING_FRAMES {
+            eprintln!(
+                "[gpu-timing] disabled: batch frames={n} > {MAX_TIMING_FRAMES} (QuerySet limit 4096 / 4 timestamps per frame)"
+            );
+        }
         let timing_count = if timing_enabled { 4 * n as u32 } else { 0 };
         let timing_set = if timing_enabled {
             Some(device.create_query_set(&wgpu::QuerySetDescriptor {
