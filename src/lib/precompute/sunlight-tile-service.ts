@@ -1399,6 +1399,7 @@ export async function computeSunlightTileArtifact(params: {
             horizon?: { masks: Float32Array; pointMaskIndices: Uint32Array };
             vegetation?: typeof vegetationPayload;
             terrain?: typeof terrainPayload;
+            focusUpdate?: NonNullable<typeof sharedSources.vulkanFocusUpdate>;
           },
         ) => Promise<Array<FrameMasks>>;
       }).evaluateBatchFramesWithShadows(
@@ -1409,6 +1410,9 @@ export async function computeSunlightTileArtifact(params: {
           horizon: horizonPayload ?? undefined,
           vegetation: vegetationPayload ?? undefined,
           terrain: terrainPayload ?? undefined,
+          // Per-tile focus state, applied atomically inside the session lock
+          // by the Vulkan backend. Race fix for concurrent precompute (2026-05-08).
+          focusUpdate: sharedSources.vulkanFocusUpdate ?? undefined,
         },
       );
       phaseMs.evalBatchDispatch += performance.now() - dispatchT0;

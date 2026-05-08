@@ -1331,6 +1331,295 @@ export async function precomputeCacheRuns(
   const workerCount = resolvePrecomputeWorkerCount(tiles.length);
   const strictMultithread = process.env.MAPPY_PRECOMPUTE_WORKERS_STRICT === "1";
 
+  // ── Tile-first orchestrator (default since 2026-05-08) ──────────────────
+  // Outer loop = tile, inner = all dates union'd into one bucket dispatch.
+  // Saves N_dates × atlas merge/write/reloadPoints per tile vs day-first.
+  // Bench 2026-05-08 (Days=2 top-priority Lausanne): 1.31× speedup,
+  // I/O atlas réduits ×2.0, atlas-vs-CPU bit-stable cross-run.
+  //
+  // Race fix concomitant (2026-05-08) : setFrustumFocus / updateMesh ne
+  // mutent plus le backend Vulkan hors-lock — le focus per-tuile transite
+  // via `sharedSources.vulkanFocusUpdate` et est appliqué atomiquement
+  // dans `withSessionLock` avant le dispatch. Sans ce fix, tile-first
+  // produisait des atlases non-déterministes (~5-21 mismatches/tuile sur
+  // certaines tuiles avec PIPELINE_DEPTH > 1).
+  //
+  // Opt-out via MAPPY_PRECOMPUTE_ORDER=day-first (kept for A/B benchmarking).
+  const orderEnv = (process.env.MAPPY_PRECOMPUTE_ORDER ?? "tile-first").trim().toLowerCase();
+  if (orderEnv !== "day-first") {
+    console.log(
+      `[cache-admin] tile-first orchestrator (experimental): ${tiles.length} tiles × ${request.days} dates`,
+    );
+    const allDates: string[] = [];
+    for (let dayOffset = 0; dayOffset < request.days; dayOffset += 1) {
+      allDates.push(addDays(request.startDate, dayOffset));
+    }
+
+    const perDateSucceeded = new Set<string>();
+    const perDateFailed = new Map<string, string[]>();
+    const perTileStartedAt = new Map<number, number>();
+    const tileFirstStartedAt = performance.now();
+
+    // Pipeline depth: same rationale as day-first sequential path. Multi-worker
+    // is intentionally NOT wired here — the prototype runs sequential with
+    // pipeline overlap, which matches the GPU-IPC=N=1 default (ADR-0019).
+    const PIPELINE_DEPTH = Math.max(
+      1,
+      Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "5"),
+    );
+    const inflight: Array<Promise<void>> = [];
+
+    const processTileAllDates = async (tileIndex: number): Promise<void> => {
+      const tile = tiles[tileIndex];
+      perTileStartedAt.set(tileIndex, performance.now());
+
+      options.onProgress?.({
+        stage: "running",
+        date: allDates[0],
+        dayIndex: 1,
+        daysTotal: request.days,
+        tileIndex: tileIndex + 1,
+        tilesTotal: tiles.length,
+        completedTiles,
+        totalTiles,
+        percent: totalTiles === 0 ? 100 : Math.round((completedTiles / totalTiles) * 1000) / 10,
+        currentTileState: "running",
+        currentTilePhase: "prepare-context",
+        currentTileProgressPercent: 0,
+        currentTilePointCountTotal: null,
+        currentTilePointCountOutdoor: null,
+        currentTileFrameCountTotal: null,
+        currentTileFrameIndex: null,
+      });
+
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let gridMetadata: any;
+        try {
+          const { loadTileGridMetadata } = await import("@/lib/precompute/tile-grid-metadata");
+          gridMetadata = await loadTileGridMetadata(
+            request.region,
+            modelVersion.gridMetadataHash,
+            request.gridStepMeters,
+            tile.tileId,
+          );
+        } catch {
+          // grid metadata not available — proceed without
+        }
+
+        const { computeAndMergeAtlasForTileMultiDate } = await import(
+          "@/lib/precompute/atlas-tile-service"
+        );
+        const result = await computeAndMergeAtlasForTileMultiDate({
+          region: request.region,
+          modelVersionHash: modelVersion.modelVersionHash,
+          algorithmVersion: modelVersion.algorithmVersion,
+          dates: allDates,
+          timezone: request.timezone,
+          sampleEveryMinutes: request.sampleEveryMinutes,
+          gridStepMeters: request.gridStepMeters,
+          startLocalTime: request.startLocalTime,
+          endLocalTime: request.endLocalTime,
+          tile,
+          shadowCalibration,
+          resolutionDeg: request.atlasResolutionDeg,
+          cooperativeYieldEveryPoints: 5000,
+          signal: options.signal,
+          gridMetadata,
+          skipExisting,
+          onProgress: (tileProgress) => {
+            const tileFraction =
+              tileProgress.total <= 0
+                ? 0
+                : Math.max(0, Math.min(1, tileProgress.completed / tileProgress.total));
+            options.onProgress?.({
+              stage: "running",
+              date: allDates[0],
+              dayIndex: 1,
+              daysTotal: request.days,
+              tileIndex: tileIndex + 1,
+              tilesTotal: tiles.length,
+              completedTiles,
+              totalTiles,
+              percent:
+                totalTiles === 0
+                  ? 100
+                  : Math.round(((completedTiles + tileFraction * request.days) / totalTiles) * 1000) /
+                    10,
+              currentTileState: "running",
+              currentTilePhase: tileProgress.stage,
+              currentTileProgressPercent: Math.round(tileFraction * 1000) / 10,
+              currentTilePointCountTotal: tileProgress.pointCountTotal,
+              currentTilePointCountOutdoor: tileProgress.pointCountOutdoor,
+              currentTileFrameCountTotal: tileProgress.frameCountTotal,
+              currentTileFrameIndex: tileProgress.frameIndex,
+            });
+          },
+        });
+
+        // Tile success → all dates get this tileId.
+        for (const d of allDates) perDateSucceeded.add(`${d}|${tile.tileId}`);
+        completedTiles += request.days;
+        const tileElapsedMs = performance.now() - (perTileStartedAt.get(tileIndex) ?? performance.now());
+        console.log(
+          `[tile-first] ${tile.tileId}  state=${result.state}  newBuckets=${result.newBucketsComputed}/${result.uniqueBucketsRequested}  totalBuckets=${result.bucketCountTotal}  elapsed=${tileElapsedMs.toFixed(0)}ms`,
+        );
+
+        options.onProgress?.({
+          stage: "running",
+          date: allDates[allDates.length - 1],
+          dayIndex: request.days,
+          daysTotal: request.days,
+          tileIndex: tileIndex + 1,
+          tilesTotal: tiles.length,
+          completedTiles,
+          totalTiles,
+          percent: totalTiles === 0 ? 100 : Math.round((completedTiles / totalTiles) * 1000) / 10,
+          currentTileState: result.state === "skipped" ? "skipped" : "computed",
+          currentTilePhase: null,
+          currentTileProgressPercent: 100,
+          currentTilePointCountTotal: result.pointCountTotal,
+          currentTilePointCountOutdoor: result.pointCountOutdoor,
+          currentTileFrameCountTotal: result.bucketCountTotal,
+          currentTileFrameIndex: result.bucketCountTotal,
+        });
+      } catch (error) {
+        if (options.signal?.aborted) throw error;
+        const errMsg = formatPrecomputeTileError(error);
+        for (const d of allDates) {
+          let arr = perDateFailed.get(d);
+          if (!arr) {
+            arr = [];
+            perDateFailed.set(d, arr);
+          }
+          arr.push(tile.tileId);
+        }
+        completedTiles += request.days;
+        console.warn(
+          `[tile-first] tile precompute failed ${formatPrecomputeTileFailureLog({
+            region: request.region,
+            date: allDates[0],
+            tileId: tile.tileId,
+            error: errMsg,
+          })}`,
+        );
+        options.onProgress?.({
+          stage: "running",
+          date: allDates[0],
+          dayIndex: 1,
+          daysTotal: request.days,
+          tileIndex: tileIndex + 1,
+          tilesTotal: tiles.length,
+          completedTiles,
+          totalTiles,
+          percent: totalTiles === 0 ? 100 : Math.round((completedTiles / totalTiles) * 1000) / 10,
+          currentTileState: "failed",
+          currentTilePhase: null,
+          currentTileProgressPercent: 100,
+          currentTilePointCountTotal: null,
+          currentTilePointCountOutdoor: null,
+          currentTileFrameCountTotal: null,
+          currentTileFrameIndex: null,
+        });
+      }
+    };
+
+    for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
+      throwIfAborted(options.signal);
+      while (inflight.length >= PIPELINE_DEPTH) {
+        await inflight.shift();
+      }
+      inflight.push(processTileAllDates(tileIndex));
+    }
+    await Promise.all(inflight);
+
+    // Write one manifest per date — all successful tiles are present in each.
+    for (const date of allDates) {
+      const succeededTileIds: string[] = [];
+      const failedTileIds = (perDateFailed.get(date) ?? []).slice().sort();
+      for (const tile of tiles) {
+        if (perDateSucceeded.has(`${date}|${tile.tileId}`)) {
+          succeededTileIds.push(tile.tileId);
+        }
+      }
+      succeededTileIds.sort();
+      const manifest: PrecomputedSunlightManifest = {
+        artifactFormatVersion: modelVersion.artifactFormatVersion,
+        region: request.region,
+        modelVersionHash: modelVersion.modelVersionHash,
+        date,
+        timezone: request.timezone,
+        gridStepMeters: request.gridStepMeters,
+        sampleEveryMinutes: request.sampleEveryMinutes,
+        startLocalTime: request.startLocalTime,
+        endLocalTime: request.endLocalTime,
+        tileSizeMeters,
+        tileIds: succeededTileIds,
+        failedTileIds,
+        bbox: {
+          minLon: Math.min(...tiles.map((tile) => tile.bbox.minLon)),
+          minLat: Math.min(...tiles.map((tile) => tile.bbox.minLat)),
+          maxLon: Math.max(...tiles.map((tile) => tile.bbox.maxLon)),
+          maxLat: Math.max(...tiles.map((tile) => tile.bbox.maxLat)),
+        },
+        generatedAt: new Date().toISOString(),
+        complete: failedTileIds.length === 0 && succeededTileIds.length === tiles.length,
+      };
+      await writePrecomputedSunlightManifest(manifest);
+      dates.push({
+        date,
+        succeededTiles: succeededTileIds.length,
+        // In tile-first mode, "skipped" is per-tile (entire tile across all
+        // dates was skipped) — the per-(date,tile) skip granularity isn't
+        // available without re-resolving target buckets per date. Reporting 0
+        // here keeps the result schema valid; the [tile-first] log line above
+        // shows the per-tile skip state.
+        skippedTiles: 0,
+        failedTiles: failedTileIds.length,
+        complete: manifest.complete,
+        elapsedMs: 0,
+      });
+    }
+
+    const tileFirstElapsedMs = performance.now() - tileFirstStartedAt;
+    console.log(
+      `[tile-first] orchestrator done  tiles=${tiles.length}  dates=${request.days}  elapsed=${tileFirstElapsedMs.toFixed(0)}ms`,
+    );
+
+    await disposeSunlightTileEvaluationBackends();
+    {
+      const { awaitAllPendingAtlasWrites } = await import(
+        "@/lib/precompute/atlas-tile-service"
+      );
+      await awaitAllPendingAtlasWrites();
+    }
+
+    return {
+      generatedAt: new Date().toISOString(),
+      region: request.region,
+      modelVersionHash: modelVersion.modelVersionHash,
+      algorithmVersion: modelVersion.algorithmVersion,
+      totalTiles: tiles.length,
+      totalDates: request.days,
+      params: {
+        region: request.region,
+        startDate: request.startDate,
+        days: request.days,
+        timezone: request.timezone,
+        sampleEveryMinutes: request.sampleEveryMinutes,
+        gridStepMeters: request.gridStepMeters,
+        tileSizeMeters,
+        startLocalTime: request.startLocalTime,
+        endLocalTime: request.endLocalTime,
+        skipExisting,
+        buildingHeightBiasMeters: shadowCalibration.buildingHeightBiasMeters,
+      },
+      dates,
+      atlasDriftRecords: consumeAtlasDriftRecords(),
+    };
+  }
+  // ── End tile-first orchestrator ──────────────────────────────────────────
+
   // Parallel warm-up of the atlas skip cache: reads each tile's
   // `.atlas.idx` sidecar (~2 KB uncompressed) so `canSkipAllTilesForDay`
   // can fire on day 1 of the run. On first run after upgrade, tiles

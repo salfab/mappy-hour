@@ -665,3 +665,269 @@ export async function computeAndMergeAtlasForTile(
     bucketCountTotal: merged.bucketCount,
   };
 }
+
+// ── Tile-first prototype (MAPPY_PRECOMPUTE_ORDER=tile-first) ─────────────
+// Orchestre un seul (tile × N dates) au lieu de (tile × 1 date) × N.
+// Union les target buckets sur toutes les dates, déduplique par bucket key,
+// 1 seule dispatch GPU, 1 seul merge + write par tuile. Sur un run multi-jours
+// cold-cache, économise (N_dates - 1) atlas merge/write/reloadPoints par tile.
+
+export interface AtlasComputeMultiDateParams
+  extends Omit<AtlasComputeParams, "date"> {
+  dates: readonly string[];
+}
+
+export interface AtlasComputeMultiDateResult extends AtlasComputeResult {
+  /** Number of unique buckets actually computed (after cross-date dedup + atlas filter). */
+  newBucketsComputed: number;
+  /** Total unique buckets requested across all dates (post-dedup, pre-skip). */
+  uniqueBucketsRequested: number;
+}
+
+export async function computeAndMergeAtlasForTileMultiDate(
+  params: AtlasComputeMultiDateParams,
+): Promise<AtlasComputeMultiDateResult> {
+  const resolutionDeg = params.resolutionDeg ?? DEFAULT_ATLAS_RESOLUTION_DEG;
+  const skipExisting = params.skipExisting ?? true;
+  const centerE = (params.tile.minEasting + params.tile.maxEasting) / 2;
+  const centerN = (params.tile.minNorthing + params.tile.maxNorthing) / 2;
+  const tileCenter = lv95ToWgs84Precise(centerE, centerN);
+
+  // Union of target buckets across all dates, deduplicated by packed key.
+  const unionMap = new Map<number, { azBucket: number; altBucket: number }>();
+  for (const date of params.dates) {
+    const targets = resolveTargetBuckets(
+      {
+        date,
+        timezone: params.timezone,
+        sampleEveryMinutes: params.sampleEveryMinutes,
+        startLocalTime: params.startLocalTime,
+        endLocalTime: params.endLocalTime,
+      },
+      tileCenter.lat,
+      tileCenter.lon,
+      resolutionDeg,
+    );
+    for (const b of targets) {
+      const key = packBucketKey(b.azBucket, b.altBucket);
+      if (!unionMap.has(key)) unionMap.set(key, b);
+    }
+  }
+  const targetBuckets = Array.from(unionMap.values());
+  const uniqueBucketsRequested = targetBuckets.length;
+
+  const skipKey = atlasSkipCacheKey({
+    region: params.region,
+    modelVersionHash: params.modelVersionHash,
+    gridStepMeters: params.gridStepMeters,
+    tileId: params.tile.tileId,
+    resolutionDeg,
+  });
+
+  // Fast skip: if the in-memory bucket set covers every union member, no I/O.
+  if (skipExisting) {
+    const cachedSkipInfo = atlasSkipCache.get(skipKey);
+    if (cachedSkipInfo) {
+      const allCovered = targetBuckets.every((b) =>
+        cachedSkipInfo.keys.has(packBucketKey(b.azBucket, b.altBucket)),
+      );
+      if (allCovered) {
+        return {
+          state: "skipped",
+          pointCountTotal: cachedSkipInfo.pointCount,
+          pointCountOutdoor: cachedSkipInfo.outdoorPointCount,
+          bucketCountTotal: cachedSkipInfo.bucketCount,
+          newBucketsComputed: 0,
+          uniqueBucketsRequested,
+        };
+      }
+    }
+  } else {
+    atlasSkipCache.delete(skipKey);
+  }
+
+  const existingAtlas = await loadPrecomputedTileAtlas({
+    region: params.region,
+    modelVersionHash: params.modelVersionHash,
+    gridStepMeters: params.gridStepMeters,
+    tileId: params.tile.tileId,
+    resolutionDeg,
+  });
+
+  const existingKeys =
+    skipExisting && existingAtlas ? getAtlasBucketKeySet(existingAtlas) : new Set<number>();
+  const missing = targetBuckets.filter(
+    (b) => !existingKeys.has(packBucketKey(b.azBucket, b.altBucket)),
+  );
+
+  if (missing.length === 0) {
+    atlasSkipCache.set(skipKey, {
+      keys: existingKeys,
+      pointCount: existingAtlas?.pointCount ?? 0,
+      outdoorPointCount: existingAtlas?.outdoorPointCount ?? 0,
+      bucketCount: existingAtlas?.bucketCount ?? 0,
+    });
+    if (existingAtlas) {
+      try {
+        await writeTileAtlasIndex(atlasToIndex(existingAtlas), {
+          region: params.region,
+          modelVersionHash: params.modelVersionHash,
+          gridStepMeters: params.gridStepMeters,
+          tileId: params.tile.tileId,
+          resolutionDeg,
+        });
+      } catch {
+        // Non-fatal — next run will retry.
+      }
+    }
+    return {
+      state: "skipped",
+      pointCountTotal: existingAtlas?.pointCount ?? null,
+      pointCountOutdoor: existingAtlas?.outdoorPointCount ?? null,
+      bucketCountTotal: existingAtlas?.bucketCount ?? 0,
+      newBucketsComputed: 0,
+      uniqueBucketsRequested,
+    };
+  }
+
+  const sunOverride = missing.map((b) => ({
+    azimuthDeg: (b.azBucket + 0.5) * resolutionDeg,
+    altitudeDeg: (b.altBucket + 0.5) * resolutionDeg,
+  }));
+
+  // Tag the artifact with the first date — `date` is metadata-only when
+  // sunOverride is set (see computeSunlightTileArtifact: atlasMode bypasses
+  // sample-time logic).
+  const artifact = await computeSunlightTileArtifact({
+    region: params.region,
+    modelVersionHash: params.modelVersionHash,
+    algorithmVersion: params.algorithmVersion,
+    date: params.dates[0],
+    timezone: params.timezone,
+    sampleEveryMinutes: params.sampleEveryMinutes,
+    gridStepMeters: params.gridStepMeters,
+    startLocalTime: params.startLocalTime,
+    endLocalTime: params.endLocalTime,
+    tile: params.tile,
+    shadowCalibration: params.shadowCalibration,
+    cooperativeYieldEveryPoints: params.cooperativeYieldEveryPoints,
+    signal: params.signal,
+    gridMetadata: params.gridMetadata,
+    sunOverride,
+    onProgress: params.onProgress,
+  });
+
+  const pointCount = artifact.points.length;
+  const pointLon = new Float64Array(pointCount);
+  const pointLat = new Float64Array(pointCount);
+  const pointIx = new Int32Array(pointCount);
+  const pointIy = new Int32Array(pointCount);
+  const pointOutdoorIndex = new Int32Array(pointCount);
+  const pointFlags = new Uint32Array(pointCount);
+  const pointIds: string[] = new Array(pointCount);
+  const indoorBuildingIds: Array<string | null> = new Array(pointCount);
+  const pointElevationMeters: Array<number | null> = new Array(pointCount);
+  const pointLv95Easting: number[] = new Array(pointCount);
+  const pointLv95Northing: number[] = new Array(pointCount);
+  for (let i = 0; i < pointCount; i++) {
+    const p = artifact.points[i];
+    pointLon[i] = p.lon;
+    pointLat[i] = p.lat;
+    pointIx[i] = p.ix;
+    pointIy[i] = p.iy;
+    pointOutdoorIndex[i] = p.outdoorIndex ?? -1;
+    pointFlags[i] = p.insideBuilding ? 1 : 0;
+    pointIds[i] = p.id;
+    indoorBuildingIds[i] = p.indoorBuildingId;
+    pointElevationMeters[i] = p.pointElevationMeters;
+    pointLv95Easting[i] = p.lv95Easting;
+    pointLv95Northing[i] = p.lv95Northing;
+  }
+  const outdoorPointCount = artifact.stats.pointCount;
+  const maskBytesPerBucket = Math.ceil(outdoorPointCount / 8);
+
+  const newBuckets: AtlasBucketEntry[] = [];
+  for (let i = 0; i < artifact.frames.length; i++) {
+    const frame = artifact.frames[i];
+    const bucket = missing[i];
+    newBuckets.push({
+      azBucket: bucket.azBucket,
+      altBucket: bucket.altBucket,
+      sunMask: frame.sunMask,
+      sunNoVegMask: frame.sunMaskNoVegetation,
+      terrainMask: frame.terrainBlockedMask,
+      buildingsMask: frame.buildingsBlockedMask,
+      vegetationMask: frame.vegetationBlockedMask,
+    });
+  }
+
+  const meta: TileAtlasMetadata = {
+    atlasFormatVersion: 1,
+    region: params.region,
+    modelVersionHash: params.modelVersionHash,
+    gridStepMeters: params.gridStepMeters,
+    resolutionDegAz: resolutionDeg,
+    resolutionDegAlt: resolutionDeg,
+    tile: params.tile,
+    model: artifact.model as unknown as Record<string, unknown>,
+    warnings: artifact.warnings,
+    stats: {
+      bucketCount: 0,
+      pointCount,
+      outdoorPointCount,
+      sourceFramesTotal:
+        (existingAtlas?.meta.stats.sourceFramesTotal ?? 0) + artifact.frames.length,
+    },
+    pointIds,
+    indoorBuildingIds,
+    pointElevationMeters,
+    pointLv95Easting,
+    pointLv95Northing,
+  };
+
+  const atlasMergeT0 = performance.now();
+  const merged = mergeBucketsIntoAtlas({
+    existing: existingAtlas,
+    meta,
+    pointCount,
+    outdoorPointCount,
+    maskBytesPerBucket,
+    resolutionDegAz: resolutionDeg,
+    resolutionDegAlt: resolutionDeg,
+    pointLon,
+    pointLat,
+    pointIx,
+    pointIy,
+    pointOutdoorIndex,
+    pointFlags,
+    newBuckets,
+  });
+  const atlasMergeMs = performance.now() - atlasMergeT0;
+  console.log(
+    `[atlas-merge-multi] ${params.tile.tileId}  ${atlasMergeMs.toFixed(0)}ms  newBuckets=${newBuckets.length}  totalBuckets=${merged.bucketCount}  dates=${params.dates.length}  unique=${uniqueBucketsRequested}  existing=${existingAtlas != null}`,
+  );
+
+  atlasSkipCache.set(skipKey, {
+    keys: getAtlasBucketKeySet(merged),
+    pointCount,
+    outdoorPointCount,
+    bucketCount: merged.bucketCount,
+  });
+
+  await kickoffAtlasWrite(merged, {
+    region: params.region,
+    modelVersionHash: params.modelVersionHash,
+    gridStepMeters: params.gridStepMeters,
+    tileId: params.tile.tileId,
+    resolutionDeg,
+  });
+
+  return {
+    state: "computed",
+    pointCountTotal: pointCount,
+    pointCountOutdoor: outdoorPointCount,
+    bucketCountTotal: merged.bucketCount,
+    newBucketsComputed: newBuckets.length,
+    uniqueBucketsRequested,
+  };
+}

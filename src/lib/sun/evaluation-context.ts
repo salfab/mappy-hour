@@ -70,6 +70,24 @@ export interface SharedPointEvaluationSources {
    */
   vegetationShadowHandledByBackend?: boolean;
   terrainShadowHandledByBackend?: boolean;
+  /**
+   * Per-tile focus capsule for the Vulkan backend. Computed alongside
+   * `webgpuComputeBackend` when shadow mode = rust-wgpu-vulkan. The caller
+   * (sunlight-tile-service) must thread this into `evaluateBatchFramesWithShadows`
+   * via `options.focusUpdate` so the Vulkan backend can apply mesh + focus
+   * atomically with the dispatch (race fix for concurrent precompute, see
+   * RustWgpuVulkanShadowBackend.evaluateBatchFramesWithShadowsOnSlot).
+   */
+  vulkanFocusUpdate?: {
+    focusBounds: { minX: number; minY: number; maxX: number; maxY: number };
+    maxBuildingHeight: number;
+    zoneKey: string;
+    zoneObstacles?: Array<{
+      centerX: number; centerY: number; height: number;
+      minX: number; maxX: number; minY: number; maxY: number;
+      [key: string]: unknown;
+    }>;
+  } | null;
 }
 
 export interface BuildPointEvaluationContextOptions {
@@ -273,8 +291,8 @@ export function disposeWebGpuBackend(): void {
   if (rustWgpuVulkanBackendCache) {
     rustWgpuVulkanBackendCache.dispose();
     rustWgpuVulkanBackendCache = undefined;
-    rustWgpuVulkanBackendFocusKey = "";
     rustWgpuVulkanBackendLoading = null;
+    zoneObstaclesCache.clear();
   }
 }
 
@@ -297,8 +315,8 @@ export async function disposeWebGpuBackendAsync(): Promise<void> {
     // precomputeCacheRuns N times, each ending with this dispose; the
     // second config saw cache=null and silently got a null backend.
     rustWgpuVulkanBackendCache = undefined;
-    rustWgpuVulkanBackendFocusKey = "";
     rustWgpuVulkanBackendLoading = null;
+    zoneObstaclesCache.clear();
     if ("shutdown" in backend && typeof backend.shutdown === "function") {
       await (backend.shutdown as () => Promise<void>)();
     } else {
@@ -310,149 +328,104 @@ export async function disposeWebGpuBackendAsync(): Promise<void> {
 let webgpuBackendLoading: Promise<import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null> | null = null;
 
 let rustWgpuVulkanBackendCache: import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null | undefined;
-let rustWgpuVulkanBackendFocusKey = "";
 let rustWgpuVulkanBackendLoading: Promise<import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null> | null = null;
+
+// Per-zone filtered-obstacles cache. Filtering ~8k obstacles per tile is
+// wasteful when 16 tiles share the same 1km zone — cache the result keyed
+// on `${focusKey}|m${margin}`. Cleared at backend dispose.
+const zoneObstaclesCache = new Map<
+  string,
+  Array<{
+    centerX: number; centerY: number; height: number;
+    minX: number; maxX: number; minY: number; maxY: number;
+    [key: string]: unknown;
+  }>
+>();
+
+type ObstacleType = {
+  centerX: number; centerY: number; height: number;
+  minX: number; maxX: number; minY: number; maxY: number;
+  [key: string]: unknown;
+};
+
+function filterObstaclesForZone(
+  obstacles: ReadonlyArray<ObstacleType>,
+  focusBounds: { minX: number; minY: number; maxX: number; maxY: number },
+  margin: number,
+): ObstacleType[] {
+  const bucket = focusBucketBounds(focusBounds);
+  return obstacles.filter(
+    (o) =>
+      o.maxX > bucket.minX - margin && o.minX < bucket.maxX + margin &&
+      o.maxY > bucket.minY - margin && o.minY < bucket.maxY + margin,
+  );
+}
+
+/**
+ * Build the per-tile focus capsule that is threaded into
+ * `evaluateBatchFramesWithShadows` via `options.focusUpdate`. The Vulkan
+ * backend applies it inside the session lock, atomically with the dispatch,
+ * preventing concurrent tile prep from clobbering the focus state mid-eval
+ * (race fix 2026-05-08).
+ *
+ * Returns null when the focus zone has no obstacles (caller falls back to
+ * "all outdoor" for this tile, same semantics as the previous mutating path).
+ */
+export function buildVulkanFocusCapsule(
+  obstacles: ReadonlyArray<ObstacleType>,
+  focusBounds: { minX: number; minY: number; maxX: number; maxY: number },
+): SharedPointEvaluationSources["vulkanFocusUpdate"] {
+  const margin = getRustWgpuVulkanFocusMarginMeters();
+  const zoneKey = `${focusKeyFromBounds(focusBounds)}|m${margin}`;
+  let zoneObstacles = zoneObstaclesCache.get(zoneKey);
+  if (!zoneObstacles) {
+    zoneObstacles = filterObstaclesForZone(obstacles, focusBounds, margin);
+    zoneObstaclesCache.set(zoneKey, zoneObstacles);
+  }
+  if (zoneObstacles.length === 0) {
+    return null;
+  }
+  const maxBuildingHeight = zoneObstacles.reduce(
+    (max, o) => Math.max(max, o.height),
+    0,
+  );
+  return {
+    focusBounds: {
+      minX: focusBounds.minX,
+      minY: focusBounds.minY,
+      maxX: focusBounds.maxX,
+      maxY: focusBounds.maxY,
+    },
+    maxBuildingHeight,
+    zoneKey,
+    zoneObstacles,
+  };
+}
 
 async function getOrCreateRustWgpuVulkanBackend(
   obstacles: Array<{ centerX: number; centerY: number; height: number; minX: number; maxX: number; minY: number; maxY: number; [key: string]: unknown }>,
   focusBounds?: { minX: number; minY: number; maxX: number; maxY: number },
 ): Promise<import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null> {
-  const margin = getRustWgpuVulkanFocusMarginMeters();
-  const newFocusKey = focusBounds ? `${focusKeyFromBounds(focusBounds)}|m${margin}` : "all";
-
-  // Cache hit, same focus zone — just return the existing backend. Without
-  // this, every call after the first with a matching focus was falling
-  // through to the "create from scratch" path below, respawning the Rust
-  // server and reloading the full mesh on every single call (observed: 194
-  // recreations for one /api/places/windows request).
-  //
-  // IMPORTANT: `newFocusKey` is rounded to a 1km grid — it is SAME for all
-  // 16 tiles inside one focus zone. But the 250m tile bounds passed as
-  // `focusBounds` DIFFER per tile. Without this refresh, the server kept
-  // rendering the shadow map with the FIRST tile's frustum; the rest of
-  // the 1km-focus tiles got points projected outside NDC → bBlk=0%. Same
-  // class of bug as the gpu-raster race fixed in commit 4baa755 — fixed
-  // here for Vulkan by always calling setFrustumFocus + letting
-  // ensureServer() reload the server focus on next evaluateBatch.
-  if (rustWgpuVulkanBackendCache && newFocusKey === rustWgpuVulkanBackendFocusKey) {
-    if (focusBounds && "setFrustumFocus" in rustWgpuVulkanBackendCache) {
-      const maxH = obstacles.reduce((max, o) => Math.max(max, o.height), 0);
-      (rustWgpuVulkanBackendCache as {
-        setFrustumFocus: (
-          bounds: { minX: number; minY: number; maxX: number; maxY: number },
-          maxH: number,
-        ) => void;
-      }).setFrustumFocus(focusBounds, maxH);
-    }
-    return rustWgpuVulkanBackendCache;
-  }
-
-  if (
-    rustWgpuVulkanBackendCache &&
-    newFocusKey !== rustWgpuVulkanBackendFocusKey &&
-    "updateMesh" in rustWgpuVulkanBackendCache
-  ) {
-    // Focus zone changed → keep the same backend (and its native Vulkan
-    // server) alive and swap the mesh + focus in place instead of
-    // destroying/recreating the whole stack.
-    const backend = rustWgpuVulkanBackendCache as unknown as {
-      updateMesh: (o: typeof obstacles) => Promise<void>;
-      setFrustumFocus: (
-        bounds: { minX: number; minY: number; maxX: number; maxY: number },
-        maxH: number,
-      ) => void;
-      triangleCount: number;
-      name: string;
-      dispose: () => void;
-    };
-    let filtered = obstacles;
-    if (focusBounds) {
-      // Filter around the WHOLE 1km focus bucket, not just the tile bounds of
-      // this first tile — otherwise tiles on the opposite side of the bucket
-      // get a mesh missing their relevant obstacles (62-tiles-KO regression).
-      const bucket = focusBucketBounds(focusBounds);
-      filtered = obstacles.filter(
-        (o) =>
-          o.maxX > bucket.minX - margin && o.minX < bucket.maxX + margin &&
-          o.maxY > bucket.minY - margin && o.minY < bucket.maxY + margin,
-      );
-    }
-    if (filtered.length === 0) {
-      // No obstacles in the new focus zone — return null so the caller falls
-      // back to "all outdoor" for this tile. Keep the backend alive; the next
-      // tile with obstacles will hit the updateMesh branch above. Disposing
-      // here has been observed to leave the backend in a broken state
-      // (cache=undefined but the Rust server never restarts for the next
-      // tile with obstacles), producing "Vulkan backend failed despite
-      // obstacles present in focus zone" errors during batch preflight.
-      console.log(`[evaluation-context] Rust/wgpu Vulkan new focus has 0 obstacles, backend kept alive (no update).`);
-      return null;
-    }
-    try {
-      console.log(
-        `[evaluation-context] Rust/wgpu Vulkan focus changed (${rustWgpuVulkanBackendFocusKey} -> ${newFocusKey}), updating mesh in place (${filtered.length}/${obstacles.length} obstacles)...`,
-      );
-      const zoneChangeT0 = performance.now();
-      await backend.updateMesh(filtered);
-      if (focusBounds) {
-        const maxH = filtered.reduce((max, o) => Math.max(max, o.height), 0);
-        backend.setFrustumFocus(focusBounds, maxH);
-      }
-      const zoneChangeMs = performance.now() - zoneChangeT0;
-      rustWgpuVulkanBackendFocusKey = newFocusKey;
-      console.log(
-        `[evaluation-context] Rust/wgpu Vulkan mesh updated: ${backend.name}, ${backend.triangleCount} triangles [zone-change=${zoneChangeMs.toFixed(0)}ms]`,
-      );
-      return rustWgpuVulkanBackendCache;
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.warn(
-        `[evaluation-context] Rust/wgpu Vulkan updateMesh failed (${msg}), recreating backend...`,
-      );
-      rustWgpuVulkanBackendCache.dispose();
-      rustWgpuVulkanBackendCache = undefined;
-      rustWgpuVulkanBackendLoading = null;
-    }
-  } else if (rustWgpuVulkanBackendCache && newFocusKey !== rustWgpuVulkanBackendFocusKey) {
-    // Cache is null (previous start failed) — just reset state.
-    rustWgpuVulkanBackendCache = undefined;
-    rustWgpuVulkanBackendLoading = null;
-  }
-
+  // Lifecycle simplified post-2026-05-08 race fix: this function only ensures
+  // the backend INSTANCE exists. Per-tile focus state (focusBounds, maxH,
+  // mesh swap on zone change) is no longer applied here — it travels through
+  // `sharedSources.vulkanFocusUpdate` and is committed atomically inside the
+  // session lock by `evaluateBatchFramesWithShadows`. Removing the per-tile
+  // mutations eliminates the race that caused intermittent atlas drift on
+  // tiles whose dispatch overlapped a sibling tile's focus prep.
   if (rustWgpuVulkanBackendCache !== undefined) {
-    if (rustWgpuVulkanBackendCache && focusBounds && "setFrustumFocus" in rustWgpuVulkanBackendCache) {
-      const maxH = obstacles.reduce((max, obstacle) => Math.max(max, obstacle.height), 0);
-      (rustWgpuVulkanBackendCache as {
-        setFrustumFocus: (
-          bounds: { minX: number; minY: number; maxX: number; maxY: number },
-          maxH: number,
-        ) => void;
-      }).setFrustumFocus(
-        {
-          minX: focusBounds.minX,
-          minY: focusBounds.minY,
-          maxX: focusBounds.maxX,
-          maxY: focusBounds.maxY,
-        },
-        maxH,
-      );
-    }
     return rustWgpuVulkanBackendCache;
   }
   if (rustWgpuVulkanBackendLoading) return rustWgpuVulkanBackendLoading;
 
   rustWgpuVulkanBackendLoading = (async () => {
     try {
+      const margin = getRustWgpuVulkanFocusMarginMeters();
       let filtered = obstacles;
       if (focusBounds) {
-        // Same rationale as updateMesh path (see focusBucketBounds): filter
-        // around the 1km focus bucket so every tile in the bucket has its
-        // relevant obstacles available after the single initial upload.
-        const bucket = focusBucketBounds(focusBounds);
-        filtered = obstacles.filter(o =>
-          o.maxX > bucket.minX - margin && o.minX < bucket.maxX + margin &&
-          o.maxY > bucket.minY - margin && o.minY < bucket.maxY + margin,
-        );
+        // Cold-start filter: use first-tile zone obstacles so initial mesh
+        // upload is small. Subsequent zone changes ride through focusUpdate.
+        filtered = filterObstaclesForZone(obstacles, focusBounds, margin);
         console.log(`[evaluation-context] Rust/wgpu Vulkan spatial filter: ${filtered.length}/${obstacles.length} obstacles within ${margin}m of 1km focus bucket`);
       }
       if (filtered.length === 0) {
@@ -466,23 +439,10 @@ async function getOrCreateRustWgpuVulkanBackend(
         filtered as Parameters<typeof RustWgpuVulkanShadowBackend.createWithDxfMeshes>[0],
         4096,
       );
-      if (focusBounds) {
-        const maxH = filtered.reduce((max, obstacle) => Math.max(max, obstacle.height), 0);
-        backend.setFrustumFocus(
-          {
-            minX: focusBounds.minX,
-            minY: focusBounds.minY,
-            maxX: focusBounds.maxX,
-            maxY: focusBounds.maxY,
-          },
-          maxH,
-        );
-      }
       console.log(
         `[evaluation-context] Rust/wgpu Vulkan backend ready: ${backend.name}, ${backend.triangleCount} triangles`,
       );
       rustWgpuVulkanBackendCache = backend;
-      rustWgpuVulkanBackendFocusKey = newFocusKey;
       return backend;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -607,6 +567,7 @@ export async function buildSharedPointEvaluationSources(
   // Uses an isolated subprocess (stdin/stdout) so Dawn/D3D12 never coexists
   // with terrain file I/O in the same process (Intel Arc driver bug).
   let webgpuComputeBackend: SharedPointEvaluationSources["webgpuComputeBackend"] = undefined;
+  let vulkanFocusUpdate: SharedPointEvaluationSources["vulkanFocusUpdate"] = null;
   if (BUILDINGS_SHADOW_MODE === "webgpu-compute" && buildingsIndex) {
     try {
       const { WebGpuIpcClient } = await import("./webgpu-ipc-client");
@@ -631,6 +592,12 @@ export async function buildSharedPointEvaluationSources(
       buildingsIndex.obstacles,
       options.lv95Bounds ?? undefined,
     );
+    if (webgpuComputeBackend && options.lv95Bounds) {
+      vulkanFocusUpdate = buildVulkanFocusCapsule(
+        buildingsIndex.obstacles,
+        options.lv95Bounds,
+      );
+    }
   }
 
   // ── Zenith indoor mask (from pre-computed grid metadata) ─────────────
@@ -736,6 +703,7 @@ export async function buildSharedPointEvaluationSources(
     zenithIndoorCheck,
     vegetationShadowHandledByBackend,
     terrainShadowHandledByBackend,
+    vulkanFocusUpdate,
   };
 }
 

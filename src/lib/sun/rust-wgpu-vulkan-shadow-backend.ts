@@ -216,6 +216,12 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   // call (TOCTOU race: file-write awaits yield to other tasks that can kill+restart
   // the server, invalidating the session's point_count before upload_horizon_masks).
   private serverGeneration = 0;
+  // Tracks the last 1km focus zone whose mesh has been committed via
+  // `updateMeshInner`. Used by `evaluateBatchFramesWithShadowsOnSlot` to
+  // decide whether the caller's `focusUpdate.zoneObstacles` should trigger
+  // an atomic mesh swap before dispatch (only when the zone changed).
+  // See ADR / commit doc for the focus race fix that motivated this field.
+  private committedZoneKey: string | null = null;
 
   private constructor(params: {
     originX: number;
@@ -293,8 +299,25 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
    *
    * Any previously set focus bounds are cleared — callers should call
    * setFrustumFocus() again with the new focus bounds right after.
+   *
+   * ⚠️  Public version: NOT thread-safe with concurrent evaluateBatch calls
+   * because mesh state mutation happens outside `withSessionLock`. Callers
+   * doing pipelined precompute (cache-admin tile-first / day-first with
+   * PIPELINE_DEPTH > 1) must use `evaluateBatchFramesWithShadows` with the
+   * `focusUpdate` option instead — that path applies mesh + focus inside
+   * the session lock atomically with the dispatch.
    */
   async updateMesh(obstacles: ObstacleArray): Promise<void> {
+    return this.updateMeshInner(obstacles);
+  }
+
+  /**
+   * Internal mesh swap. Assumes the caller holds the session lock (or that
+   * no concurrent evaluateBatch is in flight). Used both by the public
+   * `updateMesh` and by `evaluateBatchFramesWithShadows` when the caller
+   * passes a `focusUpdate` with `zoneObstacles` (atomic mesh+focus+eval).
+   */
+  private async updateMeshInner(obstacles: ObstacleArray): Promise<void> {
     const sceneBounds = computeObstacleBounds(obstacles);
     const originX = (sceneBounds.minX + sceneBounds.maxX) / 2;
     const originY = (sceneBounds.minY + sceneBounds.maxY) / 2;
@@ -439,6 +462,24 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         originX: number;
         originY: number;
       };
+      /**
+       * Per-tile focus state to apply atomically with the dispatch.
+       * Mandatory for safe concurrent precompute (PIPELINE_DEPTH > 1 with
+       * tile-first or day-first). When provided, `focusBounds` and
+       * `maxBuildingHeight` are written to the backend INSIDE the session
+       * lock right before the dispatch — preventing concurrent prep on
+       * other tiles from clobbering this tile's state.
+       *
+       * If `zoneKey` differs from the last committed zone AND `zoneObstacles`
+       * is non-empty, `updateMeshInner` runs first (atomic mesh swap).
+       * Caller passes `zoneObstacles` filtered for the 1km focus bucket.
+       */
+      focusUpdate?: {
+        focusBounds: Bounds2d;
+        maxBuildingHeight: number;
+        zoneKey: string;
+        zoneObstacles?: ObstacleArray;
+      };
     },
   ): Promise<
     Array<{
@@ -494,6 +535,20 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         sunnyCount: 0,
         sunnyNoVegCount: 0,
       }));
+    }
+    // Apply per-tile focus atomically with the dispatch. Caller MUST pass
+    // `focusUpdate` when running concurrent tiles (PIPELINE_DEPTH > 1) —
+    // otherwise this.focusBounds / this.maxBuildingHeight may be clobbered
+    // by another tile's prep between this tile's prep and dispatch.
+    if (options?.focusUpdate) {
+      const { focusBounds, maxBuildingHeight, zoneKey, zoneObstacles } =
+        options.focusUpdate;
+      if (zoneKey !== this.committedZoneKey && zoneObstacles && zoneObstacles.length > 0) {
+        await this.updateMeshInner(zoneObstacles);
+        this.committedZoneKey = zoneKey;
+      }
+      this.focusBounds = { ...focusBounds };
+      this.maxBuildingHeight = maxBuildingHeight;
     }
     const ensureT0 = performance.now();
     await this.ensureSlot(slot, points, pointCount);
