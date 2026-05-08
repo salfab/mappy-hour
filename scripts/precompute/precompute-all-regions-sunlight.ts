@@ -256,6 +256,11 @@ function main() {
     return;
   }
 
+  const computeStart = Date.now();
+  console.log(
+    `[precompute-all] [BENCH] compute_start ${new Date(computeStart).toISOString()} (preflight excluded)`,
+  );
+
   let anyFailed = false;
 
   // Two-pass iteration: top-priority tiles across every region first, then
@@ -294,6 +299,11 @@ function main() {
       }
     }
   }
+
+  const computeElapsed = ((Date.now() - computeStart) / 1000).toFixed(1);
+  console.log(
+    `[precompute-all] [BENCH] compute_end   ${new Date().toISOString()} — compute wall=${computeElapsed}s (preflight excluded)`,
+  );
 
   if (anyFailed) {
     console.error("\n[precompute-all] Une ou plusieurs passes/régions ont échoué.");
