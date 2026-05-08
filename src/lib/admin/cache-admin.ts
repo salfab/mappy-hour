@@ -1370,15 +1370,22 @@ export async function precomputeCacheRuns(
     );
     const inflight: Array<Promise<void>> = [];
 
+    // Display label for the per-tile progress events. Tile-first computes
+    // the union of all `request.days` dates per tile in a single dispatch —
+    // there is no "current date" in the day-first sense. Surface that fact
+    // to the operator instead of pinning the header to allDates[0] (which
+    // misled "Jour 1/365 2026-05-01" stuck-on-day-1).
+    const tileFirstLabel = `${allDates[0]}..${allDates[allDates.length - 1]} (tile-first union ${request.days}j)`;
+
     const processTileAllDates = async (tileIndex: number): Promise<void> => {
       const tile = tiles[tileIndex];
       perTileStartedAt.set(tileIndex, performance.now());
 
       options.onProgress?.({
         stage: "running",
-        date: allDates[0],
+        date: tileFirstLabel,
         dayIndex: 1,
-        daysTotal: request.days,
+        daysTotal: 1,
         tileIndex: tileIndex + 1,
         tilesTotal: tiles.length,
         completedTiles,
@@ -1435,9 +1442,9 @@ export async function precomputeCacheRuns(
                 : Math.max(0, Math.min(1, tileProgress.completed / tileProgress.total));
             options.onProgress?.({
               stage: "running",
-              date: allDates[0],
+              date: tileFirstLabel,
               dayIndex: 1,
-              daysTotal: request.days,
+              daysTotal: 1,
               tileIndex: tileIndex + 1,
               tilesTotal: tiles.length,
               completedTiles,
@@ -1468,9 +1475,9 @@ export async function precomputeCacheRuns(
 
         options.onProgress?.({
           stage: "running",
-          date: allDates[allDates.length - 1],
-          dayIndex: request.days,
-          daysTotal: request.days,
+          date: tileFirstLabel,
+          dayIndex: 1,
+          daysTotal: 1,
           tileIndex: tileIndex + 1,
           tilesTotal: tiles.length,
           completedTiles,
@@ -1506,9 +1513,9 @@ export async function precomputeCacheRuns(
         );
         options.onProgress?.({
           stage: "running",
-          date: allDates[0],
+          date: tileFirstLabel,
           dayIndex: 1,
-          daysTotal: request.days,
+          daysTotal: 1,
           tileIndex: tileIndex + 1,
           tilesTotal: tiles.length,
           completedTiles,
