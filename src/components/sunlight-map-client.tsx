@@ -3359,6 +3359,7 @@ export function SunlightMapClient() {
 
   // Canvas overlay for large grids — fast slider updates
   useEffect(() => {
+    console.log("[canvas-effect]", { isMapReady, hasTl: !!dailyTimeline, mode, tiles: dailyTimeline?.tiles.length, pts: dailyTimeline?.pointCount, bounds: !!dailyTimeline?.overlayBounds, showSunny, showShadow });
     if (!isMapReady || !dailyTimeline || mode !== "daily") {
       if (sunShadowOverlayRef.current) {
         sunShadowOverlayRef.current.remove();
