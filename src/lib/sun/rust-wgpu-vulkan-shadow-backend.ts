@@ -504,14 +504,55 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
         sunnyNoVegCount: 0,
       }));
     }
-    // Multi-session pre-flight bench instrumentation: split the dispatch
-    // wall into lockWait | upload | serverIpc | decode so we know which
-    // segment dominates and whether multi-session would actually help.
-    // See ADR-0011 Phase G post-mortem.
+    // Chunk large batches : the Rust server allocates per-frame uniform
+    // buffers + bind groups inside `evaluate_batch_frames` (one
+    // render_uniform + render_bg + compute_params + compute_bg per frame).
+    // For the tile-first 365-day case where one tile unions ~1900 buckets,
+    // that's ~7600 wgpu objects in flight per dispatch — Intel Arc OOMs in
+    // wgpu_core.rs:2653 ("wgpu error: Out of Memory") on roughly the 9th
+    // such tile (cumulative descriptor pool pressure).
+    //
+    // Chunking on the Node side keeps each Rust dispatch ≤ MAX_FRAMES_PER_DISPATCH
+    // and is invisible to callers — sub-batches share the slot lock for the
+    // duration of the tile but inter-tile pipelining is preserved.
+    // 512 is conservative; tune up if Intel Arc tolerates more, but the
+    // marginal speedup is small (Rust per-frame work is ~constant).
+    const MAX_FRAMES_PER_DISPATCH = 512;
     const lockEnterT0 = performance.now();
     return this.withSessionLock(async (slot, releaseEarly) => {
       const lockWaitMs = performance.now() - lockEnterT0;
-      return this.evaluateBatchFramesWithShadowsOnSlot(slot, frames, points, pointCount, options, lockWaitMs, 0, releaseEarly);
+      if (frames.length <= MAX_FRAMES_PER_DISPATCH) {
+        return this.evaluateBatchFramesWithShadowsOnSlot(slot, frames, points, pointCount, options, lockWaitMs, 0, releaseEarly);
+      }
+      // Split into chunks; first chunk applies focusUpdate atomically with
+      // its dispatch (race-safe — see focus race fix). Subsequent chunks
+      // skip focusUpdate (state already committed inside the lock) but still
+      // pass uploads (backend hash-dedups so they're a no-op when same).
+      const chunks: Array<typeof frames> = [];
+      for (let i = 0; i < frames.length; i += MAX_FRAMES_PER_DISPATCH) {
+        chunks.push(frames.slice(i, i + MAX_FRAMES_PER_DISPATCH));
+      }
+      console.log(
+        `[batch-chunk] tile=${slot.id}  frames=${frames.length}  chunks=${chunks.length} × ≤${MAX_FRAMES_PER_DISPATCH}`,
+      );
+      type FrameResult = Awaited<ReturnType<RustWgpuVulkanShadowBackend["evaluateBatchFramesWithShadows"]>>[number];
+      const accumulated: FrameResult[] = [];
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkOptions = i === 0
+          ? options
+          : { ...options, focusUpdate: undefined };
+        // Only release the slot AFTER the LAST chunk's send (caller's
+        // pipeline ordering relies on this). Earlier chunks must not
+        // release: a sibling tile could otherwise interleave and clobber
+        // the slot's per-tile state mid-tile.
+        const chunkRelease = i === chunks.length - 1 ? releaseEarly : undefined;
+        const chunkResult = await this.evaluateBatchFramesWithShadowsOnSlot(
+          slot, chunks[i], points, pointCount, chunkOptions,
+          i === 0 ? lockWaitMs : 0, 0, chunkRelease,
+        );
+        accumulated.push(...chunkResult);
+      }
+      return accumulated;
     });
   }
 
