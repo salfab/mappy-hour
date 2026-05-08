@@ -67,7 +67,16 @@ export const RAW_NYON_PLACES_PATH = path.join(
 
 export const PROCESSED_ROOT = path.join(DATA_ROOT, "processed");
 export const CACHE_ROOT = path.join(DATA_ROOT, "cache");
-export const CACHE_SUNLIGHT_DIR = path.join(CACHE_ROOT, "sunlight");
+// Override sunlight cache only (= atlases + sidecars + horizon caches), keeping
+// inputs (raw, processed) at the regular DATA_ROOT. Useful for benches that
+// need an isolated cache without copying the entire data tree.
+const ENV_CACHE_SUNLIGHT_DIR = process.env.MAPPY_CACHE_SUNLIGHT_DIR?.trim();
+export const CACHE_SUNLIGHT_DIR =
+  ENV_CACHE_SUNLIGHT_DIR && ENV_CACHE_SUNLIGHT_DIR.length > 0
+    ? path.isAbsolute(ENV_CACHE_SUNLIGHT_DIR)
+      ? ENV_CACHE_SUNLIGHT_DIR
+      : path.resolve(PROJECT_ROOT, ENV_CACHE_SUNLIGHT_DIR)
+    : path.join(CACHE_ROOT, "sunlight");
 export const PROCESSED_HORIZON_DIR = path.join(PROCESSED_ROOT, "horizon");
 export const PROCESSED_HORIZON_SHARING_DIR = path.join(
   PROCESSED_HORIZON_DIR,

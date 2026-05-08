@@ -1,0 +1,449 @@
+
+> mappy-hour@0.1.0 precompute:all-regions:vulkan C:\sources\MappyHour
+> cross-env MAPPY_PRECOMPUTE_WORKERS=1 tsx scripts/precompute/precompute-all-regions-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan "--" "--tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json" "--start-date=2026-05-01" "--days=1" "--start-local-time=12:00" "--end-local-time=12:15" "--skip-existing=false"
+
+
+╔═══════════════════════════════════════════════════════════════════════╗
+║                    PRECOMPUTE RUN RECAP                               ║
+╚═══════════════════════════════════════════════════════════════════════╝
+  Tile selection   : data/processed/precompute/golden-dedup-terrain-2026-05-04.json
+  Total tiles      : 7
+  Regions (4)      : lausanne → morges → vevey → geneve
+
+  Passe 1/2 — Top priority (0 tuiles) :
+  Passe 2/2 — Couverture étendue (7 tuiles) :
+    • lausanne       2 tiles  █████████
+    • morges         2 tiles  █████████
+    • vevey          1 tiles  ████
+    • geneve         2 tiles  █████████
+
+  Date range       : 2026-05-01 (+ 1 day)
+  Local time win.  : 12:00 → 12:15, every 15 min
+  Buildings mode   : rust-wgpu-vulkan
+  Grid step        : 1 m
+  Skip existing    : false
+───────────────────────────────────────────────────────────────────────
+
+[precompute-all] EXPERIMENTAL cachePolicy=shared-contract : les caches gpu-raster compatibles peuvent être réutilisés/skippés.
+
+[precompute-all] ▶ preflight grid-metadata : 4 région(s), grid=1m, fichier=data/processed/precompute/golden-dedup-terrain-2026-05-04.json
+[precompute-all]   · grid-metadata région=lausanne
+[grid-metadata] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z → 2 tiles
+[grid-metadata] region=lausanne model=bff55b407db8426b tiles=2 grid=1m
+[swiss-terrain] dedup 2072 → 775 TIFs (max-year-best-res-v1)
+[vegetation-shadow] tile kinds after dedup (shader-compose=off): vhm_raw=0, vhm_composed=644, dsm=120
+[evaluation-context] Spatial filter: 32649/168257 obstacles within 5000m of focus
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2536873-1153836-32649): 2013437 triangles in 80.04ms
+[evaluation-context] GPU raster backend ready: gpu-shadowmap-4096 (ANGLE), 2013437 triangles
+[grid-metadata] tile 1/2 e2536750_n1152000_s250 — 47981 outdoor, 14519 indoor in 2.5s
+[evaluation-context] GPU focus changed (2537,1152 → 2533,1153), recreating backend...
+[evaluation-context] Spatial filter: 24668/168257 obstacles within 5000m of focus
+[evaluation-context] GPU raster backend ready: gpu-shadowmap-4096 (ANGLE), 1490799 triangles
+[grid-metadata] tile 2/2 e2533000_n1153000_s250 — 57401 outdoor, 5099 indoor in 26.6s
+[grid-metadata] done: 2 tiles, 105382 outdoor, 19618 indoor in 29.0s
+[gpu-mesh-loader] Binary cache saved (gpu-mesh-2533122-1154508-24668): 1490799 triangles
+[precompute-all]   · grid-metadata région=morges
+[grid-metadata] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z → 2 tiles
+[grid-metadata] region=morges model=65d7ddb814c66251 tiles=2 grid=1m
+[swiss-terrain] dedup 2072 → 775 TIFs (max-year-best-res-v1)
+[vegetation-shadow] tile kinds after dedup (shader-compose=off): vhm_raw=0, vhm_composed=644, dsm=120
+[evaluation-context] Spatial filter: 13427/168257 obstacles within 5000m of focus
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2527153-1151481-13427): 736156 triangles in 18.48ms
+[evaluation-context] GPU raster backend ready: gpu-shadowmap-4096 (ANGLE), 736156 triangles
+[grid-metadata] tile 1/2 e2527000_n1150750_s250 — 59750 outdoor, 2750 indoor in 6.3s
+[evaluation-context] GPU focus changed (2527,1151 → 2531,1151), recreating backend...
+[evaluation-context] Spatial filter: 17113/168257 obstacles within 5000m of focus
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2530662-1152815-17113): 956787 triangles in 25.44ms
+[evaluation-context] GPU raster backend ready: gpu-shadowmap-4096 (ANGLE), 956787 triangles
+[grid-metadata] tile 2/2 e2530500_n1151000_s250 — 62140 outdoor, 360 indoor in 2.4s
+[grid-metadata] done: 2 tiles, 121890 outdoor, 3110 indoor in 8.6s
+[precompute-all]   · grid-metadata région=vevey
+[grid-metadata] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z → 1 tiles
+[grid-metadata] region=vevey model=5e96c05c816211e8 tiles=1 grid=1m
+[swiss-terrain] dedup 2072 → 775 TIFs (max-year-best-res-v1)
+[vegetation-shadow] tile kinds after dedup (shader-compose=off): vhm_raw=0, vhm_composed=644, dsm=120
+[evaluation-context] Spatial filter: 5020/168257 obstacles within 5000m of focus
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2546987-1149710-5020): 273884 triangles in 5.59ms
+[evaluation-context] GPU raster backend ready: gpu-shadowmap-4096 (ANGLE), 273884 triangles
+[grid-metadata] tile 1/1 e2549000_n1147000_s250 — 62500 outdoor, 0 indoor in 5.1s
+[grid-metadata] done: 1 tiles, 62500 outdoor, 0 indoor in 5.1s
+[precompute-all]   · grid-metadata région=geneve
+[grid-metadata] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z → 2 tiles
+[grid-metadata] region=geneve model=a9bd7d439bb70671 tiles=2 grid=1m
+[swiss-terrain] dedup 2072 → 775 TIFs (max-year-best-res-v1)
+[vegetation-shadow] tile kinds after dedup (shader-compose=off): vhm_raw=0, vhm_composed=644, dsm=120
+[evaluation-context] Spatial filter: 39812/168257 obstacles within 5000m of focus
+[evaluation-context] GPU raster backend ready: gpu-shadowmap-4096 (ANGLE), 2495766 triangles
+[grid-metadata] tile 1/2 e2499000_n1116000_s250 — 36333 outdoor, 26167 indoor in 36.4s
+[evaluation-context] GPU focus changed (2499,1116 → 2499,1118), recreating backend...
+[evaluation-context] Spatial filter: 41515/168257 obstacles within 5000m of focus
+[gpu-mesh-loader] Binary cache saved (gpu-mesh-2499079-1116265-39812): 2495766 triangles
+[evaluation-context] GPU raster backend ready: gpu-shadowmap-4096 (ANGLE), 2583616 triangles
+[grid-metadata] tile 2/2 e2499000_n1118000_s250 — 40362 outdoor, 22138 indoor in 37.3s
+[grid-metadata] done: 2 tiles, 76695 outdoor, 48305 indoor in 73.7s
+[gpu-mesh-loader] Binary cache saved (gpu-mesh-2499079-1117996-41515): 2583616 triangles
+[precompute-all] ✓ preflight grid-metadata terminé en 125.6s
+
+
+[precompute-all] ▶▶ Passe 1/2 Top-priority (places-density)
+
+[precompute-all] ▶ pass=top-priority région=lausanne  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=false --region=lausanne --group-filter=top-priority
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=top-priority → 0 tiles
+[precompute] fatal: No tiles selected after applying tile-selection-file/bbox filters.
+[precompute-all] ✗ pass=top-priority région=lausanne a échoué (exit 1)
+
+[precompute-all] ▶ pass=top-priority région=morges  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=false --region=morges --group-filter=top-priority
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=top-priority → 0 tiles
+[precompute] fatal: No tiles selected after applying tile-selection-file/bbox filters.
+[precompute-all] ✗ pass=top-priority région=morges a échoué (exit 1)
+
+[precompute-all] ▶ pass=top-priority région=vevey  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=false --region=vevey --group-filter=top-priority
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=top-priority → 0 tiles
+[precompute] fatal: No tiles selected after applying tile-selection-file/bbox filters.
+[precompute-all] ✗ pass=top-priority région=vevey a échoué (exit 1)
+
+[precompute-all] ▶ pass=top-priority région=geneve  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=false --region=geneve --group-filter=top-priority
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=top-priority → 0 tiles
+[precompute] fatal: No tiles selected after applying tile-selection-file/bbox filters.
+[precompute-all] ✗ pass=top-priority région=geneve a échoué (exit 1)
+
+[precompute-all] ▶▶ Passe 2/2 Couverture étendue
+
+[precompute-all] ▶ pass=other région=lausanne  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=false --region=lausanne --group-filter=other
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=other → 2 tiles
+[precompute] engine=cache-admin shadowMode=rust-wgpu-vulkan workers=1 region=lausanne startDate=2026-05-01 days=1 gridStep=1m sampleEvery=15min window=12:00-12:15 atlasRes=0.75° skipExisting=false tiles=2
+[precompute] EXPERIMENTAL buildingsShadowMode=rust-wgpu-vulkan cachePolicy=shared-contract skipExisting=false
+
+  ── Jour 1/1  2026-05-01 ──
+  ⟳  Jour 1/1  2026-05-01  [░░░░░░░░░░░░░░░░░░░░░░░░]   0.0%  ETA --[K
+    t  1  [░░░░░░░░░░░░]   0%  prepare-context[K
+[swiss-terrain] dedup 2072 → 775 TIFs (max-year-best-res-v1)
+[2A[J[vegetation-shadow] tile kinds after dedup (shader-compose=off): vhm_raw=0, vhm_composed=644, dsm=120
+[evaluation-context] Rust/wgpu Vulkan spatial filter: 1908/168257 obstacles within 500m of 1km focus bucket
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2533017-1153085-1908): 110994 triangles in 2.19ms
+[evaluation-context] Rust/wgpu Vulkan backend ready: rust-wgpu-vulkan-4096, 110994 triangles
+[indoor-check] Loaded zenith indoor mask for e2533000_n1153000_s250 (5099 indoor)
+  ⟳  Jour 1/1  2026-05-01  [█░░░░░░░░░░░░░░░░░░░░░░░]   4.0%  ETA 29s[K
+    t  1  [█░░░░░░░░░░░]   8%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██░░░░░░░░░░░░░░░░░░░░░░]   8.0%  ETA 14s[K
+    t  1  [██░░░░░░░░░░]  16%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███░░░░░░░░░░░░░░░░░░░░░]  12.0%  ETA 9s[K
+    t  1  [███░░░░░░░░░]  24%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████░░░░░░░░░░░░░░░░░░░░]  16.0%  ETA 7s[K
+    t  1  [████░░░░░░░░]  32%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████░░░░░░░░░░░░░░░░░░░]  20.0%  ETA 5s[K
+    t  1  [█████░░░░░░░]  40%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████░░░░░░░░░░░░░░░░░░]  24.0%  ETA 4s[K
+    t  1  [██████░░░░░░]  48%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████░░░░░░░░░░░░░░░░░]  28.0%  ETA 3s[K
+    t  1  [███████░░░░░]  56%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████░░░░░░░░░░░░░░░░]  32.0%  ETA 3s[K
+    t  1  [████████░░░░]  64%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████░░░░░░░░░░░░░░░]  36.0%  ETA 2s[K
+    t  1  [█████████░░░]  72%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████████░░░░░░░░░░░░░░]  40.0%  ETA 2s[K
+    t  1  [██████████░░]  80%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████░░░░░░░░░░░░░]  44.0%  ETA 2s[K
+    t  1  [███████████░]  88%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  48.0%  ETA 1s[K
+    t  1  [████████████]  96%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  50.0%  ETA 1s[K
+    t  1  [████████████] 100%  prepare-points[K
+    Finished `release` profile [optimized] target(s) in 4.19s
+[2A[J[rust-wgpu-vulkan] Native server started in 4452ms (pointCount=57401, triangles=110994)
+  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  50.0%  ETA 6s[K
+    t  1  [████████████] 100%  evaluate-frames[K
+[2A[J[tile e2533000_n1153000_s250] 5.9s total (cpu 37%) — horizon 0.0s, sources 1.1s, points 0.1s [ctx 0ms, loop 142ms for 62500 pts (5099 in, 57401 out)], eval 4.6s [setup 4.56s (pts 4ms, horiz 0ms, veg 5ms, perFrame 0ms), dispatch 4.54s, frameLoop 0.01s], other 0.05s [pre 0.05s, post-horizon 0.00s, post-sources 0.00s, post-points 0.00s, post-eval 0.00s] (57401 evals, 80 µs/eval) — 62500 grid pts, 57401 outdoor, 5099 indoor
+[atlas-write] e2533000_n1153000_s250  74ms  buckets=1
+  ✓ t1/2  57’401 pts outdoor  [████████████░░░░░░░░░░░░]  50.0%  ETA 6s
+  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  50.0%  ETA 6s[K
+[1A[J  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  50.0%  ETA 6s[K
+    t  2  [░░░░░░░░░░░░]   0%  prepare-context[K
+[2A[J[evaluation-context] Rust/wgpu Vulkan focus changed (2533,1153|m500 -> 2537,1152|m500), updating mesh in place (2596/168257 obstacles)...
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2537049-1152001-2596): 229365 triangles in 15.48ms
+[evaluation-context] Rust/wgpu Vulkan mesh updated: rust-wgpu-vulkan-4096, 229365 triangles [zone-change=43ms]
+[indoor-check] Loaded zenith indoor mask for e2536750_n1152000_s250 (14519 indoor)
+  ⟳  Jour 1/1  2026-05-01  [█████████████░░░░░░░░░░░]  54.0%  ETA 6s[K
+    t  2  [█░░░░░░░░░░░]   8%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████████████░░░░░░░░░░]  58.0%  ETA 5s[K
+    t  2  [██░░░░░░░░░░]  16%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████░░░░░░░░░]  62.0%  ETA 4s[K
+    t  2  [███░░░░░░░░░]  24%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████░░░░░░░░]  66.0%  ETA 4s[K
+    t  2  [████░░░░░░░░]  32%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████████████░░░░░░░]  70.0%  ETA 3s[K
+    t  2  [█████░░░░░░░]  40%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████████░░░░░]  78.0%  ETA 2s[K
+    t  2  [███████░░░░░]  56%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████░░░░]  82.0%  ETA 2s[K
+    t  2  [████████░░░░]  64%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████████████████████░░]  90.0%  ETA 1s[K
+    t  2  [██████████░░]  80%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████████████░]  94.0%  ETA 0s[K
+    t  2  [███████████░]  88%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████████]  98.0%  ETA 0s[K
+    t  2  [████████████]  96%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+    t  2  [████████████] 100%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+    t  2  [████████████] 100%  evaluate-frames[K
+[2A[J[tile e2536750_n1152000_s250] 1.1s total (cpu 130%) — horizon 0.0s, sources 0.8s, points 0.1s [ctx 0ms, loop 121ms for 62500 pts (14519 in, 47981 out)], eval 0.1s [setup 0.10s (pts 3ms, horiz 0ms, veg 2ms, perFrame 0ms), dispatch 0.09s, frameLoop 0.02s], other 0.04s [pre 0.04s, post-horizon 0.00s, post-sources 0.00s, post-points 0.00s, post-eval 0.00s] (47981 evals, 2 µs/eval) — 62500 grid pts, 47981 outdoor, 14519 indoor
+[atlas-write] e2536750_n1152000_s250  69ms  buckets=1
+  ✓ t2/2  47’981 pts outdoor  [████████████████████████] 100.0%  ETA 0s
+  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+[1A[J  ✓ t2/2  [████████████████████████] 100.0%  ETA 0s
+  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+[1A[J[rust-wgpu-vulkan] Shutting down native server
+
+[precompute] ✓ terminé  region=lausanne  model=bff55b407db8426b  totalDates=1  totalTiles=2  durée=8s
+[precompute] breakdown  cold-start 1s (11%)  tiles 7s (89%)  gap 0s (0%)
+[precompute] horizon-cache  0/4 hits (0%)  builds=4 (0s)  lookup=0s
+  ✓ 2026-05-01  ok=2  skip=0  fail=0  durée=7s
+[rust-wgpu-vulkan] Native server stopped
+[precompute-all] ✓ pass=other région=lausanne terminée
+
+[precompute-all] ▶ pass=other région=morges  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=false --region=morges --group-filter=other
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=other → 2 tiles
+[precompute] engine=cache-admin shadowMode=rust-wgpu-vulkan workers=1 region=morges startDate=2026-05-01 days=1 gridStep=1m sampleEvery=15min window=12:00-12:15 atlasRes=0.75° skipExisting=false tiles=2
+[precompute] EXPERIMENTAL buildingsShadowMode=rust-wgpu-vulkan cachePolicy=shared-contract skipExisting=false
+
+  ── Jour 1/1  2026-05-01 ──
+  ⟳  Jour 1/1  2026-05-01  [░░░░░░░░░░░░░░░░░░░░░░░░]   0.0%  ETA --[K
+    t  1  [░░░░░░░░░░░░]   0%  prepare-context[K
+[swiss-terrain] dedup 2072 → 775 TIFs (max-year-best-res-v1)
+[2A[J[vegetation-shadow] tile kinds after dedup (shader-compose=off): vhm_raw=0, vhm_composed=644, dsm=120
+[evaluation-context] Rust/wgpu Vulkan spatial filter: 1828/168257 obstacles within 500m of 1km focus bucket
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2526999-1151005-1828): 117923 triangles in 13.18ms
+[evaluation-context] Rust/wgpu Vulkan backend ready: rust-wgpu-vulkan-4096, 117923 triangles
+[indoor-check] Loaded zenith indoor mask for e2527000_n1150750_s250 (2750 indoor)
+  ⟳  Jour 1/1  2026-05-01  [█░░░░░░░░░░░░░░░░░░░░░░░]   4.0%  ETA 2m17s[K
+    t  1  [█░░░░░░░░░░░]   8%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██░░░░░░░░░░░░░░░░░░░░░░]   8.0%  ETA 1m06s[K
+    t  1  [██░░░░░░░░░░]  16%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███░░░░░░░░░░░░░░░░░░░░░]  12.0%  ETA 42s[K
+    t  1  [███░░░░░░░░░]  24%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████░░░░░░░░░░░░░░░░░░░░]  16.0%  ETA 30s[K
+    t  1  [████░░░░░░░░]  32%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████░░░░░░░░░░░░░░░░░░░]  20.0%  ETA 23s[K
+    t  1  [█████░░░░░░░]  40%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████░░░░░░░░░░░░░░░░░░]  24.0%  ETA 18s[K
+    t  1  [██████░░░░░░]  48%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████░░░░░░░░░░░░░░░░░]  28.0%  ETA 15s[K
+    t  1  [███████░░░░░]  56%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████░░░░░░░░░░░░░░░░]  32.0%  ETA 12s[K
+    t  1  [████████░░░░]  64%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████░░░░░░░░░░░░░░░]  36.0%  ETA 10s[K
+    t  1  [█████████░░░]  72%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████████░░░░░░░░░░░░░░]  40.0%  ETA 9s[K
+    t  1  [██████████░░]  80%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████░░░░░░░░░░░░░]  44.0%  ETA 7s[K
+    t  1  [███████████░]  88%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  48.0%  ETA 6s[K
+    t  1  [████████████]  96%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  50.0%  ETA 6s[K
+    t  1  [████████████] 100%  prepare-points[K
+    Finished `release` profile [optimized] target(s) in 0.08s
+[2A[J[rust-wgpu-vulkan] Native server started in 280ms (pointCount=59750, triangles=117923)
+  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  50.0%  ETA 6s[K
+    t  1  [████████████] 100%  evaluate-frames[K
+[2A[J[tile e2527000_n1150750_s250] 6.3s total (cpu 120%) — horizon 0.0s, sources 5.6s, points 0.2s [ctx 1ms, loop 162ms for 62500 pts (2750 in, 59750 out)], eval 0.5s [setup 0.50s (pts 8ms, horiz 0ms, veg 4ms, perFrame 0ms), dispatch 0.48s, frameLoop 0.01s], other 0.05s [pre 0.05s, post-horizon 0.00s, post-sources 0.00s, post-points 0.00s, post-eval 0.00s] (59750 evals, 9 µs/eval) — 62500 grid pts, 59750 outdoor, 2750 indoor
+[atlas-write] e2527000_n1150750_s250  76ms  buckets=1
+  ✓ t1/2  59’750 pts outdoor  [████████████░░░░░░░░░░░░]  50.0%  ETA 6s
+  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  50.0%  ETA 6s[K
+[1A[J  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  50.0%  ETA 6s[K
+    t  2  [░░░░░░░░░░░░]   0%  prepare-context[K
+[2A[J[evaluation-context] Rust/wgpu Vulkan focus changed (2527,1151|m500 -> 2531,1151|m500), updating mesh in place (779/168257 obstacles)...
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2531016-1151611-779): 40688 triangles in 11.52ms
+[evaluation-context] Rust/wgpu Vulkan mesh updated: rust-wgpu-vulkan-4096, 40688 triangles [zone-change=25ms]
+[indoor-check] Loaded zenith indoor mask for e2530500_n1151000_s250 (360 indoor)
+  ⟳  Jour 1/1  2026-05-01  [█████████████░░░░░░░░░░░]  54.0%  ETA 7s[K
+    t  2  [█░░░░░░░░░░░]   8%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████████████░░░░░░░░░░]  58.0%  ETA 6s[K
+    t  2  [██░░░░░░░░░░]  16%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████░░░░░░░░░]  62.0%  ETA 5s[K
+    t  2  [███░░░░░░░░░]  24%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████░░░░░░░░]  66.0%  ETA 4s[K
+    t  2  [████░░░░░░░░]  32%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████████████░░░░░░░]  70.0%  ETA 4s[K
+    t  2  [█████░░░░░░░]  40%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████████████████░░░░░░]  74.0%  ETA 3s[K
+    t  2  [██████░░░░░░]  48%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████████░░░░░]  78.0%  ETA 2s[K
+    t  2  [███████░░░░░]  56%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████░░░░]  82.0%  ETA 2s[K
+    t  2  [████████░░░░]  64%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████████████████░░░]  86.0%  ETA 1s[K
+    t  2  [█████████░░░]  72%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████████████████████░░]  90.0%  ETA 1s[K
+    t  2  [██████████░░]  80%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████████████░]  94.0%  ETA 1s[K
+    t  2  [███████████░]  88%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████████]  98.0%  ETA 0s[K
+    t  2  [████████████]  96%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+    t  2  [████████████] 100%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+    t  2  [████████████] 100%  evaluate-frames[K
+[2A[J[tile e2530500_n1151000_s250] 2.2s total (cpu 155%) — horizon 0.0s, sources 1.8s, points 0.1s [ctx 0ms, loop 97ms for 62500 pts (360 in, 62140 out)], eval 0.2s [setup 0.17s (pts 5ms, horiz 0ms, veg 3ms, perFrame 0ms), dispatch 0.15s, frameLoop 0.01s], other 0.05s [pre 0.05s, post-horizon 0.00s, post-sources 0.00s, post-points 0.00s, post-eval 0.00s] (62140 evals, 3 µs/eval) — 62500 grid pts, 62140 outdoor, 360 indoor
+[atlas-write] e2530500_n1151000_s250  65ms  buckets=1
+  ✓ t2/2  62’140 pts outdoor  [████████████████████████] 100.0%  ETA 0s
+  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+[1A[J  ✓ t2/2  [████████████████████████] 100.0%  ETA 0s
+  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+[1A[J[rust-wgpu-vulkan] Shutting down native server
+
+[precompute] ✓ terminé  region=morges  model=65d7ddb814c66251  totalDates=1  totalTiles=2  durée=10s
+[precompute] breakdown  cold-start 1s (9%)  tiles 9s (91%)  gap 0s (0%)
+[precompute] horizon-cache  0/4 hits (0%)  builds=4 (0s)  lookup=0s
+  ✓ 2026-05-01  ok=2  skip=0  fail=0  durée=9s
+[rust-wgpu-vulkan] Native server stopped
+[precompute-all] ✓ pass=other région=morges terminée
+
+[precompute-all] ▶ pass=other région=vevey  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=false --region=vevey --group-filter=other
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=other → 1 tiles
+[precompute] engine=cache-admin shadowMode=rust-wgpu-vulkan workers=1 region=vevey startDate=2026-05-01 days=1 gridStep=1m sampleEvery=15min window=12:00-12:15 atlasRes=0.75° skipExisting=false tiles=1
+[precompute] EXPERIMENTAL buildingsShadowMode=rust-wgpu-vulkan cachePolicy=shared-contract skipExisting=false
+
+  ── Jour 1/1  2026-05-01 ──
+  ⟳  Jour 1/1  2026-05-01  [░░░░░░░░░░░░░░░░░░░░░░░░]   0.0%  ETA --[K
+    t  1  [░░░░░░░░░░░░]   0%  prepare-context[K
+[swiss-terrain] dedup 2072 → 775 TIFs (max-year-best-res-v1)
+[2A[J[vegetation-shadow] tile kinds after dedup (shader-compose=off): vhm_raw=0, vhm_composed=644, dsm=120
+[evaluation-context] Rust/wgpu Vulkan spatial filter: 614/168257 obstacles within 500m of 1km focus bucket
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2549062-1147580-614): 37878 triangles in 0.98ms
+[evaluation-context] Rust/wgpu Vulkan backend ready: rust-wgpu-vulkan-4096, 37878 triangles
+[indoor-check] Loaded zenith indoor mask for e2549000_n1147000_s250 (0 indoor)
+  ⟳  Jour 1/1  2026-05-01  [██░░░░░░░░░░░░░░░░░░░░░░]   8.0%  ETA 55s[K
+    t  1  [█░░░░░░░░░░░]   8%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████░░░░░░░░░░░░░░░░░░░░]  16.0%  ETA 25s[K
+    t  1  [██░░░░░░░░░░]  16%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████░░░░░░░░░░░░░░░░░░]  24.0%  ETA 15s[K
+    t  1  [███░░░░░░░░░]  24%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████░░░░░░░░░░░░░░░░]  32.0%  ETA 10s[K
+    t  1  [████░░░░░░░░]  32%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████████░░░░░░░░░░░░░░]  40.0%  ETA 7s[K
+    t  1  [█████░░░░░░░]  40%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  48.0%  ETA 5s[K
+    t  1  [██████░░░░░░]  48%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████████░░░░░░░░░░░]  56.0%  ETA 4s[K
+    t  1  [███████░░░░░]  56%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████░░░░░░░░░]  64.0%  ETA 3s[K
+    t  1  [████████░░░░]  64%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████████████░░░░░░░]  72.0%  ETA 2s[K
+    t  1  [█████████░░░]  72%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████████░░░░░]  80.0%  ETA 1s[K
+    t  1  [██████████░░]  80%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████████████████░░░]  88.0%  ETA 1s[K
+    t  1  [███████████░]  88%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████████████░]  96.0%  ETA 0s[K
+    t  1  [████████████]  96%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+    t  1  [████████████] 100%  prepare-points[K
+    Finished `release` profile [optimized] target(s) in 0.08s
+[2A[J[rust-wgpu-vulkan] Native server started in 258ms (pointCount=62500, triangles=37878)
+  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+    t  1  [████████████] 100%  evaluate-frames[K
+[2A[J[tile e2549000_n1147000_s250] 5.4s total (cpu 121%) — horizon 0.0s, sources 4.7s, points 0.2s [ctx 1ms, loop 167ms for 62500 pts (0 in, 62500 out)], eval 0.5s [setup 0.51s (pts 7ms, horiz 0ms, veg 4ms, perFrame 0ms), dispatch 0.48s, frameLoop 0.01s], other 0.05s [pre 0.05s, post-horizon 0.00s, post-sources 0.00s, post-points 0.00s, post-eval 0.00s] (62500 evals, 8 µs/eval) — 62500 grid pts, 62500 outdoor, 0 indoor
+[atlas-write] e2549000_n1147000_s250  67ms  buckets=1
+  ✓ t1/1  62’500 pts outdoor  [████████████████████████] 100.0%  ETA 0s
+  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+[1A[J  ✓ t1/1  [████████████████████████] 100.0%  ETA 0s
+  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+[1A[J[rust-wgpu-vulkan] Shutting down native server
+
+[precompute] ✓ terminé  region=vevey  model=5e96c05c816211e8  totalDates=1  totalTiles=1  durée=6s
+[precompute] breakdown  cold-start 1s (14%)  tiles 6s (86%)  gap 0s (0%)
+[precompute] horizon-cache  0/2 hits (0%)  builds=2 (0s)  lookup=0s
+  ✓ 2026-05-01  ok=1  skip=0  fail=0  durée=6s
+[rust-wgpu-vulkan] Native server stopped
+[precompute-all] ✓ pass=other région=vevey terminée
+
+[precompute-all] ▶ pass=other région=geneve  tsx C:\sources\MappyHour\scripts\precompute\precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan --tile-selection-file=data/processed/precompute/golden-dedup-terrain-2026-05-04.json --start-date=2026-05-01 --days=1 --start-local-time=12:00 --end-local-time=12:15 --skip-existing=false --region=geneve --group-filter=other
+[precompute] tileSelectionFile=C:\sources\MappyHour\data\processed\precompute\golden-dedup-terrain-2026-05-04.json generatedAt=2026-05-04T17:26:16.931191Z groupFilter=other → 2 tiles
+[precompute] engine=cache-admin shadowMode=rust-wgpu-vulkan workers=1 region=geneve startDate=2026-05-01 days=1 gridStep=1m sampleEvery=15min window=12:00-12:15 atlasRes=0.75° skipExisting=false tiles=2
+[precompute] EXPERIMENTAL buildingsShadowMode=rust-wgpu-vulkan cachePolicy=shared-contract skipExisting=false
+
+  ── Jour 1/1  2026-05-01 ──
+  ⟳  Jour 1/1  2026-05-01  [░░░░░░░░░░░░░░░░░░░░░░░░]   0.0%  ETA --[K
+    t  1  [░░░░░░░░░░░░]   0%  prepare-context[K
+[swiss-terrain] dedup 2072 → 775 TIFs (max-year-best-res-v1)
+[2A[J[vegetation-shadow] tile kinds after dedup (shader-compose=off): vhm_raw=0, vhm_composed=644, dsm=120
+[evaluation-context] Rust/wgpu Vulkan spatial filter: 2305/168257 obstacles within 500m of 1km focus bucket
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2498996-1116008-2305): 171627 triangles in 3.4ms
+[evaluation-context] Rust/wgpu Vulkan backend ready: rust-wgpu-vulkan-4096, 171627 triangles
+[indoor-check] Loaded zenith indoor mask for e2499000_n1116000_s250 (26167 indoor)
+  ⟳  Jour 1/1  2026-05-01  [█░░░░░░░░░░░░░░░░░░░░░░░]   4.0%  ETA 2m38s[K
+    t  1  [█░░░░░░░░░░░]   8%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██░░░░░░░░░░░░░░░░░░░░░░]   8.0%  ETA 1m16s[K
+    t  1  [██░░░░░░░░░░]  16%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███░░░░░░░░░░░░░░░░░░░░░]  12.0%  ETA 49s[K
+    t  1  [███░░░░░░░░░]  24%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████░░░░░░░░░░░░░░░░░░░░]  16.0%  ETA 35s[K
+    t  1  [████░░░░░░░░]  32%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████░░░░░░░░░░░░░░░░░░░]  20.0%  ETA 27s[K
+    t  1  [█████░░░░░░░]  40%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████░░░░░░░░░░░░░░░░░░]  24.0%  ETA 21s[K
+    t  1  [██████░░░░░░]  48%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████░░░░░░░░░░░░░░░░░]  28.0%  ETA 17s[K
+    t  1  [███████░░░░░]  56%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████░░░░░░░░░░░░░]  44.0%  ETA 9s[K
+    t  1  [███████████░]  88%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  48.0%  ETA 7s[K
+    t  1  [████████████]  96%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  50.0%  ETA 7s[K
+    t  1  [████████████] 100%  prepare-points[K
+    Finished `release` profile [optimized] target(s) in 0.09s
+[2A[J[rust-wgpu-vulkan] Native server started in 272ms (pointCount=36333, triangles=171627)
+  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  50.0%  ETA 7s[K
+    t  1  [████████████] 100%  evaluate-frames[K
+[2A[J[tile e2499000_n1116000_s250] 7.2s total (cpu 119%) — horizon 0.0s, sources 6.5s, points 0.1s [ctx 1ms, loop 117ms for 62500 pts (26167 in, 36333 out)], eval 0.5s [setup 0.50s (pts 2ms, horiz 0ms, veg 3ms, perFrame 0ms), dispatch 0.47s, frameLoop 0.00s], other 0.05s [pre 0.05s, post-horizon 0.00s, post-sources 0.00s, post-points 0.00s, post-eval 0.00s] (36333 evals, 14 µs/eval) — 62500 grid pts, 36333 outdoor, 26167 indoor
+[atlas-write] e2499000_n1116000_s250  78ms  buckets=1
+  ✓ t1/2  36’333 pts outdoor  [████████████░░░░░░░░░░░░]  50.0%  ETA 7s
+  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  50.0%  ETA 7s[K
+[1A[J  ⟳  Jour 1/1  2026-05-01  [████████████░░░░░░░░░░░░]  50.0%  ETA 7s[K
+    t  2  [░░░░░░░░░░░░]   0%  prepare-context[K
+[2A[J[evaluation-context] Rust/wgpu Vulkan focus changed (2499,1116|m500 -> 2499,1118|m500), updating mesh in place (2408/168257 obstacles)...
+[gpu-mesh-loader] Binary cache hit (gpu-mesh-2498999-1117969-2408): 217360 triangles in 3.6ms
+[evaluation-context] Rust/wgpu Vulkan mesh updated: rust-wgpu-vulkan-4096, 217360 triangles [zone-change=30ms]
+[indoor-check] Loaded zenith indoor mask for e2499000_n1118000_s250 (22138 indoor)
+  ⟳  Jour 1/1  2026-05-01  [██████████████░░░░░░░░░░]  58.0%  ETA 10s[K
+    t  2  [██░░░░░░░░░░]  16%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████░░░░░░░░░]  62.0%  ETA 8s[K
+    t  2  [███░░░░░░░░░]  24%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████░░░░░░░░]  66.0%  ETA 7s[K
+    t  2  [████░░░░░░░░]  32%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████████████░░░░░░░]  70.0%  ETA 6s[K
+    t  2  [█████░░░░░░░]  40%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████████░░░░░]  78.0%  ETA 4s[K
+    t  2  [███████░░░░░]  56%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████░░░░]  82.0%  ETA 3s[K
+    t  2  [████████░░░░]  64%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [█████████████████████░░░]  86.0%  ETA 2s[K
+    t  2  [█████████░░░]  72%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [██████████████████████░░]  90.0%  ETA 1s[K
+    t  2  [██████████░░]  80%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [███████████████████████░]  94.0%  ETA 1s[K
+    t  2  [███████████░]  88%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████████]  98.0%  ETA 0s[K
+    t  2  [████████████]  96%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+    t  2  [████████████] 100%  prepare-points[K
+[2A[J  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+    t  2  [████████████] 100%  evaluate-frames[K
+[2A[J[tile e2499000_n1118000_s250] 6.4s total (cpu 126%) — horizon 0.0s, sources 5.9s, points 0.1s [ctx 0ms, loop 129ms for 62500 pts (22138 in, 40362 out)], eval 0.2s [setup 0.24s (pts 3ms, horiz 0ms, veg 2ms, perFrame 0ms), dispatch 0.22s, frameLoop 0.00s], other 0.05s [pre 0.05s, post-horizon 0.00s, post-sources 0.00s, post-points 0.00s, post-eval 0.00s] (40362 evals, 6 µs/eval) — 62500 grid pts, 40362 outdoor, 22138 indoor
+[atlas-write] e2499000_n1118000_s250  68ms  buckets=1
+  ✓ t2/2  40’362 pts outdoor  [████████████████████████] 100.0%  ETA 0s
+  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+[1A[J  ✓ t2/2  [████████████████████████] 100.0%  ETA 0s
+  ⟳  Jour 1/1  2026-05-01  [████████████████████████] 100.0%  ETA 0s[K
+[1A[J[rust-wgpu-vulkan] Shutting down native server
+
+[precompute] ✓ terminé  region=geneve  model=a9bd7d439bb70671  totalDates=1  totalTiles=2  durée=15s
+[precompute] breakdown  cold-start 1s (6%)  tiles 14s (94%)  gap 0s (0%)
+[precompute] horizon-cache  0/4 hits (0%)  builds=4 (0s)  lookup=0s
+  ✓ 2026-05-01  ok=2  skip=0  fail=0  durée=14s
+[rust-wgpu-vulkan] Native server stopped
+[precompute-all] ✓ pass=other région=geneve terminée
+
+[precompute-all] Une ou plusieurs passes/régions ont échoué.
+ ELIFECYCLE  Command failed with exit code 1.

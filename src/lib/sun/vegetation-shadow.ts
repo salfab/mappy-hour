@@ -7,12 +7,15 @@ import { RAW_VEGETATION_SURFACE_DIR } from "@/lib/storage/data-paths";
 
 type TypedRaster = Float32Array | Int16Array | Uint16Array | Int32Array | Uint32Array;
 
+export type VegetationTileKind = "dsm" | "vhm_composed" | "vhm_raw";
+
 interface VegetationSurfaceTileMetadata {
   filePath: string;
   minX: number;
   minY: number;
   maxX: number;
   maxY: number;
+  kind: VegetationTileKind;
 }
 
 interface VegetationSurfaceTile extends VegetationSurfaceTileMetadata {
@@ -93,11 +96,31 @@ function boundsIntersect(
 
 function parseTileBoundsFromFilename(
   filePath: string,
-): Pick<VegetationSurfaceTileMetadata, "minX" | "minY" | "maxX" | "maxY"> | null {
+): Pick<VegetationSurfaceTileMetadata, "minX" | "minY" | "maxX" | "maxY" | "kind"> | null {
   const fileName = path.basename(filePath);
-  const match = /_(\d+)-(\d+)_0(?:\.0|\.5)?_2056_5728\.tif$/i.exec(fileName);
-  if (!match) {
-    return null;
+  // Match one of:
+  //   swisssurface3d-raster_2019_2502-1141_0.5_2056_5728.tif     (legacy DSM)
+  //   swisssurface3d-raster_vhm_2502-1141.tif                    (composed canopy_abs)
+  //   swisssurface3d-raster_vhm_raw_2502-1141.tif                (raw VHM heights)
+  // Check raw BEFORE composed — regex `_vhm_(\d+)-` would wrongly match
+  // `_vhm_raw_` if checked first (captures `raw` as tileEastingKm).
+  let match: RegExpExecArray | null;
+  let kind: VegetationTileKind;
+  match = /_vhm_raw_(\d+)-(\d+)\.tif$/i.exec(fileName);
+  if (match) {
+    kind = "vhm_raw";
+  } else {
+    match = /_vhm_(\d+)-(\d+)\.tif$/i.exec(fileName);
+    if (match) {
+      kind = "vhm_composed";
+    } else {
+      match = /_(\d+)-(\d+)_0(?:\.0|\.5)?_2056_5728\.tif$/i.exec(fileName);
+      if (match) {
+        kind = "dsm";
+      } else {
+        return null;
+      }
+    }
   }
 
   const tileEastingKm = Number(match[1]);
@@ -113,7 +136,16 @@ function parseTileBoundsFromFilename(
     minY,
     maxX: minX + VEGETATION_TILE_SIZE_METERS,
     maxY: minY + VEGETATION_TILE_SIZE_METERS,
+    kind,
   };
+}
+
+function isVhmTile(filePath: string): boolean {
+  return /_vhm_/i.test(path.basename(filePath));
+}
+
+function vegetationUsesRawVhm(): boolean {
+  return process.env.MAPPY_VHM_SHADER_COMPOSE === "1";
 }
 
 async function listTifsRecursively(rootDirectory: string): Promise<string[]> {
@@ -187,13 +219,40 @@ async function loadVegetationTileMetadata(): Promise<
           minY: bbox[1],
           maxX: bbox[2],
           maxY: bbox[3],
+          kind: "dsm", // unknown; treat as DSM so composed VHM wins if co-located
         });
       } finally {
         await closeGeoTiff(tiff);
       }
     }
 
-    return metadata;
+    // Deduplicate by tile key (minX-minY in km). Preference order depends on
+    // whether the shader will compose (terrain + raw VHM at sample time) or
+    // read an absolute canopy directly.
+    //
+    //   MAPPY_VHM_SHADER_COMPOSE=1 → prefer vhm_raw > vhm_composed > dsm
+    //   (default)                  → prefer vhm_composed > dsm (vhm_raw ignored)
+    const useRaw = vegetationUsesRawVhm();
+    const priorityByKind = useRaw
+      ? { vhm_raw: 3, vhm_composed: 2, dsm: 1 }
+      : { vhm_composed: 3, vhm_raw: 0, dsm: 1 }; // vhm_raw=0 → always loses in default mode
+    const byKey = new Map<string, VegetationSurfaceTileMetadata>();
+    for (const entry of metadata) {
+      if (priorityByKind[entry.kind] === 0) continue; // filter out raw in default mode
+      const key = `${Math.round(entry.minX / 1000)}-${Math.round(entry.minY / 1000)}`;
+      const existing = byKey.get(key);
+      if (!existing || priorityByKind[entry.kind] > priorityByKind[existing.kind]) {
+        byKey.set(key, entry);
+      }
+    }
+    const selected = Array.from(byKey.values());
+    const counts = { dsm: 0, vhm_composed: 0, vhm_raw: 0 };
+    for (const t of selected) counts[t.kind] += 1;
+    console.log(
+      `[vegetation-shadow] tile kinds after dedup (shader-compose=${useRaw ? "on" : "off"}): ` +
+        `vhm_raw=${counts.vhm_raw}, vhm_composed=${counts.vhm_composed}, dsm=${counts.dsm}`,
+    );
+    return selected;
   })();
   vegetationTileMetadataCachePromise = loadPromise;
 
@@ -327,6 +386,17 @@ function sampleSurfaceElevationLv95(
   return null;
 }
 
+function emptyVegetationShadowResult(checkedSamplesCount = 0): VegetationShadowResult {
+  return {
+    blocked: false,
+    blockerDistanceMeters: null,
+    blockerAltitudeAngleDeg: null,
+    blockerSurfaceElevationMeters: null,
+    blockerClearanceMeters: null,
+    checkedSamplesCount,
+  };
+}
+
 export function createVegetationShadowEvaluator(params: {
   tiles: VegetationSurfaceTile[];
   pointX: number;
@@ -339,17 +409,41 @@ export function createVegetationShadowEvaluator(params: {
   const maxDistanceMeters = params.maxDistanceMeters ?? DEFAULT_MAX_DISTANCE_METERS;
   const stepMeters = params.stepMeters ?? DEFAULT_STEP_METERS;
   const minClearanceMeters = params.minClearanceMeters ?? DEFAULT_MIN_CLEARANCE_METERS;
+  const pointX = params.pointX;
+  const pointY = params.pointY;
+  const pointElevation = params.pointElevation;
+
+  // ── Pre-filter to candidate tiles within maxDistanceMeters of the point ─
+  // The ray-march never reaches further than maxDistanceMeters from the
+  // point. Tiles outside that radius can never contribute to any sample.
+  // For most outdoor points in dense urban contexts, this leaves 0-2 tiles
+  // out of potentially many loaded for the whole bbox.
+  const candidateTiles: VegetationSurfaceTile[] = [];
+  for (const tile of params.tiles) {
+    if (
+      pointX + maxDistanceMeters < tile.minX ||
+      pointX - maxDistanceMeters > tile.maxX ||
+      pointY + maxDistanceMeters < tile.minY ||
+      pointY - maxDistanceMeters > tile.maxY
+    ) {
+      continue;
+    }
+    candidateTiles.push(tile);
+  }
+
+  // No candidate tile → evaluator is a no-op (saves the ray-march entirely).
+  if (candidateTiles.length === 0) {
+    return (sample) =>
+      sample.altitudeDeg <= 0 ? emptyVegetationShadowResult() : emptyVegetationShadowResult();
+  }
+
+  // Last-hit tile cache. Subsequent ray-march steps usually fall in the
+  // same tile (rays advance by stepMeters, tiles are typically much larger).
+  let lastHitTile: VegetationSurfaceTile | null = null;
 
   return (sample: VegetationShadowEvaluatorInput): VegetationShadowResult => {
     if (sample.altitudeDeg <= 0) {
-      return {
-        blocked: false,
-        blockerDistanceMeters: null,
-        blockerAltitudeAngleDeg: null,
-        blockerSurfaceElevationMeters: null,
-        blockerClearanceMeters: null,
-        checkedSamplesCount: 0,
-      };
+      return emptyVegetationShadowResult();
     }
 
     const azimuthRad = (sample.azimuthDeg * Math.PI) / 180;
@@ -362,21 +456,54 @@ export function createVegetationShadowEvaluator(params: {
       distanceMeters <= maxDistanceMeters;
       distanceMeters += stepMeters
     ) {
-      const sampleX = params.pointX + dirX * distanceMeters;
-      const sampleY = params.pointY + dirY * distanceMeters;
-      const surfaceElevation = sampleSurfaceElevationLv95(
-        params.tiles,
-        sampleX,
-        sampleY,
-      );
-      if (surfaceElevation === null) {
+      const sampleX = pointX + dirX * distanceMeters;
+      const sampleY = pointY + dirY * distanceMeters;
+
+      // Try cached tile first; fall back to scanning candidates on miss.
+      let hitTile: VegetationSurfaceTile | null = null;
+      if (
+        lastHitTile !== null &&
+        sampleX >= lastHitTile.minX &&
+        sampleX <= lastHitTile.maxX &&
+        sampleY >= lastHitTile.minY &&
+        sampleY <= lastHitTile.maxY
+      ) {
+        hitTile = lastHitTile;
+      } else {
+        for (const tile of candidateTiles) {
+          if (
+            sampleX < tile.minX ||
+            sampleX > tile.maxX ||
+            sampleY < tile.minY ||
+            sampleY > tile.maxY
+          ) {
+            continue;
+          }
+          hitTile = tile;
+          lastHitTile = tile;
+          break;
+        }
+      }
+
+      if (hitTile === null) {
+        continue;
+      }
+
+      const xRatio = (sampleX - hitTile.minX) / (hitTile.maxX - hitTile.minX);
+      const yRatio = (hitTile.maxY - sampleY) / (hitTile.maxY - hitTile.minY);
+      const x = clamp(Math.floor(xRatio * hitTile.width), 0, hitTile.width - 1);
+      const y = clamp(Math.floor(yRatio * hitTile.height), 0, hitTile.height - 1);
+      const index = y * hitTile.width + x;
+      const value = Number(hitTile.raster[index]);
+
+      if (!Number.isFinite(value) || valueIsNoData(value, hitTile.nodata)) {
         continue;
       }
 
       checkedSamplesCount += 1;
 
       // V1 approximation: local canopy/top clearance is estimated against point elevation.
-      const clearanceMeters = surfaceElevation - params.pointElevation;
+      const clearanceMeters = value - pointElevation;
       if (clearanceMeters < minClearanceMeters) {
         continue;
       }
@@ -389,21 +516,14 @@ export function createVegetationShadowEvaluator(params: {
           blockerDistanceMeters: Math.round(distanceMeters * 1000) / 1000,
           blockerAltitudeAngleDeg:
             Math.round(blockerAltitudeAngleDeg * 1000) / 1000,
-          blockerSurfaceElevationMeters: Math.round(surfaceElevation * 1000) / 1000,
+          blockerSurfaceElevationMeters: Math.round(value * 1000) / 1000,
           blockerClearanceMeters: Math.round(clearanceMeters * 1000) / 1000,
           checkedSamplesCount,
         };
       }
     }
 
-    return {
-      blocked: false,
-      blockerDistanceMeters: null,
-      blockerAltitudeAngleDeg: null,
-      blockerSurfaceElevationMeters: null,
-      blockerClearanceMeters: null,
-      checkedSamplesCount,
-    };
+    return emptyVegetationShadowResult(checkedSamplesCount);
   };
 }
 

@@ -4,7 +4,7 @@ import { performance } from "node:perf_hooks";
 
 import { LAUSANNE_CENTER, LAUSANNE_LOCAL_BBOX } from "../../src/lib/config/lausanne";
 import { buildGridFromBbox } from "../../src/lib/geo/grid";
-import { lv95ToWgs84, wgs84ToLv95 } from "../../src/lib/geo/projection";
+import { lv95ToWgs84Precise, wgs84ToLv95Precise } from "../../src/lib/geo/projection";
 import { buildDynamicHorizonMask } from "../../src/lib/sun/dynamic-horizon-mask";
 import type { HorizonMask } from "../../src/lib/sun/horizon-mask";
 import { evaluateInstantSunlight } from "../../src/lib/sun/solar";
@@ -173,7 +173,7 @@ function buildSamplePoints(args: ParsedArgs): SamplePoint[] {
   );
   const sampled = deterministicDownsample(raw, args.maxPoints);
   return sampled.map((point) => {
-    const lv95 = wgs84ToLv95(point.lon, point.lat);
+    const lv95 = wgs84ToLv95Precise(point.lon, point.lat);
     return {
       id: point.id,
       lat: point.lat,
@@ -186,7 +186,7 @@ function buildSamplePoints(args: ParsedArgs): SamplePoint[] {
 
 function resolveMaskCenter(point: SamplePoint, strategy: Strategy): MaskCenter {
   if (strategy.kind === "global") {
-    const lv95 = wgs84ToLv95(LAUSANNE_CENTER.lon, LAUSANNE_CENTER.lat);
+    const lv95 = wgs84ToLv95Precise(LAUSANNE_CENTER.lon, LAUSANNE_CENTER.lat);
     return {
       key: toCenterKey(lv95.easting, lv95.northing),
       lat: LAUSANNE_CENTER.lat,
@@ -211,7 +211,7 @@ function resolveMaskCenter(point: SamplePoint, strategy: Strategy): MaskCenter {
     Math.floor(point.easting / cellSize) * cellSize + cellSize / 2;
   const cellNorthing =
     Math.floor(point.northing / cellSize) * cellSize + cellSize / 2;
-  const center = lv95ToWgs84(cellEasting, cellNorthing);
+  const center = lv95ToWgs84Precise(cellEasting, cellNorthing);
   return {
     key: toCenterKey(cellEasting, cellNorthing),
     lat: center.lat,

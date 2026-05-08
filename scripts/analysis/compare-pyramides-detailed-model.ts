@@ -4,7 +4,7 @@ import path from "node:path";
 import AdmZip from "adm-zip";
 import SunCalc from "suncalc";
 
-import { wgs84ToLv95 } from "@/lib/geo/projection";
+import { wgs84ToLv95Precise } from "@/lib/geo/projection";
 import {
   evaluateBuildingsShadow,
   loadBuildingsObstacleIndex,
@@ -499,7 +499,7 @@ async function main() {
     throw new Error("Point elevation unavailable.");
   }
 
-  const pointLv95 = wgs84ToLv95(TARGET.lon, TARGET.lat);
+  const pointLv95 = wgs84ToLv95Precise(TARGET.lon, TARGET.lat);
   const pointElevation = pointContext.pointElevationMeters;
 
   const times = buildTimeSeries();

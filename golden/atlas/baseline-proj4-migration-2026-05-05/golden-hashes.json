@@ -1,0 +1,158 @@
+{
+  "capturedAt": "2026-05-05T10:04:32.166752+00:00",
+  "purpose": "Baseline before proj4 -> swisstopo Precise migration (2026-05-05)",
+  "gitTag": "baseline/proj4-migration-2026-05-05",
+  "selectionFile": "data/processed/precompute/golden-dedup-terrain-2026-05-04.json",
+  "regionAtlasModelHashes": {
+    "lausanne": "bff55b407db8426b",
+    "morges": "65d7ddb814c66251",
+    "nyon": "7bf203237ff6647b",
+    "geneve": "a9bd7d439bb70671",
+    "vevey": "5e96c05c816211e8"
+  },
+  "regionGridMetadataHashes": {
+    "lausanne": "0910f768b4efd260",
+    "morges": "439140b6325cb7d9",
+    "nyon": "adacd155b68acf7f",
+    "geneve": "7db3b09de245607f",
+    "vevey": "0238f16eb74988b2"
+  },
+  "summary": {
+    "totalTiles": 7,
+    "atlasesFound": 3,
+    "atlasesMissing": 4,
+    "gridMetadataFound": 6
+  },
+  "captures": [
+    {
+      "region": "morges",
+      "tileId": "e2527000_n1150750_s250",
+      "label": "morges-west-StSulpice-north",
+      "atlasModelHash": "65d7ddb814c66251",
+      "gridMetadataHash": "439140b6325cb7d9",
+      "atlasBin": {
+        "path": "data/cache/sunlight/morges/65d7ddb814c66251/g1/atlas/r0.75/e2527000_n1150750_s250.atlas.bin.gz",
+        "sha256": "78ccf2018f9d9b1dc97a1bbeabcdb1a7f5e3e7a835fa9475568afeb4f7980d4c",
+        "size": 1738275,
+        "mtime": "2026-05-05T10:04:22.442238+00:00"
+      },
+      "atlasIdx": {
+        "path": "data/cache/sunlight/morges/65d7ddb814c66251/g1/atlas/r0.75/e2527000_n1150750_s250.atlas.idx",
+        "sha256": "aa4798df291c8955e8677b1a462ba1cba156cdfabb9158356410bc8ee4b6522e",
+        "size": 472,
+        "mtime": "2026-05-05T10:04:22.443345+00:00"
+      },
+      "gridMetadata": {
+        "path": "data/cache/tile-grid-metadata/morges/439140b6325cb7d9/g1/e2527000_n1150750_s250.json.gz",
+        "sha256": "1992fe56c25de66911cc2f9b908aafc89bcceea09f67bafdc28e3eb53a1c1aa0",
+        "size": 289291,
+        "mtime": "2026-05-04T22:46:12.961300+00:00"
+      }
+    },
+    {
+      "region": "morges",
+      "tileId": "e2530500_n1151000_s250",
+      "label": "morges-Preverenges-plage",
+      "atlasModelHash": "65d7ddb814c66251",
+      "gridMetadataHash": "439140b6325cb7d9",
+      "atlasBin": {
+        "path": "data/cache/sunlight/morges/65d7ddb814c66251/g1/atlas/r0.75/e2530500_n1151000_s250.atlas.bin.gz",
+        "sha256": "03f6dddab8611dd09b015b801e1818b41c07eb2783b9cd6b158ea390586f7002",
+        "size": 1052600,
+        "mtime": "2026-05-05T10:04:16.674160+00:00"
+      },
+      "atlasIdx": {
+        "path": "data/cache/sunlight/morges/65d7ddb814c66251/g1/atlas/r0.75/e2530500_n1151000_s250.atlas.idx",
+        "sha256": "73a99693e35ba372791c8ec22b8403103795967754ee425687a696d41159f30b",
+        "size": 360,
+        "mtime": "2026-05-05T10:04:16.674160+00:00"
+      },
+      "gridMetadata": {
+        "path": "data/cache/tile-grid-metadata/morges/439140b6325cb7d9/g1/e2530500_n1151000_s250.json.gz",
+        "sha256": "1d8d5ce904eaad4504104485dcc2a6e910b9d1e64a0f89624ef0d170711a4be1",
+        "size": 95755,
+        "mtime": "2026-05-04T22:46:18.636400+00:00"
+      }
+    },
+    {
+      "region": "lausanne",
+      "tileId": "e2536750_n1152000_s250",
+      "label": "lausanne-Montriond",
+      "atlasModelHash": "bff55b407db8426b",
+      "gridMetadataHash": "0910f768b4efd260",
+      "atlasBin": {
+        "path": "data/cache/sunlight/lausanne/bff55b407db8426b/g1/atlas/r0.75/e2536750_n1152000_s250.atlas.bin.gz",
+        "sha256": "b75798e119cce13f665e5d251c4daa7494a88a139c0707f130db6dade7145cd2",
+        "size": 18893545,
+        "mtime": "2026-05-05T09:56:46.333702+00:00"
+      },
+      "atlasIdx": {
+        "path": "data/cache/sunlight/lausanne/bff55b407db8426b/g1/atlas/r0.75/e2536750_n1152000_s250.atlas.idx",
+        "sha256": "cc142470f49f76c70091c66ba12b09daa7fb6c90fd06cb52e851cfb3fa3ef3c7",
+        "size": 9620,
+        "mtime": "2026-05-05T09:56:46.351485+00:00"
+      },
+      "gridMetadata": {
+        "path": "data/cache/tile-grid-metadata/lausanne/0910f768b4efd260/g1/e2536750_n1152000_s250.json.gz",
+        "sha256": "2cf5e895826ad25a27bcc1a497d7e92cbedd543f1d3d7256dfda00d4b82fcd8b",
+        "size": 99980,
+        "mtime": "2026-05-04T22:41:11.917341+00:00"
+      }
+    },
+    {
+      "region": "lausanne",
+      "tileId": "e2533000_n1153000_s250",
+      "label": "lausanne-west-Renens",
+      "atlasModelHash": "bff55b407db8426b",
+      "gridMetadataHash": "0910f768b4efd260",
+      "atlasBin": null,
+      "atlasIdx": null,
+      "gridMetadata": {
+        "path": "data/cache/tile-grid-metadata/lausanne/0910f768b4efd260/g1/e2533000_n1153000_s250.json.gz",
+        "sha256": "802a52fef5c2ef8f5cfd82205d9182e9648c806889b0c378d8f237bd4518aa23",
+        "size": 103461,
+        "mtime": "2026-05-04T22:42:31.225726+00:00"
+      }
+    },
+    {
+      "region": "geneve",
+      "tileId": "e2499000_n1118000_s250",
+      "label": "geneve-Rive",
+      "atlasModelHash": "a9bd7d439bb70671",
+      "gridMetadataHash": "7db3b09de245607f",
+      "atlasBin": null,
+      "atlasIdx": null,
+      "gridMetadata": {
+        "path": "data/cache/tile-grid-metadata/geneve/7db3b09de245607f/g1/e2499000_n1118000_s250.json.gz",
+        "sha256": "1acf8c84c903aab500bc6590455c76205eb23eb77e1c5b52cf951da9dcbcde1c",
+        "size": 199289,
+        "mtime": "2026-05-04T22:50:03.415132+00:00"
+      }
+    },
+    {
+      "region": "geneve",
+      "tileId": "e2499000_n1116000_s250",
+      "label": "geneve-Carouge-sud",
+      "atlasModelHash": "a9bd7d439bb70671",
+      "gridMetadataHash": "7db3b09de245607f",
+      "atlasBin": null,
+      "atlasIdx": null,
+      "gridMetadata": {
+        "path": "data/cache/tile-grid-metadata/geneve/7db3b09de245607f/g1/e2499000_n1116000_s250.json.gz",
+        "sha256": "9785a0c5c7a2f6e3d40e5af7c091cbe246ec0165bfb36b067ea1e03549de3768",
+        "size": 174850,
+        "mtime": "2026-05-04T22:48:41.310614+00:00"
+      }
+    },
+    {
+      "region": "vevey",
+      "tileId": "e2549000_n1147000_s250",
+      "label": "vevey-Lavaux-est",
+      "atlasModelHash": "5e96c05c816211e8",
+      "gridMetadataHash": "0238f16eb74988b2",
+      "atlasBin": null,
+      "atlasIdx": null,
+      "gridMetadata": null
+    }
+  ]
+}

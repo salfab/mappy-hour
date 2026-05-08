@@ -1,7 +1,20 @@
 # ADR-0005 - Bâtiments V3: ombre à deux niveaux (prisme + vérification détaillée ciblée)
 
 Date: 2026-03-15  
-Statut: accepté
+Statut: supersédé par ADR-0010 le 2026-04-14
+
+## Note de supersession
+
+Cette ADR décrit une décision correcte au moment où le calcul bâtiment était encore dominé par le coût CPU d'une vérification maillage détaillée. Elle n'est plus la décision active pour le precompute.
+
+Les travaux ultérieurs ont changé les contraintes :
+
+- la sélection de tuiles chaudes et le tuilage 250m bornent fortement le volume à calculer ;
+- le filtrage spatial du VBO (ADR-0008) permet de ne charger que les bâtiments utiles autour de la tuile ;
+- les chemins `gpu-raster` et Rust/wgpu Vulkan travaillent directement sur les meshes SwissTopo quand ils sont disponibles ;
+- les faux positifs liés aux empreintes/prismes simplifiés coûtent plus cher en qualité que le gain de simplification ne rapporte en performance.
+
+La décision active est donc ADR-0010 : pour le precompute, on privilégie les meshes SwissTopo source, avec filtrage spatial et fallback contrôlé, plutôt qu'une stratégie prisme + vérification détaillée ciblée.
 
 ## Contexte
 
@@ -67,4 +80,3 @@ Si la vérification détaillée dit "non bloqué", on exclut ce bloqueur et on r
   - vérifie le fallback sur un second bloqueur.
 - `src/lib/sun/evaluation-context.test.ts`
   - compatibilité du pipeline de contexte après intégration.
-

@@ -15,7 +15,7 @@ import {
   type SunSample,
 } from "@/lib/sun/solar";
 import { DEFAULT_SHADOW_CALIBRATION } from "@/lib/sun/shadow-calibration";
-import { lv95ToWgs84, wgs84ToLv95 } from "@/lib/geo/projection";
+import { lv95ToWgs84Precise, wgs84ToLv95Precise } from "@/lib/geo/projection";
 import { zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
 type ModeName = "detailed" | "two-level";
@@ -148,10 +148,10 @@ function buildGridPoints(hotspot: Hotspot): Array<{
 }> {
   const points: Array<{ id: string; row: number; col: number; lat: number; lon: number }> = [];
   const corners = [
-    wgs84ToLv95(hotspot.bbox.minLon, hotspot.bbox.minLat),
-    wgs84ToLv95(hotspot.bbox.minLon, hotspot.bbox.maxLat),
-    wgs84ToLv95(hotspot.bbox.maxLon, hotspot.bbox.minLat),
-    wgs84ToLv95(hotspot.bbox.maxLon, hotspot.bbox.maxLat),
+    wgs84ToLv95Precise(hotspot.bbox.minLon, hotspot.bbox.minLat),
+    wgs84ToLv95Precise(hotspot.bbox.minLon, hotspot.bbox.maxLat),
+    wgs84ToLv95Precise(hotspot.bbox.maxLon, hotspot.bbox.minLat),
+    wgs84ToLv95Precise(hotspot.bbox.maxLon, hotspot.bbox.maxLat),
   ];
   const minX = Math.floor(Math.min(...corners.map((point) => point.easting)));
   const maxX = Math.ceil(Math.max(...corners.map((point) => point.easting)));
@@ -170,7 +170,7 @@ function buildGridPoints(hotspot: Hotspot): Array<{
       easting <= maxX;
       easting += GRID_STEP_METERS
     ) {
-      const wgs = lv95ToWgs84(easting, northing);
+      const wgs = lv95ToWgs84Precise(easting, northing);
       if (
         wgs.lon < hotspot.bbox.minLon ||
         wgs.lon > hotspot.bbox.maxLon ||
@@ -218,10 +218,10 @@ function getSunEdgeTimes(centerLat: number, centerLon: number): {
 
 async function buildPointContexts(hotspot: Hotspot): Promise<PointContext[]> {
   const corners = [
-    wgs84ToLv95(hotspot.bbox.minLon, hotspot.bbox.minLat),
-    wgs84ToLv95(hotspot.bbox.minLon, hotspot.bbox.maxLat),
-    wgs84ToLv95(hotspot.bbox.maxLon, hotspot.bbox.minLat),
-    wgs84ToLv95(hotspot.bbox.maxLon, hotspot.bbox.maxLat),
+    wgs84ToLv95Precise(hotspot.bbox.minLon, hotspot.bbox.minLat),
+    wgs84ToLv95Precise(hotspot.bbox.minLon, hotspot.bbox.maxLat),
+    wgs84ToLv95Precise(hotspot.bbox.maxLon, hotspot.bbox.minLat),
+    wgs84ToLv95Precise(hotspot.bbox.maxLon, hotspot.bbox.maxLat),
   ];
   const minX = Math.floor(Math.min(...corners.map((point) => point.easting))) - 20;
   const minY = Math.floor(Math.min(...corners.map((point) => point.northing))) - 20;

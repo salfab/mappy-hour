@@ -3,7 +3,7 @@ import path from "node:path";
 
 import SunCalc from "suncalc";
 
-import { lv95ToWgs84 } from "@/lib/geo/projection";
+import { lv95ToWgs84Precise } from "@/lib/geo/projection";
 import type { PrecomputedRegionName, RegionTileSpec } from "@/lib/precompute/sunlight-cache";
 import { PROCESSED_HORIZON_SHARING_DIR } from "@/lib/storage/data-paths";
 import { HorizonMask, isTerrainBlockedByHorizon } from "@/lib/sun/horizon-mask";
@@ -238,7 +238,7 @@ function buildSamplePoints(tile: RegionTileSpec): Array<{ lat: number; lon: numb
         tile.minEasting + ratioX * (tile.maxEasting - tile.minEasting);
       const northing =
         tile.minNorthing + ratioY * (tile.maxNorthing - tile.minNorthing);
-      const wgs84 = lv95ToWgs84(easting, northing);
+      const wgs84 = lv95ToWgs84Precise(easting, northing);
       points.push({
         lat: wgs84.lat,
         lon: wgs84.lon,
@@ -253,12 +253,43 @@ function buildMaskCacheKey(lat: number, lon: number): string {
   return `${round6(lat)}:${round6(lon)}`;
 }
 
+// Horizon cache stats — quantifies how often shared/local masks are reused.
+// Reset at process start; queried once at end of run to estimate the
+// headroom a smarter sharing policy would unlock.
+const horizonCacheStats = {
+  hits: 0,
+  misses: 0,
+  totalBuildMs: 0,
+  totalHitLookupMs: 0,
+};
+
+export function getHorizonCacheStats(): {
+  hits: number;
+  misses: number;
+  totalBuildMs: number;
+  totalHitLookupMs: number;
+  hitRatio: number;
+} {
+  const total = horizonCacheStats.hits + horizonCacheStats.misses;
+  return {
+    ...horizonCacheStats,
+    hitRatio: total === 0 ? 0 : horizonCacheStats.hits / total,
+  };
+}
+
 async function buildMaskCached(lat: number, lon: number): Promise<HorizonMask | null> {
   const key = buildMaskCacheKey(lat, lon);
   if (maskCache.has(key)) {
-    return maskCache.get(key) ?? null;
+    const t0 = performance.now();
+    const cached = maskCache.get(key) ?? null;
+    horizonCacheStats.hits++;
+    horizonCacheStats.totalHitLookupMs += performance.now() - t0;
+    return cached;
   }
+  const t0 = performance.now();
   const mask = await buildDynamicHorizonMask({ lat, lon });
+  horizonCacheStats.misses++;
+  horizonCacheStats.totalBuildMs += performance.now() - t0;
   maskCache.set(key, mask);
   return mask;
 }
@@ -274,7 +305,7 @@ function macroCenterForTile(tile: RegionTileSpec): { lat: number; lon: number } 
     Math.floor(centerNorthing / MACRO_CELL_NORTHING_METERS) *
       MACRO_CELL_NORTHING_METERS +
     MACRO_CELL_NORTHING_METERS / 2;
-  const wgs84 = lv95ToWgs84(macroCenterEasting, macroCenterNorthing);
+  const wgs84 = lv95ToWgs84Precise(macroCenterEasting, macroCenterNorthing);
   return {
     lat: round6(wgs84.lat),
     lon: round6(wgs84.lon),

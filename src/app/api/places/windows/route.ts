@@ -4,7 +4,29 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { loadAllPlaces } from "@/lib/places/lausanne-places";
-import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
+import { wgs84ToLv95Precise, lv95ToWgs84Precise } from "@/lib/geo/projection";
+import {
+  findCachedModelVersionHash,
+  type PrecomputedRegionName,
+} from "@/lib/precompute/sunlight-cache";
+import {
+  loadPrecomputedSunlightTileBinary,
+  getFrameMask,
+  MASK_KIND_SUN,
+  MASK_KIND_SUN_NO_VEG,
+  type BinaryTileArtifact,
+} from "@/lib/precompute/sunlight-cache-binary";
+import {
+  loadPrecomputedTileAtlasesInPrecisionOrder,
+  lookupAtlasByAngle,
+  type BinaryTileAtlas,
+} from "@/lib/precompute/sunlight-cache-atlas";
+import { resolveRegionForBbox } from "@/lib/precompute/sunlight-tile-service";
+import SunCalc from "suncalc";
+import {
+  buildPointEvaluationContext,
+  buildSharedPointEvaluationSources,
+} from "@/lib/sun/evaluation-context";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { evaluateInstantSunlight } from "@/lib/sun/solar";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
@@ -304,6 +326,7 @@ async function pickOutdoorEvaluationPoint(
     shadowCalibration: {
       buildingHeightBiasMeters: number;
     };
+    sharedSources: Awaited<ReturnType<typeof buildSharedPointEvaluationSources>>;
   },
 ) {
   const candidates = place.hasOutdoorSeating
@@ -322,6 +345,7 @@ async function pickOutdoorEvaluationPoint(
     const context = await buildPointEvaluationContext(candidate.lat, candidate.lon, {
       skipTerrainSamplingWhenIndoor: true,
       shadowCalibration: options.shadowCalibration,
+      sharedSources: options.sharedSources,
     });
     if (!fallback) {
       fallback = { ...candidate, context };
@@ -339,6 +363,7 @@ async function pickOutdoorEvaluationPoint(
     const context = await buildPointEvaluationContext(place.lat, place.lon, {
       skipTerrainSamplingWhenIndoor: true,
       shadowCalibration: options.shadowCalibration,
+      sharedSources: options.sharedSources,
     });
     return {
       lat: place.lat,
@@ -499,17 +524,440 @@ export async function POST(request: Request) {
           )
         : null;
 
-    for (const place of places) {
+    const timings = {
+      pickPoint: 0,
+      evalSamples: 0,
+      placesProcessed: 0,
+      shared: 0,
+      tileHits: 0,
+      tileMiss: 0,
+      tileLookup: 0,
+    };
+    const routeT0 = performance.now();
+
+    // ── Fast path: read precomputed sun masks from the tile cache ─────
+    // For daily mode at g=1m / sample=15min, every place at a grid-aligned
+    // cell already has its sunny/not-sunny bit per frame stored on disk.
+    // This skips the per-place GPU evaluate loop (which is O(places × samples)
+    // at ~30ms each on ANGLE) entirely.
+    const CACHE_GRID_STEP = 1;
+    const tileSizeMeters = 250;
+    // Cache stores the Promise, not the resolved value, so concurrent
+    // lookups for the same tile share one disk+decode pass.
+    const tilePointCache = new Map<string, Promise<BinaryTileArtifact | null>>();
+    const tileAtlasCache = new Map<string, Promise<BinaryTileAtlas[]>>();
+    const regionInfoCache = new Map<
+      PrecomputedRegionName,
+      { modelVersionHash: string; tw: { startLocalTime: string; endLocalTime: string } } | null
+    >();
+    const canUseTileLookup =
+      mode === "daily" && parsed.data.sampleEveryMinutes === 15;
+    const resolveRegionInfo = async (region: PrecomputedRegionName) => {
+      const cached = regionInfoCache.get(region);
+      if (cached !== undefined) return cached;
+      const candidates = await findCachedModelVersionHash({
+        region,
+        date: parsed.data.date,
+        gridStepMeters: CACHE_GRID_STEP,
+        sampleEveryMinutes: 15,
+        startLocalTime: parsed.data.startLocalTime,
+        endLocalTime: parsed.data.endLocalTime,
+      });
+      const clientStart = localTimeToMinutes(parsed.data.startLocalTime);
+      const clientEnd = localTimeToMinutes(parsed.data.endLocalTime);
+      let info: { modelVersionHash: string; tw: { startLocalTime: string; endLocalTime: string } } | null = null;
+      for (const hit of candidates) {
+        const covering = hit.timeWindows.find((tw) => {
+          const twStart = localTimeToMinutes(tw.startLocalTime);
+          const twEnd = localTimeToMinutes(tw.endLocalTime);
+          return twStart <= clientStart && twEnd >= clientEnd;
+        });
+        if (covering) {
+          info = { modelVersionHash: hit.modelVersionHash, tw: covering };
+          break;
+        }
+      }
+      if (!info) {
+        regionInfoCache.set(region, null);
+        return null;
+      }
+      regionInfoCache.set(region, info);
+      return info;
+    };
+    type TileOrAtlas =
+      | { kind: "tile"; tile: BinaryTileArtifact; region: PrecomputedRegionName; ix: number; iy: number }
+      | { kind: "atlas"; atlases: BinaryTileAtlas[]; region: PrecomputedRegionName; ix: number; iy: number };
+
+    // Hoist UTC samples once — independent of tile, reused for every strict
+    // coverage check below.
+    const coverageUtcSamples = createUtcSamples(
+      parsed.data.date,
+      parsed.data.timezone,
+      parsed.data.sampleEveryMinutes,
+      parsed.data.startLocalTime,
+      parsed.data.endLocalTime,
+    );
+
+    const atlasCoversAllFrames = (atlases: BinaryTileAtlas[]): boolean => {
+      if (atlases.length === 0 || coverageUtcSamples.length === 0) return false;
+      const meta = atlases[0].meta;
+      const tileCenterE = (meta.tile.minEasting + meta.tile.maxEasting) / 2;
+      const tileCenterN = (meta.tile.minNorthing + meta.tile.maxNorthing) / 2;
+      const { lat: tileLat, lon: tileLon } = lv95ToWgs84Precise(tileCenterE, tileCenterN);
+      const RAD_TO_DEG = 180 / Math.PI;
+      for (const utcDate of coverageUtcSamples) {
+        const pos = SunCalc.getPosition(utcDate, tileLat, tileLon);
+        const alt = pos.altitude * RAD_TO_DEG;
+        if (alt <= 0) continue;
+        let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
+        if (az < 0) az += 360;
+        const bucket = lookupAtlasByAngle(atlases, az, alt);
+        if (!bucket) return false;
+      }
+      return true;
+    };
+
+    const loadTileForPoint = async (
+      lat: number,
+      lon: number,
+    ): Promise<TileOrAtlas | null> => {
+      const region = resolveRegionForBbox({
+        minLon: lon,
+        maxLon: lon,
+        minLat: lat,
+        maxLat: lat,
+      });
+      if (!region) return null;
+      const info = await resolveRegionInfo(region);
+      if (!info) return null;
+      const lv95 = wgs84ToLv95Precise(lon, lat);
+      const ix = Math.floor(lv95.easting);
+      const iy = Math.floor(lv95.northing);
+      const tileMinE = Math.floor(ix / tileSizeMeters) * tileSizeMeters;
+      const tileMinN = Math.floor(iy / tileSizeMeters) * tileSizeMeters;
+      const tileId = `e${tileMinE}_n${tileMinN}_s${tileSizeMeters}`;
+
+      // Try atlas first (ADR-0013): year-independent, angle-keyed.
+      // Load every resolution available so lookup can cascade r0.5 → r0.75 → r1
+      // — a partial r0.5 alone must not mask a complete r0.75 corpus.
+      const atlasKey = `atlas:${region}:${info.modelVersionHash}:${tileId}`;
+      let atlasesPromise = tileAtlasCache.get(atlasKey);
+      if (!atlasesPromise) {
+        atlasesPromise = loadPrecomputedTileAtlasesInPrecisionOrder({
+          region,
+          modelVersionHash: info.modelVersionHash,
+          gridStepMeters: CACHE_GRID_STEP,
+          tileId,
+        });
+        tileAtlasCache.set(atlasKey, atlasesPromise);
+      }
+      const atlases = await atlasesPromise;
+      // Strict coverage: the atlas is only usable if EVERY above-horizon frame
+      // in the client's requested window can be resolved to a bucket across
+      // the cascading resolutions. A partial atlas (e.g. r0.5 populated only
+      // for bench dates) must NOT silently return "0 shadow" — treat it as a
+      // cache miss so the caller falls through to the binary tile or the GPU.
+      if (atlases.length > 0 && atlasCoversAllFrames(atlases)) {
+        return { kind: "atlas", atlases, region, ix, iy };
+      }
+
+      // Fallback: date-keyed binary tile.
+      const cacheKey = `${region}:${info.modelVersionHash}:${parsed.data.date}:${info.tw.startLocalTime}-${info.tw.endLocalTime}:${tileId}`;
+      let tilePromise = tilePointCache.get(cacheKey);
+      if (!tilePromise) {
+        tilePromise = loadPrecomputedSunlightTileBinary({
+          region,
+          modelVersionHash: info.modelVersionHash,
+          date: parsed.data.date,
+          gridStepMeters: CACHE_GRID_STEP,
+          sampleEveryMinutes: 15,
+          startLocalTime: info.tw.startLocalTime,
+          endLocalTime: info.tw.endLocalTime,
+          tileId,
+        });
+        tilePointCache.set(cacheKey, tilePromise);
+      }
+      const tile = await tilePromise;
+      if (!tile) return null;
+      return { kind: "tile", tile, region, ix, iy };
+    };
+
+    // Look up the grid cell for (ix, iy) in a tile or atlas. Points are laid out
+    // row-major in buildTilePoints (iy outer, ix inner) so we can compute
+    // the index directly without a linear scan. The check at the end
+    // guards against precompute layouts that skip edge cells.
+    type TileOrAtlasPoints = {
+      meta: { tile: { minEasting: number; minNorthing: number; maxEasting: number } };
+      pointCount: number;
+      pointIx: Int32Array;
+      pointIy: Int32Array;
+      pointOutdoorIndex: Int32Array;
+      pointFlags: Uint32Array;
+    };
+    const lookupPointInTile = (
+      tile: TileOrAtlasPoints,
+      ix: number,
+      iy: number,
+    ): number | null => {
+      const tileMinE = tile.meta.tile.minEasting;
+      const tileMinN = tile.meta.tile.minNorthing;
+      const widthCells = Math.round(
+        (tile.meta.tile.maxEasting - tileMinE) / CACHE_GRID_STEP,
+      );
+      const col = ix - Math.floor(tileMinE / CACHE_GRID_STEP);
+      const row = iy - Math.floor(tileMinN / CACHE_GRID_STEP);
+      if (col < 0 || col >= widthCells || row < 0) return null;
+      const pointIdx = row * widthCells + col;
+      if (pointIdx < 0 || pointIdx >= tile.pointCount) return null;
+      if (tile.pointIx[pointIdx] !== ix || tile.pointIy[pointIdx] !== iy) {
+        // Layout mismatch — fall back to scan
+        for (let i = 0; i < tile.pointCount; i++) {
+          if (tile.pointIx[i] === ix && tile.pointIy[i] === iy) return i;
+        }
+        return null;
+      }
+      return pointIdx;
+    };
+
+    // Build GPU-backed shared sources lazily — only if at least one place
+    // falls through to the GPU fallback path. For fully-cached bboxes, this
+    // avoids the 1-2s GPU backend setup entirely.
+    let sharedSources: Awaited<ReturnType<typeof buildSharedPointEvaluationSources>> | null = null;
+    const sharedLv95Bounds = (() => {
+      if (places.length === 0) return undefined;
+      let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+      for (const p of places) {
+        if (p.lon < minLon) minLon = p.lon;
+        if (p.lat < minLat) minLat = p.lat;
+        if (p.lon > maxLon) maxLon = p.lon;
+        if (p.lat > maxLat) maxLat = p.lat;
+      }
+      const sw = wgs84ToLv95Precise(minLon, minLat);
+      const ne = wgs84ToLv95Precise(maxLon, maxLat);
+      return {
+        minX: Math.min(sw.easting, ne.easting),
+        minY: Math.min(sw.northing, ne.northing),
+        maxX: Math.max(sw.easting, ne.easting),
+        maxY: Math.max(sw.northing, ne.northing),
+      };
+    })();
+    const ensureSharedSources = async () => {
+      if (sharedSources) return sharedSources;
+      const tShared0 = performance.now();
+      sharedSources = await buildSharedPointEvaluationSources({
+        lv95Bounds: sharedLv95Bounds,
+      });
+      timings.shared += performance.now() - tShared0;
+      return sharedSources;
+    };
+    // Try to pick a terrace point via tile lookup alone (no GPU). Returns
+    // null when the tile is not cached or the place is wholly indoor across
+    // all terrace candidates.
+    const pickViaTile = async (place: typeof places[number]) => {
+      if (!canUseTileLookup) return null;
+      const candidates = place.hasOutdoorSeating
+        ? buildTerraceCandidates(place.lat, place.lon)
+        : [{ lat: place.lat, lon: place.lon, offsetMeters: 0 }];
+      type HitInfo = NonNullable<Awaited<ReturnType<typeof loadTileForPoint>>>;
+      let fallback: {
+        cand: typeof candidates[number];
+        hit: HitInfo;
+        pointIdx: number;
+        outdoorIndex: number;
+        insideBuilding: boolean;
+      } | null = null;
+      for (const cand of candidates) {
+        const hit = await loadTileForPoint(cand.lat, cand.lon);
+        if (!hit) return null; // any candidate misses tile/atlas → GPU fallback
+        const points = hit.kind === "atlas" ? hit.atlases[0] : hit.tile;
+        const pointIdx = lookupPointInTile(points, hit.ix, hit.iy);
+        if (pointIdx === null) return null;
+        const flags = points.pointFlags[pointIdx];
+        const outdoorIndex = points.pointOutdoorIndex[pointIdx];
+        const insideBuilding = (flags & 1) !== 0 || outdoorIndex < 0;
+        if (!fallback) {
+          fallback = { cand, hit, pointIdx, outdoorIndex, insideBuilding };
+        }
+        if (!insideBuilding) {
+          return {
+            ...cand,
+            hit,
+            pointIdx,
+            outdoorIndex,
+            insideBuilding,
+            selectionStrategy: cand.offsetMeters === 0 ? "original" : "terrace_offset",
+          } as const;
+        }
+      }
+      if (!fallback) return null;
+      return {
+        ...fallback.cand,
+        hit: fallback.hit,
+        pointIdx: fallback.pointIdx,
+        outdoorIndex: fallback.outdoorIndex,
+        insideBuilding: fallback.insideBuilding,
+        selectionStrategy: "indoor_fallback",
+      } as const;
+    };
+
+    // Pre-warm the tile cache with bounded concurrency. Same-tile requests
+    // share a single disk+decode via the Promise cache; different-tile
+    // requests load in parallel up to CONCURRENCY at a time.
+    let tilePicks: Array<Awaited<ReturnType<typeof pickViaTile>>> = [];
+    if (canUseTileLookup && mode === "daily") {
+      const tWarm0 = performance.now();
+      tilePicks = new Array(places.length);
+      const CONCURRENCY = 8;
+      let cursor = 0;
+      const runWorker = async () => {
+        while (true) {
+          const i = cursor++;
+          if (i >= places.length) return;
+          tilePicks[i] = await pickViaTile(places[i]);
+        }
+      };
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => runWorker()));
+      timings.tileLookup += performance.now() - tWarm0;
+    }
+
+    type PickedPoint = Awaited<ReturnType<typeof pickOutdoorEvaluationPoint>>;
+    const gpuDailyPending: Array<{
+      place: typeof places[number];
+      venueType: VenueType;
+      selectedPoint: PickedPoint;
+      context: PickedPoint["context"];
+    }> = [];
+
+    for (let placeIdx = 0; placeIdx < places.length; placeIdx++) {
+      const place = places[placeIdx];
+      timings.placesProcessed += 1;
+      const venueType = classifyVenueType(place);
+
+      // ── Fast path: resolve the place entirely from tile data ─────────
+      if (canUseTileLookup && mode === "daily") {
+        const tilePick = tilePicks[placeIdx];
+        if (tilePick) {
+          const { hit, pointIdx, outdoorIndex, insideBuilding, lat, lon, offsetMeters, selectionStrategy } = tilePick;
+          const clientStart = localTimeToMinutes(parsed.data.startLocalTime);
+          const clientEnd = localTimeToMinutes(parsed.data.endLocalTime);
+          let sunnyWindows: SunnyWindow[];
+          if (insideBuilding) {
+            sunnyWindows = [];
+          } else {
+            const byteIdx = outdoorIndex >> 3;
+            const bitMask = 1 << (outdoorIndex & 7);
+            const tileSamples: Array<{ isSunny: boolean; localTime: string; utcTime: string }> = [];
+            if (hit.kind === "atlas") {
+              // Atlas path: lookup by (az, alt) bucket per time sample, cascading
+              // through available resolutions (r0.5 → r0.75 → r1).
+              const { atlases } = hit;
+              const meta = atlases[0].meta;
+              const tileCenterLv95E = (meta.tile.minEasting + meta.tile.maxEasting) / 2;
+              const tileCenterLv95N = (meta.tile.minNorthing + meta.tile.maxNorthing) / 2;
+              const { lat: tileLat, lon: tileLon } = lv95ToWgs84Precise(tileCenterLv95E, tileCenterLv95N);
+              const RAD_TO_DEG = 180 / Math.PI;
+              const utcSamples = createUtcSamples(
+                parsed.data.date, parsed.data.timezone, parsed.data.sampleEveryMinutes,
+                parsed.data.startLocalTime, parsed.data.endLocalTime,
+              );
+              for (const utcDate of utcSamples) {
+                const localTime = utcDate.toLocaleTimeString("fr-CH", { timeZone: parsed.data.timezone, hour: "2-digit", minute: "2-digit", hour12: false });
+                const m = localTimeToMinutes(localTime);
+                if (m < clientStart || m >= clientEnd) continue;
+                const pos = SunCalc.getPosition(utcDate, tileLat, tileLon);
+                const alt = pos.altitude * RAD_TO_DEG;
+                let isSunny = false;
+                if (alt > 0) {
+                  let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
+                  if (az < 0) az += 360;
+                  const bucket = lookupAtlasByAngle(atlases, az, alt);
+                  if (bucket) {
+                    const mask = parsed.data.ignoreVegetation ? bucket.sunNoVegMask : bucket.sunMask;
+                    isSunny = (mask[byteIdx] & bitMask) !== 0;
+                  }
+                }
+                tileSamples.push({ isSunny, localTime, utcTime: utcDate.toISOString() });
+              }
+            } else {
+              // Date-keyed binary tile fallback.
+              const { tile } = hit;
+              for (let f = 0; f < tile.frameCount; f++) {
+                const fm = tile.meta.framesMeta[f];
+                const m = localTimeToMinutes(fm.localTime);
+                if (m < clientStart || m >= clientEnd) continue;
+                const mask = parsed.data.ignoreVegetation
+                  ? getFrameMask(tile, f, MASK_KIND_SUN_NO_VEG)
+                  : getFrameMask(tile, f, MASK_KIND_SUN);
+                tileSamples.push({
+                  isSunny: (mask[byteIdx] & bitMask) !== 0,
+                  localTime: fm.localTime,
+                  utcTime: fm.utcTime,
+                });
+              }
+            }
+            sunnyWindows = buildSunnyWindows(
+              tileSamples,
+              parsed.data.sampleEveryMinutes,
+              parsed.data.timezone,
+            );
+          }
+          const sunnyMinutes = sunnyWindows.reduce(
+            (total, w) => total + w.durationMinutes,
+            0,
+          );
+          if (!parsed.data.includeNonSunny && sunnyMinutes <= 0) {
+            timings.tileHits += 1;
+            continue;
+          }
+          const elev = (hit.kind === "atlas" ? hit.atlases[0].meta : hit.tile.meta).pointElevationMeters?.[pointIdx] ?? null;
+          placesWithWindows.push({
+            id: place.id,
+            name: place.name,
+            category: place.category,
+            subcategory: place.subcategory,
+            venueType,
+            hasOutdoorSeating: place.hasOutdoorSeating,
+            lat: place.lat,
+            lon: place.lon,
+            evaluationLat: Math.round(lat * 1_000_000) / 1_000_000,
+            evaluationLon: Math.round(lon * 1_000_000) / 1_000_000,
+            selectionStrategy,
+            selectionOffsetMeters: offsetMeters,
+            pointElevationMeters: elev,
+            insideBuilding,
+            isSunnyNow: null,
+            sunnyMinutes,
+            sunnyWindows,
+            sunlightStartLocalTime:
+              sunnyWindows.length > 0 ? extractClock(sunnyWindows[0].startLocalTime) : null,
+            sunlightEndLocalTime:
+              sunnyWindows.length > 0 ? extractClock(sunnyWindows[sunnyWindows.length - 1].endLocalTime) : null,
+            warnings: [],
+          });
+          timings.tileHits += 1;
+          // Record methods once (precomputed = rust-wgpu-vulkan)
+          if (terrainMethod === "none") terrainMethod = "precomputed";
+          if (buildingsMethod === "none") buildingsMethod = "precomputed";
+          if (vegetationMethod === "none") vegetationMethod = "precomputed";
+          continue;
+        }
+        timings.tileMiss += 1;
+      }
+
+      // ── Slow path: GPU fallback (lazily initialised) ─────────────────
+      const gpuShared = await ensureSharedSources();
+      const tPick0 = performance.now();
       const selectedPoint = await pickOutdoorEvaluationPoint(place, {
         shadowCalibration,
+        sharedSources: gpuShared,
       });
+      timings.pickPoint += performance.now() - tPick0;
       const context = selectedPoint.context;
       terrainMethod = context.terrainHorizonMethod;
       buildingsMethod = context.buildingsShadowMethod;
       vegetationMethod = context.vegetationShadowMethod ?? "none";
       warnings.push(...context.warnings);
 
-      const venueType = classifyVenueType(place);
       if (mode === "instant" && instantUtcDate) {
         const sample = evaluateInstantSunlight({
           lat: selectedPoint.lat,
@@ -559,62 +1007,94 @@ export async function POST(request: Request) {
         continue;
       }
 
-      const samples = dailySamples.map((utcDate) =>
-        evaluateInstantSunlight({
-          lat: selectedPoint.lat,
-          lon: selectedPoint.lon,
-          utcDate,
-          timeZone: parsed.data.timezone,
-            horizonMask: context.horizonMask,
-            buildingShadowEvaluator: context.buildingShadowEvaluator,
-            vegetationShadowEvaluator: context.vegetationShadowEvaluator,
-          }),
-      );
-      const sunnyWindows = buildSunnyWindows(
-        samples.map((sample) => ({
-          isSunny: isSampleSunny(sample, parsed.data.ignoreVegetation),
-          localTime: sample.localTime,
-          utcTime: sample.utcTime,
-        })),
-        parsed.data.sampleEveryMinutes,
-        parsed.data.timezone,
-      );
-      const sunnyMinutes = sunnyWindows.reduce(
-        (total, window) => total + window.durationMinutes,
-        0,
-      );
-      if (!parsed.data.includeNonSunny && sunnyMinutes <= 0) {
-        continue;
-      }
-
-      placesWithWindows.push({
-        id: place.id,
-        name: place.name,
-        category: place.category,
-        subcategory: place.subcategory,
+      // Defer GPU daily evaluation so we can batch it sample-outer,
+      // place-inner. prepareSunPosition (the expensive 30 ms shadow-map
+      // render + readPixels on ANGLE) is idempotent for a given sun
+      // angle: sweeping places-outer re-renders 60× per place, while
+      // sweeping sample-outer renders 60× total for the whole batch.
+      gpuDailyPending.push({
+        place,
         venueType,
-        hasOutdoorSeating: place.hasOutdoorSeating,
-        lat: place.lat,
-        lon: place.lon,
-        evaluationLat: Math.round(selectedPoint.lat * 1_000_000) / 1_000_000,
-        evaluationLon: Math.round(selectedPoint.lon * 1_000_000) / 1_000_000,
-        selectionStrategy: selectedPoint.selectionStrategy,
-        selectionOffsetMeters: selectedPoint.offsetMeters,
-        pointElevationMeters: context.pointElevationMeters,
-        insideBuilding: context.insideBuilding,
-        isSunnyNow: null,
-        sunnyMinutes,
-        sunnyWindows,
-        sunlightStartLocalTime:
-          sunnyWindows.length > 0
-            ? extractClock(sunnyWindows[0].startLocalTime)
-            : null,
-        sunlightEndLocalTime:
-          sunnyWindows.length > 0
-            ? extractClock(sunnyWindows[sunnyWindows.length - 1].endLocalTime)
-            : null,
-        warnings: context.warnings,
+        selectedPoint,
+        context,
       });
+    }
+
+    // ── Batch GPU daily evaluation: sample-outer, place-inner ──────────
+    if (gpuDailyPending.length > 0) {
+      const tBatch0 = performance.now();
+      const perPlaceSamples: Array<Array<{
+        isSunny: boolean;
+        localTime: string;
+        utcTime: string;
+      }>> = gpuDailyPending.map(() => []);
+      for (const utcDate of dailySamples) {
+        for (let i = 0; i < gpuDailyPending.length; i++) {
+          const entry = gpuDailyPending[i];
+          const sample = evaluateInstantSunlight({
+            lat: entry.selectedPoint.lat,
+            lon: entry.selectedPoint.lon,
+            utcDate,
+            timeZone: parsed.data.timezone,
+            horizonMask: entry.context.horizonMask,
+            buildingShadowEvaluator: entry.context.buildingShadowEvaluator,
+            vegetationShadowEvaluator: entry.context.vegetationShadowEvaluator,
+          });
+          perPlaceSamples[i].push({
+            isSunny: isSampleSunny(sample, parsed.data.ignoreVegetation),
+            localTime: sample.localTime,
+            utcTime: sample.utcTime,
+          });
+        }
+      }
+      timings.evalSamples += performance.now() - tBatch0;
+      for (let i = 0; i < gpuDailyPending.length; i++) {
+        const entry = gpuDailyPending[i];
+        const sunnyWindows = buildSunnyWindows(
+          perPlaceSamples[i],
+          parsed.data.sampleEveryMinutes,
+          parsed.data.timezone,
+        );
+        const sunnyMinutes = sunnyWindows.reduce(
+          (total, window) => total + window.durationMinutes,
+          0,
+        );
+        if (!parsed.data.includeNonSunny && sunnyMinutes <= 0) {
+          continue;
+        }
+        placesWithWindows.push({
+          id: entry.place.id,
+          name: entry.place.name,
+          category: entry.place.category,
+          subcategory: entry.place.subcategory,
+          venueType: entry.venueType,
+          hasOutdoorSeating: entry.place.hasOutdoorSeating,
+          lat: entry.place.lat,
+          lon: entry.place.lon,
+          evaluationLat: Math.round(entry.selectedPoint.lat * 1_000_000) / 1_000_000,
+          evaluationLon: Math.round(entry.selectedPoint.lon * 1_000_000) / 1_000_000,
+          selectionStrategy: entry.selectedPoint.selectionStrategy,
+          selectionOffsetMeters: entry.selectedPoint.offsetMeters,
+          pointElevationMeters: entry.context.pointElevationMeters,
+          insideBuilding: entry.context.insideBuilding,
+          isSunnyNow: null,
+          sunnyMinutes,
+          sunnyWindows,
+          sunlightStartLocalTime:
+            sunnyWindows.length > 0 ? extractClock(sunnyWindows[0].startLocalTime) : null,
+          sunlightEndLocalTime:
+            sunnyWindows.length > 0 ? extractClock(sunnyWindows[sunnyWindows.length - 1].endLocalTime) : null,
+          warnings: entry.context.warnings,
+        });
+      }
+    }
+
+    if (timings.placesProcessed > 0) {
+      const total = performance.now() - routeT0;
+      const n = timings.placesProcessed;
+      process.stderr.write(
+        `[places/windows] mode=${mode} places=${n}/${places.length} samples=${dailySamples.length} total=${total.toFixed(0)}ms shared=${timings.shared.toFixed(0)}ms avg pickPoint=${(timings.pickPoint / n).toFixed(1)}ms evalSamples=${(timings.evalSamples / n).toFixed(1)}ms tileLookup=${(timings.tileLookup / n).toFixed(1)}ms (tileHits=${timings.tileHits} tileMiss=${timings.tileMiss})\n`,
+      );
     }
 
     placesWithWindows.sort((left, right) => {

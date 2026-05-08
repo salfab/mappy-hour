@@ -23,10 +23,6 @@ const {
   createDetailedBuildingShadowVerifierMock: vi.fn(() => vi.fn()),
 }));
 
-const { loadLausanneHorizonMaskMock } = vi.hoisted(() => ({
-  loadLausanneHorizonMaskMock: vi.fn(),
-}));
-
 const {
   sampleSwissTerrainElevationLv95Mock,
   loadTerrainTilesForBoundsMock,
@@ -48,7 +44,7 @@ const {
 }));
 
 vi.mock("@/lib/geo/projection", () => ({
-  wgs84ToLv95: wgs84ToLv95Mock,
+  wgs84ToLv95Precise: wgs84ToLv95Mock,
 }));
 
 vi.mock("@/lib/sun/buildings-shadow", () => ({
@@ -57,10 +53,6 @@ vi.mock("@/lib/sun/buildings-shadow", () => ({
   evaluateBuildingsShadow: evaluateBuildingsShadowMock,
   evaluateBuildingsShadowTwoLevel: evaluateBuildingsShadowTwoLevelMock,
   createDetailedBuildingShadowVerifier: createDetailedBuildingShadowVerifierMock,
-}));
-
-vi.mock("@/lib/sun/horizon-mask", () => ({
-  loadLausanneHorizonMask: loadLausanneHorizonMaskMock,
 }));
 
 vi.mock("@/lib/terrain/swiss-terrain", () => ({
@@ -94,7 +86,6 @@ describe("buildPointEvaluationContext vegetation warnings", () => {
   });
 
   it("does not warn about missing vegetation raster when point is indoor", async () => {
-    loadLausanneHorizonMaskMock.mockResolvedValue(createMockHorizonMask());
     loadBuildingsObstacleIndexMock.mockResolvedValue({
       method: "mock-buildings",
       obstacles: [],
@@ -108,6 +99,7 @@ describe("buildPointEvaluationContext vegetation warnings", () => {
 
     const context = await buildPointEvaluationContext(46.5, 6.6, {
       skipTerrainSamplingWhenIndoor: true,
+      terrainHorizonOverride: createMockHorizonMask(),
     });
 
     expect(context.insideBuilding).toBe(true);
@@ -118,7 +110,6 @@ describe("buildPointEvaluationContext vegetation warnings", () => {
   });
 
   it("warns when vegetation raster lookup is required but unavailable", async () => {
-    loadLausanneHorizonMaskMock.mockResolvedValue(createMockHorizonMask());
     loadBuildingsObstacleIndexMock.mockResolvedValue({
       method: "mock-buildings",
       obstacles: [],
@@ -132,6 +123,7 @@ describe("buildPointEvaluationContext vegetation warnings", () => {
 
     const context = await buildPointEvaluationContext(46.5, 6.6, {
       skipTerrainSamplingWhenIndoor: true,
+      terrainHorizonOverride: createMockHorizonMask(),
     });
 
     expect(context.insideBuilding).toBe(false);
@@ -142,7 +134,6 @@ describe("buildPointEvaluationContext vegetation warnings", () => {
   });
 
   it("reuses shared tile sources without per-point vegetation lookup", async () => {
-    loadLausanneHorizonMaskMock.mockResolvedValue(createMockHorizonMask());
     loadBuildingsObstacleIndexMock.mockResolvedValue({
       method: "mock-buildings",
       obstacles: [],
@@ -175,6 +166,7 @@ describe("buildPointEvaluationContext vegetation warnings", () => {
         maxX: 2_600_100,
         maxY: 1_200_100,
       },
+      terrainHorizonOverride: createMockHorizonMask(),
     });
 
     await buildPointEvaluationContext(46.5, 6.6, {
@@ -189,7 +181,6 @@ describe("buildPointEvaluationContext vegetation warnings", () => {
   });
 
   it("uses detailed building verification by default", async () => {
-    loadLausanneHorizonMaskMock.mockResolvedValue(createMockHorizonMask());
     loadBuildingsObstacleIndexMock.mockResolvedValue({
       method: "mock-buildings",
       obstacles: [],
@@ -211,6 +202,7 @@ describe("buildPointEvaluationContext vegetation warnings", () => {
 
     const context = await buildPointEvaluationContext(46.5, 6.6, {
       skipTerrainSamplingWhenIndoor: true,
+      terrainHorizonOverride: createMockHorizonMask(),
     });
 
     expect(context.buildingShadowEvaluator).toBeDefined();
@@ -223,7 +215,6 @@ describe("buildPointEvaluationContext vegetation warnings", () => {
   });
 
   it("forwards allowed blocker ids into the building evaluator", async () => {
-    loadLausanneHorizonMaskMock.mockResolvedValue(createMockHorizonMask());
     loadBuildingsObstacleIndexMock.mockResolvedValue({
       method: "mock-buildings",
       obstacles: [],
@@ -247,6 +238,7 @@ describe("buildPointEvaluationContext vegetation warnings", () => {
     const context = await buildPointEvaluationContext(46.5, 6.6, {
       skipTerrainSamplingWhenIndoor: true,
       buildingShadowAllowedIds: allowed,
+      terrainHorizonOverride: createMockHorizonMask(),
     });
 
     context.buildingShadowEvaluator?.({ azimuthDeg: 190, altitudeDeg: 18 });

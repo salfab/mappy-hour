@@ -1,4 +1,4 @@
-import { lv95ToWgs84 } from "@/lib/geo/projection";
+import { lv95ToWgs84Precise } from "@/lib/geo/projection";
 
 interface Lv95Point {
   easting: number;
@@ -271,7 +271,7 @@ export function buildOutlineRingsFromTileIds(
 ): Array<Array<[number, number]>> {
   return buildOutlineRingsFromTileIdsLv95(tileIds).map((ring) =>
     ring.map((point) => {
-      const wgs84 = lv95ToWgs84(point.easting, point.northing);
+      const wgs84 = lv95ToWgs84Precise(point.easting, point.northing);
       return [
         Math.round(wgs84.lat * 1_000_000) / 1_000_000,
         Math.round(wgs84.lon * 1_000_000) / 1_000_000,

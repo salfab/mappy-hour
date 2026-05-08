@@ -1,10 +1,14 @@
+import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import { gzip as gzipCallback, gunzip as gunzipCallback } from "node:zlib";
 import path from "node:path";
 
 import { LAUSANNE_CONFIG } from "@/lib/config/lausanne";
 import { NYON_CONFIG } from "@/lib/config/nyon";
-import { lv95ToWgs84, wgs84ToLv95 } from "@/lib/geo/projection";
+import { MORGES_CONFIG } from "@/lib/config/morges";
+import { GENEVE_CONFIG } from "@/lib/config/geneve";
+import { VEVEY_CONFIG } from "@/lib/config/vevey";
+import { lv95ToWgs84Precise, wgs84ToLv95Precise } from "@/lib/geo/projection";
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 import { getSunlightCacheStorage } from "./sunlight-cache-storage";
 import { SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "./model-version";
@@ -12,7 +16,7 @@ import { SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "./model-version";
 const gzip = promisify(gzipCallback);
 const gunzip = promisify(gunzipCallback);
 
-export type PrecomputedRegionName = "lausanne" | "nyon";
+export type PrecomputedRegionName = "lausanne" | "nyon" | "morges" | "geneve" | "vevey";
 
 export interface RegionBbox {
   minLon: number;
@@ -58,11 +62,11 @@ export interface PrecomputedSunlightFrame {
   utcTime: string;
   sunnyCount: number;
   sunnyCountNoVegetation: number;
-  sunMaskBase64: string;
-  sunMaskNoVegetationBase64: string;
-  terrainBlockedMaskBase64: string;
-  buildingsBlockedMaskBase64: string;
-  vegetationBlockedMaskBase64: string;
+  sunMask: Uint8Array;
+  sunMaskNoVegetation: Uint8Array;
+  terrainBlockedMask: Uint8Array;
+  buildingsBlockedMask: Uint8Array;
+  vegetationBlockedMask: Uint8Array;
   diagnostics: PrecomputedSunlightFrameDiagnostics;
 }
 
@@ -131,6 +135,24 @@ const REGION_BBOXES: Record<PrecomputedRegionName, RegionBbox> = {
     maxLon: NYON_CONFIG.localBbox[2],
     maxLat: NYON_CONFIG.localBbox[3],
   },
+  morges: {
+    minLon: MORGES_CONFIG.localBbox[0],
+    minLat: MORGES_CONFIG.localBbox[1],
+    maxLon: MORGES_CONFIG.localBbox[2],
+    maxLat: MORGES_CONFIG.localBbox[3],
+  },
+  geneve: {
+    minLon: GENEVE_CONFIG.localBbox[0],
+    minLat: GENEVE_CONFIG.localBbox[1],
+    maxLon: GENEVE_CONFIG.localBbox[2],
+    maxLat: GENEVE_CONFIG.localBbox[3],
+  },
+  vevey: {
+    minLon: VEVEY_CONFIG.localBbox[0],
+    minLat: VEVEY_CONFIG.localBbox[1],
+    maxLon: VEVEY_CONFIG.localBbox[2],
+    maxLat: VEVEY_CONFIG.localBbox[3],
+  },
 };
 
 export function getPrecomputedRegionBbox(region: PrecomputedRegionName): RegionBbox {
@@ -144,6 +166,88 @@ export function bboxContains(container: RegionBbox, inner: RegionBbox): boolean 
     container.maxLon >= inner.maxLon &&
     container.maxLat >= inner.maxLat
   );
+}
+
+/**
+ * Scan the cache directory to find an existing modelVersionHash and time window
+ * for this region, without needing to load the GPU backend or compute the hash.
+ * Returns the hash + the actual startLocalTime/endLocalTime found in cache.
+ */
+/**
+ * Returns ALL cached model version hash candidates for the given region,
+ * ordered by quality (most complete precompute first):
+ *
+ * 1. Hashes that have the exact requested date in m15 (primary match).
+ * 2. All other hashes sorted by m15 date count descending (atlas fallback).
+ *
+ * Callers iterate the array and try each hash in turn — stopping as soon
+ * as tiles are found for the requested bbox. An empty array means no cache.
+ */
+export async function findCachedModelVersionHash(params: {
+  region: PrecomputedRegionName;
+  date: string;
+  gridStepMeters: number;
+  sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
+}): Promise<Array<{ modelVersionHash: string; timeWindows: Array<{ startLocalTime: string; endLocalTime: string }> }>> {
+  const regionDir = path.join(CACHE_SUNLIGHT_DIR, params.region);
+  let hashEntries: string[];
+  try {
+    hashEntries = await fs.readdir(regionDir);
+  } catch {
+    return [];
+  }
+  const gridSamplePath = path.join(`g${params.gridStepMeters}`, `m${params.sampleEveryMinutes}`);
+
+  type Candidate = { modelVersionHash: string; timeWindows: Array<{ startLocalTime: string; endLocalTime: string }>; dateCount: number };
+  const primary: Candidate[] = [];
+  const fallback: Candidate[] = [];
+
+  for (const hash of hashEntries) {
+    const gridDir = path.join(regionDir, hash, gridSamplePath);
+    let dates: string[];
+    try {
+      dates = await fs.readdir(gridDir);
+    } catch {
+      continue;
+    }
+
+    let dateCount = 0;
+    let exactTimeWindows: Array<{ startLocalTime: string; endLocalTime: string }> = [];
+    let firstTimeWindows: Array<{ startLocalTime: string; endLocalTime: string }> = [];
+
+    for (const d of dates) {
+      const dateDir = path.join(gridDir, d);
+      try {
+        const twEntries = await fs.readdir(dateDir);
+        for (const tw of twEntries) {
+          const match = /^t(\d{4})-(\d{4})$/.exec(tw);
+          if (!match) continue;
+          const parsed = {
+            startLocalTime: `${match[1].slice(0, 2)}:${match[1].slice(2)}`,
+            endLocalTime: `${match[2].slice(0, 2)}:${match[2].slice(2)}`,
+          };
+          dateCount++;
+          if (d === params.date) exactTimeWindows.push(parsed);
+          if (firstTimeWindows.length === 0) firstTimeWindows.push(parsed);
+        }
+      } catch { /* unreadable date dir */ }
+    }
+
+    if (exactTimeWindows.length > 0) {
+      primary.push({ modelVersionHash: hash, timeWindows: exactTimeWindows, dateCount });
+    } else if (dateCount > 0) {
+      fallback.push({ modelVersionHash: hash, timeWindows: firstTimeWindows, dateCount });
+    }
+  }
+
+  // Primary: sort by dateCount desc (most complete first)
+  primary.sort((a, b) => b.dateCount - a.dateCount);
+  // Fallback: same sort; callers use atlas which is date-agnostic
+  fallback.sort((a, b) => b.dateCount - a.dateCount);
+
+  return [...primary, ...fallback].map(({ modelVersionHash, timeWindows }) => ({ modelVersionHash, timeWindows }));
 }
 
 function createCacheRunKey(params: {
@@ -223,17 +327,12 @@ export async function writePrecomputedSunlightManifest(
 export async function writePrecomputedSunlightTile(
   artifact: PrecomputedSunlightTileArtifact,
 ): Promise<void> {
-  const targetPath = getPrecomputedSunlightTilePath({
-    region: artifact.region,
-    modelVersionHash: artifact.modelVersionHash,
-    date: artifact.date,
-    gridStepMeters: artifact.gridStepMeters,
-    sampleEveryMinutes: artifact.sampleEveryMinutes,
-    startLocalTime: artifact.startLocalTime,
-    endLocalTime: artifact.endLocalTime,
-    tileId: artifact.tile.tileId,
-  });
-  await writeCompressedJson(targetPath, artifact);
+  // Dynamic import to avoid a module cycle (sunlight-cache-binary imports
+  // type PrecomputedSunlightTileArtifact from this file).
+  const { writePrecomputedSunlightTileBinary } = await import(
+    "./sunlight-cache-binary"
+  );
+  await writePrecomputedSunlightTileBinary(artifact);
 }
 
 export async function loadPrecomputedSunlightManifest(params: {
@@ -275,6 +374,27 @@ export async function loadPrecomputedSunlightTile(params: {
   endLocalTime: string;
   tileId: string;
 }): Promise<PrecomputedSunlightTileArtifact | null> {
+  // Prefer the binary format when available; reconstruct the legacy shape
+  // for callers that still expect object-graph points/frames (admin tools,
+  // tests, non-cache-only precompute flow). The cache-only stream reads
+  // binary directly and never comes through this function.
+  const {
+    loadPrecomputedSunlightTileBinary,
+    binaryTileToLegacyArtifact,
+  } = await import("./sunlight-cache-binary");
+  const binary = await loadPrecomputedSunlightTileBinary(params);
+  if (binary) {
+    if (
+      binary.meta.artifactFormatVersion !== SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION
+    ) {
+      return null;
+    }
+    if (binary.meta.modelVersionHash !== params.modelVersionHash) {
+      return null;
+    }
+    return binaryTileToLegacyArtifact(binary);
+  }
+
   const targetPath = getPrecomputedSunlightTilePath(params);
   try {
     const parsed = await readCompressedJson<PrecomputedSunlightTileArtifact>(targetPath);
@@ -293,13 +413,49 @@ export async function loadPrecomputedSunlightTile(params: {
   }
 }
 
+/**
+ * List tile IDs already cached for a given cache run (date + params).
+ * Uses a single readdir instead of per-tile gunzip+parse — ~1000× faster
+ * for skip-existing checks.
+ */
+export async function listCachedTileIds(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  date: string;
+  gridStepMeters: number;
+  sampleEveryMinutes: number;
+  startLocalTime: string;
+  endLocalTime: string;
+}): Promise<Set<string>> {
+  const tilesDir = path.join(createCacheRunKey(params), "tiles");
+  try {
+    const entries = await fs.readdir(tilesDir);
+    const tileIds = new Set<string>();
+    for (const entry of entries) {
+      // Precompute now writes .tile.bin.gz; legacy cache still has .json.gz.
+      // Both count as "already computed" for skip-existing.
+      if (entry.endsWith(".tile.bin.gz")) {
+        tileIds.add(entry.slice(0, -".tile.bin.gz".length));
+      } else if (entry.endsWith(".json.gz")) {
+        tileIds.add(entry.slice(0, -".json.gz".length));
+      }
+    }
+    return tileIds;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return new Set();
+    }
+    throw error;
+  }
+}
+
 function getLv95BoundsForRegion(region: PrecomputedRegionName) {
   const bbox = getPrecomputedRegionBbox(region);
   const corners = [
-    wgs84ToLv95(bbox.minLon, bbox.minLat),
-    wgs84ToLv95(bbox.minLon, bbox.maxLat),
-    wgs84ToLv95(bbox.maxLon, bbox.minLat),
-    wgs84ToLv95(bbox.maxLon, bbox.maxLat),
+    wgs84ToLv95Precise(bbox.minLon, bbox.minLat),
+    wgs84ToLv95Precise(bbox.minLon, bbox.maxLat),
+    wgs84ToLv95Precise(bbox.maxLon, bbox.minLat),
+    wgs84ToLv95Precise(bbox.maxLon, bbox.maxLat),
   ];
 
   return {
@@ -338,8 +494,8 @@ export function buildRegionTiles(
     ) {
       const maxEasting = minEasting + tileSizeMeters;
       const maxNorthing = minNorthing + tileSizeMeters;
-      const southWest = lv95ToWgs84(minEasting, minNorthing);
-      const northEast = lv95ToWgs84(maxEasting, maxNorthing);
+      const southWest = lv95ToWgs84Precise(minEasting, minNorthing);
+      const northEast = lv95ToWgs84Precise(maxEasting, maxNorthing);
       const bbox = {
         minLon: Math.min(southWest.lon, northEast.lon),
         minLat: Math.min(southWest.lat, northEast.lat),
@@ -386,10 +542,10 @@ export function buildTilePoints(tile: RegionTileSpec, gridStepMeters: number) {
         continue;
       }
 
-      const wgs84 = lv95ToWgs84(easting, northing);
-      if (!pointInBbox(wgs84.lon, wgs84.lat, tile.bbox)) {
-        continue;
-      }
+      // Swisstopo rigorous algorithm: sub-mm delta vs proj4, 6.2x faster.
+      // See ADR-0014 and scripts/diag/bench-lv95-3algos.ts.
+      // LV95 bounds check above is sufficient — no WGS84 bbox filter needed.
+      const wgs84 = lv95ToWgs84Precise(easting, northing);
 
       points.push({
         id: `ix${ix}-iy${iy}`,
