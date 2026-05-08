@@ -29,6 +29,7 @@ import type {
   CacheRunDetailResponse,
 } from "@/lib/admin/cache-run-detail";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
+import { prepareVulkanZoneIfChanged } from "@/lib/sun/evaluation-context";
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 
 export interface CacheAdminFilters {
@@ -1524,8 +1525,42 @@ export async function precomputeCacheRuns(
       }
     };
 
+    // Helper: 1km-rounded zone key matching evaluation-context.focusKeyFromBounds
+    // semantics. Tiles within the same zone share the same Vulkan mesh upload.
+    const zoneKeyForTile = (t: RegionTileSpec): string => {
+      const cx = Math.round((t.minEasting + t.maxEasting) / 2 / 1000);
+      const cy = Math.round((t.minNorthing + t.maxNorthing) / 2 / 1000);
+      return `${cx},${cy}`;
+    };
+    let lastDispatchedZoneKey: string | null = null;
+    const isVulkanMode = (process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "").trim().toLowerCase() === "rust-wgpu-vulkan";
+
     for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
       throwIfAborted(options.signal);
+      const tile = tiles[tileIndex];
+      const tileZoneKey = zoneKeyForTile(tile);
+
+      // Drain barrier on zone change : updateMesh must happen with no
+      // in-flight eval. Without this, mesh state is mutated mid-dispatch by
+      // sibling tiles → atlases drift (race fixed 2026-05-08). Cost of the
+      // barrier is one updateMesh (~300ms) + waiting for the previous zone's
+      // last 1-3 tiles to flush, only at zone boundaries (~18 / Lausanne run).
+      if (isVulkanMode && tileZoneKey !== lastDispatchedZoneKey) {
+        if (inflight.length > 0) {
+          await Promise.all(inflight);
+          inflight.length = 0;
+        }
+        await prepareVulkanZoneIfChanged({
+          focusBounds: {
+            minX: tile.minEasting,
+            minY: tile.minNorthing,
+            maxX: tile.maxEasting,
+            maxY: tile.maxNorthing,
+          },
+        });
+        lastDispatchedZoneKey = tileZoneKey;
+      }
+
       while (inflight.length >= PIPELINE_DEPTH) {
         await inflight.shift();
       }

@@ -509,9 +509,9 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     // segment dominates and whether multi-session would actually help.
     // See ADR-0011 Phase G post-mortem.
     const lockEnterT0 = performance.now();
-    return this.withSessionLock(async (slot) => {
+    return this.withSessionLock(async (slot, releaseEarly) => {
       const lockWaitMs = performance.now() - lockEnterT0;
-      return this.evaluateBatchFramesWithShadowsOnSlot(slot, frames, points, pointCount, options, lockWaitMs);
+      return this.evaluateBatchFramesWithShadowsOnSlot(slot, frames, points, pointCount, options, lockWaitMs, 0, releaseEarly);
     });
   }
 
@@ -523,6 +523,7 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     options?: Parameters<RustWgpuVulkanShadowBackend["evaluateBatchFramesWithShadows"]>[3],
     lockWaitMs?: number,
     _retryCount = 0,
+    releaseEarly?: () => void,
   ): Promise<Awaited<ReturnType<RustWgpuVulkanShadowBackend["evaluateBatchFramesWithShadows"]>>> {
     if (frames.length === 0) return [];
     if (pointCount === 0) {
@@ -540,15 +541,20 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     // `focusUpdate` when running concurrent tiles (PIPELINE_DEPTH > 1) —
     // otherwise this.focusBounds / this.maxBuildingHeight may be clobbered
     // by another tile's prep between this tile's prep and dispatch.
+    //
+    // Mesh state (zoneObstacles) is NOT applied here since 2026-05-08 :
+    // updateMesh runs out-of-lock at zone boundaries via the orchestrator's
+    // drain barrier (cache-admin tile-first branch + prepareVulkanZoneIfChanged).
+    // Doing it inside the lock serialised every zone change against the whole
+    // pipeline, costing ~30s per Lausanne run. The drain barrier preserves
+    // race-safety (no in-flight eval during mesh swap) without that cost.
     if (options?.focusUpdate) {
-      const { focusBounds, maxBuildingHeight, zoneKey, zoneObstacles } =
-        options.focusUpdate;
-      if (zoneKey !== this.committedZoneKey && zoneObstacles && zoneObstacles.length > 0) {
-        await this.updateMeshInner(zoneObstacles);
-        this.committedZoneKey = zoneKey;
-      }
+      const { focusBounds, maxBuildingHeight, zoneKey } = options.focusUpdate;
       this.focusBounds = { ...focusBounds };
       this.maxBuildingHeight = maxBuildingHeight;
+      // Track committed zone for diagnostic purposes only (no longer drives
+      // updateMesh from here). Caller's zone barrier guarantees mesh validity.
+      this.committedZoneKey = zoneKey;
     }
     const ensureT0 = performance.now();
     await this.ensureSlot(slot, points, pointCount);
@@ -591,19 +597,45 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     const uploadTerrainMs = performance.now() - uploadTerrainT0;
     const uploadMs = uploadHorizonMs + uploadVegMs + uploadTerrainMs;
     this.evaluationId += 1;
+    const evalId = this.evaluationId;
     const azimuthsDeg = frames.map((f) => f.azimuthDeg);
     const altitudesDeg = frames.map((f) => f.altitudeDeg);
-    // Binary IPC: Rust streams Vec<u32> raw bytes on stdout after JSON header.
-    let result;
+    // Pipelined IPC : SEND under the slot lock (preserves command order on
+    // Rust stdin), then release the slot so the next tile can start preparing
+    // while the GPU dispatches this one. The response (binary masks) is
+    // routed back by `id` via the IPC client's `pendingById` map. Without
+    // this split, the slot stayed busy through the whole ~150-300ms GPU
+    // round-trip — wasting overlap potential. Refactor 2026-05-08.
     const ipcT0 = performance.now();
     try {
-      result = await this.server.evaluateBatch(this.evaluationId, azimuthsDeg, altitudesDeg, {
+      await this.server.sendEvaluateBatch(evalId, azimuthsDeg, altitudesDeg, {
         includeMask: true,
         sessionId: slot.id,
       });
     } catch (error) {
-      // Server timed out or crashed — kill it so ensureSlot recreates it next time.
-      console.error(`[rust-wgpu-vulkan] evaluateBatch failed, killing server: ${error instanceof Error ? error.message : error}`);
+      console.error(`[rust-wgpu-vulkan] sendEvaluateBatch failed, killing server: ${error instanceof Error ? error.message : error}`);
+      try { await this.server.forceKill(); } catch { /* best effort */ }
+      this.server = null;
+      this.serverVegetationHash = null;
+      this.serverTerrainHash = null;
+      for (const s of this.sessionSlots) {
+        s.horizonHash = null;
+        s.pointsHash = null;
+        s.pointCount = null;
+        s.opened = false;
+      }
+      throw error;
+    }
+    // SEND complete → slot lock can be released. Subsequent tiles that
+    // acquire the slot will issue their own SEND, queued FIFO behind ours
+    // on Rust stdin. Their responses route by id, so the await below is
+    // safe to run without the lock.
+    if (releaseEarly) releaseEarly();
+    let result;
+    try {
+      result = await this.server.awaitEvaluateBatchResult(evalId, frames.length);
+    } catch (error) {
+      console.error(`[rust-wgpu-vulkan] awaitEvaluateBatchResult failed, killing server: ${error instanceof Error ? error.message : error}`);
       try { await this.server.forceKill(); } catch { /* best effort */ }
       this.server = null;
       this.serverVegetationHash = null;
@@ -1010,20 +1042,37 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
   //
   // withSessionLock races all slot chains and claims the first free slot.
   // Losing slot chains receive an immediate release to avoid deadlock.
-  private withSessionLock<T>(fn: (slot: SessionSlot) => Promise<T>): Promise<T> {
+  //
+  // The `releaseEarly` callback passed to fn lets the caller release the slot
+  // BEFORE fn resolves — used by the pipelined evaluateBatch path so the next
+  // tile can start preparing while the current tile awaits its GPU response.
+  // If fn never calls releaseEarly, behaviour is identical to the legacy
+  // late-release path. Calling releaseEarly more than once is a no-op.
+  private withSessionLock<T>(
+    fn: (slot: SessionSlot, releaseEarly: () => void) => Promise<T>,
+  ): Promise<T> {
     // Semaphore: synchronous claim via indexOf avoids Promise.race spurious multi-fires.
     // (Promise.race does NOT cancel queued microtask callbacks; when N slots are all free,
     // all N .then callbacks would fire, calling fn() N times on the same slot.)
+    const runWithSlot = (idx: number, resolve: (v: T) => void, reject: (e: unknown) => void) => {
+      let released = false;
+      const releaseEarly = () => {
+        if (released) return;
+        released = true;
+        this.releaseSlot(idx);
+      };
+      fn(this.sessionSlots[idx], releaseEarly)
+        .then(resolve, reject)
+        .finally(releaseEarly);
+    };
     const freeIdx = this.slotAvailable.indexOf(true);
     if (freeIdx !== -1) {
       this.slotAvailable[freeIdx] = false;
-      return fn(this.sessionSlots[freeIdx]).finally(() => this.releaseSlot(freeIdx));
+      return new Promise<T>((resolve, reject) => runWithSlot(freeIdx, resolve, reject));
     }
     // No free slot: queue this work.
     return new Promise<T>((resolve, reject) => {
-      this.slotWaiters.push((idx: number) => {
-        fn(this.sessionSlots[idx]).then(resolve, reject).finally(() => this.releaseSlot(idx));
-      });
+      this.slotWaiters.push((idx: number) => runWithSlot(idx, resolve, reject));
     });
   }
 

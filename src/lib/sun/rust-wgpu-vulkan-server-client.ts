@@ -157,18 +157,25 @@ export class RustWgpuVulkanShadowServer {
   private payloadChunks: Buffer[] = [];
   private parserError: Error | null = null;
 
-  // ── IPC lock (FIFO, promise-chain) ───────────────────────────────────
-  // Serializes writeJson+nextJson pairs so concurrent callers (e.g. tile N
-  // and tile N+1 being pipelined at the orchestrator level) don't interleave
-  // bytes on stdin or claim each other's responses on stdout. Order of
-  // acquisition = order of awaits, which matches Rust server's FIFO
-  // processing of stdin requests. See ADR-0019 (single Vulkan process) and
-  // the pipelining work that introduced this lock.
-  private ipcChainTail: Promise<unknown> = Promise.resolve();
-  private async withIpcLock<T>(fn: () => Promise<T>): Promise<T> {
-    const myTurn = this.ipcChainTail;
+  // ── Pipelined IPC (id-routed responses) ──────────────────────────────
+  // Refactor 2026-05-08 : `withIpcLock` enveloppait write+nextJson, ce qui
+  // serialisait l'IPC end-to-end et tenait le slot lock 400ms pendant que
+  // le GPU dispatchait (~150ms) puis encodait la réponse. En découplant le
+  // SEND (toujours sérialisé via `withWriteLock`) du RECEIVE (routé par
+  // `id` via `pendingById`), Node peut envoyer la prochaine commande à
+  // Rust pendant que le GPU est busy sur la précédente — Rust traite
+  // stdin FIFO, le pipe buffer absorbe les writes anticipés, le GPU
+  // enchaîne sans latence inter-call.
+  //
+  // `withWriteLock` reste nécessaire pour qu'un `writeJson` complet ne
+  // soit pas interleavé byte-à-byte sur stdin par un autre fiber.
+  // L'ordre des SENDs détermine l'ordre Rust → l'ordre des responses,
+  // qui sont routées par `id` vers leur Promise pending.
+  private writeChainTail: Promise<unknown> = Promise.resolve();
+  private async withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+    const myTurn = this.writeChainTail;
     let release!: () => void;
-    this.ipcChainTail = new Promise<void>((r) => {
+    this.writeChainTail = new Promise<void>((r) => {
       release = r;
     });
     await myTurn;
@@ -178,6 +185,19 @@ export class RustWgpuVulkanShadowServer {
       release();
     }
   }
+
+  // Pending responses keyed by message id. Replaces the legacy single-flight
+  // `messages` queue + `waiters` for any IpcMessage whose JSON has an `id`
+  // field. Messages without `id` (e.g. the initial `ready`) still go through
+  // the legacy queue.
+  private pendingById = new Map<
+    number | string,
+    {
+      resolve: (message: IpcMessage) => void;
+      reject: (error: Error) => void;
+      timeout: NodeJS.Timeout | null;
+    }
+  >();
 
   private constructor(child: ChildProcessWithoutNullStreams, evaluationTimeoutMs: number) {
     this.child = child;
@@ -249,9 +269,69 @@ export class RustWgpuVulkanShadowServer {
   }
 
   private deliver(message: IpcMessage): void {
+    // Route id-tagged responses (result, batch_result, ack of reload_*/upload_*/
+    // open_session/close_session/reload_mesh) to their pending Promise. The
+    // initial `ready` message has no id — falls through to the legacy queue.
+    const messageId = (message.json as { id?: number | string }).id;
+    if (messageId !== undefined) {
+      const entry = this.pendingById.get(messageId);
+      if (entry) {
+        if (entry.timeout) clearTimeout(entry.timeout);
+        this.pendingById.delete(messageId);
+        entry.resolve(message);
+        return;
+      }
+    }
     const waiter = this.waiters.shift();
     if (waiter) waiter(message);
     else this.messages.push(message);
+  }
+
+  /**
+   * Register an awaiter for a response message tagged with `id`. Resolves when
+   * `deliver` routes a matching message; rejects on timeout, parser error, or
+   * server exit. Multiple in-flight awaiters can coexist — Rust processes
+   * stdin FIFO and emits responses in send order, but Node can dispatch them
+   * to the right caller via this Map.
+   */
+  private awaitResponseById(id: number | string, timeoutMs = 0): Promise<IpcMessage> {
+    if (this.parserError) return Promise.reject(this.parserError);
+    return new Promise<IpcMessage>((resolve, reject) => {
+      let timeout: NodeJS.Timeout | null = null;
+      const cleanup = () => {
+        if (timeout) clearTimeout(timeout);
+        this.child.off("error", onError);
+        this.child.off("exit", onExit);
+        this.pendingById.delete(id);
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      const onExit = (code: number | null) => {
+        cleanup();
+        reject(new Error(`Rust server exited before response id=${id} (code=${code}). stderr:\n${this.stderr}`));
+      };
+      this.child.once("error", onError);
+      this.child.once("exit", onExit);
+      this.pendingById.set(id, {
+        resolve: (message: IpcMessage) => {
+          cleanup();
+          resolve(message);
+        },
+        reject: (error: Error) => {
+          cleanup();
+          reject(error);
+        },
+        timeout: null,
+      });
+      if (timeoutMs > 0) {
+        timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error(`Rust server timed out after ${timeoutMs}ms waiting for response id=${id}. stderr:\n${this.stderr}`));
+        }, timeoutMs);
+      }
+    });
   }
 
   static async start(params: RustWgpuVulkanShadowServerStartParams): Promise<{
@@ -302,7 +382,7 @@ export class RustWgpuVulkanShadowServer {
     altitudeDeg: number,
     options: { includeMask?: boolean; sessionId?: string } = { includeMask: true },
   ): Promise<RustWgpuVulkanResultMessage> {
-    return this.withIpcLock(async () => {
+    await this.withWriteLock(async () => {
       await this.writeJson({
         id,
         command: "evaluate",
@@ -311,15 +391,16 @@ export class RustWgpuVulkanShadowServer {
         includeMask: options.includeMask ?? true,
         ...(options.sessionId && { sessionId: options.sessionId }),
       });
-      const message = await this.nextJson<RustWgpuVulkanResultMessage>(this.evaluationTimeoutMs);
-      if (message.type !== "result") {
-        throw new Error(`Unexpected Rust server message: ${JSON.stringify(message)}`);
-      }
-      if ((options.includeMask ?? true) && !Array.isArray(message.blockedWords)) {
-        throw new Error("Rust server result is missing blockedWords.");
-      }
-      return message;
     });
+    const ipcMessage = await this.awaitResponseById(id, this.evaluationTimeoutMs);
+    const message = ipcMessage.json as RustWgpuVulkanResultMessage;
+    if (message.type !== "result") {
+      throw new Error(`Unexpected Rust server message: ${JSON.stringify(message)}`);
+    }
+    if ((options.includeMask ?? true) && !Array.isArray(message.blockedWords)) {
+      throw new Error("Rust server result is missing blockedWords.");
+    }
+    return message;
   }
 
   /**
@@ -338,6 +419,28 @@ export class RustWgpuVulkanShadowServer {
     altitudesDeg: number[],
     options: { includeMask?: boolean; sessionId?: string } = {},
   ): Promise<RustWgpuVulkanBatchResultMessage> {
+    await this.sendEvaluateBatch(id, azimuthsDeg, altitudesDeg, options);
+    return this.awaitEvaluateBatchResult(id, azimuthsDeg.length);
+  }
+
+  /**
+   * Send the evaluate_batch IPC without awaiting its response. Returns once
+   * the bytes are buffered to Rust stdin. Caller must subsequently await
+   * `awaitEvaluateBatchResult(id)` — typically AFTER releasing any per-tile
+   * lock so the next tile can start preparing while the GPU dispatches this
+   * one (see RustWgpuVulkanShadowBackend.evaluateBatchFramesWithShadowsOnSlot
+   * for the pipelined usage that motivated this 2-phase split).
+   *
+   * The write itself is serialised against other writes via `withWriteLock`
+   * so two concurrent senders don't interleave bytes on stdin. The order of
+   * SEND determines the order of Rust processing → response order.
+   */
+  async sendEvaluateBatch(
+    id: number,
+    azimuthsDeg: number[],
+    altitudesDeg: number[],
+    options: { includeMask?: boolean; sessionId?: string } = {},
+  ): Promise<void> {
     if (azimuthsDeg.length !== altitudesDeg.length) {
       throw new Error(
         `evaluateBatch: azimuths (${azimuthsDeg.length}) and altitudes (${altitudesDeg.length}) length mismatch.`,
@@ -346,7 +449,7 @@ export class RustWgpuVulkanShadowServer {
     if (azimuthsDeg.length === 0) {
       throw new Error("evaluateBatch: empty frames");
     }
-    return this.withIpcLock(async () => {
+    await this.withWriteLock(async () => {
       await this.writeJson({
         id,
         command: "evaluate_batch",
@@ -355,49 +458,56 @@ export class RustWgpuVulkanShadowServer {
         includeMask: options.includeMask ?? true,
         ...(options.sessionId && { sessionId: options.sessionId }),
       });
-      const ipcMessage = await this.nextMessage(this.evaluationTimeoutMs);
-      const message = ipcMessage.json as RustWgpuVulkanBatchResultMessage & {
-        wordCount: number;
-        hasTerrain: boolean;
-        hasVegetation: boolean;
-        payloadBytes?: number;
-      };
-      if (message.type !== "batch_result") {
-        throw new Error(`Unexpected batch result: ${JSON.stringify(message)}`);
-      }
-      if (message.frames.length !== azimuthsDeg.length) {
-        throw new Error(
-          `evaluateBatch frame count mismatch: server=${message.frames.length}, expected=${azimuthsDeg.length}`,
-        );
-      }
-      const payload = ipcMessage.payload;
-      if (!payload) {
-        throw new Error("evaluateBatch: missing binary payload");
-      }
-      // Layout: [buildings × N][terrain × N][veg × N][sunny × N][sunnyNoVeg × N],
-      // each block = wordCount u32 LE bytes (4 bytes/u32). Buffer comes from
-      // the stdout stream parser — no file I/O on the hot path.
-      const wordCount = message.wordCount;
-      const frameCount = message.frameCount;
-      const view = new Uint32Array(
-        payload.buffer,
-        payload.byteOffset,
-        Math.floor(payload.byteLength / 4),
-      );
-      const sliceFrame = (blockIndex: number, frameIndex: number): number[] => {
-        const offset = (blockIndex * frameCount + frameIndex) * wordCount;
-        return Array.from(view.subarray(offset, offset + wordCount));
-      };
-      for (let i = 0; i < frameCount; i++) {
-        const f = message.frames[i];
-        f.blockedWords = sliceFrame(0, i);
-        f.terrainBlockedWords = message.hasTerrain ? sliceFrame(1, i) : null;
-        f.vegetationBlockedWords = message.hasVegetation ? sliceFrame(2, i) : null;
-        f.sunnyWords = sliceFrame(3, i);
-        f.sunnyNoVegWords = sliceFrame(4, i);
-      }
-      return message;
     });
+  }
+
+  /** Await the binary-encoded batch response previously sent via `sendEvaluateBatch`. */
+  async awaitEvaluateBatchResult(
+    id: number,
+    expectedFrameCount: number,
+  ): Promise<RustWgpuVulkanBatchResultMessage> {
+    const ipcMessage = await this.awaitResponseById(id, this.evaluationTimeoutMs);
+    const message = ipcMessage.json as RustWgpuVulkanBatchResultMessage & {
+      wordCount: number;
+      hasTerrain: boolean;
+      hasVegetation: boolean;
+      payloadBytes?: number;
+    };
+    if (message.type !== "batch_result") {
+      throw new Error(`Unexpected batch result: ${JSON.stringify(message)}`);
+    }
+    if (message.frames.length !== expectedFrameCount) {
+      throw new Error(
+        `evaluateBatch frame count mismatch: server=${message.frames.length}, expected=${expectedFrameCount}`,
+      );
+    }
+    const payload = ipcMessage.payload;
+    if (!payload) {
+      throw new Error("evaluateBatch: missing binary payload");
+    }
+    // Layout: [buildings × N][terrain × N][veg × N][sunny × N][sunnyNoVeg × N],
+    // each block = wordCount u32 LE bytes (4 bytes/u32). Buffer comes from
+    // the stdout stream parser — no file I/O on the hot path.
+    const wordCount = message.wordCount;
+    const frameCount = message.frameCount;
+    const view = new Uint32Array(
+      payload.buffer,
+      payload.byteOffset,
+      Math.floor(payload.byteLength / 4),
+    );
+    const sliceFrame = (blockIndex: number, frameIndex: number): number[] => {
+      const offset = (blockIndex * frameCount + frameIndex) * wordCount;
+      return Array.from(view.subarray(offset, offset + wordCount));
+    };
+    for (let i = 0; i < frameCount; i++) {
+      const f = message.frames[i];
+      f.blockedWords = sliceFrame(0, i);
+      f.terrainBlockedWords = message.hasTerrain ? sliceFrame(1, i) : null;
+      f.vegetationBlockedWords = message.hasVegetation ? sliceFrame(2, i) : null;
+      f.sunnyWords = sliceFrame(3, i);
+      f.sunnyNoVegWords = sliceFrame(4, i);
+    }
+    return message;
   }
 
   /**
@@ -409,22 +519,23 @@ export class RustWgpuVulkanShadowServer {
     pointsBinPath: string,
     options: { sessionId?: string } = {},
   ): Promise<{ pointCount: number; elapsedMs: number }> {
-    return this.withIpcLock(async () => {
+    await this.withWriteLock(async () => {
       await this.writeJson({
         id,
         command: "reload_points",
         pointsBin: pointsBinPath,
         ...(options.sessionId && { sessionId: options.sessionId }),
       });
-      const message = await this.nextJson(this.evaluationTimeoutMs);
-      if (message.type !== "reloaded_points") {
-        throw new Error(`Unexpected reload_points response: ${JSON.stringify(message)}`);
-      }
-      return {
-        pointCount: Number((message as { pointCount?: number }).pointCount ?? 0),
-        elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
-      };
     });
+    const ipcMessage = await this.awaitResponseById(id, this.evaluationTimeoutMs);
+    const message = ipcMessage.json;
+    if (message.type !== "reloaded_points") {
+      throw new Error(`Unexpected reload_points response: ${JSON.stringify(message)}`);
+    }
+    return {
+      pointCount: Number((message as { pointCount?: number }).pointCount ?? 0),
+      elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
+    };
   }
 
   /**
@@ -436,7 +547,7 @@ export class RustWgpuVulkanShadowServer {
     focus: RustWgpuVulkanFocusBounds,
     maxBuildingHeight: number,
   ): Promise<void> {
-    return this.withIpcLock(async () => {
+    await this.withWriteLock(async () => {
       await this.writeJson({
         id,
         command: "reload_focus",
@@ -446,11 +557,12 @@ export class RustWgpuVulkanShadowServer {
         maxZ: focus.maxZ,
         maxBuildingHeight,
       });
-      const message = await this.nextJson(this.evaluationTimeoutMs);
-      if (message.type !== "reloaded_focus") {
-        throw new Error(`Unexpected reload_focus response: ${JSON.stringify(message)}`);
-      }
     });
+    const ipcMessage = await this.awaitResponseById(id, this.evaluationTimeoutMs);
+    const message = ipcMessage.json;
+    if (message.type !== "reloaded_focus") {
+      throw new Error(`Unexpected reload_focus response: ${JSON.stringify(message)}`);
+    }
   }
 
   /**
@@ -464,7 +576,7 @@ export class RustWgpuVulkanShadowServer {
     horizonIndicesBinPath: string,
     options: { sessionId?: string } = {},
   ): Promise<{ maskCount: number; pointCount: number; elapsedMs: number }> {
-    return this.withIpcLock(async () => {
+    await this.withWriteLock(async () => {
       await this.writeJson({
         id,
         command: "upload_horizon_masks",
@@ -472,16 +584,17 @@ export class RustWgpuVulkanShadowServer {
         horizonIndicesBin: horizonIndicesBinPath,
         ...(options.sessionId && { sessionId: options.sessionId }),
       });
-      const message = await this.nextJson(this.evaluationTimeoutMs);
-      if (message.type !== "uploaded_horizon_masks") {
-        throw new Error(`Unexpected upload_horizon_masks response: ${JSON.stringify(message)}`);
-      }
-      return {
-        maskCount: Number((message as { maskCount?: number }).maskCount ?? 0),
-        pointCount: Number((message as { pointCount?: number }).pointCount ?? 0),
-        elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
-      };
     });
+    const ipcMessage = await this.awaitResponseById(id, this.evaluationTimeoutMs);
+    const message = ipcMessage.json;
+    if (message.type !== "uploaded_horizon_masks") {
+      throw new Error(`Unexpected upload_horizon_masks response: ${JSON.stringify(message)}`);
+    }
+    return {
+      maskCount: Number((message as { maskCount?: number }).maskCount ?? 0),
+      pointCount: Number((message as { pointCount?: number }).pointCount ?? 0),
+      elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
+    };
   }
 
   /**
@@ -503,7 +616,7 @@ export class RustWgpuVulkanShadowServer {
       originY: number;
     },
   ): Promise<{ tileCount: number; dataBytes: number; elapsedMs: number }> {
-    return this.withIpcLock(async () => {
+    await this.withWriteLock(async () => {
       await this.writeJson({
         id,
         command: "upload_vegetation_rasters",
@@ -517,16 +630,17 @@ export class RustWgpuVulkanShadowServer {
         originX: params.originX,
         originY: params.originY,
       });
-      const message = await this.nextJson(this.evaluationTimeoutMs);
-      if (message.type !== "uploaded_vegetation_rasters") {
-        throw new Error(`Unexpected upload_vegetation_rasters response: ${JSON.stringify(message)}`);
-      }
-      return {
-        tileCount: Number((message as { tileCount?: number }).tileCount ?? 0),
-        dataBytes: Number((message as { dataBytes?: number }).dataBytes ?? 0),
-        elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
-      };
     });
+    const ipcMessage = await this.awaitResponseById(id, this.evaluationTimeoutMs);
+    const message = ipcMessage.json;
+    if (message.type !== "uploaded_vegetation_rasters") {
+      throw new Error(`Unexpected upload_vegetation_rasters response: ${JSON.stringify(message)}`);
+    }
+    return {
+      tileCount: Number((message as { tileCount?: number }).tileCount ?? 0),
+      dataBytes: Number((message as { dataBytes?: number }).dataBytes ?? 0),
+      elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
+    };
   }
 
   /**
@@ -547,7 +661,7 @@ export class RustWgpuVulkanShadowServer {
       originY: number;
     },
   ): Promise<{ tileCount: number; dataBytes: number; elapsedMs: number }> {
-    return this.withIpcLock(async () => {
+    await this.withWriteLock(async () => {
       await this.writeJson({
         id,
         command: "upload_terrain_rasters",
@@ -560,16 +674,17 @@ export class RustWgpuVulkanShadowServer {
         originX: params.originX,
         originY: params.originY,
       });
-      const message = await this.nextJson(this.evaluationTimeoutMs);
-      if (message.type !== "uploaded_terrain_rasters") {
-        throw new Error(`Unexpected upload_terrain_rasters response: ${JSON.stringify(message)}`);
-      }
-      return {
-        tileCount: Number((message as { tileCount?: number }).tileCount ?? 0),
-        dataBytes: Number((message as { dataBytes?: number }).dataBytes ?? 0),
-        elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
-      };
     });
+    const ipcMessage = await this.awaitResponseById(id, this.evaluationTimeoutMs);
+    const message = ipcMessage.json;
+    if (message.type !== "uploaded_terrain_rasters") {
+      throw new Error(`Unexpected upload_terrain_rasters response: ${JSON.stringify(message)}`);
+    }
+    return {
+      tileCount: Number((message as { tileCount?: number }).tileCount ?? 0),
+      dataBytes: Number((message as { dataBytes?: number }).dataBytes ?? 0),
+      elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
+    };
   }
 
   /**
@@ -581,21 +696,22 @@ export class RustWgpuVulkanShadowServer {
     id: number,
     meshBinPath: string,
   ): Promise<{ triangleCount: number; elapsedMs: number }> {
-    return this.withIpcLock(async () => {
+    await this.withWriteLock(async () => {
       await this.writeJson({
         id,
         command: "reload_mesh",
         meshBin: meshBinPath,
       });
-      const message = await this.nextJson(this.evaluationTimeoutMs);
-      if (message.type !== "reloaded_mesh") {
-        throw new Error(`Unexpected reload_mesh response: ${JSON.stringify(message)}`);
-      }
-      return {
-        triangleCount: Number((message as { triangleCount?: number }).triangleCount ?? 0),
-        elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
-      };
     });
+    const ipcMessage = await this.awaitResponseById(id, this.evaluationTimeoutMs);
+    const message = ipcMessage.json;
+    if (message.type !== "reloaded_mesh") {
+      throw new Error(`Unexpected reload_mesh response: ${JSON.stringify(message)}`);
+    }
+    return {
+      triangleCount: Number((message as { triangleCount?: number }).triangleCount ?? 0),
+      elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
+    };
   }
 
   async openSession(
@@ -603,27 +719,29 @@ export class RustWgpuVulkanShadowServer {
     sessionId: string,
     pointsBinPath: string,
   ): Promise<{ pointCount: number; elapsedMs: number }> {
-    return this.withIpcLock(async () => {
+    await this.withWriteLock(async () => {
       await this.writeJson({ id, command: "open_session", sessionId, pointsBin: pointsBinPath });
-      const message = await this.nextJson(this.evaluationTimeoutMs);
-      if (message.type !== "opened_session") {
-        throw new Error(`Unexpected open_session response: ${JSON.stringify(message)}`);
-      }
-      return {
-        pointCount: Number((message as { pointCount?: number }).pointCount ?? 0),
-        elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
-      };
     });
+    const ipcMessage = await this.awaitResponseById(id, this.evaluationTimeoutMs);
+    const message = ipcMessage.json;
+    if (message.type !== "opened_session") {
+      throw new Error(`Unexpected open_session response: ${JSON.stringify(message)}`);
+    }
+    return {
+      pointCount: Number((message as { pointCount?: number }).pointCount ?? 0),
+      elapsedMs: Number((message as { elapsedMs?: number }).elapsedMs ?? 0),
+    };
   }
 
   async closeSession(id: number, sessionId: string): Promise<void> {
-    return this.withIpcLock(async () => {
+    await this.withWriteLock(async () => {
       await this.writeJson({ id, command: "close_session", sessionId });
-      const message = await this.nextJson(this.evaluationTimeoutMs);
-      if (message.type !== "closed_session") {
-        throw new Error(`Unexpected close_session response: ${JSON.stringify(message)}`);
-      }
     });
+    const ipcMessage = await this.awaitResponseById(id, this.evaluationTimeoutMs);
+    const message = ipcMessage.json;
+    if (message.type !== "closed_session") {
+      throw new Error(`Unexpected close_session response: ${JSON.stringify(message)}`);
+    }
   }
 
   async shutdown(): Promise<void> {

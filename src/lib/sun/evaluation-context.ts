@@ -292,6 +292,7 @@ export function disposeWebGpuBackend(): void {
     rustWgpuVulkanBackendCache.dispose();
     rustWgpuVulkanBackendCache = undefined;
     rustWgpuVulkanBackendLoading = null;
+    rustWgpuVulkanLastPreparedZoneKey = null;
     zoneObstaclesCache.clear();
   }
 }
@@ -316,6 +317,7 @@ export async function disposeWebGpuBackendAsync(): Promise<void> {
     // second config saw cache=null and silently got a null backend.
     rustWgpuVulkanBackendCache = undefined;
     rustWgpuVulkanBackendLoading = null;
+    rustWgpuVulkanLastPreparedZoneKey = null;
     zoneObstaclesCache.clear();
     if ("shutdown" in backend && typeof backend.shutdown === "function") {
       await (backend.shutdown as () => Promise<void>)();
@@ -329,6 +331,9 @@ let webgpuBackendLoading: Promise<import("@/lib/sun/building-shadow-backend").Ba
 
 let rustWgpuVulkanBackendCache: import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null | undefined;
 let rustWgpuVulkanBackendLoading: Promise<import("@/lib/sun/building-shadow-backend").BatchBuildingShadowBackend | null> | null = null;
+// Tracks the last 1km focus zone for which `updateMesh` has been issued out
+// of band by `prepareVulkanZoneIfChanged`. Reset at backend dispose.
+let rustWgpuVulkanLastPreparedZoneKey: string | null = null;
 
 // Per-zone filtered-obstacles cache. Filtering ~8k obstacles per tile is
 // wasteful when 16 tiles share the same 1km zone — cache the result keyed
@@ -400,6 +405,70 @@ export function buildVulkanFocusCapsule(
     zoneKey,
     zoneObstacles,
   };
+}
+
+/**
+ * Out-of-lock mesh update for the Vulkan backend, called by the precompute
+ * orchestrator at zone boundaries. The caller MUST guarantee that no in-flight
+ * eval is running on the backend when this is invoked (drain barrier in
+ * cache-admin tile-first branch).
+ *
+ * Returns true if the mesh was actually updated (zone changed); false if the
+ * zone was already current (no-op). Used to drive a `[zone-prepare]` log line
+ * for diagnostics.
+ *
+ * Race fix 2026-05-08 part 2: keeps `updateMesh` out of `withSessionLock` so
+ * it doesn't serialise zone changes against the whole pipeline. The earlier
+ * fix put `updateMesh` inside the lock to close the focus race; that cost
+ * ~30s wall on Lausanne tile-first runs (18 zone changes × ~2s amortisation
+ * gap). Moving the call here, behind a drain barrier, recovers the gap.
+ */
+export async function prepareVulkanZoneIfChanged(params: {
+  focusBounds: { minX: number; minY: number; maxX: number; maxY: number };
+}): Promise<boolean> {
+  // Read env at call time (not module load time): the orchestrator may set
+  // MAPPY_BUILDINGS_SHADOW_MODE after this module is first imported, e.g.
+  // when precompute-region-sunlight.ts parses --buildings-shadow-mode CLI
+  // before importing cache-admin which transitively pulls evaluation-context.
+  const mode = (process.env.MAPPY_BUILDINGS_SHADOW_MODE ?? "").trim().toLowerCase();
+  if (mode !== "rust-wgpu-vulkan") return false;
+  const margin = getRustWgpuVulkanFocusMarginMeters();
+  const zoneKey = `${focusKeyFromBounds(params.focusBounds)}|m${margin}`;
+  if (zoneKey === rustWgpuVulkanLastPreparedZoneKey) return false;
+  // Backend not yet created (first zone change before any tile has triggered
+  // cold-start) — skip silently. The first tile in this zone will cold-start
+  // the backend with its own zone-filtered obstacles.
+  if (!rustWgpuVulkanBackendCache) return false;
+  const buildingsIndex = await loadBuildingsObstacleIndex();
+  if (!buildingsIndex) return false;
+  let zoneObstacles = zoneObstaclesCache.get(zoneKey);
+  if (!zoneObstacles) {
+    zoneObstacles = filterObstaclesForZone(
+      buildingsIndex.obstacles,
+      params.focusBounds,
+      margin,
+    );
+    zoneObstaclesCache.set(zoneKey, zoneObstacles);
+  }
+  if (zoneObstacles.length === 0) {
+    // No obstacles in this zone — keep the existing mesh (tiles will get
+    // empty buildings shadows naturally). Still mark the zone prepared so we
+    // don't retry every tile.
+    rustWgpuVulkanLastPreparedZoneKey = zoneKey;
+    return false;
+  }
+  const backend = rustWgpuVulkanBackendCache as unknown as {
+    updateMesh: (o: typeof zoneObstacles) => Promise<void>;
+    triangleCount: number;
+  };
+  const t0 = performance.now();
+  await backend.updateMesh(zoneObstacles);
+  const ms = performance.now() - t0;
+  console.log(
+    `[zone-prepare] ${zoneKey}  ${ms.toFixed(0)}ms  ${zoneObstacles.length} obstacles  ${backend.triangleCount} triangles`,
+  );
+  rustWgpuVulkanLastPreparedZoneKey = zoneKey;
+  return true;
 }
 
 async function getOrCreateRustWgpuVulkanBackend(
