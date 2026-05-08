@@ -35,7 +35,7 @@
     "precompute:region": "tsx scripts/precompute/precompute-region-sunlight.ts",
     "precompute:all-regions": "cross-env MAPPY_PRECOMPUTE_WORKERS=1 tsx scripts/precompute/precompute-all-regions-sunlight.ts --buildings-shadow-mode=gpu-raster",
     "precompute:region:vulkan": "cross-env MAPPY_PRECOMPUTE_WORKERS=1 tsx scripts/precompute/precompute-region-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan",
-    "precompute:all-regions:vulkan": "cross-env MAPPY_PRECOMPUTE_WORKERS=1 tsx scripts/precompute/precompute-all-regions-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan",
+    "precompute:all-regions:vulkan": "cross-env MAPPY_PRECOMPUTE_WORKERS=1 NODE_OPTIONS=--max-old-space-size=8192 tsx scripts/precompute/precompute-all-regions-sunlight.ts --buildings-shadow-mode=rust-wgpu-vulkan",
     "//precompute:all-regions": "ex: pnpm precompute:all-regions -- --tile-selection-file=data/processed/precompute/high-value-tile-selection.top-priority.json --start-date=2026-04-11 --days=7 --start-local-time=06:00 --end-local-time=21:00",
     "precompute:lausanne:terraces:next-weekends": "tsx scripts/precompute/precompute-lausanne-terraces-next-two-weekends.ts",
     "cache:verify": "tsx scripts/precompute/manage-sunlight-cache.ts --action=verify",

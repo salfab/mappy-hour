@@ -11,7 +11,7 @@
  * L'argument --region= est ignoré s'il est fourni (les régions viennent du fichier).
  */
 
-import { spawnSync } from "node:child_process";
+import { spawnSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -93,7 +93,15 @@ function printRunRecap(params: {
     "║                    PRECOMPUTE RUN RECAP                               ║",
     "╚═══════════════════════════════════════════════════════════════════════╝",
   ];
+  let gitHash = "(unknown)";
+  try { gitHash = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim(); } catch {}
+  const nodeOpts = process.env.NODE_OPTIONS ?? "(not set)";
+  const startedAt = new Date().toISOString().replace("T", " ").slice(0, 19);
+
   console.log(box.join("\n"));
+  console.log(`  Started          : ${startedAt}`);
+  console.log(`  Commit           : ${gitHash}`);
+  console.log(`  NODE_OPTIONS     : ${nodeOpts}`);
   console.log(`  Tile selection   : ${params.selectionFile}`);
   console.log(`  Total tiles      : ${totalTiles}`);
   console.log(`  Regions (${params.regions.length})      : ${params.regions.join(" → ")}`);

@@ -1516,27 +1516,30 @@ export async function computeSunlightTileArtifact(params: {
         sunnyMaskNoVegetation.set(u8View(preComputed.sunnyNoVegMask!));
         sunnyCount = preComputed.sunnyCount;
         sunnyCountNoVegetation = preComputed.sunnyNoVegCount;
-        // Diagnostic horizon angle — per-unique-mask cache.
-        horizonAngleDegByPoint.length = pointCount;
-        buildingBlockerIdByPoint.length = pointCount;
-        buildingBlockerIdByPoint.fill(null, 0, pointCount);
-        if (pointMaskIndices !== null && horizonMaskList !== null) {
-          // Precompute rounded unique horizon angles for this frame.
-          const uniqueRounded = new Float64Array(horizonMaskList.length);
-          for (let i = 0; i < horizonMaskList.length; i++) {
-            uniqueRounded[i] =
-              Math.round(getHorizonAngleForAzimuth(horizonMaskList[i], frameSolarPosition.azimuthDeg) * 1000) / 1000;
-          }
-          for (let i = 0; i < pointCount; i++) {
-            horizonAngleDegByPoint[i] = uniqueRounded[pointMaskIndices[i]];
-          }
-        } else {
-          // Fallback per-point (rare — some point had no mask).
-          for (let i = 0; i < pointCount; i++) {
-            const m = preparedOutdoorPoints[i].horizonMask;
-            horizonAngleDegByPoint[i] = m === null
-              ? null
-              : Math.round(getHorizonAngleForAzimuth(m, frameSolarPosition.azimuthDeg) * 1000) / 1000;
+        // Diagnostic horizon angle — not needed in atlas mode (sunOverride),
+        // skipping saves ~384 KB × N_frames = several GB for 365-day tile-first.
+        if (!atlasMode) {
+          horizonAngleDegByPoint.length = pointCount;
+          buildingBlockerIdByPoint.length = pointCount;
+          buildingBlockerIdByPoint.fill(null, 0, pointCount);
+          if (pointMaskIndices !== null && horizonMaskList !== null) {
+            // Precompute rounded unique horizon angles for this frame.
+            const uniqueRounded = new Float64Array(horizonMaskList.length);
+            for (let i = 0; i < horizonMaskList.length; i++) {
+              uniqueRounded[i] =
+                Math.round(getHorizonAngleForAzimuth(horizonMaskList[i], frameSolarPosition.azimuthDeg) * 1000) / 1000;
+            }
+            for (let i = 0; i < pointCount; i++) {
+              horizonAngleDegByPoint[i] = uniqueRounded[pointMaskIndices[i]];
+            }
+          } else {
+            // Fallback per-point (rare — some point had no mask).
+            for (let i = 0; i < pointCount; i++) {
+              const m = preparedOutdoorPoints[i].horizonMask;
+              horizonAngleDegByPoint[i] = m === null
+                ? null
+                : Math.round(getHorizonAngleForAzimuth(m, frameSolarPosition.azimuthDeg) * 1000) / 1000;
+            }
           }
         }
         frames.push({
@@ -1630,11 +1633,12 @@ export async function computeSunlightTileArtifact(params: {
       const pointCount = preparedOutdoorPoints.length;
       const useBatchMask = useBatchPath && batchBuildingBlockedMask !== null;
       const buildingsMaskU32 = batchBuildingBlockedMask;
-      // Pre-allocate diagnostic arrays to avoid pointCount × frames push() reallocations
-      horizonAngleDegByPoint.length = pointCount;
-      buildingBlockerIdByPoint.length = pointCount;
-      // Default to null; per-point evaluator may overwrite below
-      buildingBlockerIdByPoint.fill(null, 0, pointCount);
+      // Skip diagnostic arrays in atlas mode — saves ~384 KB × N_frames = several GB.
+      if (!atlasMode) {
+        horizonAngleDegByPoint.length = pointCount;
+        buildingBlockerIdByPoint.length = pointCount;
+        buildingBlockerIdByPoint.fill(null, 0, pointCount);
+      }
 
       // Per-frame pre-compute: for each unique horizon mask in this tile,
       // compute the (raw + rounded) horizon angles and the max-angle-plus-
@@ -1744,21 +1748,19 @@ export async function computeSunlightTileArtifact(params: {
           }
         }
 
-        // Diagnostics (preserve API contract) — index assignment, not push.
-        // Use pre-rounded per-unique-mask cache when available; otherwise
-        // round per-point (only when the dedup didn't cover all points,
-        // i.e. some point had no mask).
-        if (uniqueHorizonAnglesRounded !== null && maskIndices !== null) {
-          horizonAngleDegByPoint[pointIndex] = uniqueHorizonAnglesRounded[maskIndices[pointIndex]];
-        } else if (horizonMask !== null) {
-          horizonAngleDegByPoint[pointIndex] =
-            Math.round(getHorizonAngleForAzimuth(horizonMask, azimuthDeg) * 1000) / 1000;
-        } else {
-          horizonAngleDegByPoint[pointIndex] = null;
-        }
-        if (!useBatchMask && buildingBlockerId !== null) {
-          // Only overwrite the pre-filled null when we actually have a blocker id
-          buildingBlockerIdByPoint[pointIndex] = buildingBlockerId;
+        // Diagnostics skipped in atlas mode (saves ~384 KB × N_frames).
+        if (!atlasMode) {
+          if (uniqueHorizonAnglesRounded !== null && maskIndices !== null) {
+            horizonAngleDegByPoint[pointIndex] = uniqueHorizonAnglesRounded[maskIndices[pointIndex]];
+          } else if (horizonMask !== null) {
+            horizonAngleDegByPoint[pointIndex] =
+              Math.round(getHorizonAngleForAzimuth(horizonMask, azimuthDeg) * 1000) / 1000;
+          } else {
+            horizonAngleDegByPoint[pointIndex] = null;
+          }
+          if (!useBatchMask && buildingBlockerId !== null) {
+            buildingBlockerIdByPoint[pointIndex] = buildingBlockerId;
+          }
         }
 
         // Cooperative yield
