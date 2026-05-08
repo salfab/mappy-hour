@@ -315,6 +315,41 @@ pnpm precompute:raster -- \
   --tile-selection-file=data/processed/precompute/high-value-tile-selection.top-priority.json
 ```
 
+### Mode Vulkan natif (expérimental, performances maximales)
+
+Le backend `rust-wgpu-vulkan` délègue le calcul d'ombres à un processus Rust natif via wgpu/Vulkan.
+C'est le mode le plus rapide en production sur cette machine (Intel Arc).
+
+**Commande type — toutes régions, 1 jour :**
+
+```powershell
+pnpm precompute:all-regions:vulkan -- `
+  --tile-selection-file=data/processed/precompute/high-value-tile-selection.top-priority.json `
+  --start-date=2027-05-01 `
+  --days=1 `
+  --skip-existing=false
+```
+
+**Variables d'environnement spécifiques au backend Vulkan :**
+
+| Variable | Défaut | Description |
+|---|---|---|
+| `MAPPY_RUST_VULKAN_SESSIONS` | `1` | Nombre de sessions GPU concurrentes (voir note ci-dessous) |
+| `MAPPY_TILE_PIPELINE_DEPTH` | `5` | Tuiles en vol simultané dans le pipeline Node |
+| `MAPPY_ATLAS_COMPRESSION` | `zstd` | Format de compression de l'atlas (`zstd` ou `gzip`) |
+
+**Note sur `MAPPY_RUST_VULKAN_SESSIONS` :**
+
+- **Intel Arc (et toute carte avec une seule queue Vulkan)** : laisser à `1`. La carte sérialise les
+  dispatches GPU au niveau hardware — ajouter des sessions ne fait qu'introduire de l'overhead IPC
+  sans gain GPU. Mesuré : 0 % d'overlap GPU à N=2, GPU busy seulement 8.8 % du wall à N=1. Le
+  bottleneck est le event loop Node (IPC, atlas merge, décodage JS), pas le GPU.
+- **NVIDIA / AMD avec async compute (multi-queue)** : N=2 ou N=3 *pourrait* exposer un vrai overlap
+  GPU et améliorer le throughput. Non mesuré — si vous avez une telle carte, comparer le wall time
+  à N=1 vs N=2 avant de changer le défaut.
+- La valeur est clampée à 4 maximum. Le code de correctness (sémaphore FIFO, garde TOCTOU) s'applique
+  quel que soit N, y compris N=1. Voir `rust-wgpu-vulkan-shadow-backend.ts` et ADR-0019.
+
 ### Métadonnées de grille (pré-requis une fois par modèle)
 
 Le script `precompute-tile-grid-metadata.ts` pré-calcule la classification indoor/outdoor et

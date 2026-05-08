@@ -3,6 +3,46 @@
  *
  * This is opt-in only. It mirrors the batch contract used by precompute but
  * keeps the GPU work in a long-lived native subprocess.
+ *
+ * ## Multi-session design (MAPPY_RUST_VULKAN_SESSIONS=N)
+ *
+ * The backend supports N concurrent "session slots". Each slot holds its own
+ * per-tile state (points bin path, point count, focus key) while sharing the
+ * same Rust server process and its scene-wide uploaded data (vegetation, terrain).
+ *
+ * ### Why this exists
+ *
+ * The Node-side tile pipeline is async: while one tile awaits the Rust IPC
+ * response, other tiles could theoretically run on a second GPU session in
+ * parallel. Phases 1A-3 implement a FIFO semaphore to serialize per-slot and
+ * a serverGeneration counter to close a TOCTOU race that exists even at N=1
+ * (a server restart between the alive-check and the upload_horizon_masks call
+ * would silently produce corrupt results — the generation counter detects this).
+ *
+ * ### Why N>1 does NOT help on Intel Arc (and why N=1 is the default)
+ *
+ * Bench 2026-05-08 (1652 tiles, 1 day cold, depth=5):
+ *   354ec22 gzip N=1 : 635 s compute_wall
+ *   HEAD    zstd N=1 : 613 s compute_wall  (−3 %, within noise)
+ *
+ * Intel Arc has a single Vulkan compute queue. Dispatches from concurrent
+ * sessions serialize at the hardware level with no overlap (measured: 0 %
+ * GPU overlap at N=2, 8.8 % GPU busy at N=1). The GPU is idle 91 % of
+ * the time — the bottleneck is the Node event loop (IPC framing, atlas
+ * merge, JS decode), not the GPU. Adding sessions just adds IPC overhead.
+ *
+ * ### When N>1 might help
+ *
+ * On GPUs with multiple independent compute queues (NVIDIA, AMD with async
+ * compute), N=2 or N=3 could expose real GPU overlap and improve throughput.
+ * This has not been measured. If you have a multi-queue GPU, set
+ * MAPPY_RUST_VULKAN_SESSIONS=2 and compare wall times.
+ *
+ * Regardless of N, the correctness fixes (TOCTOU guard, cold-start
+ * serialization, FIFO semaphore) apply and are worth keeping.
+ *
+ * See ADR-0019 (single-worker default) and bench script
+ * bench-354ec22-baseline.ps1 / bench-354ec22-zstd.ps1 for details.
  */
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
