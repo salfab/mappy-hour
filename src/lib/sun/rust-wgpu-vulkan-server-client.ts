@@ -31,15 +31,21 @@ export type RustWgpuVulkanBatchFrame = {
   azimuthDeg: number;
   altitudeDeg: number;
   blockedPoints: number;
-  blockedWords?: number[];
+  // Bitmask fields are typed arrays (Uint32Array) to avoid the
+  // ArrayBuffer→Uint32Array view→Array→Uint32Array round-trip that doubled
+  // the JS heap footprint on tile-first multi-date dispatches (1900+ frames
+  // × 5 masks × 1700 words → ~16M allocations per tile, OOM at 4 GB heap).
+  // Refactor 2026-05-08 : sliceFrame produces Uint32Array directly via
+  // .slice() on the binary payload view.
+  blockedWords?: Uint32Array;
   terrainBlockedPoints?: number | null;
-  terrainBlockedWords?: number[] | null;
+  terrainBlockedWords?: Uint32Array | null;
   vegetationBlockedPoints?: number | null;
-  vegetationBlockedWords?: number[] | null;
+  vegetationBlockedWords?: Uint32Array | null;
   sunnyPoints?: number;
-  sunnyWords?: number[] | null;
+  sunnyWords?: Uint32Array | null;
   sunnyNoVegPoints?: number;
-  sunnyNoVegWords?: number[] | null;
+  sunnyNoVegWords?: Uint32Array | null;
 };
 
 export type RustWgpuVulkanBatchResultMessage = {
@@ -495,9 +501,13 @@ export class RustWgpuVulkanShadowServer {
       payload.byteOffset,
       Math.floor(payload.byteLength / 4),
     );
-    const sliceFrame = (blockIndex: number, frameIndex: number): number[] => {
+    // Each sliceFrame call copies wordCount u32 from the binary payload view
+    // into a fresh Uint32Array. Single allocation per (frame, mask) pair —
+    // the previous Array.from path doubled allocations and triggered OOM on
+    // tile-first multi-date batches (>1000 frames per dispatch).
+    const sliceFrame = (blockIndex: number, frameIndex: number): Uint32Array => {
       const offset = (blockIndex * frameCount + frameIndex) * wordCount;
-      return Array.from(view.subarray(offset, offset + wordCount));
+      return view.slice(offset, offset + wordCount);
     };
     for (let i = 0; i < frameCount; i++) {
       const f = message.frames[i];
