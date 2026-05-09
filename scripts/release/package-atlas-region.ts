@@ -75,6 +75,21 @@ async function sha256File(filePath: string): Promise<string> {
   });
 }
 
+async function writeWithBackpressure(
+  writer: fs.WriteStream,
+  chunk: Buffer,
+): Promise<void> {
+  if (!writer.write(chunk)) {
+    await new Promise<void>((resolve) => writer.once("drain", resolve));
+  }
+}
+
+async function endWriter(writer: fs.WriteStream): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    writer.end((err?: Error | null) => (err ? reject(err) : resolve()));
+  });
+}
+
 async function splitFile(inputPath: string, outDir: string, baseName: string): Promise<string[]> {
   const totalSize = (await fsp.stat(inputPath)).size;
   if (totalSize <= MAX_PART_BYTES) {
@@ -83,39 +98,57 @@ async function splitFile(inputPath: string, outDir: string, baseName: string): P
     return [dest];
   }
 
+  // Use a fixed read handle and a per-part write stream. Read in fixed-size
+  // blocks (16 MB) and respect the writer's backpressure between writes —
+  // without this the WriteStream's internal buffer grows unbounded for ~1.8 GB
+  // of unflushed data per part, blowing the Node heap on big regions.
+  const fh = await fsp.open(inputPath, "r");
   const partPaths: string[] = [];
-  const reader = fs.createReadStream(inputPath, { highWaterMark: 64 * 1024 * 1024 });
+  const READ_BLOCK = 16 * 1024 * 1024;
+  const buffer = Buffer.allocUnsafe(READ_BLOCK);
+
   let partIndex = 1;
-  let bytesWritten = 0;
+  let bytesWrittenInPart = 0;
   let writer: fs.WriteStream | null = null;
 
-  const nextWriter = () => {
+  const openNextPart = (): fs.WriteStream => {
     const partPath = path.join(outDir, `${baseName}.part${partIndex}`);
     partPaths.push(partPath);
     partIndex++;
-    bytesWritten = 0;
-    writer = fs.createWriteStream(partPath);
-    return writer;
+    bytesWrittenInPart = 0;
+    return fs.createWriteStream(partPath, { highWaterMark: 8 * 1024 * 1024 });
   };
 
-  writer = nextWriter();
+  try {
+    writer = openNextPart();
+    let totalRead = 0;
+    while (totalRead < totalSize) {
+      const { bytesRead } = await fh.read(buffer, 0, READ_BLOCK, totalRead);
+      if (bytesRead === 0) break;
+      totalRead += bytesRead;
 
-  for await (const chunk of reader) {
-    const buf = chunk as Buffer;
-    let offset = 0;
-    while (offset < buf.length) {
-      const remaining = MAX_PART_BYTES - bytesWritten;
-      const slice = buf.subarray(offset, offset + remaining);
-      writer!.write(slice);
-      bytesWritten += slice.length;
-      offset += slice.length;
-      if (bytesWritten >= MAX_PART_BYTES && offset < buf.length) {
-        await new Promise<void>((r) => writer!.end(r));
-        writer = nextWriter();
+      let offset = 0;
+      while (offset < bytesRead) {
+        const remainingInPart = MAX_PART_BYTES - bytesWrittenInPart;
+        const sliceLen = Math.min(bytesRead - offset, remainingInPart);
+        // Copy out of the shared read buffer — the writer keeps a reference
+        // until drain, and we'll overwrite this buffer on the next read.
+        const slice = Buffer.from(buffer.subarray(offset, offset + sliceLen));
+        await writeWithBackpressure(writer, slice);
+        bytesWrittenInPart += sliceLen;
+        offset += sliceLen;
+
+        if (bytesWrittenInPart >= MAX_PART_BYTES && (offset < bytesRead || totalRead < totalSize)) {
+          await endWriter(writer);
+          writer = openNextPart();
+        }
       }
     }
+    if (writer) await endWriter(writer);
+  } finally {
+    await fh.close();
   }
-  await new Promise<void>((r) => writer!.end(r));
+
   await fsp.unlink(inputPath);
   return partPaths;
 }

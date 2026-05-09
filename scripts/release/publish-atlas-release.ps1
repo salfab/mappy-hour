@@ -6,20 +6,29 @@
 #
 # Prérequis : gh CLI authentifié (gh auth login)
 
+[CmdletBinding()]
 param(
-    [string]$Regions = "lausanne,nyon,morges,vevey,geneve",
-    [string]$Tag = "",
-    [string]$OutDir = "dist\releases"
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$RawArgs
 )
 
-# Absorber args --key=value passés par pnpm (format CLI uniforme)
-foreach ($arg in $args) {
-    if ($arg -match '^--regions=(.+)$')  { $Regions = $Matches[1] }
-    if ($arg -match '^--tag=(.+)$')      { $Tag     = $Matches[1] }
-    if ($arg -match '^--out-dir=(.+)$')  { $OutDir  = $Matches[1] }
+# pnpm passes a literal "--" separator before the script args, and the standard
+# param() binding treats "--" as an ambiguous parameter prefix. Use
+# ValueFromRemainingArguments + manual --key=value parsing to avoid that.
+$Regions = "lausanne,nyon,morges,vevey,geneve"
+$Tag = ""
+$OutDir = "dist\releases"
+
+foreach ($arg in $RawArgs) {
+    if ($arg -eq "--") { continue }
+    if ($arg -match '^--regions=(.+)$')  { $Regions = $Matches[1]; continue }
+    if ($arg -match '^--tag=(.+)$')      { $Tag     = $Matches[1]; continue }
+    if ($arg -match '^--out-dir=(.+)$')  { $OutDir  = $Matches[1]; continue }
 }
 
-$ErrorActionPreference = "Stop"
+# NOTE: pas de $ErrorActionPreference = "Stop" — npx/tsx/gh écrivent des logs
+# de progression sur stderr, ce que Stop traiterait comme une erreur fatale.
+# On vérifie $LASTEXITCODE manuellement après chaque commande externe.
 
 # ── Auto-tag ──────────────────────────────────────────────────────────────────
 if (-not $Tag) {
@@ -38,15 +47,23 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $Summaries = @()
 foreach ($Region in $RegionList) {
     Write-Host "[publish]   · packaging $Region..."
-    $Output = npx tsx scripts/release/package-atlas-region.ts `
-        "--region=$Region" `
-        "--out-dir=$OutDir" 2>&1
+    # Capture stdout (JSON summary) avec stderr passant à la console parent.
+    # NB: pas de redirection 2>&1 — les logs progressifs vont s'afficher live.
+    $tmpOut = [System.IO.Path]::GetTempFileName()
+    & npx tsx scripts/release/package-atlas-region.ts "--region=$Region" "--out-dir=$OutDir" 1> $tmpOut
+    $packExit = $LASTEXITCODE
+    $Output = Get-Content $tmpOut -Raw
+    Remove-Item $tmpOut -ErrorAction SilentlyContinue
 
-    # stderr va à la console via 2>&1, stdout contient le JSON summary
-    $Lines = ($Output | Where-Object { $_ -is [string] }) -split "`n"
+    if ($packExit -ne 0) {
+        Write-Host "[publish] ✗ package-atlas-region échoué pour $Region (exit $packExit)"
+        exit 1
+    }
+
+    $Lines = $Output -split "`r?`n"
     $JsonLine = ($Lines | Where-Object { $_.TrimStart().StartsWith("{") } | Select-Object -Last 1)
     if (-not $JsonLine) {
-        Write-Error "[publish] ✗ Aucun JSON summary pour $Region. Output:`n$Output"
+        Write-Host "[publish] ✗ Aucun JSON summary pour $Region. Stdout:`n$Output"
         exit 1
     }
     $Summaries += $JsonLine
