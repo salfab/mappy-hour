@@ -269,7 +269,7 @@ function main() {
     `[precompute-all] [BENCH] compute_start ${new Date(computeStart).toISOString()} (preflight excluded)`,
   );
 
-  let anyFailed = false;
+  const failures: Array<{ pass: string; region: string; exit: string }> = [];
 
   // Two-pass iteration: top-priority tiles across every region first, then
   // the "other" group tiles (lausanne-west, lausanne-east, geneva, etc.)
@@ -298,10 +298,11 @@ function main() {
       });
 
       if (result.status !== 0) {
+        const exit = result.status != null ? String(result.status) : "signal";
         console.error(
-          `[precompute-all] ✗ pass=${pass.filter} région=${region} a échoué (exit ${result.status ?? "signal"})`,
+          `[precompute-all] ✗ pass=${pass.filter} région=${region} a échoué (exit ${exit})`,
         );
-        anyFailed = true;
+        failures.push({ pass: pass.filter, region, exit });
       } else {
         console.log(`[precompute-all] ✓ pass=${pass.filter} région=${region} terminée`);
       }
@@ -313,8 +314,13 @@ function main() {
     `[precompute-all] [BENCH] compute_end   ${new Date().toISOString()} — compute wall=${computeElapsed}s (preflight excluded)`,
   );
 
-  if (anyFailed) {
-    console.error("\n[precompute-all] Une ou plusieurs passes/régions ont échoué.");
+  if (failures.length > 0) {
+    console.error(
+      `\n[precompute-all] ✗ ${failures.length} échec(s) sur ${PASSES.length * regions.length} runs :`,
+    );
+    for (const f of failures) {
+      console.error(`[precompute-all]   · pass=${f.pass} région=${f.region} (exit ${f.exit})`);
+    }
     process.exitCode = 1;
   } else {
     console.log(
