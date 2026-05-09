@@ -1,0 +1,52 @@
+volumes:
+  mappy-cache: {}
+
+services:
+  mappy-hour:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_FORCE_CACHE_ONLY: "true"
+    image: mappy-hour:latest
+    container_name: mappy-hour
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - NODE_ENV=production
+      - MAPPY_DATA_ROOT=/data
+      - NEXT_PUBLIC_FORCE_CACHE_ONLY=true
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - type: volume
+        source: mappy-cache
+        target: /data/cache/sunlight
+        read_only: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/datasets',r=>{process.exitCode=r.statusCode===200?0:1}).on('error',()=>{process.exitCode=1})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # One-shot container pour télécharger / mettre à jour les atlas.
+  # Lancer manuellement : docker compose run --rm atlas-loader
+  # Profil "loader" : n'est pas inclus dans `docker compose up`.
+  atlas-loader:
+    build:
+      context: .
+    image: mappy-hour:latest
+    profiles:
+      - loader
+    entrypoint: ["pnpm", "atlas:download", "--"]
+    command: ["--repo=salfab/mappy-hour", "--regions=lausanne,nyon,morges,vevey,geneve"]
+    environment:
+      - MAPPY_DATA_ROOT=/data
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+    volumes:
+      - type: volume
+        source: mappy-cache
+        target: /data/cache/sunlight
