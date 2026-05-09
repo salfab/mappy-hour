@@ -102,7 +102,16 @@ foreach ($R in $Manifest.regions.PSObject.Properties) {
     $RegionLines += "- **$RName** : $Tiles tuiles (hash $Hash...)`n"
 }
 
-$Description = @"
+# Detect the GitHub repo from gh CLI to inject the right --repo value in the
+# install command. Falls back to OWNER/REPO if gh can't resolve it.
+$RepoFromGh = (gh repo view --json nameWithOwner -q .nameWithOwner 2>$null)
+if (-not $RepoFromGh) { $RepoFromGh = "OWNER/REPO" }
+
+# Build the description by parts: a double-quoted here-string for variable
+# interpolation, then a single-quoted block for the fenced code (which
+# bypasses PowerShell's backtick escape entirely — backticks would otherwise
+# need to be doubled to survive the @"..."@ here-string).
+$DescHead = @"
 ## Atlas sunlight — $Tag
 
 Algorithme : ``$($Manifest.algorithmVersion)`` — Format : v$($Manifest.artifactFormatVersion)
@@ -111,12 +120,20 @@ Algorithme : ``$($Manifest.algorithmVersion)`` — Format : v$($Manifest.artifac
 $RegionLines
 ### Installation
 
-\`\`\`bash
-pnpm atlas:download -- --repo=OWNER/REPO --regions=lausanne,nyon --release=$Tag
-\`\`\`
+"@
+
+$DescCode = @'
+```bash
+pnpm atlas:download -- --repo={REPO} --regions=lausanne,nyon --release={TAG}
+```
+'@ -replace '\{REPO\}', $RepoFromGh -replace '\{TAG\}', $Tag
+
+$DescTail = @"
 
 > Vérifie automatiquement la compatibilité algorithmVersion/artifactFormatVersion.
 "@
+
+$Description = "$DescHead`n$DescCode`n$DescTail"
 
 # ── Création de la release GitHub ─────────────────────────────────────────────
 Write-Host "`n[publish] ▶ Création de la release GitHub : $Tag"
