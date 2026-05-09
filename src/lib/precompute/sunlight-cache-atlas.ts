@@ -3,7 +3,20 @@ import { promisify } from "node:util";
 import { gzip as gzipCb, gunzip as gunzipCb } from "node:zlib";
 import path from "node:path";
 
-import { compress as zstdCompress, decompress as zstdDecompress } from "@mongodb-js/zstd";
+// Lazy-loaded: native binary may not be compiled in dev/CI without build tools.
+// Falls back to gzip when unavailable (see compressAtlasPayload / decompressAtlasPayload).
+let _zstd: { compress: typeof import("@mongodb-js/zstd").compress; decompress: typeof import("@mongodb-js/zstd").decompress } | null | undefined;
+function getZstd() {
+  if (_zstd === undefined) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      _zstd = require("@mongodb-js/zstd");
+    } catch {
+      _zstd = null;
+    }
+  }
+  return _zstd;
+}
 
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 import { getSunlightCacheStorage } from "./sunlight-cache-storage";
@@ -26,10 +39,15 @@ async function compressAtlasPayload(bin: Buffer): Promise<Buffer> {
   if (getAtlasCompressionMode() === "gzip") {
     return (await gzip(bin, { level: 1 })) as Buffer;
   }
+  const zstd = getZstd();
+  if (!zstd) {
+    // Native zstd unavailable (no build tools); fall back to gzip.
+    return (await gzip(bin, { level: 1 })) as Buffer;
+  }
   // zstd level 3: default sweet spot. Bench (130 MB raw atlas) shows ~50ms
   // compress + ~400ms decompress vs gzip-1's 89ms / 2400ms. Wall-time win is
   // dominated by decompress (read-heavy hot path).
-  return await zstdCompress(bin, 3);
+  return await zstd.compress(bin, 3);
 }
 
 async function decompressAtlasPayload(buf: Buffer): Promise<Buffer> {
@@ -44,7 +62,9 @@ async function decompressAtlasPayload(buf: Buffer): Promise<Buffer> {
     buf[2] === 0x2f &&
     buf[3] === 0xfd
   ) {
-    return await zstdDecompress(buf);
+    const zstd = getZstd();
+    if (!zstd) throw new Error("[atlas-decompress] zstd binary unavailable; reinstall with build tools or set MAPPY_ATLAS_COMPRESSION=gzip");
+    return await zstd.decompress(buf);
   }
   throw new Error(
     `[atlas-decompress] unknown compression format (first bytes ${[...buf.slice(0, 4)].map((b) => b.toString(16).padStart(2, "0")).join(" ")})`,
