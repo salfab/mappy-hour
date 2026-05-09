@@ -386,6 +386,72 @@ pnpm cache:verify
 pnpm cache:purge
 ```
 
+## Déploiement — Atlas sunlight précompute
+
+Les fichiers atlas (`.atlas.bin.gz` + `.atlas.idx`) sont précomputes une fois avec GPU Vulkan et publiés sur GitHub Releases. Une app déployée sans GPU les télécharge au lieu de les recalculer.
+
+### Structure d'une release
+
+```
+atlas-v9-2026-05-08          ← tag GitHub Release
+├── release-manifest.json    ← point d'entrée (algorithmVersion, sha256, régions)
+├── lausanne-atlas.tar
+├── lausanne-atlas.tar.sha256
+├── nyon-atlas.tar
+├── nyon-atlas.tar.sha256
+├── geneve-atlas.tar.part1   ← split auto si > 1.8 GB
+├── geneve-atlas.tar.part2
+├── geneve-atlas.tar.part1.sha256
+└── geneve-atlas.tar.part2.sha256
+```
+
+Chaque archive contient :
+
+```
+release-info.json            ← métadonnées (region, modelVersionHash, tileCount…)
+atlas/r0.75/
+  *.atlas.bin.gz
+  *.atlas.idx
+```
+
+### Publier une release
+
+```bash
+# Packager une seule région (produit dist/releases/)
+pnpm atlas:package -- --region=lausanne
+
+# Packager + publier toutes les régions (crée une draft release GitHub)
+pnpm atlas:publish -- --regions=lausanne,nyon,morges,vevey,geneve --tag=atlas-v9-2026-05-08
+```
+
+Prérequis : `gh` CLI authentifié (`gh auth login`). La release est créée en **draft** — à valider manuellement sur GitHub avant de la rendre publique.
+
+### Télécharger et installer
+
+```bash
+# Sur une machine sans GPU (app déployée)
+pnpm atlas:download -- --repo=owner/repo --regions=lausanne,nyon
+
+# Release spécifique (par défaut : latest)
+pnpm atlas:download -- --repo=owner/repo --regions=lausanne --release=atlas-v9-2026-05-08
+```
+
+Le script vérifie la compatibilité `algorithmVersion` / `artifactFormatVersion` avec le code local et refuse d'installer une release incompatible. L'installation est idempotente : si l'atlas est déjà présent avec le même `modelVersionHash`, il est sauté.
+
+### Ajouter des tuiles ou une nouvelle région
+
+Publier une nouvelle release (ou un tag patch `atlas-v9-2026-05-08-patch1`) avec seulement les régions mises à jour. Le script de download télécharge uniquement les régions demandées — pas besoin de re-télécharger les régions déjà installées.
+
+### Compatibilité des versions
+
+| Constante | Source | Rôle |
+|---|---|---|
+| `algorithmVersion` | `src/lib/precompute/model-version.ts` | Identifie l'algo de calcul (`sunlight-cache-v9`) |
+| `artifactFormatVersion` | idem | Version du format binaire atlas (actuellement `2`) |
+| `modelVersionHash` | calculé à l'exécution | Hash des inputs (bâtiments, terrain, calibration…) — détermine le répertoire cache |
+
+Un changement d'`algorithmVersion` ou d'`artifactFormatVersion` invalide les releases existantes.
+
 ## Arborescence des données
 
 - `data/raw/swisstopo/swissbuildings3d_2`

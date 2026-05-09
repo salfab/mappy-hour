@@ -67,7 +67,10 @@
     "setup:lausanne": "pnpm run ingest:lausanne && pnpm run preprocess",
     "setup:nyon": "pnpm run ingest:nyon && pnpm run preprocess",
     "setup:all": "pnpm run fetch:all:models",
-    "setup": "pnpm run setup:all"
+    "setup": "pnpm run setup:all",
+    "atlas:package": "tsx scripts/release/package-atlas-region.ts",
+    "atlas:publish": "powershell -ExecutionPolicy Bypass -File scripts/release/publish-atlas-release.ps1",
+    "atlas:download": "tsx scripts/release/download-atlas.ts"
   },
   "dependencies": {
     "@mongodb-js/zstd": "^7.0.0",

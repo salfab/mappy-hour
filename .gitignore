@@ -66,5 +66,10 @@ next-env.d.ts
 # Rust build artifacts (heavy: ~1.4GB for wgpu-vulkan-probe debug+release builds)
 /tools/**/target/
 
+# Release packaging output (archives before GitHub upload)
+/dist/releases/
+
 # local assistant/session metadata
 .claude/
+/.worktrees/
+/bench-tile-first-results-**/**
