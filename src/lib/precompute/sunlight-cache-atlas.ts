@@ -59,13 +59,35 @@ async function decompressAtlasPayload(buf: Buffer): Promise<Buffer> {
  * Guarantees that readers never observe a half-written file — either the old
  * content or the new content, never a truncated/corrupted payload. This is the
  * crash-consistency foundation the atlas + sidecar pair relies on.
+ *
+ * Retries on EPERM/EBUSY/EACCES because Windows AV (Defender, etc.) opens
+ * freshly-written files for scanning and briefly holds a handle that blocks
+ * the rename. The race window is short — a short backoff is enough.
  */
 async function writeFileAtomic(targetPath: string, data: Buffer): Promise<void> {
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
   const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
   try {
     await fs.writeFile(tmpPath, data);
-    await fs.rename(tmpPath, targetPath);
+
+    const transientCodes = new Set(["EPERM", "EBUSY", "EACCES"]);
+    const maxAttempts = 6;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await fs.rename(tmpPath, targetPath);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (!code || !transientCodes.has(code) || attempt === maxAttempts) {
+          throw error;
+        }
+        const delayMs = 50 * 2 ** (attempt - 1); // 50, 100, 200, 400, 800, 1600
+        console.warn(
+          `[atlas-write] rename ${code} on ${path.basename(targetPath)} (attempt ${attempt}/${maxAttempts}) — retry in ${delayMs}ms`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
   } catch (error) {
     await fs.unlink(tmpPath).catch(() => {});
     throw error;
