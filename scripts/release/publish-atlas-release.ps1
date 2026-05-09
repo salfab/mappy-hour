@@ -166,4 +166,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "`n[publish] ✓ Release $Tag publiée (draft)."
-Write-Host "[publish]   Vérifiez sur GitHub puis utilisez 'gh release edit $Tag --draft=false' pour la publier."
+Write-Host "[publish]   Vérifiez sur GitHub, puis pour la publier comme 'latest' :"
+Write-Host "[publish]     gh release edit $Tag --draft=false --latest=true"
+Write-Host ""
+Write-Host "[publish]   Une fois publiée, les clients pourront télécharger sans préciser le tag :"
+Write-Host "[publish]     pnpm atlas:download -- --repo=$RepoFromGh --regions=lausanne"
