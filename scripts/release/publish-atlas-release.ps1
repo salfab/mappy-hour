@@ -31,10 +31,30 @@ foreach ($arg in $RawArgs) {
 # On vérifie $LASTEXITCODE manuellement après chaque commande externe.
 
 # ── Auto-tag ──────────────────────────────────────────────────────────────────
+# Convention : v{ALGO_MAJOR}.{FORMAT_MINOR}.{YYYYMMDD}{NNN}
+#   - major = SUNLIGHT_CACHE_ALGORITHM_VERSION (sunlight-cache-vN → N)
+#   - minor = SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION
+#   - patch = YYYYMMDD * 1000 + counter (000-999) auto-incrémenté pour le jour
+# Exemples : v9.2.20260509000, v9.2.20260509001, v9.2.20260510000
+# Source de vérité : src/lib/precompute/model-version.ts
+# (bumper le major/minor ici quand le source bump — c'est le seul couplage manuel)
 if (-not $Tag) {
-    $AlgoVersion = "v9"  # extrait de sunlight-cache-v9
-    $Date = (Get-Date -Format "yyyy-MM-dd")
-    $Tag = "atlas-$AlgoVersion-$Date"
+    $AlgoMajor = "9"
+    $FormatMinor = "2"
+    $Today = (Get-Date -Format "yyyyMMdd")
+    $TagPrefix = "v$AlgoMajor.$FormatMinor.$Today"
+
+    # Auto-increment NNN en scrutant les tags existants pour aujourd'hui
+    $ExistingTags = ((gh release list --limit 100 --json tagName --jq '.[].tagName' 2>$null) -split "`r?`n") | Where-Object { $_ }
+    $MaxCounter = -1
+    foreach ($t in $ExistingTags) {
+        if ($t -match "^v$AlgoMajor\.$FormatMinor\.$Today(\d{3})$") {
+            $n = [int]$Matches[1]
+            if ($n -gt $MaxCounter) { $MaxCounter = $n }
+        }
+    }
+    $Counter = $MaxCounter + 1
+    $Tag = "$TagPrefix" + $Counter.ToString("000")
     Write-Host "[publish] Tag auto-généré : $Tag"
 }
 

@@ -390,67 +390,139 @@ pnpm cache:purge
 
 Les fichiers atlas (`.atlas.bin.gz` + `.atlas.idx`) sont précomputes une fois avec GPU Vulkan et publiés sur GitHub Releases. Une app déployée sans GPU les télécharge au lieu de les recalculer.
 
+### Convention de tag
+
+`v{ALGO_MAJOR}.{FORMAT_MINOR}.{YYYYMMDD}{NNN}` — strict semver.
+
+Exemples :
+- `v9.2.20260509000` — première release du 9 mai 2026, algo v9, format v2
+- `v9.2.20260509001` — deuxième release du même jour (auto-incrément)
+- `v9.2.20260601000` — première release du 1er juin
+
+Mapping :
+
+| Composant | Source | Rôle |
+|---|---|---|
+| `MAJOR` | `SUNLIGHT_CACHE_ALGORITHM_VERSION` (`src/lib/precompute/model-version.ts`) | Bump = breaking algorithmique |
+| `MINOR` | `SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION` (idem) | Bump = breaking format binaire atlas |
+| `PATCH` | `YYYYMMDD * 1000 + counter` | Toujours croissant, géré automatiquement par le script de publish |
+
+GitHub identifie la release "latest" par semver, donc le script `download-atlas.ts` qui pointe sur `releases/latest/download/...` récupère toujours la dernière publiée.
+
 ### Structure d'une release
 
 ```
-atlas-v9-2026-05-08          ← tag GitHub Release
+v9.2.20260509000             ← tag GitHub Release
 ├── release-manifest.json    ← point d'entrée (algorithmVersion, sha256, régions)
-├── lausanne-atlas.tar
-├── lausanne-atlas.tar.sha256
+├── lausanne-atlas.tar.part1 ← split auto si > 1.8 GB (lausanne ~20 GB → 11 parts)
+├── lausanne-atlas.tar.part2
+├── …
+├── geneve-atlas.tar.part1   ← idem (geneve ~10 GB → 6 parts)
+├── …
+├── morges-atlas.tar         ← single file (< 1.8 GB)
 ├── nyon-atlas.tar
-├── nyon-atlas.tar.sha256
-├── geneve-atlas.tar.part1   ← split auto si > 1.8 GB
-├── geneve-atlas.tar.part2
-├── geneve-atlas.tar.part1.sha256
-└── geneve-atlas.tar.part2.sha256
+├── vevey-atlas.tar
+└── *.sha256                 ← un par asset
 ```
 
-Chaque archive contient :
+Chaque archive `.tar` contient :
 
 ```
 release-info.json            ← métadonnées (region, modelVersionHash, tileCount…)
 atlas/r0.75/
-  *.atlas.bin.gz
-  *.atlas.idx
+  *.atlas.bin.gz             ← contenu zstd malgré l'extension (auto-détection magic bytes)
+  *.atlas.idx                ← sidecar non-compressé (~300 bytes/tuile)
 ```
 
 ### Publier une release
 
 ```bash
-# Packager une seule région (produit dist/releases/)
+# Packager une seule région (sortie dans dist/releases/)
 pnpm atlas:package -- --region=lausanne
 
-# Packager + publier toutes les régions (crée une draft release GitHub)
-pnpm atlas:publish -- --regions=lausanne,nyon,morges,vevey,geneve --tag=atlas-v9-2026-05-08
+# Packager + publier toutes les régions (crée une draft release GitHub avec tag auto)
+pnpm atlas:publish
+
+# Ou tag explicite si besoin
+pnpm atlas:publish -- --tag=v9.2.20260509000
 ```
 
-Prérequis : `gh` CLI authentifié (`gh auth login`). La release est créée en **draft** — à valider manuellement sur GitHub avant de la rendre publique.
+Prérequis : `gh` CLI authentifié (`gh auth login`). La release est créée en **draft** — à valider manuellement.
 
-### Télécharger et installer
+Pour la passer en production et la marquer comme "latest" :
 
 ```bash
-# Sur une machine sans GPU (app déployée)
-pnpm atlas:download -- --repo=owner/repo --regions=lausanne,nyon
-
-# Release spécifique (par défaut : latest)
-pnpm atlas:download -- --repo=owner/repo --regions=lausanne --release=atlas-v9-2026-05-08
+gh release edit v9.2.20260509000 --draft=false --latest=true
 ```
 
-Le script vérifie la compatibilité `algorithmVersion` / `artifactFormatVersion` avec le code local et refuse d'installer une release incompatible. L'installation est idempotente : si l'atlas est déjà présent avec le même `modelVersionHash`, il est sauté.
+### Récupérer les caches atlas sur un environnement déployé
 
-### Ajouter des tuiles ou une nouvelle région
+Cas typique : nouveau serveur sans GPU, on veut servir les requêtes sunlight sans recomputer.
 
-Publier une nouvelle release (ou un tag patch `atlas-v9-2026-05-08-patch1`) avec seulement les régions mises à jour. Le script de download télécharge uniquement les régions demandées — pas besoin de re-télécharger les régions déjà installées.
+**1. Cloner le repo + installer les deps**
+
+```bash
+git clone https://github.com/salfab/mappy-hour.git
+cd mappy-hour
+pnpm install
+```
+
+**2. Définir l'emplacement du cache**
+
+Le script d'installation lit `MAPPY_DATA_ROOT` (ou `MAPPY_CACHE_SUNLIGHT_DIR`) pour savoir où placer les atlas. Par défaut : `data/cache/sunlight/` dans le repo. Pour un serveur on préfère un disque dédié :
+
+```bash
+export MAPPY_DATA_ROOT=/var/lib/mappy-hour
+```
+
+**3. Télécharger les atlas (release latest par défaut)**
+
+```bash
+# Toutes les régions disponibles dans la release
+pnpm atlas:download -- --repo=salfab/mappy-hour
+
+# Seulement quelques régions
+pnpm atlas:download -- --repo=salfab/mappy-hour --regions=lausanne,geneve
+
+# Release spécifique
+pnpm atlas:download -- --repo=salfab/mappy-hour --release=v9.2.20260509000
+```
+
+Le script :
+- Vérifie la compatibilité `algorithmVersion` / `artifactFormatVersion` avec le code local — refuse d'installer si incompatible
+- Télécharge chaque part avec progress bar
+- Vérifie le SHA256 de chaque part contre le manifest
+- Concatène les parts si splittées
+- Extrait dans `${MAPPY_DATA_ROOT}/cache/sunlight/{region}/{modelVersionHash}/g1/atlas/r0.75/`
+- Idempotent : skippe les régions déjà installées avec le même hash
+- Écrit un `atlas-version.json` à la racine du cache pour le suivi
+
+**4. Lancer l'app**
+
+```bash
+pnpm build
+pnpm start
+```
+
+L'app détectera automatiquement les atlas et servira les requêtes sunlight depuis le cache, sans GPU.
+
+### Mise à jour incrémentale
+
+Quand une nouvelle release est publiée (avec correction d'un bucket manquant, nouvelle région, etc.), il suffit de relancer la même commande — `--release=latest` (défaut) résout vers la nouvelle, le SHA256 différencie les fichiers à re-télécharger, et l'idempotence skippe ce qui n'a pas changé.
+
+```bash
+pnpm atlas:download -- --repo=salfab/mappy-hour
+```
 
 ### Compatibilité des versions
 
 | Constante | Source | Rôle |
 |---|---|---|
-| `algorithmVersion` | `src/lib/precompute/model-version.ts` | Identifie l'algo de calcul (`sunlight-cache-v9`) |
-| `artifactFormatVersion` | idem | Version du format binaire atlas (actuellement `2`) |
-| `modelVersionHash` | calculé à l'exécution | Hash des inputs (bâtiments, terrain, calibration…) — détermine le répertoire cache |
+| `algorithmVersion` | `src/lib/precompute/model-version.ts` | Identifie l'algo de calcul (`sunlight-cache-v9`). Bump = MAJOR du tag |
+| `artifactFormatVersion` | idem | Version du format binaire atlas (actuellement `2`). Bump = MINOR du tag |
+| `modelVersionHash` | calculé à l'exécution | Hash des inputs (bâtiments, terrain, calibration…). Détermine le sous-répertoire de cache. Pas dans le tag — visible dans le `release-manifest.json` |
 
-Un changement d'`algorithmVersion` ou d'`artifactFormatVersion` invalide les releases existantes.
+Un changement d'`algorithmVersion` ou d'`artifactFormatVersion` invalide les releases existantes — le client refusera d'installer une release qui ne matche pas le code local.
 
 ## Arborescence des données
 
