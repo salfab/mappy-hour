@@ -74,3 +74,6 @@ next-env.d.ts
 /.worktrees/
 /bench-tile-first-results-**/**
 /scripts/bench-tile-first-results-**/**
+
+# Self-hosting local config (contains machine-specific values, must not be committed)
+scripts/headless-server-selfhosting/config.local.ps1
