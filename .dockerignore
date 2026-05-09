@@ -1,0 +1,28 @@
+# Dépendances locales (reconstruites dans le conteneur)
+node_modules
+
+# Données lourdes — non incluses dans l'image (volume ou atlas:download au runtime)
+data/
+dist/releases/
+
+# Build artifacts locaux
+.next
+
+# Répertoires de travail / debug
+.worktrees/
+bench-tile-first-results-*/
+scripts/bench-tile-first-results-*/
+
+# Environnement
+.env
+.env.local
+.env.production.local
+
+# Éditeurs / OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Git
+.git
+.gitignore

@@ -2173,7 +2173,8 @@ export function SunlightMapClient() {
   const [showTerrain, setShowTerrain] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showPlaces, setShowPlaces] = useState(true);
-  const [cacheOnly, setCacheOnly] = useState(false);
+  const forceCacheOnly = process.env.NEXT_PUBLIC_FORCE_CACHE_ONLY === "true";
+  const [cacheOnly, setCacheOnly] = useState(forceCacheOnly);
   const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
   const [isMapReady, setIsMapReady] = useState(false);
   const [focusRunParamsFromUrl, setFocusRunParamsFromUrl] =
@@ -4660,16 +4661,18 @@ export function SunlightMapClient() {
             ignorer ombre végétation
           </span>
         </label>
-        <label className="inline-flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={cacheOnly}
-            onChange={(event) => setCacheOnly(event.target.checked)}
-          />
-          <span className="rounded bg-violet-700 px-2 py-0.5 text-white">
-            cache uniquement
-          </span>
-        </label>
+        {!forceCacheOnly && (
+          <label className="inline-flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={cacheOnly}
+              onChange={(event) => setCacheOnly(event.target.checked)}
+            />
+            <span className="rounded bg-violet-700 px-2 py-0.5 text-white">
+              cache uniquement
+            </span>
+          </label>
+        )}
       </div>
 
       {mode === "daily" ? (
