@@ -191,9 +191,58 @@ présence de Docker.
 
 ---
 
+## Étape 7 — Exposer l'application via Tailscale Funnel
+
+> **Prérequis :** l'application doit être en cours d'exécution sur le serveur (port 3000 local).  
+> Cette étape doit être faite depuis une **session interactive de l'utilisateur qui possède Tailscale** (celui connecté au tailnet — souvent un compte différent du compte SSH `devops`).
+
+Tailscale Funnel permet d'exposer le port local 3000 en HTTPS public sans ouvrir de port sur le routeur, sans gérer de certificat TLS.
+
+### Prérequis dans la Tailscale admin console
+
+1. **HTTPS activé** : `login.tailscale.com/admin` → DNS → "HTTPS Certificates" → on  
+2. **Funnel autorisé** pour ce nœud — dans Access Controls, ajouter :
+   ```json
+   "nodeAttrs": [
+     { "target": ["<nom-de-la-machine>"], "attr": ["funnel"] }
+   ]
+   ```
+   Remplacer `<nom-de-la-machine>` par le nom Tailscale du serveur (visible dans `tailscale status`).
+
+### Commandes (depuis la session interactive qui possède Tailscale)
+
+```powershell
+# Proxy HTTPS → localhost:3000
+tailscale serve --bg --https=443 http://127.0.0.1:3000
+
+# Activer l'exposition publique sur le port 443
+tailscale funnel 443 on
+
+# Vérifier
+tailscale serve status
+tailscale funnel status
+```
+
+L'URL publique sera : `https://<nom-machine>.<tailnet>.ts.net`
+
+### Désactiver / couper l'accès public
+
+```powershell
+tailscale funnel 443 off
+tailscale serve --https=443 off
+```
+
+### Notes
+
+- Si Tailscale tourne sous un compte différent du compte SSH `devops` (cas fréquent sur Windows où le daemon Tailscale est lié à la session interactive), les commandes `tailscale serve/funnel` doivent être lancées depuis **cette session**, pas via SSH.
+- La configuration Funnel est persistante : elle survit aux redémarrages du daemon Tailscale.
+- Tailscale Funnel injecte les headers `Tailscale-User-*` uniquement pour le trafic tailnet, pas pour le trafic Funnel public — l'application ne peut pas s'en servir pour de l'auth.
+
+---
+
 ## Ce qui vient ensuite
 
-Une fois le SSH établi, tout se fait à distance :
+Une fois le SSH et Funnel établis, tout se fait à distance :
 
 1. Installation de Docker Engine (sans Docker Desktop)
 2. Login GHCR : `docker login ghcr.io`
