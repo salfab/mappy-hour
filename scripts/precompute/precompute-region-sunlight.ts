@@ -90,9 +90,22 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
     if (arg.startsWith("--days=")) {
-      const parsed = Number(arg.slice("--days=".length));
-      if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 366) {
-        result.days = parsed;
+      const raw = arg.slice("--days=".length);
+      const parsed = Number(raw);
+      const MAX_DAYS = 1464; // ~4 ans (cycle Gregorien complet)
+      if (Number.isInteger(parsed) && parsed >= 1) {
+        if (parsed > MAX_DAYS) {
+          console.warn(
+            `\x1b[33m[precompute] --days=${parsed} clampé à ${MAX_DAYS} (4 ans Gregorien). Au-delà, l'analemme repasse sur les mêmes buckets — précomputer plus longtemps n'apporte rien.\x1b[0m`,
+          );
+          result.days = MAX_DAYS;
+        } else {
+          result.days = parsed;
+        }
+      } else {
+        console.warn(
+          `\x1b[33m[precompute] --days=${raw} invalide — valeur par défaut ${result.days} utilisée.\x1b[0m`,
+        );
       }
       continue;
     }
