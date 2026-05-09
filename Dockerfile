@@ -1,11 +1,11 @@
 # ── Stage 1 : installation des dépendances + compilation des modules natifs ──
 FROM node:20-bookworm-slim AS deps
 
-# Outils de build pour node-gyp (gl, @mongodb-js/zstd)
-# libgl-dev + libegl-dev : headers pour headless-gl (precompute GPU)
+# python3/make/g++ : fallback node-gyp si un paquet n'a pas de prebuild
+# gl (headless-gl) est en optionalDependencies : skip silencieux si les headers
+# OpenGL manquent — il n'est utilisé que pour le precompute, pas le serving.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 make g++ \
-    libgl-dev libegl-dev libgles2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@9.0.6 --activate
@@ -28,11 +28,6 @@ RUN pnpm build
 
 # ── Stage 3 : image de production (serving uniquement) ───────────────────────
 FROM node:20-bookworm-slim AS runner
-
-# libgl1 : runtime headless-gl (non utilisé pour le serving, mais présent dans node_modules)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 \
-    && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@9.0.6 --activate
 

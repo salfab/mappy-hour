@@ -79,7 +79,6 @@
     "d3-contour": "^4.0.2",
     "earcut": "^3.0.2",
     "geotiff": "^3.0.4",
-    "gl": "^8.1.6",
     "leaflet": "^1.9.4",
     "next": "16.1.6",
     "polygon-clipping": "^0.15.7",
@@ -109,5 +108,8 @@
     "tsx": "^4.21.0",
     "typescript": "^5",
     "vitest": "^4.0.18"
+  },
+  "optionalDependencies": {
+    "gl": "^8.1.6"
   }
 }
