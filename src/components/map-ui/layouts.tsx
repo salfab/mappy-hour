@@ -1,5 +1,7 @@
 "use client";
 
+import { useRef } from "react";
+
 import { BarsList } from "./bars-list";
 import { BackIcon, ChevronRightIcon } from "./icons";
 import type { VenueCardPlace } from "./venue-card";
@@ -73,34 +75,72 @@ export function DesktopMapLayout(props: DesktopMapLayoutProps) {
 }
 
 export function MobileBottomSheet(props: MobileBottomSheetProps) {
+  const dragStartYRef = useRef<number | null>(null);
+
   const stateHeightClass =
     props.state === "compact"
-      ? "max-h-[150px]"
+      ? "h-[clamp(132px,17svh,158px)]"
       : props.state === "middle"
-        ? "max-h-[430px]"
-        : "max-h-[78dvh]";
+        ? "h-[clamp(306px,48svh,430px)]"
+        : "h-[min(82dvh,720px)]";
+
+  const goToNextState = (direction: "up" | "down") => {
+    const states: BottomSheetState[] = ["compact", "middle", "expanded"];
+    const currentIndex = states.indexOf(props.state);
+    const nextIndex =
+      direction === "up"
+        ? Math.min(states.length - 1, currentIndex + 1)
+        : Math.max(0, currentIndex - 1);
+    props.onStateChange(states[nextIndex]);
+  };
+
+  const finishDrag = (clientY: number) => {
+    const startY = dragStartYRef.current;
+    dragStartYRef.current = null;
+    if (startY === null) {
+      return;
+    }
+
+    const deltaY = clientY - startY;
+    if (Math.abs(deltaY) < 36) {
+      return;
+    }
+    goToNextState(deltaY < 0 ? "up" : "down");
+  };
 
   return (
     <section
-      className={`absolute inset-x-0 bottom-0 z-[460] overflow-hidden rounded-t-[2rem] border border-white/70 bg-white/92 px-4 pb-[calc(env(safe-area-inset-bottom)+16px)] pt-2 text-slate-900 shadow-2xl backdrop-blur transition-[max-height] duration-200 ${stateHeightClass}`}
+      className={`absolute inset-x-0 bottom-0 z-[460] grid grid-rows-[auto_1fr] overflow-hidden rounded-t-[2rem] border border-white/70 bg-white/92 px-4 pb-[calc(env(safe-area-inset-bottom)+16px)] pt-2 text-slate-900 shadow-2xl backdrop-blur transition-[height] duration-200 ${stateHeightClass}`}
       aria-label="Controle de la carte"
     >
-      <div className="mx-auto mb-2 h-1.5 w-12 rounded-full bg-slate-300" />
-      <div className="mb-3 flex justify-center gap-2">
-        {(["compact", "middle", "expanded"] as const).map((option) => (
-          <button
-            key={option}
-            type="button"
-            className={`h-2 w-8 rounded-full transition ${
-              props.state === option ? "bg-amber-300" : "bg-slate-200"
-            }`}
-            aria-label={`Afficher la feuille ${option}`}
-            onClick={() => props.onStateChange(option)}
-          />
-        ))}
+      <div className="flex justify-center pb-3">
+        <button
+          type="button"
+          className="grid h-8 w-28 touch-none place-items-center rounded-full outline-none transition focus-visible:ring-2 focus-visible:ring-amber-300"
+          aria-label="Glisser pour agrandir ou reduire le panneau"
+          onPointerDown={(event) => {
+            dragStartYRef.current = event.clientY;
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerUp={(event) => finishDrag(event.clientY)}
+          onPointerCancel={() => {
+            dragStartYRef.current = null;
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              goToNextState("up");
+            } else if (event.key === "ArrowDown") {
+              event.preventDefault();
+              goToNextState("down");
+            }
+          }}
+        >
+          <span className="h-1.5 w-14 rounded-full bg-slate-300" />
+        </button>
       </div>
 
-      <div className="grid gap-4">
+      <div className="grid min-h-0 gap-4 overflow-y-auto overscroll-contain pb-1">
         {props.timeline}
         {props.state !== "compact" ? (
           <>
