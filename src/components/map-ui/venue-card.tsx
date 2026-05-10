@@ -76,8 +76,8 @@ export function VenueCard(props: VenueCardProps) {
       type="button"
       className={`grid gap-1 rounded-lg border px-3 py-3 text-left text-sm transition ${
         props.selected
-          ? "border-yellow-300 bg-yellow-300/15"
-          : "border-white/15 bg-white/5 hover:bg-white/10"
+          ? "border-amber-300 bg-amber-100 shadow-sm"
+          : "border-slate-200 bg-white hover:border-amber-200 hover:bg-amber-50"
       }`}
       onClick={props.onSelect}
     >
@@ -91,9 +91,9 @@ export function VenueCard(props: VenueCardProps) {
           {VENUE_TYPE_LABELS[props.place.venueType]}
         </span>
       </div>
-      <div className="text-xs text-slate-300">{sunlightLabel}</div>
+      <div className="text-xs text-slate-500">{sunlightLabel}</div>
       {props.place.selectionStrategy !== "original" ? (
-        <div className="text-[11px] text-amber-200">
+        <div className="text-[11px] text-amber-700">
           Terrasse decalee ({props.place.selectionOffsetMeters}m) pour eviter un point indoor.
         </div>
       ) : null}

@@ -18,6 +18,7 @@ import {
   LayerFilters,
   ProgressStatus,
   TimeSlider,
+  ViewTabs,
 } from "@/components/map-ui/controls";
 import { FloatingSearch } from "@/components/map-ui/floating-search";
 import {
@@ -29,6 +30,7 @@ import type { VenueCardPlace } from "@/components/map-ui/venue-card";
 
 type AreaMode = "instant" | "daily";
 type BaseMapStyle = "map" | "satellite";
+type MapPanelTab = "map" | "terraces";
 
 interface AreaInstantPoint {
   id: string;
@@ -2188,6 +2190,7 @@ export function SunlightMapClient() {
   const [showTerrain, setShowTerrain] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showPlaces, setShowPlaces] = useState(true);
+  const [activeDesktopTab, setActiveDesktopTab] = useState<MapPanelTab>("map");
   const [bottomSheetState, setBottomSheetState] =
     useState<BottomSheetState>("compact");
   const [isMobileBarsOpen, setIsMobileBarsOpen] = useState(false);
@@ -2284,16 +2287,6 @@ export function SunlightMapClient() {
     );
   }, [dailyTimeline, ignoreVegetationShadow, mode]);
 
-  const dailyExposureHotspot = useMemo(() => {
-    if (!dailyExposurePoints || dailyExposurePoints.length === 0) {
-      return null;
-    }
-
-    return dailyExposurePoints.reduce((best, current) =>
-      current.exposureRatio > best.exposureRatio ? current : best,
-    );
-  }, [dailyExposurePoints]);
-
   const dailyExposureCells = useMemo(() => {
     if (!dailyExposurePoints || !dailyTimeline) {
       return null;
@@ -2350,41 +2343,6 @@ export function SunlightMapClient() {
     }
     return endMinutes <= startMinutes;
   }, [dailyEndLocalTime, dailyStartLocalTime, mode]);
-
-  const helperText = useMemo(() => {
-    if (mode === "daily" && dailyTimeline) {
-      const stats = dailyTimeline.stats;
-      const base = `${dailyTimeline.pointCount} points, tiles: ${dailyTimeline.tiles.length}, frames: ${dailyTimeline.frameCount}, plage: ${dailyTimeline.startLocalTime}-${dailyTimeline.endLocalTime}, indoor exclus: ${dailyTimeline.indoorPointsExcluded}, terrasses soleil: ${sunlitPlaces.length}, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m`;
-      if (!stats) {
-        return `${base}, calcul timeline en cours...`;
-      }
-
-      const elapsed = formatDuration(Math.round(stats.elapsedMs / 1000));
-      if (!dailyExposureHotspot) {
-        return `${base}, ${elapsed}, evaluations: ${stats.totalEvaluations}`;
-      }
-
-      const exposurePercent = Math.round(dailyExposureHotspot.exposureRatio * 100);
-      return `${base}, ${elapsed}, evaluations: ${stats.totalEvaluations}, hotspot: ${exposurePercent}% (${dailyExposureHotspot.lat.toFixed(5)}, ${dailyExposureHotspot.lon.toFixed(5)})`;
-    }
-
-    if (!lastResult) {
-      return "Aucun calcul encore lancé.";
-    }
-    const warningCount = Array.from(
-      new Set([...(lastResult.warnings ?? []), ...placesWarnings]),
-    ).length;
-    const excludedIndoor = lastResult.stats.indoorPointsExcluded ?? 0;
-    return `${lastResult.pointCount} points, ${lastResult.stats.elapsedMs} ms, indoor exclus: ${excludedIndoor}, terrasses soleil: ${sunlitPlaces.length}, toitBias ${buildingHeightBiasMeters >= 0 ? "+" : ""}${buildingHeightBiasMeters.toFixed(1)}m, warnings: ${warningCount}`;
-  }, [
-    buildingHeightBiasMeters,
-    dailyExposureHotspot,
-    dailyTimeline,
-    lastResult,
-    mode,
-    placesWarnings,
-    sunlitPlaces.length,
-  ]);
 
   useEffect(() => {
     clickDebugParamsRef.current = {
@@ -4575,23 +4533,10 @@ export function SunlightMapClient() {
     <CalculationControls
       mode={mode}
       date={date}
-      localTime={localTime}
-      dailyStartLocalTime={dailyStartLocalTime}
-      dailyEndLocalTime={dailyEndLocalTime}
-      sampleEveryMinutes={sampleEveryMinutes}
-      gridStepMeters={gridStepMeters}
-      buildingHeightBiasMeters={buildingHeightBiasMeters}
       baseMapStyle={baseMapStyle}
       isLoading={isLoading}
       isDailyRangeInvalid={isDailyRangeInvalid}
-      onModeChange={setMode}
       onDateChange={setDate}
-      onLocalTimeChange={setLocalTime}
-      onDailyStartChange={setDailyStartLocalTime}
-      onDailyEndChange={setDailyEndLocalTime}
-      onSampleEveryMinutesChange={setSampleEveryMinutes}
-      onGridStepMetersChange={setGridStepMeters}
-      onBuildingHeightBiasMetersChange={setBuildingHeightBiasMeters}
       onBaseMapStyleChange={setBaseMapStyle}
       onRunCalculation={() => void runAreaCalculation()}
       onCancelDailyCalculation={cancelDailyCalculation}
@@ -4603,19 +4548,17 @@ export function SunlightMapClient() {
       showSunny={showSunny}
       showShadow={showShadow}
       showTerrain={showTerrain}
-      showBuildings={showBuildings}
-      showVegetation={showVegetation}
       showHeatmap={showHeatmap}
       showPlaces={showPlaces}
       ignoreVegetationShadow={ignoreVegetationShadow}
       canShowHeatmap={canShowHeatmap}
       cacheOnly={cacheOnly}
       forceCacheOnly={forceCacheOnly}
-      onShowSunnyChange={setShowSunny}
-      onShowShadowChange={setShowShadow}
+      onShowSunShadowChange={(value) => {
+        setShowSunny(value);
+        setShowShadow(value);
+      }}
       onShowTerrainChange={setShowTerrain}
-      onShowBuildingsChange={setShowBuildings}
-      onShowVegetationChange={setShowVegetation}
       onShowHeatmapChange={setShowHeatmap}
       onShowPlacesChange={setShowPlaces}
       onIgnoreVegetationShadowChange={setIgnoreVegetationShadow}
@@ -4634,7 +4577,6 @@ export function SunlightMapClient() {
 
   const coveragePanel = (
     <DailyCoverage
-      helperText={helperText}
       focusRunMessage={focusRunMessage}
       focusRunMessageIsError={focusRunMessageIsError}
       error={error}
@@ -4645,21 +4587,21 @@ export function SunlightMapClient() {
 
   const desktopSearch = (
     <form
-      className="hidden items-center gap-2 rounded-full border border-white/18 bg-slate-950/80 p-2 shadow-xl backdrop-blur lg:flex"
+      className="hidden items-center gap-2 rounded-full border border-white/70 bg-white/88 p-2 text-slate-900 shadow-xl backdrop-blur lg:flex"
       onSubmit={(event) => {
         event.preventDefault();
         void handleSubmitSearch();
       }}
     >
       <input
-        className="w-72 rounded-full border border-white/12 bg-white/10 px-4 py-2 text-sm text-white outline-none placeholder:text-slate-400 focus:border-yellow-300"
+        className="w-72 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-amber-300"
         value={searchQuery}
         placeholder="Chercher une adresse ou un lieu"
         onChange={(event) => setSearchQuery(event.target.value)}
       />
       <button
         type="submit"
-        className="rounded-full bg-yellow-300 px-4 py-2 text-sm font-semibold text-black disabled:bg-slate-500"
+        className="rounded-full bg-amber-300 px-4 py-2 text-sm font-semibold text-slate-950 disabled:bg-slate-300 disabled:text-slate-500"
         disabled={isSearchLoading || searchQuery.trim().length === 0}
       >
         {isSearchLoading ? "..." : "OK"}
@@ -4683,13 +4625,23 @@ export function SunlightMapClient() {
       />
 
       <div className="absolute left-5 top-5 z-[450] hidden items-center gap-3 lg:flex">
-        <div className="rounded-full border border-white/18 bg-slate-950/80 px-4 py-2 text-sm font-semibold shadow-xl backdrop-blur">
+        <div className="rounded-full border border-white/70 bg-white/88 px-4 py-2 text-sm font-semibold text-slate-900 shadow-xl backdrop-blur">
           Mappy Hour
         </div>
         {desktopSearch}
       </div>
 
-      <div className="absolute left-5 top-20 z-[450] hidden max-h-[calc(100dvh-136px)] w-[400px] gap-3 overflow-y-auto rounded-2xl border border-white/18 bg-slate-950/82 p-4 shadow-2xl backdrop-blur lg:grid">
+      <div className="absolute left-5 top-20 z-[450] hidden max-h-[calc(100dvh-104px)] w-[360px] gap-4 overflow-y-auto rounded-3xl border border-white/70 bg-white/90 p-4 text-slate-900 shadow-2xl backdrop-blur lg:grid">
+        <ViewTabs
+          activeTab={activeDesktopTab}
+          venueCount={sunlitPlaces.length}
+          onTabChange={(tab) => {
+            setActiveDesktopTab(tab);
+            if (tab === "terraces") {
+              setShowPlaces(true);
+            }
+          }}
+        />
         {calculationControls}
         {layerFilters}
         {timelineControl}
@@ -4697,10 +4649,11 @@ export function SunlightMapClient() {
         {coveragePanel}
       </div>
 
-      <aside className="absolute right-5 top-5 z-[450] hidden h-[calc(100dvh-40px)] w-[360px] overflow-hidden rounded-2xl border border-white/18 bg-slate-950/82 shadow-2xl backdrop-blur lg:block">
-        <div className="border-b border-white/15 px-4 py-3">
-          <p className="text-sm font-semibold">Bars / restos au soleil</p>
-          <p className="text-xs text-slate-300">
+      {activeDesktopTab === "terraces" ? (
+        <aside className="absolute right-5 top-5 z-[450] hidden h-[calc(100dvh-40px)] w-[360px] overflow-hidden rounded-3xl border border-white/70 bg-white/92 text-slate-900 shadow-2xl backdrop-blur lg:block">
+        <div className="border-b border-slate-200 px-4 py-3">
+          <p className="text-sm font-semibold">Terrasses au soleil</p>
+          <p className="text-xs text-slate-500">
             {isPlacesLoading
               ? "Calcul terrasses en cours..."
               : `${sunlitPlaces.length} etablissements visibles`}
@@ -4717,10 +4670,7 @@ export function SunlightMapClient() {
           />
         </div>
       </aside>
-
-      <div className="absolute bottom-4 left-1/2 z-[440] hidden w-[min(760px,calc(100vw-48px))] -translate-x-1/2 rounded-full border border-white/14 bg-slate-950/75 px-4 py-2 text-xs text-slate-200 shadow-xl backdrop-blur lg:block">
-        {helperText}
-      </div>
+      ) : null}
 
       <div className="lg:hidden">
         <MobileBottomSheet

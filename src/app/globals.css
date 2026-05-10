@@ -48,3 +48,9 @@ code {
 .leaflet-tooltip-top.sunlit-place-label::before {
   border-top-color: rgba(15, 23, 42, 0.9);
 }
+
+@media (max-width: 1023px) {
+  .leaflet-bottom.leaflet-left {
+    bottom: 144px;
+  }
+}

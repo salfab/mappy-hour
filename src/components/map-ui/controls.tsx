@@ -2,6 +2,7 @@
 
 export type AreaMode = "instant" | "daily";
 export type BaseMapStyle = "map" | "satellite";
+export type MapPanelTab = "map" | "terraces";
 
 export interface TimelineProgressView {
   phase: string;
@@ -15,23 +16,10 @@ export interface TimelineProgressView {
 interface CalculationControlsProps {
   mode: AreaMode;
   date: string;
-  localTime: string;
-  dailyStartLocalTime: string;
-  dailyEndLocalTime: string;
-  sampleEveryMinutes: number;
-  gridStepMeters: number;
-  buildingHeightBiasMeters: number;
   baseMapStyle: BaseMapStyle;
   isLoading: boolean;
   isDailyRangeInvalid: boolean;
-  onModeChange: (mode: AreaMode) => void;
   onDateChange: (date: string) => void;
-  onLocalTimeChange: (time: string) => void;
-  onDailyStartChange: (time: string) => void;
-  onDailyEndChange: (time: string) => void;
-  onSampleEveryMinutesChange: (minutes: number) => void;
-  onGridStepMetersChange: (meters: number) => void;
-  onBuildingHeightBiasMetersChange: (meters: number) => void;
   onBaseMapStyleChange: (style: BaseMapStyle) => void;
   onRunCalculation: () => void;
   onCancelDailyCalculation: () => void;
@@ -41,19 +29,14 @@ interface LayerFiltersProps {
   showSunny: boolean;
   showShadow: boolean;
   showTerrain: boolean;
-  showBuildings: boolean;
-  showVegetation: boolean;
   showHeatmap: boolean;
   showPlaces: boolean;
   ignoreVegetationShadow: boolean;
   canShowHeatmap: boolean;
   cacheOnly: boolean;
   forceCacheOnly: boolean;
-  onShowSunnyChange: (value: boolean) => void;
-  onShowShadowChange: (value: boolean) => void;
+  onShowSunShadowChange: (value: boolean) => void;
   onShowTerrainChange: (value: boolean) => void;
-  onShowBuildingsChange: (value: boolean) => void;
-  onShowVegetationChange: (value: boolean) => void;
   onShowHeatmapChange: (value: boolean) => void;
   onShowPlacesChange: (value: boolean) => void;
   onIgnoreVegetationShadowChange: (value: boolean) => void;
@@ -78,8 +61,13 @@ interface ProgressStatusProps {
   formatDuration: (seconds: number) => string;
 }
 
+interface ViewTabsProps {
+  activeTab: MapPanelTab;
+  venueCount: number;
+  onTabChange: (tab: MapPanelTab) => void;
+}
+
 interface DailyCoverageProps {
-  helperText: string;
   focusRunMessage: string | null;
   focusRunMessageIsError: boolean;
   error: string | null;
@@ -90,7 +78,7 @@ interface DailyCoverageProps {
 function Field(props: { label: string; children: React.ReactNode }) {
   return (
     <label className="grid gap-1 text-sm">
-      <span className="text-xs font-medium uppercase tracking-wide text-slate-300">
+      <span className="text-xs font-semibold uppercase text-slate-500">
         {props.label}
       </span>
       {props.children}
@@ -98,37 +86,20 @@ function Field(props: { label: string; children: React.ReactNode }) {
   );
 }
 
-const inputClass = "rounded border border-white/20 bg-black/45 px-2 py-1 text-white";
-const chipClass = "inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/35 px-3 py-1.5";
+const inputClass =
+  "rounded-xl border border-slate-200 bg-white px-3 py-2 text-slate-900 shadow-sm outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200";
+const chipClass =
+  "inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-slate-700 shadow-sm transition hover:border-amber-200 hover:bg-amber-50";
 
 export function CalculationControls(props: CalculationControlsProps) {
   return (
     <div className="flex flex-wrap items-end gap-3">
-      <Field label="Mode">
-        <select
-          className={inputClass}
-          value={props.mode}
-          onChange={(event) => props.onModeChange(event.target.value as AreaMode)}
-        >
-          <option value="instant">instant</option>
-          <option value="daily">daily</option>
-        </select>
-      </Field>
       <Field label="Date">
         <input
           type="date"
           value={props.date}
           className={inputClass}
           onChange={(event) => props.onDateChange(event.target.value)}
-        />
-      </Field>
-      <Field label="Heure">
-        <input
-          type="time"
-          value={props.localTime}
-          className={inputClass}
-          onChange={(event) => props.onLocalTimeChange(event.target.value)}
-          disabled={props.mode !== "instant"}
         />
       </Field>
       <Field label="Fond">
@@ -141,61 +112,9 @@ export function CalculationControls(props: CalculationControlsProps) {
           <option value="satellite">satellite</option>
         </select>
       </Field>
-      <Field label="Grille">
-        <input
-          type="number"
-          min={1}
-          max={2000}
-          step={1}
-          value={props.gridStepMeters}
-          className={`${inputClass} w-24`}
-          onChange={(event) => props.onGridStepMetersChange(Number(event.target.value))}
-        />
-      </Field>
-      <Field label="Toit bias">
-        <input
-          type="number"
-          min={-20}
-          max={20}
-          step={0.1}
-          value={props.buildingHeightBiasMeters}
-          className={`${inputClass} w-24`}
-          onChange={(event) => props.onBuildingHeightBiasMetersChange(Number(event.target.value))}
-        />
-      </Field>
-      {props.mode === "daily" ? (
-        <>
-          <Field label="Debut">
-            <input
-              type="time"
-              value={props.dailyStartLocalTime}
-              className={`${inputClass} w-28`}
-              onChange={(event) => props.onDailyStartChange(event.target.value)}
-            />
-          </Field>
-          <Field label="Fin">
-            <input
-              type="time"
-              value={props.dailyEndLocalTime}
-              className={`${inputClass} w-28`}
-              onChange={(event) => props.onDailyEndChange(event.target.value)}
-            />
-          </Field>
-          <Field label="Sample">
-            <input
-              type="number"
-              min={1}
-              max={60}
-              value={props.sampleEveryMinutes}
-              className={`${inputClass} w-24`}
-              onChange={(event) => props.onSampleEveryMinutesChange(Number(event.target.value))}
-            />
-          </Field>
-        </>
-      ) : null}
       <button
         type="button"
-        className="rounded bg-yellow-300 px-4 py-2 font-semibold text-black transition hover:bg-yellow-200 disabled:cursor-not-allowed disabled:bg-slate-500"
+        className="rounded-xl bg-amber-300 px-4 py-2 font-semibold text-slate-950 shadow-sm transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
         onClick={props.onRunCalculation}
         disabled={props.isLoading || (props.mode === "daily" && props.isDailyRangeInvalid)}
       >
@@ -204,7 +123,7 @@ export function CalculationControls(props: CalculationControlsProps) {
       {props.mode === "daily" && props.isLoading ? (
         <button
           type="button"
-          className="rounded bg-rose-500 px-4 py-2 font-semibold text-white transition hover:bg-rose-400"
+          className="rounded-xl bg-rose-500 px-4 py-2 font-semibold text-white shadow-sm transition hover:bg-rose-400"
           onClick={props.onCancelDailyCalculation}
         >
           Interrompre
@@ -215,12 +134,10 @@ export function CalculationControls(props: CalculationControlsProps) {
 }
 
 export function LayerFilters(props: LayerFiltersProps) {
+  const showLight = props.showSunny || props.showShadow;
   const filters = [
-    ["Soleil", props.showSunny, props.onShowSunnyChange],
-    ["Ombre", props.showShadow, props.onShowShadowChange],
+    ["Lumiere", showLight, props.onShowSunShadowChange],
     ["Relief", props.showTerrain, props.onShowTerrainChange],
-    ["Batiments", props.showBuildings, props.onShowBuildingsChange],
-    ["Vegetation", props.showVegetation, props.onShowVegetationChange],
   ] as const;
 
   return (
@@ -244,32 +161,38 @@ export function LayerFilters(props: LayerFiltersProps) {
         />
         <span>Heatmap</span>
       </label>
-      <label className={chipClass}>
-        <input
-          type="checkbox"
-          checked={props.showPlaces}
-          onChange={(event) => props.onShowPlacesChange(event.target.checked)}
-        />
-        <span>Terrasses</span>
-      </label>
-      <label className={chipClass}>
-        <input
-          type="checkbox"
-          checked={props.ignoreVegetationShadow}
-          onChange={(event) => props.onIgnoreVegetationShadowChange(event.target.checked)}
-        />
-        <span>Ignorer vegetation</span>
-      </label>
-      {!props.forceCacheOnly ? (
-        <label className={chipClass}>
-          <input
-            type="checkbox"
-            checked={props.cacheOnly}
-            onChange={(event) => props.onCacheOnlyChange(event.target.checked)}
-          />
-          <span>Cache uniquement</span>
-        </label>
-      ) : null}
+    </div>
+  );
+}
+
+export function ViewTabs(props: ViewTabsProps) {
+  return (
+    <div className="grid grid-cols-2 gap-1 rounded-2xl border border-slate-200 bg-white p-1 text-sm font-semibold shadow-sm">
+      <button
+        type="button"
+        className={`rounded-xl px-3 py-2 transition ${
+          props.activeTab === "map"
+            ? "bg-amber-200 text-slate-950"
+            : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+        }`}
+        onClick={() => props.onTabChange("map")}
+      >
+        Carte
+      </button>
+      <button
+        type="button"
+        className={`rounded-xl px-3 py-2 transition ${
+          props.activeTab === "terraces"
+            ? "bg-amber-200 text-slate-950"
+            : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+        }`}
+        onClick={() => props.onTabChange("terraces")}
+      >
+        Terrasses
+        <span className="ml-2 rounded-full bg-white/70 px-2 py-0.5 text-xs">
+          {props.venueCount}
+        </span>
+      </button>
     </div>
   );
 }
@@ -283,11 +206,14 @@ export function TimeSlider(props: TimeSliderProps) {
 
   return (
     <div className="grid gap-2 text-sm">
-      <div className="flex items-center justify-between">
-        <span>Timeline quotidienne</span>
-        <span>{props.activeFrameTime ?? "--:--:--"}</span>
+      <div className="flex items-center justify-between text-slate-700">
+        <span className="font-medium">Timeline</span>
+        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-900">
+          {props.activeFrameTime ?? "--:--:--"}
+        </span>
       </div>
       <input
+        className="accent-amber-300"
         type="range"
         min={0}
         max={max}
@@ -296,7 +222,7 @@ export function TimeSlider(props: TimeSliderProps) {
         onChange={(event) => props.onFrameIndexChange(Number(event.target.value))}
         disabled={props.disabled}
       />
-      <p className="text-xs text-slate-300">
+      <p className="text-xs text-slate-500">
         Tuiles recues: {props.tileCount}, {props.pointCount} points
       </p>
     </div>
@@ -317,11 +243,11 @@ export function ProgressStatus(props: ProgressStatusProps) {
   return (
     <div className="grid gap-1 text-sm">
       <progress
-        className="h-2 w-full overflow-hidden rounded accent-yellow-300"
+        className="h-2 w-full overflow-hidden rounded accent-amber-300"
         max={100}
         value={isIndeterminate ? undefined : Math.min(100, Math.max(0, progress.percent))}
       />
-      <p className="text-xs text-slate-300">
+      <p className="text-xs text-slate-500">
         {progress.phase}
         {progress.tileIndex && progress.totalTiles ? ` (tuile ${progress.tileIndex}/${progress.totalTiles})` : ""}
         {!isIndeterminate ? ` - ${progress.percent.toFixed(1)}%` : ""}
@@ -337,9 +263,17 @@ export function ProgressStatus(props: ProgressStatusProps) {
 }
 
 export function DailyCoverage(props: DailyCoverageProps) {
+  if (
+    !props.focusRunMessage &&
+    !props.error &&
+    !props.placesError &&
+    props.warnings.length === 0
+  ) {
+    return null;
+  }
+
   return (
     <div className="grid gap-2 text-sm">
-      <p className="text-slate-200">{props.helperText}</p>
       {props.focusRunMessage ? (
         <p
           className={`rounded px-3 py-2 ${

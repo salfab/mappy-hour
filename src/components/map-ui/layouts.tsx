@@ -82,17 +82,17 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
 
   return (
     <section
-      className={`absolute inset-x-0 bottom-0 z-[460] overflow-hidden rounded-t-3xl border border-white/16 bg-slate-950/92 px-4 pb-[calc(env(safe-area-inset-bottom)+16px)] pt-2 text-white shadow-2xl backdrop-blur transition-[max-height] duration-200 ${stateHeightClass}`}
+      className={`absolute inset-x-0 bottom-0 z-[460] overflow-hidden rounded-t-[2rem] border border-white/70 bg-white/92 px-4 pb-[calc(env(safe-area-inset-bottom)+16px)] pt-2 text-slate-900 shadow-2xl backdrop-blur transition-[max-height] duration-200 ${stateHeightClass}`}
       aria-label="Controle de la carte"
     >
-      <div className="mx-auto mb-2 h-1.5 w-12 rounded-full bg-white/35" />
+      <div className="mx-auto mb-2 h-1.5 w-12 rounded-full bg-slate-300" />
       <div className="mb-3 flex justify-center gap-2">
         {(["compact", "middle", "expanded"] as const).map((option) => (
           <button
             key={option}
             type="button"
             className={`h-2 w-8 rounded-full transition ${
-              props.state === option ? "bg-yellow-300" : "bg-white/20"
+              props.state === option ? "bg-amber-300" : "bg-slate-200"
             }`}
             aria-label={`Afficher la feuille ${option}`}
             onClick={() => props.onStateChange(option)}
@@ -113,11 +113,11 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
             {props.coverage}
             <button
               type="button"
-              className="flex items-center justify-between rounded-xl border border-white/15 bg-white/10 px-3 py-3 text-left text-sm transition hover:bg-white/15"
+              className="flex items-center justify-between rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-left text-sm text-slate-900 transition hover:bg-amber-100"
               onClick={props.onOpenBars}
             >
-              <span>Bars / restos au soleil</span>
-              <span className="inline-flex items-center gap-2 text-slate-300">
+              <span>Terrasses au soleil</span>
+              <span className="inline-flex items-center gap-2 text-slate-500">
                 {props.venueCount}
                 <ChevronRightIcon className="h-4 w-4" />
               </span>
@@ -146,7 +146,7 @@ export function MobileBarsView(props: MobileBarsViewProps) {
           <BackIcon />
         </button>
         <div>
-          <h2 className="text-lg font-semibold">Bars / restos au soleil</h2>
+          <h2 className="text-lg font-semibold">Terrasses au soleil</h2>
           <p className="text-xs text-slate-300">
             {props.isLoading ? "Calcul terrasses en cours..." : `${props.places.length} etablissements visibles`}
           </p>
