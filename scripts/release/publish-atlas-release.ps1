@@ -91,7 +91,11 @@ Remove-Item $PlacesTmpRoot -Recurse -Force -ErrorAction SilentlyContinue
 $env:MAPPY_DATA_ROOT = $null
 
 # ── Packaging ─────────────────────────────────────────────────────────────────
-Write-Host "`n[publish] ▶ Packaging des régions : $Regions"
+# Force gzip compression for release assets: zstd requires a native binary
+# (@mongodb-js/zstd) that is often unavailable on deployment targets without
+# build tools. Gzip uses Node.js built-in zlib — zero extra dependencies.
+$env:MAPPY_ATLAS_COMPRESSION = "gzip"
+Write-Host "`n[publish] ▶ Packaging des régions : $Regions (compression: gzip)"
 $RegionList = $Regions -split "," | ForEach-Object { $_.Trim() }
 
 $Summaries = @()
