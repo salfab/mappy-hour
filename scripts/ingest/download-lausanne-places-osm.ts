@@ -43,7 +43,13 @@ interface NormalizedPlace {
 const OVERPASS_ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.openstreetmap.fr/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ];
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function buildOverpassQuery(): string {
   const [minLon, minLat, maxLon, maxLat] = LAUSANNE_LOCAL_BBOX;
@@ -129,22 +135,32 @@ async function fetchOverpassData(query: string): Promise<OverpassResponse> {
   let lastError: unknown = null;
 
   for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        },
-        body: `data=${encodeURIComponent(query)}`,
-      });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          },
+          body: `data=${encodeURIComponent(query)}`,
+        });
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status} from ${endpoint}`);
+        if (response.status === 429) {
+          const delay = (attempt + 1) * 15_000;
+          console.error(`[places] ${endpoint} rate-limited, retry in ${delay / 1000}s...`);
+          await sleep(delay);
+          continue;
+        }
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} from ${endpoint}`);
+        }
+
+        return (await response.json()) as OverpassResponse;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) await sleep(5_000);
       }
-
-      return (await response.json()) as OverpassResponse;
-    } catch (error) {
-      lastError = error;
     }
   }
 
