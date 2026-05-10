@@ -14,6 +14,22 @@ Write-Host "=== pnpm install ==="
 pnpm install --frozen-lockfile
 if ($LASTEXITCODE -ne 0) { Write-Host "pnpm install failed"; exit 1 }
 
+Write-Host "=== @mongodb-js/zstd native prebuilt ==="
+# The NAPI binary is not always downloaded by pnpm install --frozen-lockfile.
+# Run prebuild-install explicitly so atlas decompression works without build tools.
+$prebuildCmd = "node_modules\@mongodb-js\zstd\node_modules\.bin\prebuild-install.CMD"
+if (Test-Path $prebuildCmd) {
+    node $prebuildCmd --runtime napi --directory "node_modules\@mongodb-js\zstd" 2>&1 | Out-Null
+    $zstdCheck = node -e "try { require('@mongodb-js/zstd'); process.exit(0); } catch { process.exit(1); }"
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  zstd native module OK"
+    } else {
+        Write-Host "  Warning: zstd native module unavailable (atlas files must be gzip-compressed)"
+    }
+} else {
+    Write-Host "  prebuild-install not found, skipping"
+}
+
 # Places OSM data is downloaded alongside the atlas via:
 #   pnpm atlas:download -- --repo=salfab/mappy-hour --regions=lausanne,nyon,...
 # Run that command separately when updating the atlas or on first deploy.
