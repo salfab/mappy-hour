@@ -121,6 +121,13 @@ const tileAtlasMemoryCache = new TtlCache<BinaryTileAtlas | BinaryTileAtlas[] | 
   ATLAS_MEMORY_CACHE_ENTRIES,
 );
 
+function tileIdFromAtlasCacheFile(fileName: string): string | null {
+  const match = fileName.match(
+    /^(.*)\.atlas\.(?:bin\.gz|shards\.json|base\.bin\.zst|shard-\d+\.bin\.zst)$/,
+  );
+  return match?.[1] ?? null;
+}
+
 type BuildingsIndex = NonNullable<
   Awaited<ReturnType<typeof buildSharedPointEvaluationSources>>["buildingsIndex"]
 >;
@@ -2375,7 +2382,8 @@ export async function* streamTilesForBbox(params: {
         );
         try {
           for (const f of await fsMod.readdir(atlasDir)) {
-            if (f.endsWith(".atlas.bin.gz")) ids.add(f.slice(0, -".atlas.bin.gz".length));
+            const tileId = tileIdFromAtlasCacheFile(f);
+            if (tileId) ids.add(tileId);
           }
         } catch { /* no atlas at this resolution */ }
       }
