@@ -2,32 +2,12 @@ $ProgressPreference = "SilentlyContinue"
 $nodeDir = "C:\tools\node-v20.18.0"
 $env:PATH = "$nodeDir;$env:APPDATA\npm;" + $env:PATH
 $repoDir = "C:\srv\mappy-hour"
-$dataRoot = "C:\mappy-data"
 
 Set-Location $repoDir
 
-Write-Host "=== git pull ==="
-git pull
-if ($LASTEXITCODE -ne 0) { Write-Host "git pull failed"; exit 1 }
-
-Write-Host "=== pnpm install ==="
-pnpm install --frozen-lockfile
-if ($LASTEXITCODE -ne 0) { Write-Host "pnpm install failed"; exit 1 }
-
-Write-Host "=== @mongodb-js/zstd native prebuilt ==="
-# The NAPI binary is not always downloaded by pnpm install --frozen-lockfile.
-# install-zstd-native.js runs prebuild-install and verifies the module loads.
-node scripts\headless-server-selfhosting\install-zstd-native.js
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  Warning: zstd native module unavailable - atlas zstd files will fail to decompress"
-}
-
-# Places OSM data is downloaded alongside the atlas via:
-#   pnpm atlas:download -- --repo=salfab/mappy-hour --regions=lausanne,nyon,...
-# Run that command separately when updating the atlas or on first deploy.
-
 Write-Host "=== pnpm build ==="
 $env:NEXT_PUBLIC_FORCE_CACHE_ONLY = "true"
+$env:MAPPY_DATA_ROOT = "C:\mappy-data"
 pnpm build
 if ($LASTEXITCODE -ne 0) { Write-Host "pnpm build failed"; exit 1 }
 
@@ -47,6 +27,16 @@ Start-Sleep 2
 Write-Host "=== Demarrage via WMI ==="
 Set-Content "$repoDir\server.log" ""
 Set-Content "$repoDir\server.err" ""
+@"
+`$env:PATH = "C:\tools\node-v20.18.0;" + `$env:APPDATA + "\npm;" + `$env:PATH
+Set-Location "C:\srv\mappy-hour"
+`$env:NEXT_PUBLIC_FORCE_CACHE_ONLY = "true"
+`$env:MAPPY_DATA_ROOT = "C:\mappy-data"
+`$env:PORT = "3000"
+`$env:MAPPY_TIMELINE_CACHE_PREFETCH = "1"
+`$env:MAPPY_ATLAS_MEMORY_CACHE_ENTRIES = "0"
+pnpm start 1>> "C:\srv\mappy-hour\server.log" 2>> "C:\srv\mappy-hour\server.err"
+"@ | Set-Content "C:\temp\mitch-start.ps1" -Encoding UTF8
 $cmd = "powershell.exe -NoProfile -File C:\temp\mitch-start.ps1"
 $result = (Get-WmiObject -List Win32_Process).Create($cmd)
 if ($result.ReturnValue -eq 0) {
@@ -60,10 +50,11 @@ Start-Sleep 20
 
 Write-Host "=== Verification ==="
 try {
-    $r = Invoke-WebRequest "http://127.0.0.1:3000" -UseBasicParsing -TimeoutSec 10
+    $r = Invoke-WebRequest "http://127.0.0.1:3000/api/datasets" -UseBasicParsing -TimeoutSec 10
     Write-Host "OK: HTTP $($r.StatusCode) - serveur operationnel"
 } catch {
     Write-Host "FAIL: $($_.Exception.Message)"
     Get-Content "$repoDir\server.log" -Tail 20 -ErrorAction SilentlyContinue
     Get-Content "$repoDir\server.err" -Tail 10 -ErrorAction SilentlyContinue
+    exit 1
 }
