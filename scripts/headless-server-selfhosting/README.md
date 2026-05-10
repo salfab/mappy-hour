@@ -244,6 +244,36 @@ tailscale serve --https=443 off
 
 ---
 
+## Déployer une mise à jour
+
+Après avoir pushé un commit sur `master`, connectez-vous à mitch via SSH et lancez le script de déploiement :
+
+```powershell
+ssh devops@mitch "powershell -File C:\srv\mappy-hour\scripts\headless-server-selfhosting\mitch-deploy.ps1"
+```
+
+Le script fait, dans l'ordre :
+
+1. `git pull` — récupère la dernière version du code
+2. `pnpm install --frozen-lockfile` — installe les éventuelles nouvelles dépendances
+3. `pnpm build` — recompile l'application Next.js (~2–4 min, serveur actuel toujours en ligne)
+4. Tue l'ancien processus Node sur le port 3000
+5. Redémarre le serveur via WMI (survit à la déconnexion SSH)
+6. Attend 20 s puis vérifie que `http://127.0.0.1:3000` répond
+
+> **Note :** la session SSH peut rester ouverte pendant le build (2–4 min).
+> Contrairement à `Start-Process`, le démarrage via WMI échappe au Job Object SSH
+> et le serveur continue de tourner après votre déconnexion.
+
+### Voir les logs après déploiement
+
+```powershell
+ssh devops@mitch "Get-Content C:\srv\mappy-hour\server.log -Tail 30"
+ssh devops@mitch "Get-Content C:\srv\mappy-hour\server.err -Tail 10"
+```
+
+---
+
 ## Ce qui vient ensuite
 
 Une fois le SSH et Funnel établis, tout se fait à distance :
