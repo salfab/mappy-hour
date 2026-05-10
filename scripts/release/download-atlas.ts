@@ -35,6 +35,20 @@ import {
 const GRID_STEP = "1";
 const ATLAS_RESOLUTION_DEG = "0.75";
 
+function tileIdFromAtlasFile(fileName: string): string | null {
+  const match = fileName.match(/^(.*)\.atlas\.(?:bin\.gz|idx|shards\.json|base\.bin\.zst|shard-\d+\.bin\.zst)$/);
+  return match?.[1] ?? null;
+}
+
+function countAtlasTiles(files: string[]): number {
+  const ids = new Set<string>();
+  for (const file of files) {
+    const id = tileIdFromAtlasFile(file);
+    if (id) ids.add(id);
+  }
+  return ids.size;
+}
+
 function parseArgs() {
   const args = Object.fromEntries(
     process.argv
@@ -184,11 +198,12 @@ async function processRegion(
     `r${ATLAS_RESOLUTION_DEG}`,
   );
 
-  // Idempotency check: count existing .atlas.bin.gz files
+  // Idempotency check: count existing atlas tiles. Sharded releases may not
+  // include monoliths, so `.atlas.idx` / shard manifests count too.
   let existingCount = 0;
   try {
     const existing = await fsp.readdir(destAtlasDir);
-    existingCount = existing.filter((f) => f.endsWith(".atlas.bin.gz")).length;
+    existingCount = countAtlasTiles(existing);
   } catch {
     // dir doesn't exist yet
   }
@@ -254,7 +269,8 @@ async function processRegion(
     console.error(`[download-atlas]   ✓ SHA256 OK`);
   }
 
-  // Extract — the tar contains release-info.json + atlas/r0.75/*.atlas.bin.gz|idx
+  // Extract — the tar contains release-info.json + atlas/r0.75 atlas files
+  // (legacy monoliths and/or sharded .zst payloads + manifests + .idx).
   const stagingDir = path.join(regionTmp, "extracted");
   await extractTar(tarPath, stagingDir);
   await fsp.unlink(tarPath);
@@ -265,6 +281,7 @@ async function processRegion(
 
   const extracted = await fsp.readdir(srcAtlasDir);
   for (const f of extracted) {
+    await fsp.rm(path.join(destAtlasDir, f), { force: true });
     await fsp.rename(path.join(srcAtlasDir, f), path.join(destAtlasDir, f));
   }
 
@@ -285,9 +302,7 @@ async function processRegion(
 
   await fsp.rm(regionTmp, { recursive: true, force: true });
 
-  const installed = (await fsp.readdir(destAtlasDir)).filter((f) =>
-    f.endsWith(".atlas.bin.gz"),
-  ).length;
+  const installed = countAtlasTiles(await fsp.readdir(destAtlasDir));
   console.error(`[download-atlas]   ✓ ${region} installé — ${installed}/${regionMeta.tileCount} tuiles`);
 }
 

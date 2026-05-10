@@ -25,6 +25,30 @@ const ATLAS_RESOLUTION_DEG = "0.75";
 const GRID_STEP = "1";
 const MAX_PART_BYTES = 1.8 * 1024 * 1024 * 1024; // 1.8 GB
 
+function tileIdFromAtlasFile(fileName: string): string | null {
+  const match = fileName.match(/^(.*)\.atlas\.(?:bin\.gz|idx|shards\.json|base\.bin\.zst|shard-\d+\.bin\.zst)$/);
+  return match?.[1] ?? null;
+}
+
+function countAtlasTiles(files: string[]): number {
+  const ids = new Set<string>();
+  for (const file of files) {
+    const id = tileIdFromAtlasFile(file);
+    if (id) ids.add(id);
+  }
+  return ids.size;
+}
+
+function isPackagedAtlasFile(fileName: string): boolean {
+  return (
+    fileName.endsWith(".atlas.bin.gz") ||
+    fileName.endsWith(".atlas.idx") ||
+    fileName.endsWith(".atlas.shards.json") ||
+    fileName.endsWith(".atlas.base.bin.zst") ||
+    /^.+\.atlas\.shard-\d+\.bin\.zst$/.test(fileName)
+  );
+}
+
 function parseArgs() {
   const args = Object.fromEntries(
     process.argv
@@ -56,7 +80,7 @@ async function findBestModelVersionHash(region: string): Promise<{ hash: string;
     const atlasDir = path.join(regionDir, hash, `g${GRID_STEP}`, "atlas", `r${ATLAS_RESOLUTION_DEG}`);
     try {
       const files = await fsp.readdir(atlasDir);
-      const count = files.filter((f) => f.endsWith(".atlas.bin.gz")).length;
+      const count = countAtlasTiles(files);
       if (!best || count > best.tileCount) best = { hash, tileCount: count };
     } catch {
       // no atlas dir for this hash
@@ -178,7 +202,7 @@ async function main() {
   } else {
     const atlasDir = path.join(CACHE_SUNLIGHT_DIR, region, modelVersionHash, `g${GRID_STEP}`, "atlas", `r${ATLAS_RESOLUTION_DEG}`);
     const files = await fsp.readdir(atlasDir).catch(() => [] as string[]);
-    tileCount = files.filter((f) => f.endsWith(".atlas.bin.gz")).length;
+    tileCount = countAtlasTiles(files);
   }
 
   const atlasDir = path.join(
@@ -200,9 +224,30 @@ async function main() {
   const files = await fsp.readdir(atlasDir);
   const binFiles = files.filter((f) => f.endsWith(".atlas.bin.gz"));
   const idxFiles = files.filter((f) => f.endsWith(".atlas.idx"));
-  console.error(`[package-atlas] ${binFiles.length} .atlas.bin.gz, ${idxFiles.length} .atlas.idx`);
+  const shardManifestFiles = files.filter((f) => f.endsWith(".atlas.shards.json"));
+  const shardBaseFiles = files.filter((f) => f.endsWith(".atlas.base.bin.zst"));
+  const shardDataFiles = files.filter((f) => /^.+\.atlas\.shard-\d+\.bin\.zst$/.test(f));
+  const atlasFiles = files.filter(isPackagedAtlasFile);
+  tileCount = countAtlasTiles(files);
+  console.error(
+    `[package-atlas] ${tileCount} tuiles, ${binFiles.length} .atlas.bin.gz, ${idxFiles.length} .atlas.idx, ` +
+      `${shardManifestFiles.length} manifests, ${shardBaseFiles.length} bases .zst, ${shardDataFiles.length} shards .zst`,
+  );
 
   await fsp.mkdir(args.outDir, { recursive: true });
+
+  if (args.dryRun) {
+    process.stdout.write(
+      JSON.stringify({
+        region,
+        modelVersionHash,
+        tileCount,
+        atlasFileCount: atlasFiles.length,
+        dryRun: true,
+      }),
+    );
+    return;
+  }
 
   // Write release-info.json inside the archive staging dir
   const stagingDir = path.join(args.outDir, `_staging_${region}`);
@@ -216,7 +261,8 @@ async function main() {
     artifactFormatVersion: 2,
     atlasResolutionDeg: parseFloat(ATLAS_RESOLUTION_DEG),
     gridStepMeters: parseInt(GRID_STEP),
-    tileCount: binFiles.length,
+    tileCount,
+    atlasStorage: shardManifestFiles.length > 0 ? "sharded-or-mixed" : "monolith",
     generatedAt: new Date().toISOString(),
   };
   await fsp.writeFile(
@@ -226,18 +272,11 @@ async function main() {
 
   // Copy atlas files into staging
   console.error(`[package-atlas] Copie des fichiers atlas...`);
-  for (const f of [...binFiles, ...idxFiles]) {
+  for (const f of atlasFiles) {
     await fsp.copyFile(
       path.join(atlasDir, f),
       path.join(stagingDir, "atlas", `r${ATLAS_RESOLUTION_DEG}`, f),
     );
-  }
-
-  if (args.dryRun) {
-    console.error(`[package-atlas] Dry-run — staging préparé dans ${stagingDir}`);
-    await fsp.rm(stagingDir, { recursive: true });
-    process.stdout.write(JSON.stringify({ region, modelVersionHash, tileCount: binFiles.length, dryRun: true }));
-    return;
   }
 
   // Create tar
@@ -272,7 +311,7 @@ async function main() {
   const summary = {
     region,
     modelVersionHash,
-    tileCount: binFiles.length,
+    tileCount,
     isSplit,
     parts: partInfos,
     assetName: isSplit ? undefined : `${region}-atlas.tar`,
