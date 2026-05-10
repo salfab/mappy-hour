@@ -20,7 +20,10 @@ Write-Host "=== @mongodb-js/zstd native prebuilt ==="
 $prebuildCmd = "node_modules\@mongodb-js\zstd\node_modules\.bin\prebuild-install.CMD"
 if (Test-Path $prebuildCmd) {
     node $prebuildCmd --runtime napi --directory "node_modules\@mongodb-js\zstd" 2>&1 | Out-Null
-    "try { require('@mongodb-js/zstd'); process.exit(0); } catch { process.exit(1); }" | node
+    $tmpJs = [System.IO.Path]::GetTempFileName() + ".js"
+    [System.IO.File]::WriteAllText($tmpJs, "try{require('@mongodb-js/zstd');process.exit(0);}catch{process.exit(1);}")
+    node $tmpJs
+    Remove-Item $tmpJs -ErrorAction SilentlyContinue
     if ($LASTEXITCODE -eq 0) {
         Write-Host "  zstd native module OK"
     } else {

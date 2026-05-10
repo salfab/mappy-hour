@@ -34,9 +34,8 @@ if ($prebuildExit -ne 0) {
 }
 
 Write-Host "=== Testing require('@mongodb-js/zstd') ==="
-$testJs = @'
-try { require('@mongodb-js/zstd'); console.log('OK - zstd loaded'); }
-catch(e) { console.log('FAIL: ' + e.message); process.exitCode = 1; }
-'@
-$testJs | node
+$tmpJs = [System.IO.Path]::GetTempFileName() + ".js"
+[System.IO.File]::WriteAllText($tmpJs, "try{require('@mongodb-js/zstd');console.log('OK');}catch(e){console.log('FAIL:'+e.message);process.exitCode=1;}")
+node $tmpJs
 Write-Host "zstd test exit: $LASTEXITCODE"
+Remove-Item $tmpJs -ErrorAction SilentlyContinue
