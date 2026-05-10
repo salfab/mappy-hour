@@ -210,7 +210,9 @@ export async function findCachedModelVersionHash(params: {
     try {
       dates = await fs.readdir(gridDir);
     } catch {
-      continue;
+      // gridSamplePath absent (e.g. atlas-only deploy has no m{sample}/ dir) —
+      // don't skip: fall through so dateCount stays 0 and the atlas check runs.
+      dates = [];
     }
 
     let dateCount = 0;
