@@ -21,7 +21,8 @@ $prebuildCmd = "node_modules\@mongodb-js\zstd\node_modules\.bin\prebuild-install
 if (Test-Path $prebuildCmd) {
     node $prebuildCmd --runtime napi --directory "node_modules\@mongodb-js\zstd" 2>&1 | Out-Null
     $tmpJs = [System.IO.Path]::GetTempFileName() + ".js"
-    [System.IO.File]::WriteAllText($tmpJs, "try{require('@mongodb-js/zstd');process.exit(0);}catch{process.exit(1);}")
+    $jsCode = 'try{require("@mongodb-js/zstd");process.exit(0);}catch(e){process.exit(1);}'
+    [System.IO.File]::WriteAllText($tmpJs, $jsCode)
     node $tmpJs
     Remove-Item $tmpJs -ErrorAction SilentlyContinue
     if ($LASTEXITCODE -eq 0) {
