@@ -239,6 +239,28 @@ export async function findCachedModelVersionHash(params: {
       primary.push({ modelVersionHash: hash, timeWindows: exactTimeWindows, dateCount });
     } else if (dateCount > 0) {
       fallback.push({ modelVersionHash: hash, timeWindows: firstTimeWindows, dateCount });
+    } else {
+      // No m{sample} tiles — check for atlas-format files (g{step}/atlas/r{res}/).
+      // Atlas is date-agnostic, so use the requested time window as a stand-in.
+      const ATLAS_RESOLUTIONS = ["0.5", "0.75", "1"] as const;
+      let hasAtlas = false;
+      for (const res of ATLAS_RESOLUTIONS) {
+        const atlasDir = path.join(regionDir, hash, `g${params.gridStepMeters}`, "atlas", `r${res}`);
+        try {
+          const entries = await fs.readdir(atlasDir);
+          if (entries.some((f) => f.endsWith(".atlas.bin.gz"))) {
+            hasAtlas = true;
+            break;
+          }
+        } catch { /* directory absent */ }
+      }
+      if (hasAtlas) {
+        fallback.push({
+          modelVersionHash: hash,
+          timeWindows: [{ startLocalTime: params.startLocalTime, endLocalTime: params.endLocalTime }],
+          dateCount: 1,
+        });
+      }
     }
   }
 

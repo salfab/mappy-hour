@@ -2141,7 +2141,7 @@ export function SunlightMapClient() {
     buildingHeightBiasMeters: 0,
   });
 
-  const [mode, setMode] = useState<AreaMode>("instant");
+  const [mode, setMode] = useState<AreaMode>("daily");
   const [date, setDate] = useState(defaultNow.date);
   const [localTime, setLocalTime] = useState(defaultNow.time);
   const [dailyStartLocalTime, setDailyStartLocalTime] = useState("06:00");
