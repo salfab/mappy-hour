@@ -1,5 +1,7 @@
 "use client";
 
+import { ChevronDownIcon, SunIcon } from "./icons";
+
 export type AreaMode = "instant" | "daily";
 export type BaseMapStyle = "map" | "satellite";
 export type MapPanelTab = "map" | "terraces";
@@ -75,51 +77,93 @@ interface DailyCoverageProps {
   placesError: string | null;
 }
 
-function Field(props: { label: string; children: React.ReactNode }) {
+const chipClass =
+  "inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-slate-700 shadow-sm transition hover:border-amber-200 hover:bg-amber-50";
+
+function formatDisplayDate(date: string): string {
+  const [year, month, day] = date.split("-").map(Number);
+  if (!year || !month || !day) {
+    return "Choisir un jour";
+  }
+
+  const formatted = new Intl.DateTimeFormat("fr-CH", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  }).format(new Date(year, month - 1, day));
+
+  return formatted.charAt(0).toUpperCase() + formatted.slice(1);
+}
+
+function DaySelector(props: {
+  date: string;
+  onDateChange: (date: string) => void;
+}) {
   return (
-    <label className="grid gap-1 text-sm">
-      <span className="text-xs font-semibold uppercase text-slate-500">
-        {props.label}
+    <label className="relative flex min-w-[190px] flex-1 cursor-pointer items-center gap-3 rounded-[1.75rem] border border-amber-100 bg-white/80 px-3 py-3 shadow-sm transition focus-within:ring-2 focus-within:ring-amber-300 hover:bg-amber-50/80">
+      <span className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-amber-100 text-amber-500">
+        <SunIcon className="h-8 w-8" />
       </span>
-      {props.children}
+      <span className="grid min-w-0 gap-0.5">
+        <span className="text-sm font-medium text-slate-500">Jour</span>
+        <span className="flex min-w-0 items-center gap-2 text-lg font-semibold text-slate-900">
+          <span className="truncate">{formatDisplayDate(props.date)}</span>
+          <ChevronDownIcon className="h-5 w-5 shrink-0 text-slate-500" />
+        </span>
+      </span>
+      <input
+        type="date"
+        value={props.date}
+        className="absolute inset-0 cursor-pointer opacity-0"
+        aria-label="Choisir le jour"
+        onChange={(event) => props.onDateChange(event.target.value)}
+      />
     </label>
   );
 }
 
-const inputClass =
-  "rounded-xl border border-slate-200 bg-white px-3 py-2 text-slate-900 shadow-sm outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-200";
-const chipClass =
-  "inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-slate-700 shadow-sm transition hover:border-amber-200 hover:bg-amber-50";
+function MapStyleToggle(props: {
+  value: BaseMapStyle;
+  onChange: (style: BaseMapStyle) => void;
+}) {
+  return (
+    <div className="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200 bg-white/90 p-1 text-sm font-semibold shadow-sm">
+      {(["map", "satellite"] as const).map((style) => (
+        <button
+          key={style}
+          type="button"
+          className={`rounded-full px-3 py-1.5 transition ${
+            props.value === style
+              ? "bg-amber-200 text-slate-950"
+              : "text-slate-500 hover:bg-amber-50 hover:text-slate-800"
+          }`}
+          onClick={() => props.onChange(style)}
+        >
+          {style === "map" ? "Carte" : "Satellite"}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function CalculationControls(props: CalculationControlsProps) {
   return (
-    <div className="flex flex-wrap items-end gap-3">
-      <Field label="Date">
-        <input
-          type="date"
-          value={props.date}
-          className={inputClass}
-          onChange={(event) => props.onDateChange(event.target.value)}
-        />
-      </Field>
-      <Field label="Fond">
-        <select
-          className={inputClass}
-          value={props.baseMapStyle}
-          onChange={(event) => props.onBaseMapStyleChange(event.target.value as BaseMapStyle)}
+    <div className="grid gap-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <DaySelector date={props.date} onDateChange={props.onDateChange} />
+        <button
+          type="button"
+          className="min-h-14 rounded-[1.35rem] bg-amber-400 px-5 py-3 text-base font-semibold text-white shadow-sm shadow-amber-300/40 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+          onClick={props.onRunCalculation}
+          disabled={props.isLoading || (props.mode === "daily" && props.isDailyRangeInvalid)}
         >
-          <option value="map">carte</option>
-          <option value="satellite">satellite</option>
-        </select>
-      </Field>
-      <button
-        type="button"
-        className="rounded-xl bg-amber-300 px-4 py-2 font-semibold text-slate-950 shadow-sm transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
-        onClick={props.onRunCalculation}
-        disabled={props.isLoading || (props.mode === "daily" && props.isDailyRangeInvalid)}
-      >
-        {props.isLoading ? "Calcul..." : props.mode === "daily" ? "Calculer timeline" : "Calculer zone visible"}
-      </button>
+          {props.isLoading ? "Calcul..." : "Calculer"}
+        </button>
+      </div>
+      <MapStyleToggle
+        value={props.baseMapStyle}
+        onChange={props.onBaseMapStyleChange}
+      />
       {props.mode === "daily" && props.isLoading ? (
         <button
           type="button"
