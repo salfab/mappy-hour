@@ -108,6 +108,27 @@ function yieldToEventLoop(): Promise<void> {
   });
 }
 
+function normalizeTimelineWarning(warning: string): string {
+  if (
+    warning.startsWith("Adaptive terrain horizon resolution failed for tile ") &&
+    warning.includes("Unexpected non-whitespace character after JSON")
+  ) {
+    return (
+      "Adaptive terrain horizon resolution failed for some cached tiles " +
+      "(corrupt adaptive horizon assignment JSON). Cached sunlight atlas is served as-is."
+    );
+  }
+
+  if (
+    warning ===
+    "No horizon mask. Callers should supply `terrainHorizonOverride` (live API: buildDynamicHorizonMask; precompute: resolveAdaptiveTerrainHorizonForTile). Far-horizon blocking will be ignored."
+  ) {
+    return "Some cached tiles were generated without a terrain horizon mask; far-horizon blocking may be missing for those cached tiles.";
+  }
+
+  return warning;
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const rawQuery = Object.fromEntries(url.searchParams.entries());
@@ -203,12 +224,27 @@ export async function GET(request: Request) {
           });
 
           const region = resolveRegionForBbox(bbox);
+          const timelineUtcSamples = createUtcSamples(
+            query.date,
+            query.timezone,
+            query.sampleEveryMinutes,
+            query.startLocalTime,
+            query.endLocalTime,
+          );
+          const timelineFrameLocalTimes = timelineUtcSamples.map((utcDate) =>
+            utcDate.toLocaleTimeString("fr-CH", {
+              timeZone: query.timezone,
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            }),
+          );
 
           let sentStart = false;
           let totalPointCount = 0;
           let totalGridPointCount = 0;
           let totalIndoorExcluded = 0;
-          let totalPointsWithElevation = 0;
+          const totalPointsWithElevation = 0;
           let tileStreamTotalEvaluations = 0;
           let tilesFromCache = 0;
           let tilesComputed = 0;
@@ -231,9 +267,7 @@ export async function GET(request: Request) {
             const atlas = atlases?.[0];
 
             // For atlas: enumerate time samples from query params (date-agnostic format).
-            const atlasUtcSamples = atlas
-              ? createUtcSamples(query.date, query.timezone, query.sampleEveryMinutes, query.startLocalTime, query.endLocalTime)
-              : null;
+            const atlasUtcSamples = atlas ? timelineUtcSamples : null;
 
             const viewPointCount = atlas ? atlas.pointCount : (binary ? binary.pointCount : artifact!.points.length);
             const viewFrameCount = atlas ? (atlasUtcSamples?.length ?? 0) : (binary ? binary.frameCount : artifact!.frames.length);
@@ -309,7 +343,9 @@ export async function GET(request: Request) {
             totalGridPointCount += tileGridCount;
             totalIndoorExcluded += tileIndoorExcluded;
             tileStreamTotalEvaluations += tileOutdoorCount * viewFrameCount;
-            for (const w of viewWarnings) allWarnings.add(w);
+            for (const w of viewWarnings) {
+              allWarnings.add(normalizeTimelineWarning(w));
+            }
 
             if (!query.cacheOnly && layer === "MISS" && tilesComputed > query.maxComputeTiles) {
               sendEvent("error", {
@@ -340,7 +376,9 @@ export async function GET(request: Request) {
             const tileH = tileMaxIy - tileMinIy + 1;
             const gridCellCount = tileW * tileH;
             const outdoorMask = new Uint8Array(Math.ceil(gridCellCount / 8));
-            const cellToOutdoor = new Int32Array(gridCellCount).fill(-1);
+            const outdoorCells = new Int32Array(gridCellCount);
+            const outdoorIndexes = new Int32Array(gridCellCount);
+            let outdoorCellCount = 0;
 
             // Load zenith indoor mask from grid metadata
             const { loadTileGridMetadata } = await import("@/lib/precompute/tile-grid-metadata");
@@ -377,7 +415,9 @@ export async function GET(request: Request) {
                 if (isIndoor || oi < 0) continue;
                 const cellIdx = (iy - tileMinIy) * tileW + (ix - tileMinIx);
                 setMaskBit(outdoorMask, cellIdx);
-                cellToOutdoor[cellIdx] = oi;
+                outdoorCells[outdoorCellCount] = cellIdx;
+                outdoorIndexes[outdoorCellCount] = oi;
+                outdoorCellCount += 1;
               }
             } else {
               for (const p of artifact!.points) {
@@ -395,7 +435,9 @@ export async function GET(request: Request) {
                 if (isIndoor || p.outdoorIndex === null) continue;
                 const cellIdx = (p.iy - tileMinIy) * tileW + (p.ix - tileMinIx);
                 setMaskBit(outdoorMask, cellIdx);
-                cellToOutdoor[cellIdx] = p.outdoorIndex;
+                outdoorCells[outdoorCellCount] = cellIdx;
+                outdoorIndexes[outdoorCellCount] = p.outdoorIndex;
+                outdoorCellCount += 1;
               }
             }
 
@@ -412,7 +454,7 @@ export async function GET(request: Request) {
                 const utcDate = atlasUtcSamples[f];
                 const pos = SunCalc.getPosition(utcDate, tileLat, tileLon);
                 const alt = pos.altitude * RAD_TO_DEG;
-                const localTime = utcDate.toLocaleTimeString("fr-CH", { timeZone: query.timezone, hour: "2-digit", minute: "2-digit", hour12: false });
+                const localTime = timelineFrameLocalTimes[f] ?? "";
                 const dstMask = new Uint8Array(Math.ceil(gridCellCount / 8));
                 const dstNoVeg = new Uint8Array(Math.ceil(gridCellCount / 8));
                 let sunnyCount = 0, sunnyNoVeg = 0;
@@ -422,14 +464,15 @@ export async function GET(request: Request) {
                   const bucket = lookupAtlasByAngle(atlases!, az, alt);
                   if (bucket) {
                     const { sunMask, sunNoVegMask } = bucket;
-                    for (let i = 0; i < gridCellCount; i++) {
-                      const oi = cellToOutdoor[i];
+                    for (let i = 0; i < outdoorCellCount; i++) {
+                      const cellIdx = outdoorCells[i];
+                      const oi = outdoorIndexes[i];
                       if (oi >= 0 && isMaskBitSet(sunMask, oi)) {
-                        setMaskBit(dstMask, i);
+                        setMaskBit(dstMask, cellIdx);
                         sunnyCount += 1;
                       }
                       if (oi >= 0 && isMaskBitSet(sunNoVegMask, oi)) {
-                        setMaskBit(dstNoVeg, i);
+                        setMaskBit(dstNoVeg, cellIdx);
                         sunnyNoVeg += 1;
                       }
                     }
@@ -443,20 +486,22 @@ export async function GET(request: Request) {
                 const srcMask = getFrameMask(binary, f, MASK_KIND_SUN);
                 const dstMask = new Uint8Array(Math.ceil(gridCellCount / 8));
                 let sunnyCount = 0;
-                for (let i = 0; i < gridCellCount; i++) {
-                  const oi = cellToOutdoor[i];
+                for (let i = 0; i < outdoorCellCount; i++) {
+                  const cellIdx = outdoorCells[i];
+                  const oi = outdoorIndexes[i];
                   if (oi >= 0 && isMaskBitSet(srcMask, oi)) {
-                    setMaskBit(dstMask, i);
+                    setMaskBit(dstMask, cellIdx);
                     sunnyCount += 1;
                   }
                 }
                 const srcNoVeg = getFrameMask(binary, f, MASK_KIND_SUN_NO_VEG);
                 const dstNoVeg = new Uint8Array(Math.ceil(gridCellCount / 8));
                 let sunnyNoVeg = 0;
-                for (let i = 0; i < gridCellCount; i++) {
-                  const oi = cellToOutdoor[i];
+                for (let i = 0; i < outdoorCellCount; i++) {
+                  const cellIdx = outdoorCells[i];
+                  const oi = outdoorIndexes[i];
                   if (oi >= 0 && isMaskBitSet(srcNoVeg, oi)) {
-                    setMaskBit(dstNoVeg, i);
+                    setMaskBit(dstNoVeg, cellIdx);
                     sunnyNoVeg += 1;
                   }
                 }
@@ -474,20 +519,22 @@ export async function GET(request: Request) {
                 const srcMask = frame.sunMask;
                 const dstMask = new Uint8Array(Math.ceil(gridCellCount / 8));
                 let sunnyCount = 0;
-                for (let i = 0; i < gridCellCount; i++) {
-                  const oi = cellToOutdoor[i];
+                for (let i = 0; i < outdoorCellCount; i++) {
+                  const cellIdx = outdoorCells[i];
+                  const oi = outdoorIndexes[i];
                   if (oi >= 0 && isMaskBitSet(srcMask, oi)) {
-                    setMaskBit(dstMask, i);
+                    setMaskBit(dstMask, cellIdx);
                     sunnyCount += 1;
                   }
                 }
                 const srcNoVeg = frame.sunMaskNoVegetation;
                 const dstNoVeg = new Uint8Array(Math.ceil(gridCellCount / 8));
                 let sunnyNoVeg = 0;
-                for (let i = 0; i < gridCellCount; i++) {
-                  const oi = cellToOutdoor[i];
+                for (let i = 0; i < outdoorCellCount; i++) {
+                  const cellIdx = outdoorCells[i];
+                  const oi = outdoorIndexes[i];
                   if (oi >= 0 && isMaskBitSet(srcNoVeg, oi)) {
-                    setMaskBit(dstNoVeg, i);
+                    setMaskBit(dstNoVeg, cellIdx);
                     sunnyNoVeg += 1;
                   }
                 }

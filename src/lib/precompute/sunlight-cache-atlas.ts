@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import { gzip as gzipCb, gunzip as gunzipCb } from "node:zlib";
 import path from "node:path";
@@ -44,10 +45,10 @@ async function compressAtlasPayload(bin: Buffer): Promise<Buffer> {
     // Native zstd unavailable (no build tools); fall back to gzip.
     return (await gzip(bin, { level: 1 })) as Buffer;
   }
-  // zstd level 3: default sweet spot. Bench (130 MB raw atlas) shows ~50ms
-  // compress + ~400ms decompress vs gzip-1's 89ms / 2400ms. Wall-time win is
-  // dominated by decompress (read-heavy hot path).
-  return await zstd.compress(bin, 3);
+  // Work-format atlas writes happen in the precompute hot path. Keep zstd at
+  // level 1 to minimize CPU backpressure; release/runtime optimized shards are
+  // produced later by convert-atlas-to-shards.ts with zstd level 10.
+  return await zstd.compress(bin, 1);
 }
 
 async function decompressAtlasPayload(buf: Buffer): Promise<Buffer> {
@@ -238,6 +239,40 @@ export interface AtlasBucketEntry {
   vegetationMask: Uint8Array;
 }
 
+export type AtlasLoadSource = "monolith" | "shards";
+
+export interface AtlasLoadTiming {
+  source: AtlasLoadSource;
+  readMs: number;
+  decompressMs: number;
+  decodeMs: number;
+  totalMs: number;
+  compressedBytes: number;
+  rawBytes: number;
+  decodedBucketCount: number;
+}
+
+interface TileAtlasShardManifest {
+  format: "mappy-atlas-shards";
+  version: 1;
+  compression: "zstd";
+  bucketsPerShard: number;
+  pointCount: number;
+  outdoorPointCount: number;
+  bucketCount: number;
+  maskBytesPerBucket: number;
+  baseFile: string;
+  baseRawBytes: number;
+  baseCompressedBytes: number;
+  shards: Array<{
+    file: string;
+    startBucket: number;
+    bucketCount: number;
+    rawBytes: number;
+    compressedBytes: number;
+  }>;
+}
+
 export function encodeTileAtlasToBinary(atlas: BinaryTileAtlas): Buffer {
   const {
     pointCount,
@@ -301,7 +336,10 @@ export function encodeTileAtlasToBinary(atlas: BinaryTileAtlas): Buffer {
   return buf;
 }
 
-export function decodeTileAtlasFromBinary(raw: Uint8Array): BinaryTileAtlas {
+export function decodeTileAtlasFromBinary(
+  raw: Uint8Array,
+  bucketKeys?: ReadonlySet<number>,
+): BinaryTileAtlas {
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const magic = view.getUint32(0, true);
   if (magic !== ATLAS_MAGIC) {
@@ -346,24 +384,216 @@ export function decodeTileAtlasFromBinary(raw: Uint8Array): BinaryTileAtlas {
   }
 
   const bucketIndexOffset = pointsOffset + pointCount * pointStride;
-  const bucketAz = new Uint16Array(bucketCount);
-  const bucketAlt = new Uint16Array(bucketCount);
-  const bucketDataIndex = new Uint32Array(bucketCount);
+  const allBucketAz = new Uint16Array(bucketCount);
+  const allBucketAlt = new Uint16Array(bucketCount);
+  const allBucketDataIndex = new Uint32Array(bucketCount);
+  const selectedBucketIndexes: number[] = [];
   for (let i = 0; i < bucketCount; i++) {
     const base = bucketIndexOffset + i * ATLAS_BUCKET_INDEX_ENTRY_BYTES;
-    bucketAz[i] = view.getUint16(base + 0, true);
-    bucketAlt[i] = view.getUint16(base + 2, true);
-    bucketDataIndex[i] = view.getUint32(base + 4, true);
+    const az = view.getUint16(base + 0, true);
+    const alt = view.getUint16(base + 2, true);
+    allBucketAz[i] = az;
+    allBucketAlt[i] = alt;
+    allBucketDataIndex[i] = view.getUint32(base + 4, true);
+    if (!bucketKeys || bucketKeys.has(packBucketKey(az, alt))) {
+      selectedBucketIndexes.push(i);
+    }
   }
 
   const bucketDataOffset = bucketIndexOffset + bucketCount * ATLAS_BUCKET_INDEX_ENTRY_BYTES;
-  const masksLength = bucketCount * ATLAS_MASK_KINDS * maskBytesPerBucket;
-  const maskBuffer = new Uint8Array(raw.buffer, raw.byteOffset + bucketDataOffset, masksLength);
+  const decodedBucketCount = selectedBucketIndexes.length;
+  const bucketAz = new Uint16Array(decodedBucketCount);
+  const bucketAlt = new Uint16Array(decodedBucketCount);
+  const bucketDataIndex = new Uint32Array(decodedBucketCount);
+  const perBucketBytes = ATLAS_MASK_KINDS * maskBytesPerBucket;
+  const masksLength = decodedBucketCount * perBucketBytes;
+  const maskBuffer = bucketKeys
+    ? new Uint8Array(masksLength)
+    : new Uint8Array(raw.buffer, raw.byteOffset + bucketDataOffset, masksLength);
+
+  for (let i = 0; i < decodedBucketCount; i++) {
+    const sourceIndex = selectedBucketIndexes[i];
+    bucketAz[i] = allBucketAz[sourceIndex];
+    bucketAlt[i] = allBucketAlt[sourceIndex];
+    bucketDataIndex[i] = i;
+    if (bucketKeys) {
+      const sourceDataIndex = allBucketDataIndex[sourceIndex];
+      const sourceStart = raw.byteOffset + bucketDataOffset + sourceDataIndex * perBucketBytes;
+      maskBuffer.set(
+        new Uint8Array(raw.buffer, sourceStart, perBucketBytes),
+        i * perBucketBytes,
+      );
+    }
+  }
 
   return {
     meta,
     pointCount,
-    bucketCount,
+    bucketCount: decodedBucketCount,
+    outdoorPointCount,
+    maskBytesPerBucket,
+    resolutionDegAz,
+    resolutionDegAlt,
+    pointLon,
+    pointLat,
+    pointIx,
+    pointIy,
+    pointOutdoorIndex,
+    pointFlags,
+    bucketAz,
+    bucketAlt,
+    bucketDataIndex,
+    maskBuffer,
+  };
+}
+
+function parseTileAtlasShardManifest(raw: Buffer): TileAtlasShardManifest {
+  const parsed = JSON.parse(raw.toString("utf8")) as Partial<TileAtlasShardManifest>;
+  if (parsed.format !== "mappy-atlas-shards" || parsed.version !== 1) {
+    throw new Error("unsupported atlas shard manifest");
+  }
+  if (parsed.compression !== "zstd") {
+    throw new Error(`unsupported atlas shard compression: ${String(parsed.compression)}`);
+  }
+  if (
+    typeof parsed.baseFile !== "string" ||
+    !Array.isArray(parsed.shards) ||
+    typeof parsed.bucketCount !== "number" ||
+    typeof parsed.maskBytesPerBucket !== "number"
+  ) {
+    throw new Error("invalid atlas shard manifest shape");
+  }
+  return parsed as TileAtlasShardManifest;
+}
+
+function findAtlasShardForDataIndex(
+  manifest: TileAtlasShardManifest,
+  dataIndex: number,
+): TileAtlasShardManifest["shards"][number] | null {
+  // Shards are emitted in ascending contiguous bucket ranges. Linear lookup is
+  // small enough here because we do it only for requested timeline buckets.
+  for (const shard of manifest.shards) {
+    if (dataIndex >= shard.startBucket && dataIndex < shard.startBucket + shard.bucketCount) {
+      return shard;
+    }
+  }
+  return null;
+}
+
+function decodeTileAtlasFromShardedRaw(
+  baseRaw: Uint8Array,
+  manifest: TileAtlasShardManifest,
+  shardRawByFile: Map<string, Buffer>,
+  bucketKeys: ReadonlySet<number>,
+): BinaryTileAtlas {
+  const view = new DataView(baseRaw.buffer, baseRaw.byteOffset, baseRaw.byteLength);
+  const magic = view.getUint32(0, true);
+  if (magic !== ATLAS_MAGIC) {
+    throw new Error(`Bad magic in binary tile atlas base: 0x${magic.toString(16)}`);
+  }
+  const version = view.getUint16(4, true);
+  if (version !== ATLAS_VERSION) {
+    throw new Error(`Unsupported atlas base version: ${version}`);
+  }
+  const jsonMetaBytes = view.getUint32(8, true);
+  const pointCount = view.getUint32(12, true);
+  const bucketCount = view.getUint32(16, true);
+  const outdoorPointCount = view.getUint32(20, true);
+  const maskBytesPerBucket = view.getUint32(24, true);
+  const pointStride = view.getUint32(28, true);
+  if (pointStride !== ATLAS_POINT_STRIDE) {
+    throw new Error(`Unexpected pointStride: ${pointStride}`);
+  }
+  if (
+    pointCount !== manifest.pointCount ||
+    bucketCount !== manifest.bucketCount ||
+    outdoorPointCount !== manifest.outdoorPointCount ||
+    maskBytesPerBucket !== manifest.maskBytesPerBucket
+  ) {
+    throw new Error("atlas shard manifest does not match base header");
+  }
+  const resolutionDegAz = view.getFloat32(32, true);
+  const resolutionDegAlt = view.getFloat32(36, true);
+
+  const metaStart = ATLAS_HEADER_BYTES;
+  const metaEnd = metaStart + jsonMetaBytes;
+  const metaJson = Buffer.from(baseRaw.buffer, baseRaw.byteOffset + metaStart, jsonMetaBytes).toString("utf8");
+  const meta = JSON.parse(metaJson) as TileAtlasMetadata;
+
+  const pointLon = new Float64Array(pointCount);
+  const pointLat = new Float64Array(pointCount);
+  const pointIx = new Int32Array(pointCount);
+  const pointIy = new Int32Array(pointCount);
+  const pointOutdoorIndex = new Int32Array(pointCount);
+  const pointFlags = new Uint32Array(pointCount);
+  const pointsOffset = metaEnd;
+  for (let i = 0; i < pointCount; i++) {
+    const base = pointsOffset + i * pointStride;
+    pointLon[i] = view.getFloat64(base + 0, true);
+    pointLat[i] = view.getFloat64(base + 8, true);
+    pointIx[i] = view.getInt32(base + 16, true);
+    pointIy[i] = view.getInt32(base + 20, true);
+    pointOutdoorIndex[i] = view.getInt32(base + 24, true);
+    pointFlags[i] = view.getUint32(base + 28, true);
+  }
+
+  const bucketIndexOffset = pointsOffset + pointCount * pointStride;
+  const selectedBuckets: Array<{
+    az: number;
+    alt: number;
+    sourceDataIndex: number;
+    shardFile: string;
+    shardStartBucket: number;
+  }> = [];
+  for (let i = 0; i < bucketCount; i++) {
+    const base = bucketIndexOffset + i * ATLAS_BUCKET_INDEX_ENTRY_BYTES;
+    const az = view.getUint16(base + 0, true);
+    const alt = view.getUint16(base + 2, true);
+    if (!bucketKeys.has(packBucketKey(az, alt))) continue;
+
+    const sourceDataIndex = view.getUint32(base + 4, true);
+    const shard = findAtlasShardForDataIndex(manifest, sourceDataIndex);
+    if (!shard) {
+      throw new Error(`no atlas shard covers bucket data index ${sourceDataIndex}`);
+    }
+    selectedBuckets.push({
+      az,
+      alt,
+      sourceDataIndex,
+      shardFile: shard.file,
+      shardStartBucket: shard.startBucket,
+    });
+  }
+
+  const decodedBucketCount = selectedBuckets.length;
+  const bucketAz = new Uint16Array(decodedBucketCount);
+  const bucketAlt = new Uint16Array(decodedBucketCount);
+  const bucketDataIndex = new Uint32Array(decodedBucketCount);
+  const perBucketBytes = ATLAS_MASK_KINDS * maskBytesPerBucket;
+  const maskBuffer = new Uint8Array(decodedBucketCount * perBucketBytes);
+
+  for (let i = 0; i < decodedBucketCount; i++) {
+    const selected = selectedBuckets[i];
+    bucketAz[i] = selected.az;
+    bucketAlt[i] = selected.alt;
+    bucketDataIndex[i] = i;
+    const shardRaw = shardRawByFile.get(selected.shardFile);
+    if (!shardRaw) {
+      throw new Error(`atlas shard ${selected.shardFile} was not loaded`);
+    }
+    const localDataIndex = selected.sourceDataIndex - selected.shardStartBucket;
+    const sourceStart = localDataIndex * perBucketBytes;
+    const sourceEnd = sourceStart + perBucketBytes;
+    if (sourceEnd > shardRaw.byteLength) {
+      throw new Error(`atlas shard ${selected.shardFile} is too short for bucket data index ${selected.sourceDataIndex}`);
+    }
+    maskBuffer.set(shardRaw.subarray(sourceStart, sourceEnd), i * perBucketBytes);
+  }
+
+  return {
+    meta,
+    pointCount,
+    bucketCount: decodedBucketCount,
     outdoorPointCount,
     maskBytesPerBucket,
     resolutionDegAz,
@@ -463,6 +693,25 @@ export function getAtlasPath(params: {
     "atlas",
     resSuffix,
     `${params.tileId}.atlas.bin.gz`,
+  );
+}
+
+export function getAtlasShardManifestPath(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  tileId: string;
+  resolutionDeg?: number;
+}): string {
+  const resSuffix = params.resolutionDeg != null ? `r${params.resolutionDeg}` : "r0.75";
+  return path.join(
+    CACHE_SUNLIGHT_DIR,
+    params.region,
+    params.modelVersionHash,
+    `g${params.gridStepMeters}`,
+    "atlas",
+    resSuffix,
+    `${params.tileId}.atlas.shards.json`,
   );
 }
 
@@ -606,8 +855,8 @@ export async function writePrecomputedTileAtlas(
 ): Promise<void> {
   const targetPath = getAtlasPath(params);
   const bin = encodeTileAtlasToBinary(atlas);
-  // Compression mode toggle (zstd default, gzip fallback via env). zstd level 3
-  // is the default sweet spot — see compressAtlasPayload for rationale.
+  // Compression mode toggle (zstd default, gzip fallback via env). zstd level 1
+  // keeps monolithic work-format writes cheap during precompute.
   const compressed = await compressAtlasPayload(bin);
   // Atlas first, then sidecar. Order matters for crash consistency: a stale
   // sidecar under-reports coverage → safe fallback to full atlas load. The
@@ -617,19 +866,150 @@ export async function writePrecomputedTileAtlas(
   await writeTileAtlasIndex(atlasToIndex(atlas), params);
 }
 
+async function loadPrecomputedTileAtlasFromShards(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  tileId: string;
+  resolutionDeg?: number;
+  bucketKeys: ReadonlySet<number>;
+  onTiming?: (timing: AtlasLoadTiming) => void;
+}): Promise<BinaryTileAtlas | null> {
+  const storage = getSunlightCacheStorage();
+  const manifestPath = getAtlasShardManifestPath(params);
+  const manifestDir = path.dirname(manifestPath);
+
+  const t0 = performance.now();
+  let readMs = 0;
+  let decompressMs = 0;
+  let compressedBytes = 0;
+  let rawBytes = 0;
+
+  let manifestRaw: Buffer;
+  try {
+    const readStart = performance.now();
+    manifestRaw = await storage.readBuffer(manifestPath);
+    readMs += performance.now() - readStart;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  compressedBytes += manifestRaw.byteLength;
+  const manifest = parseTileAtlasShardManifest(manifestRaw);
+
+  const basePath = path.join(manifestDir, manifest.baseFile);
+  const baseReadStart = performance.now();
+  const baseCompressed = await storage.readBuffer(basePath);
+  readMs += performance.now() - baseReadStart;
+  compressedBytes += baseCompressed.byteLength;
+
+  const baseDecompressStart = performance.now();
+  const baseRaw = await decompressAtlasPayload(baseCompressed);
+  decompressMs += performance.now() - baseDecompressStart;
+  rawBytes += baseRaw.byteLength;
+
+  const view = new DataView(baseRaw.buffer, baseRaw.byteOffset, baseRaw.byteLength);
+  const jsonMetaBytes = view.getUint32(8, true);
+  const pointCount = view.getUint32(12, true);
+  const bucketCount = view.getUint32(16, true);
+  const pointStride = view.getUint32(28, true);
+  const bucketIndexOffset = ATLAS_HEADER_BYTES + jsonMetaBytes + pointCount * pointStride;
+  const bucketIndexEnd = bucketIndexOffset + bucketCount * ATLAS_BUCKET_INDEX_ENTRY_BYTES;
+  if (baseRaw.byteLength < bucketIndexEnd) {
+    throw new Error(`atlas shard base is truncated: ${baseRaw.byteLength} bytes, expected at least ${bucketIndexEnd}`);
+  }
+  const shardFiles = new Set<string>();
+  for (let i = 0; i < bucketCount; i++) {
+    const base = bucketIndexOffset + i * ATLAS_BUCKET_INDEX_ENTRY_BYTES;
+    const az = view.getUint16(base + 0, true);
+    const alt = view.getUint16(base + 2, true);
+    if (!params.bucketKeys.has(packBucketKey(az, alt))) continue;
+
+    const sourceDataIndex = view.getUint32(base + 4, true);
+    const shard = findAtlasShardForDataIndex(manifest, sourceDataIndex);
+    if (!shard) {
+      throw new Error(`no atlas shard covers bucket data index ${sourceDataIndex}`);
+    }
+    shardFiles.add(shard.file);
+  }
+
+  const shardRawByFile = new Map<string, Buffer>();
+  for (const shardFile of shardFiles) {
+    const shardPath = path.join(manifestDir, shardFile);
+    const readStart = performance.now();
+    const compressed = await storage.readBuffer(shardPath);
+    readMs += performance.now() - readStart;
+    compressedBytes += compressed.byteLength;
+
+    const decompressStart = performance.now();
+    const raw = await decompressAtlasPayload(compressed);
+    decompressMs += performance.now() - decompressStart;
+    rawBytes += raw.byteLength;
+    shardRawByFile.set(shardFile, raw);
+  }
+
+  const decodeStart = performance.now();
+  const atlas = decodeTileAtlasFromShardedRaw(baseRaw, manifest, shardRawByFile, params.bucketKeys);
+  const tDone = performance.now();
+  params.onTiming?.({
+    source: "shards",
+    readMs,
+    decompressMs,
+    decodeMs: tDone - decodeStart,
+    totalMs: tDone - t0,
+    compressedBytes,
+    rawBytes,
+    decodedBucketCount: atlas.bucketCount,
+  });
+  return atlas;
+}
+
 export async function loadPrecomputedTileAtlas(params: {
   region: PrecomputedRegionName;
   modelVersionHash: string;
   gridStepMeters: number;
   tileId: string;
   resolutionDeg?: number;
+  bucketKeys?: ReadonlySet<number>;
+  onTiming?: (timing: AtlasLoadTiming) => void;
 }): Promise<BinaryTileAtlas | null> {
   const storage = getSunlightCacheStorage();
   const targetPath = getAtlasPath(params);
+  if (params.bucketKeys && params.bucketKeys.size > 0) {
+    try {
+      const sharded = await loadPrecomputedTileAtlasFromShards({
+        ...params,
+        bucketKeys: params.bucketKeys,
+      });
+      if (sharded) return sharded;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        console.warn(
+          `[atlas-shards] fallback to monolith for ${params.tileId}: ${(error as Error).message}`,
+        );
+      }
+    }
+  }
   try {
+    const t0 = performance.now();
     const compressed = await storage.readBuffer(targetPath);
+    const tRead = performance.now();
     const raw = await decompressAtlasPayload(compressed);
-    return decodeTileAtlasFromBinary(raw);
+    const tDecompress = performance.now();
+    const atlas = decodeTileAtlasFromBinary(raw, params.bucketKeys);
+    const tDecode = performance.now();
+    params.onTiming?.({
+      source: "monolith",
+      readMs: tRead - t0,
+      decompressMs: tDecompress - tRead,
+      decodeMs: tDecode - tDecompress,
+      totalMs: tDecode - t0,
+      compressedBytes: compressed.byteLength,
+      rawBytes: raw.byteLength,
+      decodedBucketCount: atlas.bucketCount,
+    });
+    return atlas;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;

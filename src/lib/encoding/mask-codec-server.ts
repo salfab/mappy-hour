@@ -33,6 +33,6 @@ export function encodeTileMasksBlob(
     offset += maskBytes;
   }
 
-  const compressed = gzipSync(buffer, { level: 6 });
+  const compressed = gzipSync(buffer, { level: 1 });
   return Buffer.from(compressed).toString("base64");
 }

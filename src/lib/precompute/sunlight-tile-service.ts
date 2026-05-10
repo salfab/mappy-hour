@@ -42,7 +42,6 @@ import { TtlCache, runWithInFlightDedup } from "./runtime-cache";
 import {
   buildRegionTiles,
   buildTilePoints,
-  decodeBase64Bytes,
   findCachedModelVersionHash,
   getIntersectingTileIds,
   getPrecomputedRegionBbox,
@@ -68,8 +67,11 @@ import {
   ATLAS_READ_FALLBACK_RESOLUTIONS_DEG,
   loadPrecomputedTileAtlas,
   loadPrecomputedTileAtlasesInPrecisionOrder,
+  loadTileAtlasIndex,
   lookupAtlasByAngle,
+  packBucketKey,
   type BinaryTileAtlas,
+  type TileAtlasIndex,
 } from "./sunlight-cache-atlas";
 export type { BinaryTileAtlas } from "./sunlight-cache-atlas";
 export { lookupAtlasByAngle } from "./sunlight-cache-atlas";
@@ -88,7 +90,36 @@ const PRECOMPUTED_REGIONS: PrecomputedRegionName[] = ["lausanne", "nyon", "morge
 const manifestMemoryCache = new TtlCache<PrecomputedSunlightManifest | null>(60_000, 64);
 const tileMemoryCache = new TtlCache<PrecomputedSunlightTileArtifact | null>(60_000, 128);
 const tileBinaryMemoryCache = new TtlCache<BinaryTileArtifact | null>(60_000, 128);
-const tileAtlasMemoryCache = new TtlCache<BinaryTileAtlas | BinaryTileAtlas[] | null>(300_000, 64);
+
+function parseBoundedEnvInt(
+  name: string,
+  defaultValue: number,
+  min: number,
+  max: number,
+): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return defaultValue;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+const TIMELINE_CACHE_PREFETCH = parseBoundedEnvInt(
+  "MAPPY_TIMELINE_CACHE_PREFETCH",
+  2,
+  1,
+  16,
+);
+const ATLAS_MEMORY_CACHE_ENTRIES = parseBoundedEnvInt(
+  "MAPPY_ATLAS_MEMORY_CACHE_ENTRIES",
+  0,
+  0,
+  64,
+);
+const tileAtlasMemoryCache = new TtlCache<BinaryTileAtlas | BinaryTileAtlas[] | null>(
+  300_000,
+  ATLAS_MEMORY_CACHE_ENTRIES,
+);
 
 type BuildingsIndex = NonNullable<
   Awaited<ReturnType<typeof buildSharedPointEvaluationSources>>["buildingsIndex"]
@@ -562,7 +593,12 @@ async function loadAtlasDiskOnly(params: {
   gridStepMeters: number;
   tileId: string;
   resolutionDeg: number;
+  bucketKeys?: ReadonlySet<number>;
+  onTiming?: Parameters<typeof loadPrecomputedTileAtlas>[0]["onTiming"];
 }): Promise<BinaryTileAtlas | null> {
+  if (params.bucketKeys) {
+    return await loadPrecomputedTileAtlas(params);
+  }
   const cacheKey = JSON.stringify({ kind: "atlas", ...params });
   const cached = tileAtlasMemoryCache.get(cacheKey);
   if (cached !== undefined) return cached as BinaryTileAtlas | null;
@@ -583,6 +619,203 @@ async function loadAtlasesDiskOnly(params: {
   const loaded = await loadPrecomputedTileAtlasesInPrecisionOrder(params);
   tileAtlasMemoryCache.set(cacheKey, loaded);
   return loaded;
+}
+
+function atlasIndexKeyForAngle(
+  index: TileAtlasIndex,
+  azimuthDeg: number,
+  altitudeDeg: number,
+): number | null {
+  if (altitudeDeg <= 0) return null;
+  const azBucket = Math.floor(azimuthDeg / index.resolutionDegAz);
+  const altBucket = Math.floor(altitudeDeg / index.resolutionDegAlt);
+  const key = packBucketKey(azBucket, altBucket);
+  for (let i = 0; i < index.bucketCount; i++) {
+    if (packBucketKey(index.bucketAz[i], index.bucketAlt[i]) === key) {
+      return key;
+    }
+  }
+  return null;
+}
+
+async function loadAtlasesForSamplesDiskOnly(params: {
+  region: PrecomputedRegionName;
+  modelVersionHash: string;
+  gridStepMeters: number;
+  tile: RegionTileSpec;
+  samples: Date[];
+}): Promise<BinaryTileAtlas[]> {
+  const totalStartedAt = performance.now();
+  const timing = {
+    sunMs: 0,
+    indexMs: 0,
+    coverageMs: 0,
+    atlasReadMs: 0,
+    atlasDecompressMs: 0,
+    atlasDecodeMs: 0,
+    atlasTotalMs: 0,
+    compressedBytes: 0,
+    rawBytes: 0,
+    decodedBuckets: 0,
+    loadedAtlases: 0,
+    shardAtlases: 0,
+    monolithAtlases: 0,
+    path: "partial",
+  };
+  const onAtlasTiming: Parameters<typeof loadPrecomputedTileAtlas>[0]["onTiming"] = (entry) => {
+    timing.atlasReadMs += entry.readMs;
+    timing.atlasDecompressMs += entry.decompressMs;
+    timing.atlasDecodeMs += entry.decodeMs;
+    timing.atlasTotalMs += entry.totalMs;
+    timing.compressedBytes += entry.compressedBytes;
+    timing.rawBytes += entry.rawBytes;
+    timing.decodedBuckets += entry.decodedBucketCount;
+    timing.loadedAtlases += 1;
+    if (entry.source === "shards") timing.shardAtlases += 1;
+    if (entry.source === "monolith") timing.monolithAtlases += 1;
+  };
+  const logTiming = () => {
+    const totalMs = performance.now() - totalStartedAt;
+    process.stderr.write(
+      `[stream:atlas-load] tile=${params.tile.tileId} total=${totalMs.toFixed(1)}ms ` +
+        `index=${timing.indexMs.toFixed(1)}ms atlasTotal=${timing.atlasTotalMs.toFixed(1)}ms ` +
+        `read=${timing.atlasReadMs.toFixed(1)}ms decompress=${timing.atlasDecompressMs.toFixed(1)}ms ` +
+        `decode=${timing.atlasDecodeMs.toFixed(1)}ms\n`,
+    );
+    process.stderr.write(
+      `[stream:atlas-load:detail] tile=${params.tile.tileId} path=${timing.path} ` +
+        `sun=${timing.sunMs.toFixed(1)}ms coverage=${timing.coverageMs.toFixed(1)}ms ` +
+        `compressedMB=${(timing.compressedBytes / 1_000_000).toFixed(1)} rawMB=${(timing.rawBytes / 1_000_000).toFixed(1)} ` +
+        `atlases=${timing.loadedAtlases} shards=${timing.shardAtlases} monolith=${timing.monolithAtlases} buckets=${timing.decodedBuckets}\n`,
+    );
+    process.stderr.write(
+      `[stream:atlas-io] tile=${params.tile.tileId} ` +
+        `read=${timing.atlasReadMs.toFixed(1)}ms z=${timing.atlasDecompressMs.toFixed(1)}ms decode=${timing.atlasDecodeMs.toFixed(1)}ms\n`,
+    );
+  };
+
+  const tileCenterE = (params.tile.minEasting + params.tile.maxEasting) / 2;
+  const tileCenterN = (params.tile.minNorthing + params.tile.maxNorthing) / 2;
+  const { lat: tileLat, lon: tileLon } = lv95ToWgs84Precise(tileCenterE, tileCenterN);
+  const tSun0 = performance.now();
+  const sunAngles = params.samples
+    .map((utc) => {
+      const pos = SunCalc.getPosition(utc, tileLat, tileLon);
+      const altitudeDeg = pos.altitude * RAD_TO_DEG;
+      if (altitudeDeg <= 0) return null;
+      let azimuthDeg = (pos.azimuth * RAD_TO_DEG + 180) % 360;
+      if (azimuthDeg < 0) azimuthDeg += 360;
+      return { azimuthDeg, altitudeDeg };
+    })
+    .filter((angle): angle is { azimuthDeg: number; altitudeDeg: number } => angle !== null);
+  timing.sunMs += performance.now() - tSun0;
+
+  if (sunAngles.length === 0) {
+    timing.path = "night";
+    for (const resolutionDeg of ATLAS_READ_FALLBACK_RESOLUTIONS_DEG) {
+      const atlas = await loadAtlasDiskOnly({
+        region: params.region,
+        modelVersionHash: params.modelVersionHash,
+        gridStepMeters: params.gridStepMeters,
+        tileId: params.tile.tileId,
+        resolutionDeg,
+        onTiming: onAtlasTiming,
+      });
+      if (atlas) {
+        logTiming();
+        return [atlas];
+      }
+    }
+    logTiming();
+    return [];
+  }
+
+  const indexed: Array<{ resolutionDeg: number; index: TileAtlasIndex }> = [];
+  for (const resolutionDeg of ATLAS_READ_FALLBACK_RESOLUTIONS_DEG) {
+    const tIndex0 = performance.now();
+    const index = await loadTileAtlasIndex({
+      region: params.region,
+      modelVersionHash: params.modelVersionHash,
+      gridStepMeters: params.gridStepMeters,
+      tileId: params.tile.tileId,
+      resolutionDeg,
+    });
+    timing.indexMs += performance.now() - tIndex0;
+    if (index) {
+      indexed.push({ resolutionDeg, index });
+    }
+  }
+
+  // Older atlas corpora may not have sidecars. Fall back to the legacy full
+  // load so compatibility is preserved; current releases avoid this path.
+  if (indexed.length === 0) {
+    timing.path = "no-sidecar";
+    const atlases = await loadAtlasesDiskOnly({
+      region: params.region,
+      modelVersionHash: params.modelVersionHash,
+      gridStepMeters: params.gridStepMeters,
+      tileId: params.tile.tileId,
+    });
+    if (atlases.length === 0) {
+      logTiming();
+      return [];
+    }
+    const tCoverage0 = performance.now();
+    for (const angle of sunAngles) {
+      if (!lookupAtlasByAngle(atlases, angle.azimuthDeg, angle.altitudeDeg)) {
+        timing.coverageMs += performance.now() - tCoverage0;
+        logTiming();
+        return [];
+      }
+    }
+    timing.coverageMs += performance.now() - tCoverage0;
+    timing.loadedAtlases = atlases.length;
+    logTiming();
+    return atlases;
+  }
+
+  const requiredBucketKeysByResolution = new Map<number, Set<number>>();
+  const tCoverage0 = performance.now();
+  for (const angle of sunAngles) {
+    let hit: { resolutionDeg: number; key: number } | null = null;
+    for (const { resolutionDeg, index } of indexed) {
+      const key = atlasIndexKeyForAngle(index, angle.azimuthDeg, angle.altitudeDeg);
+      if (key != null) {
+        hit = { resolutionDeg, key };
+        break;
+      }
+    }
+    if (!hit) {
+      timing.coverageMs += performance.now() - tCoverage0;
+      logTiming();
+      return [];
+    }
+    let keys = requiredBucketKeysByResolution.get(hit.resolutionDeg);
+    if (!keys) {
+      keys = new Set<number>();
+      requiredBucketKeysByResolution.set(hit.resolutionDeg, keys);
+    }
+    keys.add(hit.key);
+  }
+  timing.coverageMs += performance.now() - tCoverage0;
+
+  const atlases: BinaryTileAtlas[] = [];
+  for (const resolutionDeg of ATLAS_READ_FALLBACK_RESOLUTIONS_DEG) {
+    const bucketKeys = requiredBucketKeysByResolution.get(resolutionDeg);
+    if (!bucketKeys) continue;
+    const atlas = await loadAtlasDiskOnly({
+      region: params.region,
+      modelVersionHash: params.modelVersionHash,
+      gridStepMeters: params.gridStepMeters,
+      tileId: params.tile.tileId,
+      resolutionDeg,
+      bucketKeys,
+      onTiming: onAtlasTiming,
+    });
+    if (atlas) atlases.push(atlas);
+  }
+  logTiming();
+  return atlases;
 }
 
 async function loadTileDiskOnly(params: {
@@ -2183,12 +2416,12 @@ export async function* streamTilesForBbox(params: {
   const resolveStartedAt = performance.now();
   let maxPercent = 0;
 
-  // Prefetch window for cache-only reads: load the next N tiles from disk
-  // in parallel while the consumer processes the current one. Each tile
-  // artifact is 1-2MB (gzip-decompressed + JSON.parse ~200-400ms), so
-  // sequential loading makes tiles arrive visibly "drop by drop". Prefetching
-  // overlaps the disk + parse work with the SSE dispatch of the previous tile.
-  const CACHE_PREFETCH = 16;
+  // Prefetch window for cache-only reads: keep a small number of in-flight disk
+  // reads/decompressions while the consumer processes the current tile. Atlas
+  // artifacts can be much larger than legacy tile binaries, so this defaults
+  // low for small self-hosted machines and can be raised on beefier hosts via
+  // MAPPY_TIMELINE_CACHE_PREFETCH.
+  const CACHE_PREFETCH = TIMELINE_CACHE_PREFETCH;
   type CachedTileLoad = {
     artifact: PrecomputedSunlightTileArtifact | null;
     binary?: BinaryTileArtifact;
@@ -2196,40 +2429,20 @@ export async function* streamTilesForBbox(params: {
     layer: "L1" | "L2" | "MISS";
   };
   const loadOneCached = async (tile: RegionTileSpec): Promise<CachedTileLoad> => {
-    // Atlas (ADR-0013): year-independent, angle-keyed. Load every available
-    // resolution (r0.5 → r0.75 → r1) so bucket lookup can cascade — otherwise
-    // a sparse r0.5 atlas (only some dates) shadowed a complete r0.75 corpus
-    // and tiles rendered as "all shadow" for any date outside r0.5's coverage.
-    const atlases = await loadAtlasesDiskOnly({
+    // Atlas (ADR-0013): first use lightweight `.atlas.idx` sidecars to prove
+    // all requested daytime frames are covered, then load only the full atlas
+    // resolutions that can actually serve those frames. This keeps cache-only
+    // reads from decompressing multiple large atlases per tile just to discover
+    // coverage.
+    const atlases = await loadAtlasesForSamplesDiskOnly({
       region,
       modelVersionHash,
       gridStepMeters: params.gridStepMeters,
-      tileId: tile.tileId,
+      tile,
+      samples,
     });
     if (atlases.length > 0) {
-      // Strict cache-hit predicate (user decision): every requested sample must
-      // resolve to a populated bucket across at least one resolution. If even
-      // one frame has no bucket anywhere, treat the tile as a miss rather than
-      // serving a timeline with silently-empty frames.
-      const tileCenterE = (tile.minEasting + tile.maxEasting) / 2;
-      const tileCenterN = (tile.minNorthing + tile.maxNorthing) / 2;
-      const { lat: tileLat, lon: tileLon } = lv95ToWgs84Precise(tileCenterE, tileCenterN);
-      const RAD_TO_DEG = 180 / Math.PI;
-      let allFramesCovered = true;
-      for (const utc of samples) {
-        const pos = SunCalc.getPosition(utc, tileLat, tileLon);
-        const alt = pos.altitude * RAD_TO_DEG;
-        if (alt <= 0) continue; // night frames never need an atlas bucket
-        let az = (pos.azimuth * RAD_TO_DEG + 180) % 360;
-        if (az < 0) az += 360;
-        if (!lookupAtlasByAngle(atlases, az, alt)) {
-          allFramesCovered = false;
-          break;
-        }
-      }
-      if (allFramesCovered) {
-        return { artifact: null, atlases, layer: "L2" as const };
-      }
+      return { artifact: null, atlases, layer: "L2" as const };
     }
 
     for (const tw of cachedTimeWindows) {

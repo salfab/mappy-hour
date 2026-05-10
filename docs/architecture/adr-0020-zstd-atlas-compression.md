@@ -16,13 +16,15 @@ Instrumenté via `[atlas-load-trace]` (reverté après diag, 2026-05-07) :
 
 ## Décision
 
-Adopter `zstd` (level 3) comme format de compression pour les nouvelles écritures.
+Adopter `zstd` comme format de compression pour les nouvelles écritures.
 Migration transparente via auto-détection des magic bytes à la lecture :
 - `1F 8B` → gzip (backward compat, anciens atlas lisibles)
 - `28 B5 2F FD` → zstd
 
 Dépendance ajoutée : `@mongodb-js/zstd` (binding natif napi).
 Override possible : `MAPPY_ATLAS_COMPRESSION=gzip|zstd` (défaut : `zstd`).
+
+Update 2026-05-10 : les monolithes sont désormais le format de travail du précompute, tandis que le format optimisé runtime/release est le sharding zstd10 (ADR-0024). Le niveau zstd du monolithe passe donc de 3 à 1 pour minimiser la backpressure CPU pendant l'écriture des atlas et éviter de starver l'orchestration GPU. La lecture runtime cache-only doit préférer les shards ; le monolithe reste un fallback et un format de merge.
 
 ## Mesures
 
@@ -81,7 +83,8 @@ pas la valeur réelle.
 ## Conséquences
 
 - Les anciens atlas gzip restent lisibles sans migration (auto-detect magic bytes).
-- Les nouveaux atlas écrits sont en zstd. Pas de migration en masse nécessaire.
+- Les nouveaux atlas monolithiques écrits par le précompute sont en zstd niveau 1. Pas de migration en masse nécessaire.
+- Les releases/self-hosted peuvent convertir ces monolithes en shards zstd niveau 10 (ADR-0024).
 - Si `MAPPY_ATLAS_COMPRESSION=gzip` est positionné, tout revient à l'ancien comportement.
 
 ## Vérification
