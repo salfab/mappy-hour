@@ -11,6 +11,21 @@ import type {
 } from "leaflet";
 import type { CacheRunDetailResponse } from "@/lib/admin/cache-run-detail";
 import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
+import { BarsList } from "@/components/map-ui/bars-list";
+import {
+  CalculationControls,
+  DailyCoverage,
+  LayerFilters,
+  ProgressStatus,
+  TimeSlider,
+} from "@/components/map-ui/controls";
+import { FloatingSearch } from "@/components/map-ui/floating-search";
+import {
+  MobileBarsView,
+  MobileBottomSheet,
+  type BottomSheetState,
+} from "@/components/map-ui/layouts";
+import type { VenueCardPlace } from "@/components/map-ui/venue-card";
 
 type AreaMode = "instant" | "daily";
 type BaseMapStyle = "map" | "satellite";
@@ -2173,6 +2188,15 @@ export function SunlightMapClient() {
   const [showTerrain, setShowTerrain] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showPlaces, setShowPlaces] = useState(true);
+  const [bottomSheetState, setBottomSheetState] =
+    useState<BottomSheetState>("compact");
+  const [isMobileBarsOpen, setIsMobileBarsOpen] = useState(false);
+  const [selectedVenueId, setSelectedVenueId] = useState<string | null>(null);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [lastSearchQuery, setLastSearchQuery] = useState("");
+  const [isSearchLoading, setIsSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const forceCacheOnly = process.env.NEXT_PUBLIC_FORCE_CACHE_ONLY === "true";
   const [cacheOnly, setCacheOnly] = useState(forceCacheOnly);
   const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
@@ -2824,6 +2848,7 @@ export function SunlightMapClient() {
     showVegetation,
     showTerrain,
     showHeatmap,
+    selectedVenueId,
     showPlaces,
     uiParamsHydrated,
   ]);
@@ -3205,16 +3230,17 @@ export function SunlightMapClient() {
       if (visibility.places) {
         for (const place of places) {
           const baseColor = venueTypeColor(place.venueType);
+          const isSelected = place.id === selectedVenueId;
           const sunny =
             place.isSunnyNow === true || (place.isSunnyNow === null && place.sunnyMinutes > 0);
           const marker = L.circleMarker(
             [place.evaluationLat ?? place.lat, place.evaluationLon ?? place.lon],
             {
-              radius: sunny ? 5 : 4,
-              color: baseColor,
+              radius: isSelected ? 8 : sunny ? 5 : 4,
+              color: isSelected ? "#f8fafc" : baseColor,
               fillColor: sunny ? "#fde047" : baseColor,
               fillOpacity: sunny ? 0.9 : 0.6,
-              weight: 1.2,
+              weight: isSelected ? 2.4 : 1.2,
             },
           ).addTo(placesLayer);
 
@@ -3245,6 +3271,7 @@ export function SunlightMapClient() {
 
           marker.on("click", (event: LeafletMouseEvent) => {
             L.DomEvent.stopPropagation(event);
+            setSelectedVenueId(place.id);
             void runPointClickDiagnostics(
               place.evaluationLat ?? place.lat,
               place.evaluationLon ?? place.lon,
@@ -3318,7 +3345,7 @@ export function SunlightMapClient() {
         }
       }
     },
-    [runPointClickDiagnostics],
+    [runPointClickDiagnostics, selectedVenueId],
   );
 
   useEffect(() => {
@@ -3754,6 +3781,85 @@ export function SunlightMapClient() {
       etaSeconds: null,
     }));
   }, [mode]);
+
+  const centerOnVenue = useCallback((place: SunlitPlaceEntry | VenueCardPlace) => {
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+    map.setView(
+      [place.evaluationLat ?? place.lat, place.evaluationLon ?? place.lon],
+      Math.max(map.getZoom(), 16),
+      { animate: true },
+    );
+  }, []);
+
+  const handleSelectVenue = useCallback(
+    (place: SunlitPlaceEntry | VenueCardPlace) => {
+      setSelectedVenueId(place.id);
+      centerOnVenue(place);
+      setIsMobileBarsOpen(false);
+      setBottomSheetState("middle");
+    },
+    [centerOnVenue],
+  );
+
+  const handleOpenSearch = useCallback(() => {
+    setSearchError(null);
+    setSearchQuery(lastSearchQuery);
+    setIsSearchOpen(true);
+  }, [lastSearchQuery]);
+
+  const handleSubmitSearch = useCallback(async () => {
+    const query = searchQuery.trim();
+    if (!query) {
+      return;
+    }
+    setIsSearchLoading(true);
+    setSearchError(null);
+    try {
+      const response = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`, {
+        cache: "no-store",
+      });
+      const result = (await response.json().catch(() => null)) as
+        | {
+            lat?: number;
+            lon?: number;
+            bbox?: [number, number, number, number];
+            error?: string;
+          }
+        | null;
+      if (!response.ok || !result?.lat || !result?.lon) {
+        throw new Error(result?.error ?? "Aucun resultat trouve.");
+      }
+      const map = mapRef.current;
+      if (map) {
+        if (result.bbox) {
+          map.fitBounds(
+            [
+              [result.bbox[1], result.bbox[0]],
+              [result.bbox[3], result.bbox[2]],
+            ],
+            { padding: [40, 40], animate: true },
+          );
+        } else {
+          map.setView([result.lat, result.lon], Math.max(map.getZoom(), 15), {
+            animate: true,
+          });
+        }
+      }
+      setLastSearchQuery(query);
+      setIsSearchOpen(false);
+    } catch (searchSubmitError) {
+      setSearchError(
+        searchSubmitError instanceof Error
+          ? searchSubmitError.message
+          : "Recherche impossible.",
+      );
+    } finally {
+      setIsSearchLoading(false);
+    }
+  }, [searchQuery]);
 
   const loadSunlitPlaces = useCallback(
     async (bbox: [number, number, number, number]) => {
@@ -4257,7 +4363,6 @@ export function SunlightMapClient() {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
-        let currentEvent = "";
 
         for (;;) {
           const { done, value } = await reader.read();
@@ -4446,429 +4551,205 @@ export function SunlightMapClient() {
     uiParamsHydrated,
   ]);
 
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      mapRef.current?.invalidateSize({ animate: false });
+    }, 220);
+    return () => window.clearTimeout(timeout);
+  }, [bottomSheetState, isMobileBarsOpen]);
+
+  const timelineControl = (
+    <TimeSlider
+      mode={mode}
+      activeFrameTime={activeFrameTime}
+      frameCount={dailyTimeline?.frameCount ?? 0}
+      tileCount={dailyTimeline?.tiles.length ?? 0}
+      pointCount={dailyTimeline?.pointCount ?? 0}
+      frameIndex={dailyFrameIndex}
+      disabled={!dailyTimeline || dailyTimeline.tiles.length === 0}
+      onFrameIndexChange={setDailyFrameIndex}
+    />
+  );
+
+  const calculationControls = (
+    <CalculationControls
+      mode={mode}
+      date={date}
+      localTime={localTime}
+      dailyStartLocalTime={dailyStartLocalTime}
+      dailyEndLocalTime={dailyEndLocalTime}
+      sampleEveryMinutes={sampleEveryMinutes}
+      gridStepMeters={gridStepMeters}
+      buildingHeightBiasMeters={buildingHeightBiasMeters}
+      baseMapStyle={baseMapStyle}
+      isLoading={isLoading}
+      isDailyRangeInvalid={isDailyRangeInvalid}
+      onModeChange={setMode}
+      onDateChange={setDate}
+      onLocalTimeChange={setLocalTime}
+      onDailyStartChange={setDailyStartLocalTime}
+      onDailyEndChange={setDailyEndLocalTime}
+      onSampleEveryMinutesChange={setSampleEveryMinutes}
+      onGridStepMetersChange={setGridStepMeters}
+      onBuildingHeightBiasMetersChange={setBuildingHeightBiasMeters}
+      onBaseMapStyleChange={setBaseMapStyle}
+      onRunCalculation={() => void runAreaCalculation()}
+      onCancelDailyCalculation={cancelDailyCalculation}
+    />
+  );
+
+  const layerFilters = (
+    <LayerFilters
+      showSunny={showSunny}
+      showShadow={showShadow}
+      showTerrain={showTerrain}
+      showBuildings={showBuildings}
+      showVegetation={showVegetation}
+      showHeatmap={showHeatmap}
+      showPlaces={showPlaces}
+      ignoreVegetationShadow={ignoreVegetationShadow}
+      canShowHeatmap={canShowHeatmap}
+      cacheOnly={cacheOnly}
+      forceCacheOnly={forceCacheOnly}
+      onShowSunnyChange={setShowSunny}
+      onShowShadowChange={setShowShadow}
+      onShowTerrainChange={setShowTerrain}
+      onShowBuildingsChange={setShowBuildings}
+      onShowVegetationChange={setShowVegetation}
+      onShowHeatmapChange={setShowHeatmap}
+      onShowPlacesChange={setShowPlaces}
+      onIgnoreVegetationShadowChange={setIgnoreVegetationShadow}
+      onCacheOnlyChange={setCacheOnly}
+    />
+  );
+
+  const progressStatus = (
+    <ProgressStatus
+      mode={mode}
+      dailyProgress={dailyProgress}
+      instantProgress={instantProgress}
+      formatDuration={formatDuration}
+    />
+  );
+
+  const coveragePanel = (
+    <DailyCoverage
+      helperText={helperText}
+      focusRunMessage={focusRunMessage}
+      focusRunMessageIsError={focusRunMessageIsError}
+      error={error}
+      warnings={activeWarnings}
+      placesError={placesError}
+    />
+  );
+
+  const desktopSearch = (
+    <form
+      className="hidden items-center gap-2 rounded-full border border-white/18 bg-slate-950/80 p-2 shadow-xl backdrop-blur lg:flex"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void handleSubmitSearch();
+      }}
+    >
+      <input
+        className="w-72 rounded-full border border-white/12 bg-white/10 px-4 py-2 text-sm text-white outline-none placeholder:text-slate-400 focus:border-yellow-300"
+        value={searchQuery}
+        placeholder="Chercher une adresse ou un lieu"
+        onChange={(event) => setSearchQuery(event.target.value)}
+      />
+      <button
+        type="submit"
+        className="rounded-full bg-yellow-300 px-4 py-2 text-sm font-semibold text-black disabled:bg-slate-500"
+        disabled={isSearchLoading || searchQuery.trim().length === 0}
+      >
+        {isSearchLoading ? "..." : "OK"}
+      </button>
+    </form>
+  );
+
   return (
-    <section className="grid gap-4 rounded-2xl border border-white/15 bg-white/5 p-5">
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="grid gap-1 text-sm">
-          <span>Mode</span>
-          <select
-            className="rounded border border-white/20 bg-black/40 px-2 py-1"
-            value={mode}
-            onChange={(event) => setMode(event.target.value as AreaMode)}
-          >
-            <option value="instant">instant</option>
-            <option value="daily">daily</option>
-          </select>
-        </label>
+    <section className="relative h-dvh min-h-screen overflow-hidden bg-slate-950 text-white">
+      <div ref={mapContainerRef} className="absolute inset-0 z-0 h-full w-full" />
 
-        <label className="grid gap-1 text-sm">
-          <span>Date</span>
-          <input
-            type="date"
-            value={date}
-            className="rounded border border-white/20 bg-black/40 px-2 py-1"
-            onChange={(event) => setDate(event.target.value)}
-          />
-        </label>
+      <FloatingSearch
+        isOpen={isSearchOpen}
+        query={searchQuery}
+        isLoading={isSearchLoading}
+        error={searchError}
+        onOpen={handleOpenSearch}
+        onClose={() => setIsSearchOpen(false)}
+        onQueryChange={setSearchQuery}
+        onSubmit={() => void handleSubmitSearch()}
+      />
 
-        <label className="grid gap-1 text-sm">
-          <span>Heure locale</span>
-          <input
-            type="time"
-            value={localTime}
-            className="rounded border border-white/20 bg-black/40 px-2 py-1"
-            onChange={(event) => setLocalTime(event.target.value)}
-            disabled={mode !== "instant"}
-          />
-        </label>
-
-        <label className="grid gap-1 text-sm">
-          <span>Grille (m)</span>
-          <input
-            type="number"
-            min={1}
-            max={2000}
-            step={1}
-            value={gridStepMeters}
-            className="w-28 rounded border border-white/20 bg-black/40 px-2 py-1"
-            onChange={(event) => setGridStepMeters(Number(event.target.value))}
-          />
-        </label>
-
-        <label className="grid gap-1 text-sm">
-          <span>Toit bias m (exp)</span>
-          <input
-            type="number"
-            min={-20}
-            max={20}
-            step={0.1}
-            value={buildingHeightBiasMeters}
-            className="w-32 rounded border border-white/20 bg-black/40 px-2 py-1"
-            onChange={(event) =>
-              setBuildingHeightBiasMeters(Number(event.target.value))
-            }
-          />
-        </label>
-
-        <label className="grid gap-1 text-sm">
-          <span>Fond de carte</span>
-          <select
-            className="rounded border border-white/20 bg-black/40 px-2 py-1"
-            value={baseMapStyle}
-            onChange={(event) =>
-              setBaseMapStyle(event.target.value as BaseMapStyle)
-            }
-          >
-            <option value="map">carte</option>
-            <option value="satellite">satellite</option>
-          </select>
-        </label>
-
-        {mode === "daily" ? (
-          <label className="grid gap-1 text-sm">
-            <span>Debut</span>
-            <input
-              type="time"
-              value={dailyStartLocalTime}
-              className="w-28 rounded border border-white/20 bg-black/40 px-2 py-1"
-              onChange={(event) => setDailyStartLocalTime(event.target.value)}
-            />
-          </label>
-        ) : null}
-
-        {mode === "daily" ? (
-          <label className="grid gap-1 text-sm">
-            <span>Fin</span>
-            <input
-              type="time"
-              value={dailyEndLocalTime}
-              className="w-28 rounded border border-white/20 bg-black/40 px-2 py-1"
-              onChange={(event) => setDailyEndLocalTime(event.target.value)}
-            />
-          </label>
-        ) : null}
-
-        {mode === "daily" ? (
-          <label className="grid gap-1 text-sm">
-            <span>Sample (min)</span>
-            <input
-              type="number"
-              min={1}
-              max={60}
-              value={sampleEveryMinutes}
-              className="w-28 rounded border border-white/20 bg-black/40 px-2 py-1"
-              onChange={(event) => setSampleEveryMinutes(Number(event.target.value))}
-            />
-          </label>
-        ) : null}
-
-        <button
-          type="button"
-          className="rounded bg-yellow-300 px-4 py-2 font-semibold text-black transition hover:bg-yellow-200 disabled:cursor-not-allowed disabled:bg-slate-500"
-          onClick={() => void runAreaCalculation()}
-          disabled={isLoading || (mode === "daily" && isDailyRangeInvalid)}
-        >
-          {isLoading
-            ? "Calcul..."
-            : mode === "daily"
-              ? "Calculer timeline"
-              : "Calculer zone visible"}
-        </button>
-        {mode === "daily" && isLoading ? (
-          <button
-            type="button"
-            className="rounded bg-rose-500 px-4 py-2 font-semibold text-white transition hover:bg-rose-400"
-            onClick={cancelDailyCalculation}
-          >
-            Interrompre
-          </button>
-        ) : null}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-4 rounded-lg border border-white/15 bg-black/20 px-3 py-2 text-sm">
-        <label className="inline-flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={showSunny}
-            onChange={(event) => setShowSunny(event.target.checked)}
-          />
-          <span className="rounded px-2 py-0.5 text-black" style={{ background: "#facc15" }}>
-            ensoleillé
-          </span>
-        </label>
-        <label className="inline-flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={showShadow}
-            onChange={(event) => setShowShadow(event.target.checked)}
-          />
-          <span className="rounded bg-slate-500 px-2 py-0.5 text-white">ombre</span>
-        </label>
-        <label className="inline-flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={showVegetation}
-            onChange={(event) => setShowVegetation(event.target.checked)}
-          />
-          <span className="rounded bg-green-700 px-2 py-0.5 text-white">végétation</span>
-        </label>
-        <label className="inline-flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={showBuildings}
-            onChange={(event) => setShowBuildings(event.target.checked)}
-          />
-          <span className="rounded bg-blue-600 px-2 py-0.5 text-white">buildings</span>
-        </label>
-        <label className="inline-flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={showTerrain}
-            onChange={(event) => setShowTerrain(event.target.checked)}
-          />
-          <span className="rounded bg-amber-700 px-2 py-0.5 text-white">
-            montagnes horizon
-          </span>
-        </label>
-        <label className="inline-flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={showHeatmap}
-            onChange={(event) => setShowHeatmap(event.target.checked)}
-            disabled={!canShowHeatmap}
-          />
-          <span className="rounded bg-rose-600 px-2 py-0.5 text-white">
-            heatmap expo
-          </span>
-        </label>
-        <label className="inline-flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={showPlaces}
-            onChange={(event) => setShowPlaces(event.target.checked)}
-          />
-          <span className="rounded bg-red-600 px-2 py-0.5 text-white">
-            terrasses soleil
-          </span>
-        </label>
-        <label className="inline-flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={ignoreVegetationShadow}
-            onChange={(event) => setIgnoreVegetationShadow(event.target.checked)}
-          />
-          <span className="rounded bg-emerald-800 px-2 py-0.5 text-white">
-            ignorer ombre végétation
-          </span>
-        </label>
-        {!forceCacheOnly && (
-          <label className="inline-flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={cacheOnly}
-              onChange={(event) => setCacheOnly(event.target.checked)}
-            />
-            <span className="rounded bg-violet-700 px-2 py-0.5 text-white">
-              cache uniquement
-            </span>
-          </label>
-        )}
-      </div>
-
-      {mode === "daily" ? (
-        <div className="grid gap-2 rounded-lg border border-white/15 bg-black/20 px-3 py-3 text-sm">
-          <div className="flex items-center justify-between">
-            <span>Timeline quotidienne</span>
-            <span>{activeFrameTime ?? "--:--:--"}</span>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={Math.max(0, (dailyTimeline?.frameCount ?? 1) - 1)}
-            step={1}
-            value={Math.min(
-              dailyFrameIndex,
-              Math.max(0, (dailyTimeline?.frameCount ?? 1) - 1),
-            )}
-            onChange={(event) => setDailyFrameIndex(Number(event.target.value))}
-            disabled={!dailyTimeline || dailyTimeline.tiles.length === 0}
-          />
-          <p className="text-xs text-slate-300">
-            Tuiles reçues: {dailyTimeline?.tiles.length ?? 0},
-            {" "}{dailyTimeline?.pointCount ?? 0} points
-          </p>
-          {canShowHeatmap ? (
-            <p className="text-xs text-rose-200">
-              Heatmap disponible: active &quot;heatmap expo&quot; pour voir
-              l&apos;exposition cumulée de la journée.
-            </p>
-          ) : null}
-          {isDailyRangeInvalid ? (
-            <p className="text-xs text-red-300">
-              Plage horaire invalide: la fin doit être strictement après le début.
-            </p>
-          ) : null}
-          {dailyProgress ? (
-            <div className="grid gap-1">
-              <div className="h-2 w-full overflow-hidden rounded bg-slate-700/70">
-                <div
-                  className={`h-full rounded bg-yellow-300 transition-[width] duration-150${
-                    dailyProgress.phase === "loading-scene" || dailyProgress.phase === "loading-cache" || dailyProgress.phase === "reconnecting" ? " animate-pulse w-full opacity-40" : ""
-                  }`}
-                  style={dailyProgress.phase !== "loading-scene" && dailyProgress.phase !== "loading-cache" && dailyProgress.phase !== "reconnecting" ? { width: `${Math.min(100, Math.max(0, dailyProgress.percent))}%` } : undefined}
-                />
-              </div>
-              <p className="text-xs text-slate-300">
-                {dailyProgress.phase === "loading-scene"
-                  ? "Chargement de la sc\u00e8ne\u2026"
-                  : dailyProgress.phase === "loading-cache"
-                    ? "Chargement du cache\u2026"
-                    : dailyProgress.phase === "reconnecting"
-                      ? "Reconnexion\u2026"
-                      : dailyProgress.phase === "tile-computation"
-                        ? `Calcul des tuiles${
-                            dailyProgress.tileIndex && dailyProgress.totalTiles
-                              ? ` (${dailyProgress.tileIndex}/${dailyProgress.totalTiles})`
-                              : ""
-                          }`
-                        : dailyProgress.phase === "cache-playback"
-                          ? "Lecture du cache"
-                          : dailyProgress.phase}
-                {dailyProgress.phase !== "loading-scene" && dailyProgress.phase !== "loading-cache" && dailyProgress.phase !== "reconnecting" && (
-                  <>
-                    {" "}&mdash; {dailyProgress.percent.toFixed(1)}%
-                    {" "}&mdash; ETA: {dailyProgress.etaSeconds === null ? "-" : formatDuration(dailyProgress.etaSeconds)}
-                    {dailyProgress.elapsedMs != null
-                      ? ` \u2014 ${formatDuration(Math.round(dailyProgress.elapsedMs / 1000))} \u00e9coul\u00e9`
-                      : ""}
-                  </>
-                )}
-              </p>
-            </div>
-          ) : null}
+      <div className="absolute left-5 top-5 z-[450] hidden items-center gap-3 lg:flex">
+        <div className="rounded-full border border-white/18 bg-slate-950/80 px-4 py-2 text-sm font-semibold shadow-xl backdrop-blur">
+          Mappy Hour
         </div>
-      ) : null}
+        {desktopSearch}
+      </div>
 
-      {mode === "instant" && instantProgress ? (
-        <div className="grid gap-1 rounded-lg border border-white/15 bg-black/20 px-3 py-3 text-sm">
-          <div className="h-2 w-full overflow-hidden rounded bg-slate-700/70">
-            <div
-              className="h-full rounded bg-yellow-300 transition-[width] duration-150"
-              style={{ width: `${Math.min(100, Math.max(0, instantProgress.percent))}%` }}
-            />
-          </div>
+      <div className="absolute left-5 top-20 z-[450] hidden max-h-[calc(100dvh-136px)] w-[400px] gap-3 overflow-y-auto rounded-2xl border border-white/18 bg-slate-950/82 p-4 shadow-2xl backdrop-blur lg:grid">
+        {calculationControls}
+        {layerFilters}
+        {timelineControl}
+        {progressStatus}
+        {coveragePanel}
+      </div>
+
+      <aside className="absolute right-5 top-5 z-[450] hidden h-[calc(100dvh-40px)] w-[360px] overflow-hidden rounded-2xl border border-white/18 bg-slate-950/82 shadow-2xl backdrop-blur lg:block">
+        <div className="border-b border-white/15 px-4 py-3">
+          <p className="text-sm font-semibold">Bars / restos au soleil</p>
           <p className="text-xs text-slate-300">
-            {instantProgress.phase}
-            {instantProgress.tileIndex && instantProgress.totalTiles
-              ? ` (tuile ${instantProgress.tileIndex}/${instantProgress.totalTiles})`
-              : ""}
-            {" "}&mdash; {instantProgress.percent.toFixed(1)}%
-            {" "}&mdash; ETA: {instantProgress.etaSeconds === null ? "-" : formatDuration(instantProgress.etaSeconds)}
-            {instantProgress.elapsedMs != null
-              ? ` \u2014 ${formatDuration(Math.round(instantProgress.elapsedMs / 1000))} \u00e9coul\u00e9`
-              : ""}
+            {isPlacesLoading
+              ? "Calcul terrasses en cours..."
+              : `${sunlitPlaces.length} etablissements visibles`}
           </p>
         </div>
-      ) : null}
-
-      <p className="text-sm text-slate-200">{helperText}</p>
-      {focusRunMessage ? (
-        <p
-          className={`rounded px-3 py-2 text-sm ${
-            focusRunMessageIsError
-              ? "border border-rose-300/40 bg-rose-500/20 text-rose-100"
-              : "border border-cyan-300/35 bg-cyan-500/10 text-cyan-100"
-          }`}
-        >
-          {focusRunMessage}
-        </p>
-      ) : null}
-      {error ? (
-        <p className="rounded border border-red-300/40 bg-red-500/20 px-3 py-2 text-sm text-red-100">
-          {error}
-        </p>
-      ) : null}
-      {activeWarnings.length ? (
-        <div className="rounded border border-amber-300/40 bg-amber-200/10 px-3 py-2 text-sm text-amber-100">
-          <p className="font-semibold">Warnings</p>
-          <ul className="list-disc pl-5">
-            {activeWarnings.map((warning) => (
-              <li key={warning}>{warning}</li>
-            ))}
-          </ul>
+        <div className="h-[calc(100dvh-106px)] overflow-y-auto px-3 py-3">
+          <BarsList
+            places={sunlitPlaces}
+            isLoading={isPlacesLoading}
+            mode={mode}
+            localTime={localTime}
+            selectedVenueId={selectedVenueId}
+            onSelectVenue={handleSelectVenue}
+          />
         </div>
-      ) : null}
+      </aside>
 
-      {placesError ? (
-        <p className="rounded border border-red-300/40 bg-red-500/20 px-3 py-2 text-sm text-red-100">
-          Terrasses: {placesError}
-        </p>
-      ) : null}
-
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="h-[560px] w-full overflow-hidden rounded-xl border border-white/20">
-          <div ref={mapContainerRef} className="h-full w-full" />
-        </div>
-        <aside className="h-[560px] overflow-hidden rounded-xl border border-white/20 bg-black/20">
-          <div className="border-b border-white/15 px-3 py-2">
-            <p className="text-sm font-semibold">Bars / restos au soleil</p>
-            <p className="text-xs text-slate-300">
-              {isPlacesLoading
-                ? "Calcul terrasses en cours..."
-                : `${sunlitPlaces.length} établissements visibles`}
-            </p>
-          </div>
-          <div className="h-[calc(560px-56px)] overflow-y-auto px-2 py-2">
-            {sunlitPlaces.length === 0 && !isPlacesLoading ? (
-              <p className="px-2 py-2 text-xs text-slate-300">
-                Aucun établissement ensoleillé pour les filtres actuels.
-              </p>
-            ) : null}
-            <div className="grid gap-2">
-              {sunlitPlaces.map((place) => (
-                <button
-                  key={place.id}
-                  type="button"
-                  className="grid gap-1 rounded border border-white/15 bg-white/5 px-2 py-2 text-left text-sm hover:bg-white/10"
-                  onClick={() => {
-                    const map = mapRef.current;
-                    if (!map) {
-                      return;
-                    }
-                    map.setView(
-                      [place.evaluationLat ?? place.lat, place.evaluationLon ?? place.lon],
-                      Math.max(map.getZoom(), 16),
-                      { animate: true },
-                    );
-                  }}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-medium">{place.name}</span>
-                    <span
-                      className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-white"
-                      style={{ background: venueTypeColor(place.venueType) }}
-                    >
-                      {venueTypeBadgeLabel(place.venueType)}
-                    </span>
-                  </div>
-                  <div className="text-xs text-slate-300">
-                    {mode === "instant"
-                      ? place.isSunnyNow
-                        ? `Soleil maintenant (${localTime})`
-                        : "À l'ombre maintenant"
-                      : `${place.sunlightStartLocalTime ?? "--:--"} -> ${place.sunlightEndLocalTime ?? "--:--"} (${place.sunnyMinutes} min)`}
-                  </div>
-                  {place.selectionStrategy !== "original" ? (
-                    <div className="text-[11px] text-amber-200">
-                      Terrasse décalée ({place.selectionOffsetMeters}m) pour éviter un point indoor.
-                    </div>
-                  ) : null}
-                </button>
-              ))}
-            </div>
-          </div>
-        </aside>
+      <div className="absolute bottom-4 left-1/2 z-[440] hidden w-[min(760px,calc(100vw-48px))] -translate-x-1/2 rounded-full border border-white/14 bg-slate-950/75 px-4 py-2 text-xs text-slate-200 shadow-xl backdrop-blur lg:block">
+        {helperText}
       </div>
+
+      <div className="lg:hidden">
+        <MobileBottomSheet
+          state={bottomSheetState}
+          venueCount={sunlitPlaces.length}
+          timeline={timelineControl}
+          controls={
+            <div className="grid gap-3">
+              {calculationControls}
+              {progressStatus}
+            </div>
+          }
+          filters={layerFilters}
+          coverage={coveragePanel}
+          onStateChange={setBottomSheetState}
+          onOpenBars={() => setIsMobileBarsOpen(true)}
+        />
+      </div>
+
+      <MobileBarsView
+        open={isMobileBarsOpen}
+        places={sunlitPlaces}
+        isLoading={isPlacesLoading}
+        mode={mode}
+        localTime={localTime}
+        selectedVenueId={selectedVenueId}
+        onClose={() => setIsMobileBarsOpen(false)}
+        onSelectVenue={handleSelectVenue}
+      />
     </section>
   );
 }
