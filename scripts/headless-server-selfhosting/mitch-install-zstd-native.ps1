@@ -34,5 +34,9 @@ if ($prebuildExit -ne 0) {
 }
 
 Write-Host "=== Testing require('@mongodb-js/zstd') ==="
-$testResult = node -e "try { const z = require('@mongodb-js/zstd'); console.log('OK - zstd loaded'); } catch(e) { console.log('FAIL: ' + e.message); process.exitCode = 1; }"
-Write-Host $testResult
+$testJs = @'
+try { require('@mongodb-js/zstd'); console.log('OK - zstd loaded'); }
+catch(e) { console.log('FAIL: ' + e.message); process.exitCode = 1; }
+'@
+$testJs | node
+Write-Host "zstd test exit: $LASTEXITCODE"
