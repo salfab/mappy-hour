@@ -1,7 +1,3 @@
-param(
-    [switch]$ForceIngest   # re-telecharge les places meme si les fichiers existent
-)
-
 $ProgressPreference = "SilentlyContinue"
 $nodeDir = "C:\tools\node-v20.18.0"
 $env:PATH = "$nodeDir;$env:APPDATA\npm;" + $env:PATH
@@ -18,24 +14,9 @@ Write-Host "=== pnpm install ==="
 pnpm install --frozen-lockfile
 if ($LASTEXITCODE -ne 0) { Write-Host "pnpm install failed"; exit 1 }
 
-# --- Ingest places (idempotent : saute si les fichiers existent et --ForceIngest absent) ---
-$lausannePlaces = "$dataRoot\processed\places\lausanne-places.json"
-$nyonPlaces     = "$dataRoot\processed\places\nyon-places.json"
-$needIngest = $ForceIngest -or
-              !(Test-Path $lausannePlaces) -or
-              !(Test-Path $nyonPlaces)
-
-if ($needIngest) {
-    Write-Host "=== Ingest places OSM ==="
-    $env:MAPPY_DATA_ROOT = $dataRoot
-    pnpm ingest:lausanne:places
-    if ($LASTEXITCODE -ne 0) { Write-Host "ingest:lausanne:places failed"; exit 1 }
-    pnpm ingest:nyon:places
-    if ($LASTEXITCODE -ne 0) { Write-Host "ingest:nyon:places failed"; exit 1 }
-    Write-Host "Places ecrites dans $dataRoot\processed\places\"
-} else {
-    Write-Host "=== Places deja presentes, ingest ignore (--ForceIngest pour forcer) ==="
-}
+# Places OSM data is downloaded alongside the atlas via:
+#   pnpm atlas:download -- --repo=salfab/mappy-hour --regions=lausanne,nyon,...
+# Run that command separately when updating the atlas or on first deploy.
 
 Write-Host "=== pnpm build ==="
 $env:NEXT_PUBLIC_FORCE_CACHE_ONLY = "true"

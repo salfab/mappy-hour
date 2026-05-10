@@ -16,7 +16,8 @@
  *      b. Downloads .tar (or all .tar.partN)
  *      c. Verifies SHA256
  *      d. Extracts into CACHE_SUNLIGHT_DIR/{region}/{modelVersionHash}/g1/atlas/r0.75/
- *   4. Writes atlas-version.json marker
+ *   4. For each requested region, downloads {region}-places.json if manifest has a "places" section
+ *   5. Writes atlas-version.json marker
  */
 
 import crypto from "node:crypto";
@@ -25,7 +26,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
+import { CACHE_SUNLIGHT_DIR, PROCESSED_PLACES_DIR } from "@/lib/storage/data-paths";
 import {
   SUNLIGHT_CACHE_ALGORITHM_VERSION,
   SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION,
@@ -161,6 +162,12 @@ interface ManifestRegion {
   bytes?: number;
 }
 
+interface PlacesManifestEntry {
+  assetName: string;
+  sha256: string;
+  bytes: number;
+}
+
 async function processRegion(
   region: string,
   regionMeta: ManifestRegion,
@@ -284,6 +291,51 @@ async function processRegion(
   console.error(`[download-atlas]   ✓ ${region} installé — ${installed}/${regionMeta.tileCount} tuiles`);
 }
 
+async function processPlacesFile(
+  region: string,
+  entry: PlacesManifestEntry,
+  baseUrl: string,
+  placesDir: string,
+): Promise<void> {
+  const destPath = path.join(placesDir, entry.assetName);
+
+  // Idempotency check: if file exists and SHA256 matches, skip
+  try {
+    const existingSha = await sha256File(destPath);
+    if (existingSha === entry.sha256) {
+      console.error(
+        `[download-atlas] ↩ ${entry.assetName} déjà présent (SHA256 OK) — skip`,
+      );
+      return;
+    }
+  } catch {
+    // file doesn't exist yet, proceed with download
+  }
+
+  console.error(
+    `\n[download-atlas] ▶ Téléchargement places ${region} : ${entry.assetName} (${(entry.bytes / 1e3).toFixed(1)} KB)`,
+  );
+
+  await fsp.mkdir(placesDir, { recursive: true });
+
+  const url = `${baseUrl}/${entry.assetName}`;
+  const tmpPath = destPath + ".tmp";
+  await downloadWithProgress(url, tmpPath);
+
+  const actualSha = await sha256File(tmpPath);
+  if (actualSha !== entry.sha256) {
+    await fsp.unlink(tmpPath).catch(() => {});
+    throw new Error(
+      `SHA256 mismatch pour ${entry.assetName}\n  attendu : ${entry.sha256}\n  obtenu  : ${actualSha}`,
+    );
+  }
+
+  await fsp.writeFile(destPath, await fsp.readFile(tmpPath));
+  await fsp.unlink(tmpPath);
+
+  console.error(`[download-atlas]   ✓ ${entry.assetName} installé → ${destPath}`);
+}
+
 async function main() {
   const args = parseArgs();
 
@@ -352,6 +404,19 @@ async function main() {
     await fsp.rm(tmpDir, { recursive: true, force: true });
   }
 
+  // Download places files if manifest has a "places" section
+  const manifestPlaces = manifest["places"] as Record<string, PlacesManifestEntry> | undefined;
+  const installedPlacesRegions: string[] = [];
+  if (manifestPlaces) {
+    for (const region of targetRegions) {
+      const entry = manifestPlaces[region];
+      if (entry) {
+        await processPlacesFile(region, entry, baseUrl, PROCESSED_PLACES_DIR);
+        installedPlacesRegions.push(region);
+      }
+    }
+  }
+
   // Write marker file
   const markerPath = path.join(args.out, "atlas-version.json");
   const existingMarker = await fsp
@@ -369,6 +434,12 @@ async function main() {
       new Set([
         ...((existingMarker["installedRegions"] as string[]) ?? []),
         ...targetRegions,
+      ]),
+    ).sort(),
+    placesInstalledRegions: Array.from(
+      new Set([
+        ...((existingMarker["placesInstalledRegions"] as string[]) ?? []),
+        ...installedPlacesRegions,
       ]),
     ).sort(),
   };

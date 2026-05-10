@@ -44,11 +44,18 @@ function parseArgs() {
     tag: args["tag"] ?? null,
     outDir: args["out-dir"] ?? path.join(process.cwd(), "dist", "releases"),
     fromStdin: args["from-stdin"] === "true",
+    placesDir: args["places-dir"] ?? null,
   };
 }
 
 interface RegionPartInfo {
   name: string;
+  sha256: string;
+  bytes: number;
+}
+
+interface PlacesFileInfo {
+  assetName: string;
   sha256: string;
   bytes: number;
 }
@@ -82,6 +89,17 @@ interface ReleaseManifest {
       bytes?: number;
     }
   >;
+  places?: Record<string, PlacesFileInfo>;
+}
+
+async function sha256File(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+    stream.on("data", (d) => hash.update(d));
+    stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("error", reject);
+  });
 }
 
 function packageRegion(region: string, outDir: string): RegionSummary {
@@ -152,6 +170,26 @@ async function main() {
     };
   }
 
+  // Build places record if --places-dir was provided
+  const placesMap: Record<string, PlacesFileInfo> = {};
+  if (args.placesDir) {
+    let placesFiles: string[] = [];
+    try {
+      placesFiles = await fsp.readdir(args.placesDir);
+    } catch {
+      console.error(`[build-manifest] Warning: impossible de lire --places-dir=${args.placesDir}`);
+    }
+    for (const fileName of placesFiles) {
+      const match = fileName.match(/^(.+)-places\.json$/);
+      if (!match) continue;
+      const region = match[1];
+      const filePath = path.join(args.placesDir, fileName);
+      const stat = await fsp.stat(filePath);
+      const sha256 = await sha256File(filePath);
+      placesMap[region] = { assetName: fileName, sha256, bytes: stat.size };
+    }
+  }
+
   const manifest: ReleaseManifest = {
     releaseTag: args.tag,
     algorithmVersion: SUNLIGHT_CACHE_ALGORITHM_VERSION,
@@ -163,6 +201,7 @@ async function main() {
       .digest("hex")
       .slice(0, 16),
     regions: regionsMap,
+    ...(Object.keys(placesMap).length > 0 ? { places: placesMap } : {}),
   };
 
   const outPath = path.join(args.outDir, "release-manifest.json");
@@ -171,6 +210,9 @@ async function main() {
   console.error(`[build-manifest] ✓ release-manifest.json écrit → ${outPath}`);
   console.error(`[build-manifest]   ${summaries.length} région(s) : ${summaries.map((s) => s.region).join(", ")}`);
   console.error(`[build-manifest]   tag=${args.tag}`);
+  if (Object.keys(placesMap).length > 0) {
+    console.error(`[build-manifest]   ${Object.keys(placesMap).length} places file(s) : ${Object.keys(placesMap).join(", ")}`);
+  }
 
   process.stdout.write(JSON.stringify(manifest));
 }

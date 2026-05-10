@@ -58,11 +58,41 @@ if (-not $Tag) {
     Write-Host "[publish] Tag auto-généré : $Tag"
 }
 
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+
+# ── Ingest places ─────────────────────────────────────────────────────────────
+# Map of region → pnpm script (only regions that have a places ingest script)
+$PlacesIngestMap = @{
+    "lausanne" = "ingest:lausanne:places"
+    "nyon"     = "ingest:nyon:places"
+}
+$PlacesTmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "mappy-places-$([datetime]::Now.ToString('yyyyMMddHHmmss'))"
+$env:MAPPY_DATA_ROOT = $PlacesTmpRoot
+Write-Host "`n[publish] ▶ Ingest places OSM..."
+$RegionList = $Regions -split "," | ForEach-Object { $_.Trim() }
+foreach ($region in $RegionList) {
+    if ($PlacesIngestMap.ContainsKey($region)) {
+        Write-Host "[publish]   · ingest places $region..."
+        pnpm run $PlacesIngestMap[$region]
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[publish]   ! Warning: ingest:$region:places failed (places skipped for this region)"
+        }
+    }
+}
+# Copy generated places JSON to $OutDir
+$PlacesProcessedDir = Join-Path $PlacesTmpRoot "processed" "places"
+if (Test-Path $PlacesProcessedDir) {
+    foreach ($f in (Get-ChildItem $PlacesProcessedDir -Filter "*-places.json")) {
+        Copy-Item $f.FullName (Join-Path $OutDir $f.Name) -Force
+        Write-Host "[publish]   · copied $($f.Name) → $OutDir"
+    }
+}
+Remove-Item $PlacesTmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+$env:MAPPY_DATA_ROOT = $null
+
 # ── Packaging ─────────────────────────────────────────────────────────────────
 Write-Host "`n[publish] ▶ Packaging des régions : $Regions"
 $RegionList = $Regions -split "," | ForEach-Object { $_.Trim() }
-
-New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $Summaries = @()
 foreach ($Region in $RegionList) {
@@ -95,7 +125,8 @@ $SummaryInput = $Summaries -join "`n"
 $SummaryInput | npx tsx scripts/release/build-release-manifest.ts `
     "--tag=$Tag" `
     "--out-dir=$OutDir" `
-    "--from-stdin=true"
+    "--from-stdin=true" `
+    "--places-dir=$OutDir"
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "[publish] ✗ build-release-manifest échoué."
@@ -122,6 +153,14 @@ foreach ($R in $Manifest.regions.PSObject.Properties) {
     $RegionLines += "- **$RName** : $Tiles tuiles (hash $Hash...)`n"
 }
 
+$PlacesLines = ""
+$PlacesFiles = Get-ChildItem $OutDir -Filter "*-places.json" -ErrorAction SilentlyContinue
+if ($PlacesFiles) {
+    foreach ($pf in $PlacesFiles) {
+        $PlacesLines += "- $($pf.Name) ($([math]::Round($pf.Length / 1KB, 1)) KB)`n"
+    }
+}
+
 # Detect the GitHub repo from gh CLI to inject the right --repo value in the
 # install command. Falls back to OWNER/REPO if gh can't resolve it.
 $RepoFromGh = (gh repo view --json nameWithOwner -q .nameWithOwner 2>$null)
@@ -131,13 +170,15 @@ if (-not $RepoFromGh) { $RepoFromGh = "OWNER/REPO" }
 # interpolation, then a single-quoted block for the fenced code (which
 # bypasses PowerShell's backtick escape entirely — backticks would otherwise
 # need to be doubled to survive the @"..."@ here-string).
+$PlacesSectionHead = if ($PlacesLines) { "`n### Places OSM`n$PlacesLines" } else { "" }
+
 $DescHead = @"
 ## Atlas sunlight — $Tag
 
 Algorithme : ``$($Manifest.algorithmVersion)`` — Format : v$($Manifest.artifactFormatVersion)
 
 ### Régions packagées
-$RegionLines
+$RegionLines$PlacesSectionHead
 ### Installation
 
 "@
