@@ -212,16 +212,20 @@ Tailscale Funnel permet d'exposer le port local 3000 en HTTPS public sans ouvrir
 ### Commandes (depuis la session interactive qui possède Tailscale)
 
 ```powershell
-# Proxy HTTPS → localhost:3000
+# Proxy HTTPS → localhost:3000 (tailnet uniquement)
 tailscale serve --bg --https=443 http://127.0.0.1:3000
 
-# Activer l'exposition publique sur le port 443
-tailscale funnel 443 on
+# Activer l'exposition publique (Funnel = accès internet)
+# Le port cible est le port LOCAL (3000), pas 443 — Tailscale gère le HTTPS côté public
+tailscale funnel --bg 3000
 
 # Vérifier
 tailscale serve status
 tailscale funnel status
 ```
+
+> **Note syntaxe** : `tailscale funnel 443 on` est l'ancienne syntaxe (dépréciée depuis ~v1.50+).  
+> La nouvelle syntaxe prend le **port local** comme argument : `tailscale funnel --bg 3000`.
 
 L'URL publique sera : `https://<nom-machine>.<tailnet>.ts.net`
 
