@@ -9,8 +9,20 @@ const path = require("path");
 const fs = require("fs");
 
 const repoRoot = path.resolve(__dirname, "../..");
-const zstdDir = path.join(repoRoot, "node_modules", "@mongodb-js", "zstd");
-const prebuildBin = path.join(zstdDir, "node_modules", ".bin", "prebuild-install.CMD");
+// pnpm hoists @mongodb-js/zstd under .pnpm — resolve via require.resolve
+let zstdDir;
+try {
+  zstdDir = path.dirname(require.resolve("@mongodb-js/zstd/package.json"));
+} catch {
+  zstdDir = path.join(repoRoot, "node_modules", "@mongodb-js", "zstd");
+}
+// prebuild-install lives either alongside the package or in a sibling .bin
+const prebuildCandidates = [
+  path.join(zstdDir, "node_modules", ".bin", "prebuild-install.CMD"),
+  path.join(repoRoot, "node_modules", ".bin", "prebuild-install.CMD"),
+  path.join(repoRoot, "node_modules", ".pnpm", ".bin", "prebuild-install.CMD"),
+];
+const prebuildBin = prebuildCandidates.find((p) => fs.existsSync(p)) ?? null;
 
 console.log("[zstd-install] Node:", process.version, "platform:", process.platform, "arch:", process.arch);
 
@@ -19,16 +31,18 @@ if (!fs.existsSync(zstdDir)) {
   process.exit(1);
 }
 
-if (!fs.existsSync(prebuildBin)) {
-  console.error("[zstd-install] prebuild-install not found at", prebuildBin);
+if (!prebuildBin) {
+  console.error("[zstd-install] prebuild-install.CMD not found — searched:", prebuildCandidates);
   process.exit(1);
 }
 
+console.log("[zstd-install] Using prebuild-install at:", prebuildBin);
 console.log("[zstd-install] Running prebuild-install --runtime napi --verbose ...");
+// .CMD is a Windows batch wrapper — must be run via cmd.exe, not node
 const result = spawnSync(
-  process.execPath,
-  [prebuildBin, "--runtime", "napi", "--verbose", "--directory", zstdDir],
-  { stdio: "inherit", cwd: repoRoot }
+  "cmd.exe",
+  ["/c", prebuildBin, "--runtime", "napi", "--verbose", "--directory", zstdDir],
+  { stdio: "inherit", cwd: repoRoot, shell: false }
 );
 console.log("[zstd-install] prebuild-install exit:", result.status);
 
