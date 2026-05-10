@@ -16,22 +16,10 @@ if ($LASTEXITCODE -ne 0) { Write-Host "pnpm install failed"; exit 1 }
 
 Write-Host "=== @mongodb-js/zstd native prebuilt ==="
 # The NAPI binary is not always downloaded by pnpm install --frozen-lockfile.
-# Run prebuild-install explicitly so atlas decompression works without build tools.
-$prebuildCmd = "node_modules\@mongodb-js\zstd\node_modules\.bin\prebuild-install.CMD"
-if (Test-Path $prebuildCmd) {
-    node $prebuildCmd --runtime napi --directory "node_modules\@mongodb-js\zstd" 2>&1 | Out-Null
-    $tmpJs = [System.IO.Path]::GetTempFileName() + ".js"
-    $jsCode = 'try{require("@mongodb-js/zstd");process.exit(0);}catch(e){process.exit(1);}'
-    [System.IO.File]::WriteAllText($tmpJs, $jsCode)
-    node $tmpJs
-    Remove-Item $tmpJs -ErrorAction SilentlyContinue
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  zstd native module OK"
-    } else {
-        Write-Host "  Warning: zstd native module unavailable (atlas files must be gzip-compressed)"
-    }
-} else {
-    Write-Host "  prebuild-install not found, skipping"
+# install-zstd-native.js runs prebuild-install and verifies the module loads.
+node scripts\headless-server-selfhosting\install-zstd-native.js
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  Warning: zstd native module unavailable — atlas zstd files will fail to decompress"
 }
 
 # Places OSM data is downloaded alongside the atlas via:

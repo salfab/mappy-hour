@@ -12,31 +12,5 @@ Set-Location "C:\srv\mappy-hour"
 Write-Host "=== Node version ==="
 node --version
 
-Write-Host "=== Running prebuild-install for @mongodb-js/zstd ==="
-$prebuildBin = "node_modules\@mongodb-js\zstd\node_modules\.bin\prebuild-install.CMD"
-if (-not (Test-Path $prebuildBin)) {
-    $prebuildBin = "node_modules\.bin\prebuild-install.CMD"
-}
-
-node $prebuildBin --runtime napi --verbose --directory "node_modules\@mongodb-js\zstd"
-$prebuildExit = $LASTEXITCODE
-Write-Host "prebuild-install exit: $prebuildExit"
-
-if ($prebuildExit -ne 0) {
-    Write-Host "prebuild-install failed — checking if a prebuilt exists in node_modules..."
-    # List what's in the prebuilds dir after the attempt
-    $prebuildsDir = "node_modules\@mongodb-js\zstd\prebuilds"
-    if (Test-Path $prebuildsDir) {
-        Get-ChildItem $prebuildsDir -Recurse | Select-Object FullName
-    } else {
-        Write-Host "(prebuilds dir absent)"
-    }
-}
-
-Write-Host "=== Testing require('@mongodb-js/zstd') ==="
-$tmpJs = [System.IO.Path]::GetTempFileName() + ".js"
-$jsCode = 'try{require("@mongodb-js/zstd");console.log("OK - zstd loaded");}catch(e){console.log("FAIL: "+e.message);process.exitCode=1;}'
-[System.IO.File]::WriteAllText($tmpJs, $jsCode)
-node $tmpJs
-Write-Host "zstd test exit: $LASTEXITCODE"
-Remove-Item $tmpJs -ErrorAction SilentlyContinue
+node scripts\headless-server-selfhosting\install-zstd-native.js
+exit $LASTEXITCODE
