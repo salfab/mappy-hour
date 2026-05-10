@@ -10,12 +10,13 @@
 | Composant | État |
 |-----------|------|
 | App Next.js buildée sur mitch | ✅ Build réussi |
-| Serveur en cours d'exécution | ✅ WMI, survit aux déconnexions SSH |
+| Serveur en cours d'exécution | ✅ WMI PID 15484, survit aux déconnexions SSH |
 | Tailscale Funnel (HTTPS public) | ✅ `https://mitch.tail63c42d.ts.net` |
-| Atlas (5 régions) | ✅ Complet — lausanne 877t, nyon 14t, morges 28t, vevey 88t, geneve 463t |
-| Places OSM (terrasses) | ❌ **À faire** — ingest non lancé |
-| API sunlight/daily | ❌ **À corriger** — 3 fixes en attente de déploiement sur mitch |
-| Persistance au reboot | ❌ Non configuré (process WMI, mais pas de scheduled task) |
+| Atlas (5 régions) | ✅ lausanne 877t, nyon 14t, morges 28t, vevey 88t, geneve 463t |
+| Places OSM (terrasses) | ✅ `lausanne-places.json` (708 KB) + `nyon-places.json` (147 KB) |
+| API sunlight/timeline/stream | ✅ Fonctionnel (bug `findCachedModelVersionHash` corrigé) |
+| API places/windows | ✅ Fonctionnel (bug GPU fallback + tile lookup corrigés) |
+| Persistance au reboot | ❌ Non configuré (process WMI ne survit pas au reboot) |
 
 ---
 
@@ -23,10 +24,10 @@
 
 - **Runtime** : Node.js v20.18.0 portable → `C:\tools\node-v20.18.0`
 - **pnpm** : 9.0.6 → `%APPDATA%\npm`
-- **Repo** : `C:\srv\mappy-hour` (branch `master`)
+- **Repo** : `C:\srv\mappy-hour` (branch `master`, commit `3882947`)
 - **Data root** : `C:\mappy-data` (`MAPPY_DATA_ROOT=C:\mappy-data`)
 - **Atlas** : `C:\mappy-data\cache\sunlight\{region}\{hash}\g1\atlas\r0.75\`
-- **Places** : `C:\mappy-data\processed\places\` — **vide, ingest à lancer**
+- **Places** : `C:\mappy-data\processed\places\lausanne-places.json` + `nyon-places.json`
 - **Build flag** : `NEXT_PUBLIC_FORCE_CACHE_ONLY=true`
 - **Port** : 3000, bind `0.0.0.0`
 - **Logs** : `C:\srv\mappy-hour\server.log` / `server.err`
@@ -45,49 +46,35 @@ Le script fait : `git pull` → `pnpm install` → `pnpm build` (~3 min) → kil
 
 ---
 
-## Actions immédiates à faire
+## Bugs corrigés dans cette session (récapitulatif)
 
-### 1. Push les commits en attente (depuis lappymaclapface)
+| Commit | Fix |
+|--------|-----|
+| `bedce17` | Mode UI par défaut `daily` au lieu d'`instant` |
+| `bedce17` | `PRECOMPUTED_REGIONS` : ajout de `vevey` |
+| `3882947` | **`findCachedModelVersionHash`** : le `catch { continue }` sautait le check atlas pour les déploiements atlas-only (dossier `g1/m15/` absent → `readdir` ENOENT → `continue` → atlas jamais scanné → `[]` → "No tiles found"). Fix : `dates = []` pour tomber dans le `else { atlas check }`. |
+| `6d196de` | **`places/windows` GPU fallback** : `pickViaTile` retournait `null` si un candidat offset (parmi les 17 points à 4m/8m) atterrissait hors couverture atlas → GPU → crash sur raw swisstopo absent. Fix : `continue` le candidat, garder les autres. Garde `NEXT_PUBLIC_FORCE_CACHE_ONLY` devant `ensureSharedSources()` en filet de sécurité. |
+| `230379d` | Places OSM embarquées comme assets GitHub Release — `pnpm atlas:publish` ingeste et publie les places JSON, `pnpm atlas:download` les télécharge automatiquement. Plus de dépendance Overpass à l'install. |
+| `19a0dc6` | Fix Overpass HTTP 406 (`URLSearchParams` body), 4 endpoints, retry 429 |
 
-Deux commits locaux attendent d'être poussés :
+---
 
-```
-bedce17  fix(ui+cache): default mode daily, detect atlas-only hashes, add vevey to regions
-f402acd  docs(deploy): add mitch-deploy.ps1 and README section for update workflow
-```
-
-```powershell
-git push origin master
-```
-
-### 2. Déployer sur mitch
+## Publier une nouvelle release atlas + places
 
 ```powershell
+# Sur lappymaclapface
+pnpm atlas:publish -- --regions=lausanne,nyon
+# Puis valider + publier la draft sur GitHub, puis sur mitch :
 ssh devops@mitch "powershell -File C:\srv\mappy-hour\scripts\headless-server-selfhosting\mitch-deploy.ps1"
+# Et mettre à jour l'atlas + places :
+ssh devops@mitch "powershell -Command \"cd C:\srv\mappy-hour; $env:PATH = 'C:\tools\node-v20.18.0;' + `$env:APPDATA + '\npm;' + `$env:PATH; pnpm atlas:download -- --repo=salfab/mappy-hour --regions=lausanne,nyon\""
 ```
 
-Ce déploiement corrige 3 bugs :
-- **Mode par défaut** "daily" au lieu de "instant" dans l'UI
-- **"No tiles found"** — `findCachedModelVersionHash` détectait uniquement la structure `m15/{date}`, ignorant les fichiers atlas `atlas/r0.75/*.atlas.bin.gz`. Les requêtes retournaient toujours 0 candidats.
-- **Vevey absent** de `PRECOMPUTED_REGIONS` → zone non reconnue
-
-### 3. Lancer l'ingest des places (sur mitch, après le déploiement)
-
-```powershell
-ssh devops@mitch
-# puis sur mitch :
-$env:PATH = "C:\tools\node-v20.18.0;$env:APPDATA\npm;" + $env:PATH
-Set-Location C:\srv\mappy-hour
-$env:MAPPY_DATA_ROOT = "C:\mappy-data"
-pnpm ingest:lausanne:places
-pnpm ingest:nyon:places
-```
-
-Les fichiers produits :
-- `C:\mappy-data\processed\places\lausanne-places.json`
-- `C:\mappy-data\processed\places\nyon-places.json`
-
-Pas besoin de redémarrer le serveur — les places sont chargées à la demande.
+`pnpm atlas:publish` (dans `scripts/release/publish-atlas-release.ps1`) :
+1. Ingeste les places OSM (lausanne + nyon) dans un répertoire temp
+2. Package les régions atlas (`package-atlas-region.ts`)
+3. Construit `release-manifest.json` (inclut les places avec SHA256)
+4. Crée la release GitHub en draft + upload les assets
 
 ---
 
@@ -168,7 +155,7 @@ Le process WMI ne redémarre pas automatiquement après un reboot Windows. Optio
 
 **Option A — Task Scheduler (sans droits admin supplémentaires)** :
 ```powershell
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -File C:\temp\start-wmi.ps1"
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -File C:\temp\mitch-start.ps1"
 $trigger = New-ScheduledTaskTrigger -AtStartup
 Register-ScheduledTask -TaskName "MappyHour" -Action $action -Trigger $trigger -RunLevel Highest -User "SYSTEM"
 ```
@@ -185,11 +172,9 @@ nssm start MappyHour
 
 ## Prochaines étapes (par priorité)
 
-1. **Push + déployer** les 3 fixes (commandes ci-dessus, §Actions immédiates)
-2. **Ingest places** (terrasses Lausanne + Nyon)
-3. **Valider** : ouvrir `https://mitch.tail63c42d.ts.net`, cliquer "daily", vérifier qu'une zone couverte affiche des résultats
-4. **Persistance au reboot** — Task Scheduler ou NSSM
-5. **(Futur) Docker** — image = code + places baked in, volume = atlas. `docker compose pull && up` pour déployer.
+1. **Valider** : ouvrir `https://mitch.tail63c42d.ts.net`, cliquer "daily", vérifier qu'une zone lausannoise affiche heatmap + terrasses
+2. **Persistance au reboot** — Task Scheduler ou NSSM
+3. **(Futur) Places pour morges/vevey/genève** — créer les scripts `ingest:{region}:places` et les intégrer à `publish-atlas-release.ps1`
 
 ---
 
@@ -200,10 +185,12 @@ nssm start MappyHour
 | `C:\srv\mappy-hour\` | Repo cloné |
 | `C:\srv\mappy-hour\server.log` / `server.err` | Logs serveur |
 | `C:\srv\mappy-hour\server.pid` | PID du process |
-| `C:\mappy-data\cache\sunlight\` | Atlas (complet) |
-| `C:\mappy-data\processed\places\` | Places OSM (vide, à ingester) |
+| `C:\mappy-data\cache\sunlight\` | Atlas (complet, 5 régions) |
+| `C:\mappy-data\processed\places\` | Places OSM (lausanne + nyon) |
 | `C:\tools\node-v20.18.0\` | Node.js portable |
 | `C:\temp\mitch-start.ps1` | Script de démarrage (hors repo) |
 | `scripts/headless-server-selfhosting/mitch-deploy.ps1` | Script de déploiement (dans le repo) |
 | `scripts/headless-server-selfhosting/README.md` | Procédure complète |
+| `scripts/release/publish-atlas-release.ps1` | Publication release atlas + places |
+| `scripts/release/download-atlas.ts` | Download atlas + places depuis GitHub Release |
 | `docs/architecture/shortcuts-registry.md` | Registre des optimisations |
