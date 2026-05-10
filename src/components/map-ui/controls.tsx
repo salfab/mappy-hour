@@ -161,6 +161,14 @@ export function LayerFilters(props: LayerFiltersProps) {
         />
         <span>Heatmap</span>
       </label>
+      <label className={chipClass}>
+        <input
+          type="checkbox"
+          checked={props.ignoreVegetationShadow}
+          onChange={(event) => props.onIgnoreVegetationShadowChange(event.target.checked)}
+        />
+        <span>Ignorer vegetation</span>
+      </label>
     </div>
   );
 }
