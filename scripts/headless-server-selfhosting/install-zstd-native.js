@@ -38,11 +38,13 @@ if (!prebuildBin) {
 
 console.log("[zstd-install] Using prebuild-install at:", prebuildBin);
 console.log("[zstd-install] Running prebuild-install --runtime napi --verbose ...");
-// .CMD is a Windows batch wrapper — must be run via cmd.exe, not node
+// .CMD is a Windows batch wrapper — must be run via cmd.exe, not node.
+// cwd must be the @mongodb-js/zstd dir so prebuild-install reads its own
+// package.json (name + repository) instead of the root mappy-hour package.
 const result = spawnSync(
   "cmd.exe",
-  ["/c", prebuildBin, "--runtime", "napi", "--verbose", "--directory", zstdDir],
-  { stdio: "inherit", cwd: repoRoot, shell: false }
+  ["/c", prebuildBin, "--runtime", "napi", "--verbose"],
+  { stdio: "inherit", cwd: zstdDir, shell: false }
 );
 console.log("[zstd-install] prebuild-install exit:", result.status);
 

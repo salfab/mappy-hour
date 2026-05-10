@@ -16,6 +16,7 @@
 | Places OSM (terrasses) | ✅ `lausanne-places.json` (708 KB) + `nyon-places.json` (147 KB) |
 | API sunlight/timeline/stream | ✅ Fonctionnel (bug `findCachedModelVersionHash` corrigé) |
 | API places/windows | ✅ Fonctionnel (bug GPU fallback + tile lookup corrigés) |
+| **Décompression atlas zstd** | ❌ `@mongodb-js/zstd` prébuilt non installé sur mitch — run `mitch-install-zstd-native.ps1` après pull |
 | Persistance au reboot | ❌ Non configuré (process WMI ne survit pas au reboot) |
 
 ---
@@ -172,9 +173,10 @@ nssm start MappyHour
 
 ## Prochaines étapes (par priorité)
 
-1. **Valider** : ouvrir `https://mitch.tail63c42d.ts.net`, cliquer "daily", vérifier qu'une zone lausannoise affiche heatmap + terrasses
-2. **Persistance au reboot** — Task Scheduler ou NSSM
-3. **(Futur) Places pour morges/vevey/genève** — créer les scripts `ingest:{region}:places` et les intégrer à `publish-atlas-release.ps1`
+1. **Décompression zstd** : après `git pull` sur mitch, lancer `mitch-install-zstd-native.ps1` pour télécharger le prebuilt `@mongodb-js/zstd`. Le fix `cwd=zstdDir` (commit ci-dessous) corrige l'URL incorrecte qui était générée.
+2. **Valider** : ouvrir `https://mitch.tail63c42d.ts.net`, cliquer "daily", vérifier heatmap + terrasses lausannoise
+3. **Persistance au reboot** — Task Scheduler ou NSSM
+4. **(Futur) Places pour morges/vevey/genève** — créer les scripts `ingest:{region}:places` et les intégrer à `publish-atlas-release.ps1`
 
 ---
 
