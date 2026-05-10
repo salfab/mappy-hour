@@ -140,14 +140,15 @@ async function fetchOverpassData(query: string): Promise<OverpassResponse> {
         const response = await fetch(endpoint, {
           method: "POST",
           headers: {
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "User-Agent": "mappy-hour/1.0 (data ingest)",
           },
-          body: `data=${encodeURIComponent(query)}`,
+          body: new URLSearchParams({ data: query }),
+          signal: AbortSignal.timeout(180_000),
         });
 
         if (response.status === 429) {
           const delay = (attempt + 1) * 15_000;
-          console.error(`[places] ${endpoint} rate-limited, retry in ${delay / 1000}s...`);
+          console.error(`[places] ${endpoint} rate-limited (attempt ${attempt + 1}/3), retry in ${delay / 1000}s...`);
           await sleep(delay);
           continue;
         }
@@ -159,6 +160,7 @@ async function fetchOverpassData(query: string): Promise<OverpassResponse> {
         return (await response.json()) as OverpassResponse;
       } catch (error) {
         lastError = error;
+        console.error(`[places] ${endpoint} attempt ${attempt + 1}/3 failed: ${error instanceof Error ? error.message : error}`);
         if (attempt < 2) await sleep(5_000);
       }
     }
