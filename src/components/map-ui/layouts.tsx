@@ -94,46 +94,47 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
     if (dragPreview !== null) {
       if (props.state === "compact") {
         if (dragPreview === "up-strong") {
-          return "h-[min(calc(100svh-116px),560px)]";
+          return "h-[clamp(330px,44svh,430px)]";
         }
         if (dragPreview === "up") {
-          return "h-[clamp(218px,34svh,300px)]";
+          return "h-[clamp(190px,28svh,252px)]";
         }
       }
 
       if (props.state === "middle") {
         if (dragPreview === "up-strong") {
-          return "h-[calc(100svh-40px)]";
+          return "h-[min(calc(100svh-96px),620px)]";
         }
         if (dragPreview === "up") {
-          return "h-[min(calc(100svh-80px),640px)]";
+          return "h-[clamp(430px,58svh,560px)]";
         }
         if (dragPreview === "down-strong") {
-          return "h-[clamp(176px,24svh,220px)]";
+          return "h-[clamp(142px,18svh,176px)]";
         }
         if (dragPreview === "down") {
-          return "h-[clamp(230px,36svh,320px)]";
+          return "h-[clamp(210px,30svh,280px)]";
         }
       }
 
       if (props.state === "expanded") {
         if (dragPreview === "down-strong") {
-          return "h-[min(calc(100svh-116px),560px)]";
+          return "h-[clamp(330px,44svh,430px)]";
         }
         if (dragPreview === "down") {
-          return "h-[min(calc(100svh-72px),660px)]";
+          return "h-[clamp(430px,58svh,560px)]";
         }
       }
     }
 
     return props.state === "compact"
-      ? "h-[clamp(176px,24svh,220px)]"
+      ? "h-[clamp(142px,18svh,176px)]"
       : props.state === "middle"
-        ? "h-[min(calc(100svh-116px),560px)]"
-        : "h-[calc(100svh-40px)]";
+        ? "h-[clamp(330px,44svh,430px)]"
+        : "h-[min(calc(100svh-96px),620px)]";
   };
 
   const stateHeightClass = getHeightClass();
+  const contentGapClass = props.state === "compact" ? "gap-3" : "gap-3.5";
 
   const updateDragPreview = (clientY: number) => {
     const startY = dragStartYRef.current;
@@ -199,7 +200,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
         setDragPreview(null);
       }}
     >
-      <div className="flex justify-center pb-3">
+      <div className="flex justify-center pb-2">
         <button
           type="button"
           className="grid h-8 w-28 touch-none place-items-center rounded-full outline-none transition focus-visible:ring-2 focus-visible:ring-amber-300"
@@ -237,7 +238,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
         </button>
       </div>
 
-      <div className="grid min-h-0 gap-4 overflow-y-auto overscroll-contain pb-1">
+      <div className={`grid min-h-0 ${contentGapClass} overflow-y-auto overscroll-contain pb-1`}>
         {props.timeline}
         {props.state !== "compact" ? (
           <>
