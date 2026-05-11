@@ -27,7 +27,7 @@ jobs:
           #   TS_OAUTH_CLIENT_SECRET → client secret
           # L'ACL Tailscale doit contenir "tag:ci" dans tagOwners (voir docs/deploy.md).
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-client-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          oauth-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
           tags: tag:ci
 
       - name: Setup SSH agent
