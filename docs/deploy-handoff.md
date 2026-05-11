@@ -29,7 +29,7 @@
 - **Data root** : `C:\mappy-data` (`MAPPY_DATA_ROOT=C:\mappy-data`)
 - **Atlas** : `C:\mappy-data\cache\sunlight\{region}\{hash}\g1\atlas\r0.75\`
 - **Places** : `C:\mappy-data\processed\places\lausanne-places.json` + `nyon-places.json`
-- **Build flag** : `NEXT_PUBLIC_FORCE_CACHE_ONLY=true`
+- **Runtime flag** : `MAPPY_FORCE_CACHE_ONLY=true` (lu au démarrage par la page server-rendered ; aucun rebuild nécessaire en cas de modif)
 - **Port** : 3000, bind `0.0.0.0`
 - **Logs** : `C:\srv\mappy-hour\server.log` / `server.err`
 - **PID** : `C:\srv\mappy-hour\server.pid`
@@ -54,7 +54,7 @@ Le script fait : `git pull` → `pnpm install` → `pnpm build` (~3 min) → kil
 | `bedce17` | Mode UI par défaut `daily` au lieu d'`instant` |
 | `bedce17` | `PRECOMPUTED_REGIONS` : ajout de `vevey` |
 | `3882947` | **`findCachedModelVersionHash`** : le `catch { continue }` sautait le check atlas pour les déploiements atlas-only (dossier `g1/m15/` absent → `readdir` ENOENT → `continue` → atlas jamais scanné → `[]` → "No tiles found"). Fix : `dates = []` pour tomber dans le `else { atlas check }`. |
-| `6d196de` | **`places/windows` GPU fallback** : `pickViaTile` retournait `null` si un candidat offset (parmi les 17 points à 4m/8m) atterrissait hors couverture atlas → GPU → crash sur raw swisstopo absent. Fix : `continue` le candidat, garder les autres. Garde `NEXT_PUBLIC_FORCE_CACHE_ONLY` devant `ensureSharedSources()` en filet de sécurité. |
+| `6d196de` | **`places/windows` GPU fallback** : `pickViaTile` retournait `null` si un candidat offset (parmi les 17 points à 4m/8m) atterrissait hors couverture atlas → GPU → crash sur raw swisstopo absent. Fix : `continue` le candidat, garder les autres. Garde `MAPPY_FORCE_CACHE_ONLY` devant `ensureSharedSources()` en filet de sécurité. |
 | `230379d` | Places OSM embarquées comme assets GitHub Release — `pnpm atlas:publish` ingeste et publie les places JSON, `pnpm atlas:download` les télécharge automatiquement. Plus de dépendance Overpass à l'install. |
 | `19a0dc6` | Fix Overpass HTTP 406 (`URLSearchParams` body), 4 endpoints, retry 429 |
 
@@ -165,7 +165,7 @@ Register-ScheduledTask -TaskName "MappyHour" -Action $action -Trigger $trigger -
 ```powershell
 winget install NSSM.NSSM
 nssm install MappyHour "C:\tools\node-v20.18.0\node.exe" "C:\srv\mappy-hour\.next\standalone\server.js"
-nssm set MappyHour AppEnvironmentExtra "NODE_ENV=production" "MAPPY_DATA_ROOT=C:\mappy-data" "NEXT_PUBLIC_FORCE_CACHE_ONLY=true" "PORT=3000"
+nssm set MappyHour AppEnvironmentExtra "NODE_ENV=production" "MAPPY_DATA_ROOT=C:\mappy-data" "MAPPY_FORCE_CACHE_ONLY=true" "PORT=3000"
 nssm start MappyHour
 ```
 

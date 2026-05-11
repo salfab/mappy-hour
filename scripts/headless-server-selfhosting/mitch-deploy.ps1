@@ -27,7 +27,8 @@ if ($LASTEXITCODE -ne 0) {
 # Run that command separately when updating the atlas or on first deploy.
 
 Write-Host "=== pnpm build ==="
-$env:NEXT_PUBLIC_FORCE_CACHE_ONLY = "true"
+# Note : aucun flag de cache-only au build. Architecture immuable :
+# MAPPY_FORCE_CACHE_ONLY est lu au runtime par la page server-rendered.
 pnpm build
 if ($LASTEXITCODE -ne 0) { Write-Host "pnpm build failed"; exit 1 }
 

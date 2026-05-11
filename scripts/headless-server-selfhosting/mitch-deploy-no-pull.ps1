@@ -6,7 +6,8 @@ $repoDir = "C:\srv\mappy-hour"
 Set-Location $repoDir
 
 Write-Host "=== pnpm build ==="
-$env:NEXT_PUBLIC_FORCE_CACHE_ONLY = "true"
+# Architecture immuable : aucun flag cache-only au build.
+# MAPPY_FORCE_CACHE_ONLY est lu au runtime (cf. C:\temp\mitch-start.ps1).
 $env:MAPPY_DATA_ROOT = "C:\mappy-data"
 pnpm build
 if ($LASTEXITCODE -ne 0) { Write-Host "pnpm build failed"; exit 1 }
@@ -30,7 +31,7 @@ Set-Content "$repoDir\server.err" ""
 @"
 `$env:PATH = "C:\tools\node-v20.18.0;" + `$env:APPDATA + "\npm;" + `$env:PATH
 Set-Location "C:\srv\mappy-hour"
-`$env:NEXT_PUBLIC_FORCE_CACHE_ONLY = "true"
+`$env:MAPPY_FORCE_CACHE_ONLY = "true"
 `$env:MAPPY_DATA_ROOT = "C:\mappy-data"
 `$env:PORT = "3000"
 `$env:MAPPY_TIMELINE_CACHE_PREFETCH = "1"

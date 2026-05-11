@@ -17,10 +17,8 @@ RUN pnpm install --frozen-lockfile
 # ── Stage 2 : build Next.js ──────────────────────────────────────────────────
 FROM deps AS builder
 
-# NEXT_PUBLIC_* vars sont inlinées à la compilation dans le bundle client.
-# Passer --build-arg NEXT_PUBLIC_FORCE_CACHE_ONLY=true pour l'image de production.
-ARG NEXT_PUBLIC_FORCE_CACHE_ONLY=true
-ENV NEXT_PUBLIC_FORCE_CACHE_ONLY=$NEXT_PUBLIC_FORCE_CACHE_ONLY
+# Architecture immuable : aucune config baked au build.
+# Le cache-only est piloté au runtime via MAPPY_FORCE_CACHE_ONLY (server-side env).
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY . .

@@ -5,8 +5,6 @@ services:
   mappy-hour:
     build:
       context: .
-      args:
-        NEXT_PUBLIC_FORCE_CACHE_ONLY: "true"
     image: mappy-hour:latest
     container_name: mappy-hour
     restart: unless-stopped
@@ -17,7 +15,9 @@ services:
     environment:
       - NODE_ENV=production
       - MAPPY_DATA_ROOT=/data
-      - NEXT_PUBLIC_FORCE_CACHE_ONLY=true
+      # Runtime flag : MAPPY_FORCE_CACHE_ONLY=true → image immuable utilisable
+      # sur un serveur GPU (=false) ou headless (=true) sans rebuild.
+      - MAPPY_FORCE_CACHE_ONLY=true
     ports:
       - "127.0.0.1:3000:3000"
     volumes:

@@ -2098,7 +2098,14 @@ function createEmptyInstantAreaResult(
   };
 }
 
-export function SunlightMapClient() {
+export interface SunlightMapClientProps {
+  /** Server-injected at request time from MAPPY_FORCE_CACHE_ONLY env var.
+   * Runtime config — same build artifact runs on a GPU server (false) or
+   * a headless cache-only server (true) without rebuilding. */
+  forceCacheOnly: boolean;
+}
+
+export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const defaultNow = useMemo(() => zurichNowDateAndTime(), []);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
@@ -2200,7 +2207,6 @@ export function SunlightMapClient() {
   const [lastSearchQuery, setLastSearchQuery] = useState("");
   const [isSearchLoading, setIsSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const forceCacheOnly = process.env.NEXT_PUBLIC_FORCE_CACHE_ONLY === "true";
   const [cacheOnly, setCacheOnly] = useState(forceCacheOnly);
   const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
   const [isMapReady, setIsMapReady] = useState(false);

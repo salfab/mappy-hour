@@ -947,7 +947,7 @@ export async function POST(request: Request) {
       // ── Slow path: GPU fallback (lazily initialised) ─────────────────
       // In cache-only deployments raw terrain/building data is absent — skip
       // places that didn't get a tile hit rather than crashing on missing files.
-      if (process.env.NEXT_PUBLIC_FORCE_CACHE_ONLY === "true") {
+      if (process.env.MAPPY_FORCE_CACHE_ONLY === "true") {
         continue;
       }
       const gpuShared = await ensureSharedSources();
