@@ -41,6 +41,14 @@ jobs:
           echo "${{ secrets.MITCH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+      - name: Wait for Tailscale propagation
+        run: |
+          # The ephemeral tag:ci node needs a few seconds for its netmap to
+          # reach peers (notably mitch) — without this, SSH fails with
+          # "Network is unreachable".
+          sleep 10
+          tailscale status | head -5
+
       - name: Deploy
         env:
           HOST: ${{ secrets.MITCH_SSH_HOST }}
@@ -49,7 +57,7 @@ jobs:
           set -e
           # Docker-based deploy: git pull + docker compose pull + up. Runs in kiosque
           # session where WSL2/Docker live (cf. docs/deploy.md §3).
-          ssh -o ConnectTimeout=15 "$USER@$HOST" \
+          ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 "$USER@$HOST" \
             "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\srv\\mappy-hour\\scripts\\headless-server-selfhosting\\mitch-deploy-docker.ps1"
 
       - name: Health check
