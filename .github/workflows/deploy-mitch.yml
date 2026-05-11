@@ -55,10 +55,11 @@ jobs:
           USER: ${{ secrets.MITCH_SSH_USER }}
         run: |
           set -e
-          # Docker-based deploy: git pull + docker compose pull + up. Runs in kiosque
-          # session where WSL2/Docker live (cf. docs/deploy.md §3).
+          # Bootstrap: pull latest repo state first (the deploy script lives in the
+          # repo, so we can't trust the local copy to be current). Then run the
+          # freshly-pulled script which does the actual docker compose pull/up.
           ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 "$USER@$HOST" \
-            "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\srv\\mappy-hour\\scripts\\headless-server-selfhosting\\mitch-deploy-docker.ps1"
+            "powershell -NoProfile -Command \"Set-Location C:\\srv\\mappy-hour; git pull --ff-only; if (\$LASTEXITCODE -ne 0) { exit 1 }; & powershell -NoProfile -ExecutionPolicy Bypass -File C:\\srv\\mappy-hour\\scripts\\headless-server-selfhosting\\mitch-deploy-docker.ps1\""
 
       - name: Health check
         env:
