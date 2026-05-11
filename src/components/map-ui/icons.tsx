@@ -159,15 +159,16 @@ export function HeatmapIcon({ className = "h-5 w-5" }: IconProps) {
     <svg
       aria-hidden="true"
       className={className}
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
+      fill="currentColor"
+      stroke="none"
       viewBox="0 0 24 24"
     >
-      <path d="M8.5 17.5a3.5 3.5 0 0 0 7 0c0-2.4-1.8-3.2-2.7-5.3-.4-.9-.5-2-.2-3.2-2.9 1.5-5.1 4.1-5.1 8.5Z" />
-      <path d="M12 21a7 7 0 0 0 7-7c0-3.4-2.1-6-4.8-9.6-.5 2.8-2.6 4-4.4 5.7C8.1 11.7 7 13.5 7 16a5 5 0 0 0 5 5Z" />
+      <circle cx="7" cy="7" r="2.25" opacity="0.45" />
+      <circle cx="13" cy="6" r="3" opacity="0.85" />
+      <circle cx="18" cy="10" r="2.25" opacity="0.55" />
+      <circle cx="9" cy="14" r="3.1" opacity="0.75" />
+      <circle cx="15.5" cy="16.5" r="3.6" opacity="0.95" />
+      <circle cx="5" cy="18" r="1.4" opacity="0.35" />
     </svg>
   );
 }
@@ -184,10 +185,11 @@ export function LeafOffIcon({ className = "h-5 w-5" }: IconProps) {
       strokeWidth="2"
       viewBox="0 0 24 24"
     >
-      <path d="M3 3l18 18" />
-      <path d="M19.5 7.5C17 5 13.5 4 8 4c0 3.2.8 5.7 2.2 7.6" />
-      <path d="M6.8 6.8C5.7 8.2 5 10 5 12c0 3.9 3.1 7 7 7 2.1 0 4-.9 5.3-2.3" />
-      <path d="M12 19c1.2-3.2 3.2-5.2 6.5-6.5" />
+      <path d="M12 20v-8" />
+      <path d="M8.5 20h7" />
+      <path d="M7 12.5a5 5 0 0 1 10 0" />
+      <path d="M5.5 14.5a6.5 6.5 0 0 1 13 0" />
+      <path d="M4 4l16 16" />
     </svg>
   );
 }
@@ -204,14 +206,13 @@ export function TerraceIcon({ className = "h-5 w-5" }: IconProps) {
       strokeWidth="2"
       viewBox="0 0 24 24"
     >
-      <path d="M4 10h16" />
-      <path d="M6 10l2-5h8l2 5" />
-      <path d="M12 10v10" />
-      <path d="M8 20h8" />
-      <path d="M5 14h4" />
-      <path d="M15 14h4" />
-      <path d="M6 14v4" />
-      <path d="M18 14v4" />
+      <path d="M4 10a8 8 0 0 1 16 0H4Z" />
+      <path d="M12 10v9" />
+      <path d="M8 19h8" />
+      <path d="M7 14h10" />
+      <path d="M8 14v4" />
+      <path d="M16 14v4" />
+      <path d="M5 21h14" />
     </svg>
   );
 }

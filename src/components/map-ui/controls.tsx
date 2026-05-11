@@ -99,7 +99,7 @@ function ToggleIconButton(props: ToggleIconButtonProps) {
   return (
     <button
       type="button"
-      className={`group grid h-11 w-11 place-items-center rounded-full border text-slate-600 shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45 ${
+      className={`group grid w-[4.5rem] place-items-center gap-1 rounded-2xl border px-2 py-2 text-slate-600 shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45 ${
         props.desktopOnly ? "hidden lg:grid" : ""
       } ${
         props.pressed
@@ -113,6 +113,9 @@ function ToggleIconButton(props: ToggleIconButtonProps) {
       onClick={() => props.onPressedChange(!props.pressed)}
     >
       <Icon className="h-5 w-5 transition group-hover:scale-105" />
+      <span className="max-w-full truncate text-[11px] font-semibold leading-none">
+        {props.label}
+      </span>
     </button>
   );
 }
@@ -219,7 +222,7 @@ export function LayerFilters(props: LayerFiltersProps) {
         onPressedChange={props.onIgnoreVegetationShadowChange}
       />
       <ToggleIconButton
-        label="Terrasses carte"
+        label="Terrasses"
         pressed={props.showPlaces}
         icon={TerraceIcon}
         onPressedChange={props.onShowPlacesChange}
