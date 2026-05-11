@@ -506,6 +506,107 @@ re-scan les hashes disponibles (`findCachedModelVersionHash`).
 
 ---
 
+## 7ter. Migration d'une install existante — ajout des bind-mounts buildings + places
+
+À faire **une seule fois** sur les hôtes déployés **avant le 2026-05-12** (avant
+l'introduction des bind-mounts `MAPPY_BUILDINGS_PATH` et `MAPPY_PLACES_PATH`).
+Sans ça, l'overlay terrasses est vide (le SSE `event: places` ne sort pas) et
+toute tentative de re-précompute manque l'index buildings global.
+
+```powershell
+# Sur Mitch, en session kiosque (ou SSH vers kiosque)
+
+# 1) Créer les répertoires host
+New-Item -ItemType Directory -Force C:\mappy-data\processed\buildings | Out-Null
+New-Item -ItemType Directory -Force C:\mappy-data\processed\places    | Out-Null
+
+# 2) Étendre le .env existant
+$envPath = "C:\srv\mappy-hour\.env"
+Add-Content -Path $envPath -Value "MAPPY_BUILDINGS_PATH=/mnt/c/mappy-data/processed/buildings"
+Add-Content -Path $envPath -Value "MAPPY_PLACES_PATH=/mnt/c/mappy-data/processed/places"
+
+# 3) Pull du compose à jour (déjà fait si deploy-mitch.yml a tourné depuis 5527a40)
+Set-Location C:\srv\mappy-hour
+git pull --ff-only
+
+# 4) Recréer le container avec la nouvelle config (pas juste restart — le bind-mount change)
+wsl -d Ubuntu -u root -e bash -c 'cd /mnt/c/srv/mappy-hour && docker compose up -d --force-recreate mappy-hour'
+
+# 5) Peupler les bind-mounts via le profil loader (download depuis la release latest)
+wsl -d Ubuntu -u root -e bash -c 'cd /mnt/c/srv/mappy-hour && docker compose --profile loader run --rm atlas-loader --repo=salfab/mappy-hour --release=latest'
+# Pour aussi récupérer le global buildings index (~70 MB) :
+# ... atlas-loader --repo=salfab/mappy-hour --release=latest --with-buildings
+
+# 6) Verif : le fichier places doit être présent côté host
+Get-ChildItem C:\mappy-data\processed\places
+# → lausanne-places.json (et nyon-places.json si la release l'inclut)
+```
+
+> **Note** : `docker compose up -d --force-recreate` (étape 4) est obligatoire
+> à cause du changement de spec volumes. Un simple `restart` ne réapplique pas
+> les bind-mounts.
+
+---
+
+## 7quater. Déployer une nouvelle release atlas
+
+Workflow normal une fois la migration §7ter faite. Source de vérité côté CI :
+`.github/workflows/refresh-mitch-atlas.yml` (déclenchable manuellement).
+
+### Côté repo / dev box
+
+```powershell
+# Précompute + sharding terminés sur la dev box, puis :
+pnpm atlas:publish -- --regions=vevey_city
+# (ou plus de régions : --regions=lausanne,morges,nyon,vevey,vevey_city,geneve)
+```
+
+Le script :
+1. Auto-génère le tag `v9.2.YYYYMMDDNNN` (scrute les tags GH du jour, +1)
+2. Package chaque région (2 tars : atlas + grid-metadata)
+3. Package `buildings-shared.tar`
+4. Construit le `release-manifest.json`
+5. Crée la GH release en **`--draft`** + upload des assets
+
+### Promotion + déploiement Mitch
+
+```bash
+# 1. Inspecter la draft sur GitHub Releases, vérifier les sha256/tile counts
+# 2. La promouvoir comme latest (déclenche la sortie de --draft) :
+gh release edit v9.2.20260512000 --draft=false --latest=true
+
+# 3. Trigger le workflow Refresh atlas on Mitch (UI ou gh)
+gh workflow run "Refresh atlas on Mitch" \
+  --field release=latest \
+  --field with_grid_metadata=false \
+  --field with_buildings=false
+```
+
+Le workflow va :
+- SSH Mitch via Tailscale
+- `git pull --ff-only` (au cas où le compose ou les scripts auraient changé)
+- `docker compose --profile loader run --rm atlas-loader <args>` (idempotent :
+  les régions dont le `modelVersionHash` est déjà installé sont skip)
+- `docker compose restart mappy-hour` pour que le runtime re-scan le cache
+- Health check sur `/api/datasets`
+
+### Smoke test post-deploy
+
+Curl la zone Riponne pour vérifier qu'on a bien des `event: places` dans le
+stream (= sidecars places lus) et que les tuiles sortent du cache :
+
+```bash
+curl -sS 'https://mitch.tail63c42d.ts.net/api/sunlight/timeline/stream?minLon=6.63247&minLat=46.52208&maxLon=6.634932&maxLat=46.523497&date=2026-05-15&timezone=Europe%2FZurich&startLocalTime=06%3A00&endLocalTime=21%3A00&sampleEveryMinutes=15&gridStepMeters=1&maxPoints=2000000&cacheOnly=true' \
+  | grep -E '^event:|"warnings"' | head -20
+```
+
+Critères :
+- ≥ 1 `event: places` (sinon : places non peuplé sur host → revoir §7ter étape 5)
+- `tilesFromCache:N tilesComputed:0` (sinon : modelVersionHash mismatch)
+- `warnings: []` ou warnings connus uniquement (corrupt adaptive horizon — bénin)
+
+---
+
 ## 8. Démarrer le service
 
 ```powershell
