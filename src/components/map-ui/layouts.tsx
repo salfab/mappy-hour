@@ -79,10 +79,10 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
 
   const stateHeightClass =
     props.state === "compact"
-      ? "h-[clamp(132px,17svh,158px)]"
+      ? "h-[clamp(168px,22svh,194px)]"
       : props.state === "middle"
-        ? "h-[min(calc(100dvh-112px),560px)]"
-        : "h-[calc(100dvh-48px)]";
+        ? "h-[min(calc(100svh-116px),560px)]"
+        : "h-[calc(100svh-48px)]";
 
   const goToNextState = (direction: "up" | "down") => {
     const states: BottomSheetState[] = ["compact", "middle", "expanded"];
@@ -110,7 +110,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
 
   return (
     <section
-      className={`absolute inset-x-0 bottom-0 z-[460] grid grid-rows-[auto_1fr] overflow-hidden rounded-t-[2rem] border border-white/70 bg-white/92 px-4 pb-[calc(env(safe-area-inset-bottom)+16px)] pt-2 text-slate-900 shadow-2xl backdrop-blur transition-[height] duration-200 ${stateHeightClass}`}
+      className={`absolute inset-x-0 bottom-3 z-[460] grid grid-rows-[auto_1fr] overflow-hidden rounded-[2rem] border border-white/70 bg-white/92 px-4 pb-[calc(env(safe-area-inset-bottom)+28px)] pt-2 text-slate-900 shadow-2xl backdrop-blur transition-[height] duration-200 ${stateHeightClass}`}
       aria-label="Controle de la carte"
     >
       <div className="flex justify-center pb-3">
