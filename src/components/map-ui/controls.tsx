@@ -3,7 +3,6 @@
 import { ChevronDownIcon, SunIcon } from "./icons";
 
 export type AreaMode = "instant" | "daily";
-export type BaseMapStyle = "map" | "satellite";
 export type MapPanelTab = "map" | "terraces";
 
 export interface TimelineProgressView {
@@ -18,11 +17,9 @@ export interface TimelineProgressView {
 interface CalculationControlsProps {
   mode: AreaMode;
   date: string;
-  baseMapStyle: BaseMapStyle;
   isLoading: boolean;
   isDailyRangeInvalid: boolean;
   onDateChange: (date: string) => void;
-  onBaseMapStyleChange: (style: BaseMapStyle) => void;
   onRunCalculation: () => void;
   onCancelDailyCalculation: () => void;
 }
@@ -122,30 +119,6 @@ function DaySelector(props: {
   );
 }
 
-function MapStyleToggle(props: {
-  value: BaseMapStyle;
-  onChange: (style: BaseMapStyle) => void;
-}) {
-  return (
-    <div className="inline-grid w-fit grid-cols-2 gap-0.5 rounded-full border border-slate-200 bg-white/90 p-0.5 text-xs font-semibold shadow-sm">
-      {(["map", "satellite"] as const).map((style) => (
-        <button
-          key={style}
-          type="button"
-          className={`rounded-full px-3 py-1.5 transition ${
-            props.value === style
-              ? "bg-amber-200 text-slate-950"
-              : "text-slate-500 hover:bg-amber-50 hover:text-slate-800"
-          }`}
-          onClick={() => props.onChange(style)}
-        >
-          {style === "map" ? "Carte" : "Satellite"}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 export function CalculationControls(props: CalculationControlsProps) {
   return (
     <div className="grid gap-3">
@@ -160,10 +133,6 @@ export function CalculationControls(props: CalculationControlsProps) {
           {props.isLoading ? "Calcul..." : "Calculer"}
         </button>
       </div>
-      <MapStyleToggle
-        value={props.baseMapStyle}
-        onChange={props.onBaseMapStyleChange}
-      />
       {props.mode === "daily" && props.isLoading ? (
         <button
           type="button"

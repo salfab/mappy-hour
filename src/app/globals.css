@@ -49,6 +49,17 @@ code {
   border-top-color: rgba(15, 23, 42, 0.9);
 }
 
+.leaflet-top.leaflet-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.leaflet-top.leaflet-left .leaflet-control {
+  clear: none;
+  margin-right: 0;
+}
+
 @media (max-width: 1023px) {
   .leaflet-bottom.leaflet-left {
     bottom: 144px;

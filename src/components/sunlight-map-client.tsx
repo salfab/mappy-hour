@@ -2954,7 +2954,7 @@ export function SunlightMapClient() {
       L.control.layers(
         { "Carte": streetLayer, "Satellite": satelliteLayer },
         {},
-        { position: "topright", collapsed: true },
+        { position: "topleft", collapsed: true },
       ).addTo(map);
 
       map.on("baselayerchange", (event: L.LayersControlEvent) => {
@@ -4533,11 +4533,9 @@ export function SunlightMapClient() {
     <CalculationControls
       mode={mode}
       date={date}
-      baseMapStyle={baseMapStyle}
       isLoading={isLoading}
       isDailyRangeInvalid={isDailyRangeInvalid}
       onDateChange={setDate}
-      onBaseMapStyleChange={setBaseMapStyle}
       onRunCalculation={() => void runAreaCalculation()}
       onCancelDailyCalculation={cancelDailyCalculation}
     />
