@@ -30,9 +30,14 @@ jobs:
       - name: Setup Tailscale
         uses: tailscale/github-action@v3
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-client-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
-          tags: tag:ci
+          # Auth key éphémère (préféré — pas besoin de tag:ci dans l'ACL).
+          # Créer dans Tailscale admin → Settings → Keys → Generate auth key
+          # (cocher "Reusable" + "Ephemeral"), puis ajouter comme secret TS_AUTHKEY.
+          # Alternative OAuth (nécessite tag:ci dans tagOwners) :
+          #   oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          #   oauth-client-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          #   tags: tag:ci
+          authkey: ${{ secrets.TS_AUTHKEY }}
 
       - name: Setup SSH agent
         uses: webfactory/ssh-agent@v0.9.0
