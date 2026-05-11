@@ -3930,33 +3930,33 @@ export function SunlightMapClient() {
     placesRequestIdRef.current = placesRequestId;
     decodedTimelineMaskCacheRef.current.clear();
 
-    void loadSunlitPlaces(bbox)
-      .then((placesResult) => {
-        if (placesRequestIdRef.current !== placesRequestId) {
-          return;
-        }
-        setSunlitPlaces(placesResult.places);
-        setPlacesWarnings(placesResult.warnings);
-      })
-      .catch((placesRequestError) => {
-        if (placesRequestIdRef.current !== placesRequestId) {
-          return;
-        }
-        setSunlitPlaces([]);
-        setPlacesError(
-          placesRequestError instanceof Error
-            ? placesRequestError.message
-            : "Failed to load sunlit terraces.",
-        );
-      })
-      .finally(() => {
-        if (placesRequestIdRef.current !== placesRequestId) {
-          return;
-        }
-        setIsPlacesLoading(false);
-      });
-
     if (mode === "instant") {
+      void loadSunlitPlaces(bbox)
+        .then((placesResult) => {
+          if (placesRequestIdRef.current !== placesRequestId) {
+            return;
+          }
+          setSunlitPlaces(placesResult.places);
+          setPlacesWarnings(placesResult.warnings);
+        })
+        .catch((placesRequestError) => {
+          if (placesRequestIdRef.current !== placesRequestId) {
+            return;
+          }
+          setSunlitPlaces([]);
+          setPlacesError(
+            placesRequestError instanceof Error
+              ? placesRequestError.message
+              : "Failed to load sunlit terraces.",
+          );
+        })
+        .finally(() => {
+          if (placesRequestIdRef.current !== placesRequestId) {
+            return;
+          }
+          setIsPlacesLoading(false);
+        });
+
       setDailyTimeline(null);
       setDailyProgress(null);
       setLastResult(null);
@@ -4149,6 +4149,7 @@ export function SunlightMapClient() {
       gridStepMeters: String(gridStepMeters),
       maxPoints: "2000000",
       buildingHeightBiasMeters: String(buildingHeightBiasMeters),
+      ignoreVegetation: String(ignoreVegetationShadow),
       ...(cacheOnly ? { cacheOnly: "true" } : {}),
     });
 
@@ -4278,6 +4279,33 @@ export function SunlightMapClient() {
         if (msSinceFlush > 3000 || pendingTilesRef.current.length >= 5) {
           flushPendingTiles();
         }
+      } else if (eventType === "places") {
+        const data = JSON.parse(jsonData) as {
+          tileId: string;
+          count: number;
+          places: SunlitPlaceEntry[];
+          warnings?: string[];
+        };
+        setSunlitPlaces((previous) => {
+          const byId = new Map(previous.map((place) => [place.id, place]));
+          for (const place of data.places) {
+            const existing = byId.get(place.id);
+            if (!existing || place.sunnyMinutes > existing.sunnyMinutes) {
+              byId.set(place.id, place);
+            }
+          }
+          return Array.from(byId.values()).sort((left, right) => {
+            if (right.sunnyMinutes !== left.sunnyMinutes) {
+              return right.sunnyMinutes - left.sunnyMinutes;
+            }
+            return left.name.localeCompare(right.name);
+          });
+        });
+        if (data.warnings?.length) {
+          setPlacesWarnings((previous) =>
+            Array.from(new Set([...previous, ...(data.warnings ?? [])])),
+          );
+        }
       } else if (eventType === "progress") {
         const data = JSON.parse(jsonData) as TimelineProgress;
         setDailyProgress(data);
@@ -4301,6 +4329,7 @@ export function SunlightMapClient() {
         setError(
           errorPayload?.details ?? errorPayload?.error ?? "Timeline streaming failed.",
         );
+        setIsPlacesLoading(false);
         timelineAbortRef.current = null;
         streamFinished = true;
         finalizeIfDone();
@@ -4385,10 +4414,12 @@ export function SunlightMapClient() {
             etaSeconds: 0,
             elapsedMs: data.stats.elapsedMs,
           });
+          setIsPlacesLoading(false);
           timelineAbortRef.current = null;
           streamFinished = true;
           finalizeIfDone();
         } else if (!streamFinished && !streamFailed) {
+          setIsPlacesLoading(false);
           streamFinished = true;
           finalizeIfDone();
         }
@@ -4397,6 +4428,7 @@ export function SunlightMapClient() {
         if (!streamFailed && !streamFinished) {
           streamFailed = true;
           setError(err instanceof Error ? err.message : "Timeline streaming failed.");
+          setIsPlacesLoading(false);
           streamFinished = true;
           finalizeIfDone();
         }
@@ -4415,6 +4447,7 @@ export function SunlightMapClient() {
     dailyEndLocalTime,
     dailyStartLocalTime,
     gridStepMeters,
+    ignoreVegetationShadow,
     isDailyRangeInvalid,
     loadSunlitPlaces,
     localTime,

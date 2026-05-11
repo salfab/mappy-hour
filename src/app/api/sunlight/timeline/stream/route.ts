@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { MAX_OUTDOOR_POINTS, DEFAULT_MAX_OUTDOOR_POINTS } from "@/lib/config/grid-limits";
 import { lv95ToWgs84Precise, wgs84ToLv95Precise } from "@/lib/geo/projection";
+import { loadAllPlaces, type PlacesFile } from "@/lib/places/lausanne-places";
 import {
   streamTilesForBbox,
   resolveRegionForBbox,
@@ -46,6 +47,7 @@ const querySchema = z
     maxPoints: z.coerce.number().int().min(1).max(MAX_OUTDOOR_POINTS).default(DEFAULT_MAX_OUTDOOR_POINTS),
     buildingHeightBiasMeters: z.coerce.number().min(-20).max(20).default(0),
     cacheOnly: z.string().default("false").transform(v => v === "true" || v === "1"),
+    ignoreVegetation: z.string().default("false").transform(v => v === "true" || v === "1"),
     maxComputeTiles: z.coerce.number().int().min(0).max(500).default(50),
   })
   .refine(
@@ -127,6 +129,144 @@ function normalizeTimelineWarning(warning: string): string {
   }
 
   return warning;
+}
+
+type VenueType = "restaurant" | "bar" | "snack" | "foodtruck" | "other";
+type PlaceEntry = PlacesFile["places"][number];
+
+interface SunnyWindow {
+  startLocalTime: string;
+  endLocalTime: string;
+  durationMinutes: number;
+}
+
+function extractClock(localDateTime: string): string {
+  const match = /\b(\d{2}:\d{2})(?::\d{2})?\b/.exec(localDateTime);
+  return match ? match[1] : localDateTime;
+}
+
+function formatDateTimeLocal(date: Date, timeZone: string): string {
+  const datePart = new Intl.DateTimeFormat("sv-SE", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+  const timePart = new Intl.DateTimeFormat("sv-SE", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
+  return `${datePart} ${timePart}`;
+}
+
+function buildSunnyWindows(
+  samples: Array<{ isSunny: boolean; localTime: string; utcTime: string }>,
+  sampleEveryMinutes: number,
+  timeZone: string,
+): SunnyWindow[] {
+  const windows: SunnyWindow[] = [];
+  let currentStart: string | null = null;
+  let currentDuration = 0;
+
+  for (const sample of samples) {
+    if (sample.isSunny) {
+      currentStart ??= sample.localTime;
+      currentDuration += sampleEveryMinutes;
+      continue;
+    }
+
+    if (currentStart) {
+      windows.push({
+        startLocalTime: currentStart,
+        endLocalTime: sample.localTime,
+        durationMinutes: currentDuration,
+      });
+      currentStart = null;
+      currentDuration = 0;
+    }
+  }
+
+  if (currentStart) {
+    const lastSample = samples.at(-1);
+    const endLocalTime = lastSample
+      ? formatDateTimeLocal(
+          new Date(Date.parse(lastSample.utcTime) + sampleEveryMinutes * 60_000),
+          timeZone,
+        )
+      : currentStart;
+
+    windows.push({
+      startLocalTime: currentStart,
+      endLocalTime,
+      durationMinutes: currentDuration,
+    });
+  }
+
+  return windows;
+}
+
+function classifyVenueType(place: Pick<PlaceEntry, "name" | "subcategory" | "tags">): VenueType {
+  const subcategory = place.subcategory.toLowerCase();
+  const amenity = (place.tags.amenity ?? "").toLowerCase();
+  const name = place.name.toLowerCase();
+  const isFoodTruck =
+    place.tags.food_truck === "yes" ||
+    place.tags.mobile === "yes" ||
+    place.tags.street_vendor === "yes" ||
+    name.includes("truck");
+
+  if (isFoodTruck) return "foodtruck";
+  if (subcategory === "bar" || subcategory === "pub" || subcategory === "biergarten") return "bar";
+  if (subcategory === "fast_food" || subcategory === "food_court") return "snack";
+  if (subcategory === "restaurant" || subcategory === "cafe") return "restaurant";
+  if (amenity === "bar" || amenity === "pub" || amenity === "biergarten") return "bar";
+  if (amenity === "fast_food" || amenity === "food_court") return "snack";
+  if (amenity === "restaurant" || amenity === "cafe") return "restaurant";
+
+  return "other";
+}
+
+function offsetPointByMeters(
+  lat: number,
+  lon: number,
+  distanceMeters: number,
+  bearingDeg: number,
+): { lat: number; lon: number; offsetMeters: number } {
+  const bearingRad = (bearingDeg * Math.PI) / 180;
+  const metersPerDegreeLat = 111_320;
+  const metersPerDegreeLon =
+    metersPerDegreeLat * Math.max(Math.cos((lat * Math.PI) / 180), 0.01);
+  return {
+    lat: lat + (Math.cos(bearingRad) * distanceMeters) / metersPerDegreeLat,
+    lon: lon + (Math.sin(bearingRad) * distanceMeters) / metersPerDegreeLon,
+    offsetMeters: distanceMeters,
+  };
+}
+
+function buildTerraceCandidates(place: PlaceEntry): Array<{ lat: number; lon: number; offsetMeters: number }> {
+  if (!place.hasOutdoorSeating) {
+    return [{ lat: place.lat, lon: place.lon, offsetMeters: 0 }];
+  }
+
+  const candidates = [{ lat: place.lat, lon: place.lon, offsetMeters: 0 }];
+  for (const distance of [4, 8]) {
+    for (const bearing of [0, 45, 90, 135, 180, 225, 270, 315]) {
+      candidates.push(offsetPointByMeters(place.lat, place.lon, distance, bearing));
+    }
+  }
+  return candidates;
+}
+
+function isInsideQueryBbox(place: PlaceEntry, bbox: { minLon: number; minLat: number; maxLon: number; maxLat: number }): boolean {
+  return (
+    place.lon >= bbox.minLon &&
+    place.lat >= bbox.minLat &&
+    place.lon <= bbox.maxLon &&
+    place.lat <= bbox.maxLat
+  );
 }
 
 export async function GET(request: Request) {
@@ -239,6 +379,15 @@ export async function GET(request: Request) {
               hour12: false,
             }),
           );
+          const placesFile = await loadAllPlaces();
+          const foodTypes = new Set<VenueType>(["restaurant", "bar", "snack", "foodtruck"]);
+          const candidatePlaces = (placesFile?.places ?? []).filter((place) => {
+            if (place.category !== "terrace_candidate") return false;
+            if (!place.hasOutdoorSeating) return false;
+            if (!isInsideQueryBbox(place, bbox)) return false;
+            const venueType = classifyVenueType(place);
+            return venueType !== "other" && foodTypes.has(venueType);
+          });
 
           let sentStart = false;
           let totalPointCount = 0;
@@ -548,6 +697,90 @@ export async function GET(request: Request) {
               }
             }
 
+            const tilePlaces = candidatePlaces.flatMap((place) => {
+              const venueType = classifyVenueType(place);
+              let selected:
+                | {
+                    lat: number;
+                    lon: number;
+                    offsetMeters: number;
+                    cellIdx: number;
+                    selectionStrategy: "original" | "terrace_offset";
+                  }
+                | null = null;
+
+              for (const candidate of buildTerraceCandidates(place)) {
+                const lv95 = wgs84ToLv95Precise(candidate.lon, candidate.lat);
+                const ix = Math.floor(lv95.easting / query.gridStepMeters);
+                const iy = Math.floor(lv95.northing / query.gridStepMeters);
+                if (ix < tileMinIx || ix > tileMaxIx || iy < tileMinIy || iy > tileMaxIy) {
+                  continue;
+                }
+                const cellIdx = (iy - tileMinIy) * tileW + (ix - tileMinIx);
+                if (!isMaskBitSet(outdoorMask, cellIdx)) {
+                  continue;
+                }
+                selected = {
+                  lat: candidate.lat,
+                  lon: candidate.lon,
+                  offsetMeters: candidate.offsetMeters,
+                  cellIdx,
+                  selectionStrategy: candidate.offsetMeters === 0 ? "original" : "terrace_offset",
+                };
+                break;
+              }
+
+              if (!selected) {
+                return [];
+              }
+
+              const samples = frameMaskBuffers.map((frameMasks, index) => {
+                const mask = query.ignoreVegetation ? frameMasks.sunNoVeg : frameMasks.sun;
+                return {
+                  isSunny: isMaskBitSet(mask, selected.cellIdx),
+                  localTime: tileFrameMeta[index]?.localTime ?? timelineFrameLocalTimes[index] ?? "",
+                  utcTime: timelineUtcSamples[index]?.toISOString() ?? "",
+                };
+              });
+              const sunnyWindows = buildSunnyWindows(
+                samples,
+                query.sampleEveryMinutes,
+                query.timezone,
+              );
+              const sunnyMinutes = sunnyWindows.reduce(
+                (total, window) => total + window.durationMinutes,
+                0,
+              );
+              if (sunnyMinutes <= 0) {
+                return [];
+              }
+
+              return [{
+                id: place.id,
+                name: place.name,
+                category: place.category,
+                subcategory: place.subcategory,
+                venueType,
+                hasOutdoorSeating: place.hasOutdoorSeating,
+                lat: place.lat,
+                lon: place.lon,
+                evaluationLat: Math.round(selected.lat * 1_000_000) / 1_000_000,
+                evaluationLon: Math.round(selected.lon * 1_000_000) / 1_000_000,
+                selectionStrategy: selected.selectionStrategy,
+                selectionOffsetMeters: selected.offsetMeters,
+                pointElevationMeters: null,
+                insideBuilding: false,
+                isSunnyNow: null,
+                sunnyMinutes,
+                sunnyWindows,
+                sunlightStartLocalTime:
+                  sunnyWindows.length > 0 ? extractClock(sunnyWindows[0].startLocalTime) : null,
+                sunlightEndLocalTime:
+                  sunnyWindows.length > 0 ? extractClock(sunnyWindows[sunnyWindows.length - 1].endLocalTime) : null,
+                warnings: [],
+              }];
+            });
+
             const tEncodeStart = performance.now();
             perTileTiming.remap += tEncodeStart - tRemapStart;
             // Concatenate + gzip all masks into a single compressed blob
@@ -581,6 +814,14 @@ export async function GET(request: Request) {
               masksBase64,
               frames: tileFrameMeta,
             });
+            if (tilePlaces.length > 0) {
+              sendEvent("places", {
+                tileId,
+                count: tilePlaces.length,
+                places: tilePlaces,
+                warnings: [],
+              });
+            }
             await yieldToEventLoop();
             perTileTiming.send += performance.now() - tSendStart;
             perTileTiming.totalYielded += 1;
