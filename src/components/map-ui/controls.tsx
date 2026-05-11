@@ -75,7 +75,7 @@ interface DailyCoverageProps {
 }
 
 const chipClass =
-  "inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-slate-700 shadow-sm transition hover:border-amber-200 hover:bg-amber-50";
+  "items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-slate-700 shadow-sm transition hover:border-amber-200 hover:bg-amber-50";
 
 function formatDisplayDate(date: string): string {
   const [year, month, day] = date.split("-").map(Number);
@@ -156,7 +156,7 @@ export function LayerFilters(props: LayerFiltersProps) {
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm">
       {filters.map(([label, checked, onChange]) => (
-        <label key={label} className={chipClass}>
+        <label key={label} className={`hidden lg:inline-flex ${chipClass}`}>
           <input
             type="checkbox"
             checked={checked}
@@ -165,7 +165,7 @@ export function LayerFilters(props: LayerFiltersProps) {
           <span>{label}</span>
         </label>
       ))}
-      <label className={chipClass}>
+      <label className={`inline-flex ${chipClass}`}>
         <input
           type="checkbox"
           checked={props.showHeatmap}
@@ -174,7 +174,7 @@ export function LayerFilters(props: LayerFiltersProps) {
         />
         <span>Heatmap</span>
       </label>
-      <label className={chipClass}>
+      <label className={`inline-flex ${chipClass}`}>
         <input
           type="checkbox"
           checked={props.ignoreVegetationShadow}
@@ -182,7 +182,7 @@ export function LayerFilters(props: LayerFiltersProps) {
         />
         <span>Ignorer vegetation</span>
       </label>
-      <label className={chipClass}>
+      <label className={`inline-flex ${chipClass}`}>
         <input
           type="checkbox"
           checked={props.showPlaces}

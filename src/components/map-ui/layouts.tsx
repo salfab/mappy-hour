@@ -242,11 +242,11 @@ export function MobileBarsView(props: MobileBarsViewProps) {
   }
 
   return (
-    <section className="absolute inset-0 z-[520] grid grid-rows-[auto_1fr] bg-slate-950 text-white lg:hidden">
-      <header className="flex items-center gap-3 border-b border-white/12 px-4 py-3">
+    <section className="absolute inset-0 z-[520] grid grid-rows-[auto_1fr] bg-slate-50 text-slate-950 lg:hidden">
+      <header className="flex items-center gap-3 border-b border-slate-200 bg-white/92 px-4 py-3 shadow-sm backdrop-blur">
         <button
           type="button"
-          className="grid h-10 w-10 place-items-center rounded-full border border-white/15 bg-white/10"
+          className="grid h-10 w-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-800 shadow-sm"
           aria-label="Retour a la carte"
           onClick={props.onClose}
         >
@@ -254,7 +254,7 @@ export function MobileBarsView(props: MobileBarsViewProps) {
         </button>
         <div>
           <h2 className="text-lg font-semibold">Terrasses au soleil</h2>
-          <p className="text-xs text-slate-300">
+          <p className="text-xs text-slate-500">
             {props.isLoading ? "Calcul terrasses en cours..." : `${props.places.length} etablissements visibles`}
           </p>
         </div>
