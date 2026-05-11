@@ -286,7 +286,14 @@ export async function GET(request: Request) {
 
   try {
     const started = performance.now();
-    const query = parsed.data;
+    const query = {
+      ...parsed.data,
+      // Server-side override: MAPPY_FORCE_CACHE_ONLY=true in .env enforces
+      // cache-only mode regardless of what the client sends. Useful on headless
+      // servers (e.g. Mitch) where GPU compute is unavailable and grid metadata
+      // (zenith indoor mask) has not been generated.
+      cacheOnly: parsed.data.cacheOnly || process.env.MAPPY_FORCE_CACHE_ONLY === "true",
+    };
     const shadowCalibration = normalizeShadowCalibration({
       buildingHeightBiasMeters: query.buildingHeightBiasMeters,
     });

@@ -231,6 +231,7 @@ docker compose up -d
 |---|---|---|
 | `MAPPY_DATA_ROOT` | `./data` | Racine des données (atlas, buildings, DEM) |
 | `MAPPY_CACHE_SUNLIGHT_DIR` | `$DATA_ROOT/cache/sunlight` | Override pour le cache atlas uniquement |
-| `NEXT_PUBLIC_FORCE_CACHE_ONLY` | `false` | `true` → force le mode "cache uniquement" et masque le bouton dans l'UI. Recommandé sur tout serveur headless sans GPU. |
+| `MAPPY_FORCE_CACHE_ONLY` | `false` | `true` → force cache-only **côté serveur** (runtime, sans rebuild). Évite les tentatives de calcul à la volée qui échouent faute de zenith mask. **Prioritaire.** |
+| `NEXT_PUBLIC_FORCE_CACHE_ONLY` | `false` | `true` → masque le bouton dans l'UI **côté client** (inliné au build). Doit être défini avant `pnpm build`. |
 | `PORT` | `3000` | Port d'écoute Next.js |
 | `NODE_ENV` | — | Mettre `production` en prod |
