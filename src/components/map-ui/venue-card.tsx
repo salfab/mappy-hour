@@ -1,5 +1,7 @@
 "use client";
 
+import { getVenueSunStatus, VenueSunStatusIcon, VenueTerraceIcon } from "./venue-assets";
+
 export type VenueType = "restaurant" | "bar" | "snack" | "foodtruck" | "other";
 
 export interface VenueCardPlace {
@@ -35,33 +37,15 @@ const VENUE_TYPE_LABELS: Record<VenueType, string> = {
 };
 
 const VENUE_TYPE_CLASSES: Record<VenueType, string> = {
-  restaurant: "bg-red-600",
-  bar: "bg-amber-600",
-  snack: "bg-orange-600",
-  foodtruck: "bg-teal-600",
-  other: "bg-slate-600",
+  restaurant: "bg-rose-100 text-rose-800 ring-rose-200",
+  bar: "bg-amber-100 text-amber-900 ring-amber-200",
+  snack: "bg-orange-100 text-orange-800 ring-orange-200",
+  foodtruck: "bg-teal-100 text-teal-800 ring-teal-200",
+  other: "bg-slate-100 text-slate-700 ring-slate-200",
 };
 
-export function venueTypeBadgeLabel(venueType: VenueType): string {
-  return VENUE_TYPE_LABELS[venueType];
-}
-
-export function venueTypeMarkerColor(venueType: VenueType): string {
-  switch (venueType) {
-    case "restaurant":
-      return "#dc2626";
-    case "bar":
-      return "#d97706";
-    case "snack":
-      return "#ea580c";
-    case "foodtruck":
-      return "#0d9488";
-    case "other":
-      return "#64748b";
-  }
-}
-
 export function VenueCard(props: VenueCardProps) {
+  const sunStatus = getVenueSunStatus(props.place);
   const sunlightLabel =
     props.mode === "instant"
       ? props.place.isSunnyNow
@@ -74,26 +58,54 @@ export function VenueCard(props: VenueCardProps) {
   return (
     <button
       type="button"
-      className={`grid gap-1 rounded-lg border px-3 py-3 text-left text-sm transition ${
+      className={`grid gap-3 rounded-2xl border px-3 py-3 text-left text-sm shadow-sm transition ${
         props.selected
-          ? "border-amber-300 bg-amber-100 shadow-sm"
+          ? "border-amber-300 bg-amber-50 shadow-amber-100"
           : "border-slate-200 bg-white hover:border-amber-200 hover:bg-amber-50"
       }`}
       onClick={props.onSelect}
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className="truncate font-medium">{props.place.name}</span>
+      <div className="grid grid-cols-[auto_1fr_auto] items-center gap-3">
         <span
-          className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] text-white ${
+          className={`grid h-11 w-11 shrink-0 place-items-center rounded-full ${
+            sunStatus.tone === "shadow"
+              ? "bg-slate-100 text-slate-500"
+              : "bg-amber-100 text-amber-600"
+          }`}
+        >
+          <VenueTerraceIcon className="h-6 w-6" />
+        </span>
+        <span className="grid min-w-0 gap-1">
+          <span className="truncate font-semibold text-slate-950">{props.place.name}</span>
+          <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <span
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${
+                sunStatus.tone === "shadow"
+                  ? "bg-slate-100 text-slate-600 ring-slate-200"
+                  : "bg-amber-100 text-amber-900 ring-amber-200"
+              }`}
+            >
+              <VenueSunStatusIcon tone={sunStatus.tone} className="h-3.5 w-3.5" />
+              {sunStatus.label}
+            </span>
+            {props.mode === "daily" ? (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600 ring-1 ring-inset ring-slate-200">
+                {props.place.sunnyMinutes} min
+              </span>
+            ) : null}
+          </span>
+        </span>
+        <span
+          className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold ring-1 ring-inset ${
             VENUE_TYPE_CLASSES[props.place.venueType]
           }`}
         >
           {VENUE_TYPE_LABELS[props.place.venueType]}
         </span>
       </div>
-      <div className="text-xs text-slate-500">{sunlightLabel}</div>
+      <div className="pl-14 text-xs font-medium text-slate-500">{sunlightLabel}</div>
       {props.place.selectionStrategy !== "original" ? (
-        <div className="text-[11px] text-amber-700">
+        <div className="pl-14 text-[11px] text-amber-700">
           Terrasse decalee ({props.place.selectionOffsetMeters}m) pour eviter un point indoor.
         </div>
       ) : null}

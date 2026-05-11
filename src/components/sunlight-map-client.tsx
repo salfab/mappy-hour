@@ -26,6 +26,11 @@ import {
   MobileBottomSheet,
   type BottomSheetState,
 } from "@/components/map-ui/layouts";
+import {
+  buildVenueMarkerHtml,
+  getVenueSunStatus,
+  venueMarkerClassName,
+} from "@/components/map-ui/venue-assets";
 import type { VenueCardPlace } from "@/components/map-ui/venue-card";
 
 type AreaMode = "instant" | "daily";
@@ -2064,21 +2069,6 @@ function venueTypeBadgeLabel(venueType: FoodVenueType): string {
   }
 }
 
-function venueTypeColor(venueType: FoodVenueType): string {
-  switch (venueType) {
-    case "restaurant":
-      return "#dc2626";
-    case "bar":
-      return "#0f766e";
-    case "snack":
-      return "#ea580c";
-    case "foodtruck":
-      return "#0891b2";
-    default:
-      return "#475569";
-  }
-}
-
 function createEmptyInstantAreaResult(
   start: InstantStreamStartPayload,
 ): AreaApiResponse {
@@ -3194,18 +3184,26 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
 
       if (visibility.places) {
         for (const place of places) {
-          const baseColor = venueTypeColor(place.venueType);
           const isSelected = place.id === selectedVenueId;
-          const sunny =
-            place.isSunnyNow === true || (place.isSunnyNow === null && place.sunnyMinutes > 0);
-          const marker = L.circleMarker(
+          const sunStatus = getVenueSunStatus(place);
+          const markerClassName = venueMarkerClassName(
+            place.venueType,
+            sunStatus.tone,
+            isSelected,
+          );
+          const marker = L.marker(
             [place.evaluationLat ?? place.lat, place.evaluationLon ?? place.lon],
             {
-              radius: isSelected ? 8 : sunny ? 5 : 4,
-              color: isSelected ? "#f8fafc" : baseColor,
-              fillColor: sunny ? "#fde047" : baseColor,
-              fillOpacity: sunny ? 0.9 : 0.6,
-              weight: isSelected ? 2.4 : 1.2,
+              icon: L.divIcon({
+                html: buildVenueMarkerHtml(markerClassName),
+                className: "sunlit-venue-marker-shell",
+                iconSize: isSelected ? [42, 48] : [34, 42],
+                iconAnchor: isSelected ? [21, 44] : [17, 38],
+                popupAnchor: [0, -34],
+                tooltipAnchor: [0, -34],
+              }),
+              keyboard: true,
+              title: place.name,
             },
           ).addTo(placesLayer);
 
@@ -3225,7 +3223,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           marker.bindTooltip(place.name, {
             permanent: true,
             direction: "top",
-            offset: [0, -8],
+            offset: [0, -10],
             className: "sunlit-place-label",
             opacity: 0.95,
           });
