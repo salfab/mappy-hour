@@ -4613,7 +4613,7 @@ export function SunlightMapClient() {
   );
 
   return (
-    <section className="relative h-dvh min-h-screen overflow-hidden bg-slate-950 text-white">
+    <section className="relative h-dvh max-h-dvh overflow-hidden bg-slate-950 text-white">
       <div ref={mapContainerRef} className="absolute inset-0 z-0 h-full w-full" />
 
       <FloatingSearch

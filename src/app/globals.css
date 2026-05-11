@@ -17,7 +17,11 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), sans-serif;
-  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+html {
+  height: 100%;
 }
 
 code {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 
 import { BarsList } from "./bars-list";
 import { BackIcon, ChevronRightIcon } from "./icons";
@@ -47,7 +47,7 @@ interface MobileBarsViewProps {
 
 export function MobileMapLayout(props: MobileMapLayoutProps) {
   return (
-    <div className="relative h-dvh min-h-screen overflow-hidden bg-slate-950 lg:hidden">
+    <div className="relative h-dvh max-h-dvh overflow-hidden bg-slate-950 lg:hidden">
       {props.map}
       {props.search}
       {props.bottomSheet}
@@ -58,7 +58,7 @@ export function MobileMapLayout(props: MobileMapLayoutProps) {
 
 export function DesktopMapLayout(props: DesktopMapLayoutProps) {
   return (
-    <div className="relative hidden h-dvh min-h-screen overflow-hidden bg-slate-950 lg:block">
+    <div className="relative hidden h-dvh max-h-dvh overflow-hidden bg-slate-950 lg:block">
       {props.map}
       {props.search}
       <div className="absolute left-5 top-5 z-[450] grid max-h-[calc(100dvh-96px)] w-[390px] gap-3 overflow-y-auto rounded-2xl border border-white/18 bg-slate-950/82 p-4 shadow-2xl backdrop-blur">
@@ -76,13 +76,72 @@ export function DesktopMapLayout(props: DesktopMapLayoutProps) {
 
 export function MobileBottomSheet(props: MobileBottomSheetProps) {
   const dragStartYRef = useRef<number | null>(null);
+  const [dragPreview, setDragPreview] = useState<"down-strong" | "down" | "up" | "up-strong" | null>(null);
 
-  const stateHeightClass =
-    props.state === "compact"
-      ? "h-[clamp(168px,22svh,194px)]"
+  const getHeightClass = () => {
+    if (dragPreview !== null) {
+      if (props.state === "compact") {
+        if (dragPreview === "up-strong") {
+          return "h-[min(calc(100svh-116px),560px)]";
+        }
+        if (dragPreview === "up") {
+          return "h-[clamp(218px,34svh,300px)]";
+        }
+      }
+
+      if (props.state === "middle") {
+        if (dragPreview === "up-strong") {
+          return "h-[calc(100svh-40px)]";
+        }
+        if (dragPreview === "up") {
+          return "h-[min(calc(100svh-80px),640px)]";
+        }
+        if (dragPreview === "down-strong") {
+          return "h-[clamp(176px,24svh,220px)]";
+        }
+        if (dragPreview === "down") {
+          return "h-[clamp(230px,36svh,320px)]";
+        }
+      }
+
+      if (props.state === "expanded") {
+        if (dragPreview === "down-strong") {
+          return "h-[min(calc(100svh-116px),560px)]";
+        }
+        if (dragPreview === "down") {
+          return "h-[min(calc(100svh-72px),660px)]";
+        }
+      }
+    }
+
+    return props.state === "compact"
+      ? "h-[clamp(176px,24svh,220px)]"
       : props.state === "middle"
         ? "h-[min(calc(100svh-116px),560px)]"
-        : "h-[calc(100svh-48px)]";
+        : "h-[calc(100svh-40px)]";
+  };
+
+  const stateHeightClass = getHeightClass();
+
+  const updateDragPreview = (clientY: number) => {
+    const startY = dragStartYRef.current;
+    if (startY === null) {
+      return;
+    }
+
+    const deltaY = clientY - startY;
+    if (deltaY < -96) {
+      setDragPreview("up-strong");
+    } else if (deltaY < -18) {
+      setDragPreview("up");
+    } else if (deltaY > 96) {
+      setDragPreview("down-strong");
+    } else if (deltaY > 18) {
+      setDragPreview("down");
+    } else {
+      setDragPreview(null);
+    }
+  };
 
   const goToNextState = (direction: "up" | "down") => {
     const states: BottomSheetState[] = ["compact", "middle", "expanded"];
@@ -97,6 +156,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
   const finishDrag = (clientY: number) => {
     const startY = dragStartYRef.current;
     dragStartYRef.current = null;
+    setDragPreview(null);
     if (startY === null) {
       return;
     }
@@ -110,7 +170,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
 
   return (
     <section
-      className={`absolute inset-x-0 bottom-3 z-[460] grid grid-rows-[auto_1fr] overflow-hidden rounded-[2rem] border border-white/70 bg-white/92 px-4 pb-[calc(env(safe-area-inset-bottom)+28px)] pt-2 text-slate-900 shadow-2xl backdrop-blur transition-[height] duration-200 ${stateHeightClass}`}
+      className={`absolute inset-x-0 bottom-0 z-[460] grid grid-rows-[auto_1fr] overflow-hidden rounded-t-[2rem] border border-b-0 border-white/70 bg-white/92 px-4 pb-[calc(env(safe-area-inset-bottom)+34px)] pt-2 text-slate-900 shadow-2xl backdrop-blur transition-[height] duration-150 ${stateHeightClass}`}
       aria-label="Controle de la carte"
     >
       <div className="flex justify-center pb-3">
@@ -120,11 +180,14 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
           aria-label="Glisser pour agrandir ou reduire le panneau"
           onPointerDown={(event) => {
             dragStartYRef.current = event.clientY;
+            setDragPreview(null);
             event.currentTarget.setPointerCapture(event.pointerId);
           }}
+          onPointerMove={(event) => updateDragPreview(event.clientY)}
           onPointerUp={(event) => finishDrag(event.clientY)}
           onPointerCancel={() => {
             dragStartYRef.current = null;
+            setDragPreview(null);
           }}
           onKeyDown={(event) => {
             if (event.key === "ArrowUp") {
@@ -136,7 +199,11 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
             }
           }}
         >
-          <span className="h-1.5 w-14 rounded-full bg-slate-300" />
+          <span
+            className={`h-1.5 rounded-full bg-slate-300 transition-[width,background-color] duration-150 ${
+              dragPreview === null ? "w-14" : "w-20 bg-amber-300"
+            }`}
+          />
         </button>
       </div>
 

@@ -2,7 +2,7 @@ import { SunlightMapClient } from "@/components/sunlight-map-client";
 
 export default function Home() {
   return (
-    <main className="h-dvh min-h-screen w-full overflow-hidden">
+    <main className="fixed inset-0 h-dvh max-h-dvh w-full overflow-hidden">
       <SunlightMapClient />
     </main>
   );
