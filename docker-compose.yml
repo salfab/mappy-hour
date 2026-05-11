@@ -1,9 +1,14 @@
 # Bind-mounts (host → container) :
-#   MAPPY_ATLAS_PATH     → /data/cache/sunlight       (atlases, gros)
+#   MAPPY_ATLAS_PATH     → /data/cache/sunlight       (atlases, gros, ~10-30 GB)
 #   MAPPY_BUILDINGS_PATH → /data/processed/buildings  (lausanne-buildings-index.json, ~70 MB)
-# Les deux bind-mounts sont placés CÔTE À CÔTE sur le host (par défaut sous
+#   MAPPY_PLACES_PATH    → /data/processed/places     (lausanne-places.json, nyon-places.json, ~100 KB)
+# Les trois bind-mounts sont placés CÔTE À CÔTE sur le host (par défaut sous
 # ./data/...) pour qu'un opérateur les retrouve dans le même répertoire racine
 # (typiquement C:\mappy-data\ sur mitch).
+# Sans le bind-mount places, `loadAllPlaces()` retourne null et le SSE
+# `event: places` n'est jamais émis (tilePlaces.length===0 → skip) — l'overlay
+# terrasses est vide côté UI. data/processed/ est gitignored, l'image Docker
+# ne baker rien.
 # TODO migration vers un volume Docker ext4 quand on saura gérer le format final
 # des atlas shardés (cf. tasks).
 services:
@@ -41,6 +46,10 @@ services:
         source: ${MAPPY_BUILDINGS_PATH:-./data/processed/buildings}
         target: /data/processed/buildings
         read_only: true
+      - type: bind
+        source: ${MAPPY_PLACES_PATH:-./data/processed/places}
+        target: /data/processed/places
+        read_only: true
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:3000/api/datasets',r=>{process.exitCode=r.statusCode===200?0:1}).on('error',()=>{process.exitCode=1})\""]
       interval: 30s
@@ -71,3 +80,6 @@ services:
       - type: bind
         source: ${MAPPY_BUILDINGS_PATH:-./data/processed/buildings}
         target: /data/processed/buildings
+      - type: bind
+        source: ${MAPPY_PLACES_PATH:-./data/processed/places}
+        target: /data/processed/places

@@ -408,24 +408,29 @@ WSL lira le compose via `/mnt/c/srv/mappy-hour/docker-compose.yml`.
 
 ### 7.2 `.env` — bind-mount Windows
 
-Deux bind-mounts sont nécessaires (depuis la release `v9.2.20260512xxx`) :
+Trois bind-mounts sont nécessaires (depuis la release `v9.2.20260512xxx`) :
 - `MAPPY_ATLAS_PATH` → cache atlas sunlight (~10-30 GB)
 - `MAPPY_BUILDINGS_PATH` → global obstacle index `lausanne-buildings-index.json` (~70 MB)
+- `MAPPY_PLACES_PATH` → sidecars `<region>-places.json` (~100 KB) — **sans ça, l'overlay terrasses est vide**
 
 ```powershell
 @"
 MAPPY_ATLAS_PATH=/mnt/c/mappy-data/cache/sunlight
 MAPPY_BUILDINGS_PATH=/mnt/c/mappy-data/processed/buildings
+MAPPY_PLACES_PATH=/mnt/c/mappy-data/processed/places
 "@ | Set-Content C:\srv\mappy-hour\.env -Encoding UTF8
 
 New-Item -ItemType Directory -Force C:\mappy-data\cache\sunlight | Out-Null
 New-Item -ItemType Directory -Force C:\mappy-data\processed\buildings | Out-Null
+New-Item -ItemType Directory -Force C:\mappy-data\processed\places | Out-Null
 ```
 
-> **Pourquoi 2 bind-mounts ?** L'image Docker est immuable et ne contient plus
-> le global buildings index (trop volumineux pour bake dans chaque build). Il
-> est livré comme un asset partagé de la release (`buildings-shared.tar`) et
-> peuplé côte à côte avec l'atlas. Cf. ADR-0024 / commit du 2026-05-12.
+> **Pourquoi 3 bind-mounts ?** L'image Docker est immuable et ne contient ni
+> le global buildings index (trop volumineux), ni les places sidecars
+> (`data/processed/` est gitignored, jamais bake). Sans bind-mount places,
+> `loadAllPlaces()` retourne null et le timeline stream n'émet jamais d'event
+> `places` → overlay terrasses vide côté UI. Cf. ADR-0024 / commit du
+> 2026-05-12.
 
 Autres variables (`MAPPY_FORCE_CACHE_ONLY=true`, `MAPPY_DATA_ROOT=/data`,
 `NODE_ENV=production`) sont déjà fixées dans `docker-compose.yml` — l'image est immuable
