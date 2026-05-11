@@ -185,10 +185,9 @@ export function LeafOffIcon({ className = "h-5 w-5" }: IconProps) {
       strokeWidth="2"
       viewBox="0 0 24 24"
     >
-      <path d="M12 20v-8" />
-      <path d="M8.5 20h7" />
-      <path d="M7 12.5a5 5 0 0 1 10 0" />
-      <path d="M5.5 14.5a6.5 6.5 0 0 1 13 0" />
+      <path d="M12 21V8" />
+      <path d="M8 21h8" />
+      <path d="m12 3-4.5 6h2.2L6 14h12l-3.7-5h2.2L12 3Z" />
       <path d="M4 4l16 16" />
     </svg>
   );

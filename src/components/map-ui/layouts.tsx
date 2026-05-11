@@ -94,47 +94,47 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
     if (dragPreview !== null) {
       if (props.state === "compact") {
         if (dragPreview === "up-strong") {
-          return "h-[clamp(330px,44svh,430px)]";
+          return "h-[clamp(292px,38svh,360px)]";
         }
         if (dragPreview === "up") {
-          return "h-[clamp(190px,28svh,252px)]";
+          return "h-[clamp(184px,24svh,228px)]";
         }
       }
 
       if (props.state === "middle") {
         if (dragPreview === "up-strong") {
-          return "h-[min(calc(100svh-96px),620px)]";
+          return "h-[clamp(430px,64svh,560px)]";
         }
         if (dragPreview === "up") {
-          return "h-[clamp(430px,58svh,560px)]";
+          return "h-[clamp(360px,50svh,470px)]";
         }
         if (dragPreview === "down-strong") {
-          return "h-[clamp(142px,18svh,176px)]";
+          return "h-[clamp(124px,16svh,152px)]";
         }
         if (dragPreview === "down") {
-          return "h-[clamp(210px,30svh,280px)]";
+          return "h-[clamp(184px,24svh,228px)]";
         }
       }
 
       if (props.state === "expanded") {
         if (dragPreview === "down-strong") {
-          return "h-[clamp(330px,44svh,430px)]";
+          return "h-[clamp(292px,38svh,360px)]";
         }
         if (dragPreview === "down") {
-          return "h-[clamp(430px,58svh,560px)]";
+          return "h-[clamp(360px,50svh,470px)]";
         }
       }
     }
 
     return props.state === "compact"
-      ? "h-[clamp(142px,18svh,176px)]"
+      ? "h-[clamp(124px,16svh,152px)]"
       : props.state === "middle"
-        ? "h-[clamp(330px,44svh,430px)]"
-        : "h-[min(calc(100svh-96px),620px)]";
+        ? "h-[clamp(292px,38svh,360px)]"
+        : "h-[clamp(430px,64svh,560px)]";
   };
 
   const stateHeightClass = getHeightClass();
-  const contentGapClass = props.state === "compact" ? "gap-3" : "gap-3.5";
+  const contentGapClass = props.state === "compact" ? "gap-2.5" : "gap-3";
 
   const updateDragPreview = (clientY: number) => {
     const startY = dragStartYRef.current;
