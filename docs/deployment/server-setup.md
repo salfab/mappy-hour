@@ -1,5 +1,12 @@
-# Déploiement headless — guide pas-à-pas (Mitch et équivalents)
+# Déploiement headless Node.js natif — guide pas-à-pas (legacy / alternative)
 
+> **Statut :** approche alternative. **Pas utilisée sur mitch** depuis la bascule
+> Docker dans WSL2 (2026-05). Ce guide reste valable pour un déploiement
+> Node.js natif sur un serveur Ubuntu/Debian sans Docker.
+>
+> Pour le déploiement actuel (Windows + WSL2 + Docker Engine + image GHCR + Tailscale Funnel),
+> voir [`../deploy.md`](../deploy.md).
+>
 > Reproductible sur n'importe quelle machine Ubuntu/Debian sans GPU Vulkan.
 > L'atlas précompute est téléchargé depuis GitHub Releases via `pnpm atlas:download`.
 
@@ -189,39 +196,41 @@ sudo systemctl restart mappy-hour
 
 ---
 
-## Déploiement via Docker
+## Déploiement via Docker (recommandé)
+
+Pour la procédure complète (Windows + WSL2 + Docker Engine + Tailscale Funnel),
+voir [`../deploy.md`](../deploy.md). Cette section est conservée comme résumé
+minimaliste pour un Linux nu.
 
 Voir `Dockerfile` et `.github/workflows/docker-publish.yml` à la racine du repo.
-
 L'image est publiée sur `ghcr.io/salfab/mappy-hour` à chaque push sur `master`.
 
 ### Lancer avec Docker Compose
 
-```yaml
-# docker-compose.yml
-services:
-  mappy-hour:
-    image: ghcr.io/salfab/mappy-hour:latest
-    ports:
-      - "3000:3000"
-    volumes:
-      - /data/mappy-hour:/data
-    environment:
-      - MAPPY_DATA_ROOT=/data
-    restart: unless-stopped
+Le `docker-compose.yml` du repo est prêt à l'emploi. Configurer `MAPPY_ATLAS_PATH`
+(bind-mount du dossier atlas hôte) dans un `.env` à côté :
+
+```dotenv
+# .env
+MAPPY_ATLAS_PATH=/data/mappy-hour/cache/sunlight
 ```
 
-Avant le premier démarrage, télécharger les atlas dans `/data/mappy-hour` :
+Peupler le bind-mount avant le premier démarrage :
 
 ```bash
-# Sur la machine hôte (pas dans le conteneur)
-cd /opt/mappy-hour
-MAPPY_DATA_ROOT=/data/mappy-hour pnpm atlas:download -- \
+# Option A : copie depuis une machine de précompute (rsync / robocopy)
+# Option B : via le service one-shot atlas-loader (profil "loader")
+docker compose --profile loader run --rm atlas-loader \
   --repo=salfab/mappy-hour \
   --regions=lausanne,nyon,morges,vevey,geneve
 
 docker compose up -d
 ```
+
+> **Note bind-mount** : le compose utilise un bind-mount RO depuis l'hôte
+> (`MAPPY_ATLAS_PATH`) plutôt qu'un volume Docker nommé. C'est temporaire — à
+> terme, migration vers un volume ext4 propre. Cf. `../deploy.md` section
+> "Architecture".
 
 ---
 

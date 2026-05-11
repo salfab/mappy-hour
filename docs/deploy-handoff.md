@@ -1,5 +1,14 @@
-# Handoff — Déploiement mappy-hour sur mitch
+# Handoff — Déploiement mappy-hour sur mitch (snapshot historique)
 
+> **LEGACY — Statut au 2026-05-11 :** ce handoff décrit le **déploiement initial en
+> Node.js natif via WMI** sur mitch (mai 2026). **Plus utilisé** depuis la bascule
+> sur **Docker Engine dans WSL2 + image GHCR**.
+>
+> **Source de vérité actuelle : [`deploy.md`](./deploy.md).**
+>
+> Ce document est conservé pour traçabilité (bugs corrigés au moment de la transition,
+> justification WMI vs Job Object SSH, état SSH/Tailscale Funnel d'origine).
+>
 > Dernière mise à jour : 2026-05-10  
 > Session origine : Claude Sonnet 4.6 (plan `tidy-cuddling-feather.md`)
 
@@ -39,7 +48,13 @@
 
 ## Déployer une mise à jour (commande unique)
 
+> **Obsolète depuis la bascule Docker (2026-05).** Le script courant est
+> `mitch-deploy-docker.ps1` (`git pull` + `docker compose pull` + `docker compose up -d`)
+> et le déploiement est piloté par GitHub Actions (`.github/workflows/deploy-mitch.yml`).
+> Conservé ci-dessous pour mémoire :
+
 ```powershell
+# Ancien flow Node.js natif (legacy)
 ssh devops@mitch "powershell -File C:\srv\mappy-hour\scripts\headless-server-selfhosting\mitch-deploy.ps1"
 ```
 

@@ -386,6 +386,13 @@ pnpm cache:verify
 pnpm cache:purge
 ```
 
+## Déploiement serveur (Docker + Tailscale Funnel)
+
+Procédure from-scratch pour déployer l'app sur un serveur Windows (référence : `mitch`) :
+voir [`docs/deploy.md`](docs/deploy.md). Couvre WSL2 + Docker Engine, l'image GHCR
+`ghcr.io/salfab/mappy-hour:latest`, le bind-mount atlas, Tailscale Funnel, le CI/CD
+GitHub Actions, la persistance WSL2 et le diagnostic 502.
+
 ## Déploiement — Atlas sunlight précompute
 
 Les fichiers atlas (`.atlas.bin.gz` + `.atlas.idx`) sont précomputes une fois avec GPU Vulkan et publiés sur GitHub Releases. Une app déployée sans GPU les télécharge au lieu de les recalculer.

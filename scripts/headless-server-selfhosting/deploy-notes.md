@@ -1,59 +1,88 @@
 # Notes de déploiement — MappyHour
 
-> **Statut :** prospectif — rien n'est encore implémenté ici.  
-> Ce document décrit l'architecture cible pour le déploiement sur serveur headless.
+> **Statut :** déploiement Docker en place sur mitch depuis 2026-05.
+> Ce document conserve l'historique des décisions d'archi et liste les écarts
+> entre l'archi cible imaginée et l'implémentation effective.
+>
+> **Source de vérité procédurale (from-scratch + diagnostic) : [`../../docs/deploy.md`](../../docs/deploy.md).**
+> Inclut les points critiques découverts après coup : pourquoi Docker tourne en session
+> kiosque, les 3 conditions de persistance WSL2 (wsl.conf + .wslconfig + scheduled task),
+> SSH `AllowUsers`, hardening retiré, pattern `scp+ps1`, diagnostic 502 Funnel.
 
 ---
 
-## Architecture cible
+## Architecture effective (2026-05)
 
 ### Image Docker
 
-Une seule image pour l'application Next.js, publiée sur GHCR :
+Une seule image pour l'application Next.js, publiée sur GHCR (publique) :
 
 ```
 ghcr.io/salfab/mappy-hour:latest
 ```
 
-### Volume de données
+Build et push automatiques par `.github/workflows/docker-publish.yml` à chaque
+commit `master` et à chaque tag `v*`.
 
-Un volume Docker nommé contient le cache précompute (atlas de masques solaires) :
+### Stockage atlas — bind-mount Windows (provisoire)
 
+L'archi initialement prévue était un **volume Docker nommé** (`mappy_hour_data`)
+hydraté depuis GitHub Releases. En pratique sur mitch on utilise un
+**bind-mount Windows → /mnt/c/mappy-data/...** via le pont 9P de WSL2, car :
+
+- L'atlas pèse ~30 GB
+- Le copier depuis Windows vers un volume ext4 WSL prend 3h+ (overhead 9P)
+- La stratégie atlas shardés (ADR-0024) va changer le format → pas de raison
+  d'optimiser la copie tant que ce n'est pas figé
+
+`docker-compose.yml` lit `MAPPY_ATLAS_PATH` (env var, défaut `./data/cache/sunlight`) :
+
+```yaml
+volumes:
+  - type: bind
+    source: ${MAPPY_ATLAS_PATH:-./data/cache/sunlight}
+    target: /data/cache/sunlight
+    read_only: true
 ```
-mappy_hour_data
-```
 
-La variable d'environnement `MAPPY_DATA_ROOT=/app/data` pointe vers ce volume dans le conteneur.
+Sur mitch : `MAPPY_ATLAS_PATH=/mnt/c/mappy-data/cache/sunlight` dans
+`C:\srv\mappy-hour\.env`.
+
+**TODO :** migration vers un volume Docker ext4 propre une fois les atlas
+shardés finalisés. Cf. registre des raccourcis (`docs/architecture/shortcuts-registry.md`).
 
 ### Services Compose
 
 ```
-cache-init   — hydrate le volume depuis un GitHub Release (run-once)
-app          — Next.js, lit/écrit dans le même volume
+mappy-hour     — Next.js serving, bind-mount atlas en RO
+atlas-loader   — one-shot, profil "loader", télécharge depuis GitHub Releases
 ```
 
 ---
 
 ## Modes de déploiement
 
-### NUC / serveur sans GPU dédié
+### NUC / serveur sans GPU dédié (cas mitch)
 
 ```env
-MAPPY_CACHE_MISS_MODE=log-only
-MAPPY_SHADOW_MODE=cpu
+MAPPY_FORCE_CACHE_ONLY=true
+MAPPY_DATA_ROOT=/data
+MAPPY_ATLAS_PATH=/mnt/c/mappy-data/cache/sunlight
 ```
 
-Le serveur sert uniquement le cache précompute. Les tuiles manquantes sont notées dans les logs.  
-Le calcul à la demande est désactivé.
+Le serveur sert uniquement le cache précompute. Les tuiles manquantes retournent
+503 (cf. `environment-config.md` pour les effets exacts de `MAPPY_FORCE_CACHE_ONLY`).
 
-### Station avec GPU (Vulkan)
+### Station avec GPU (Vulkan) — non implémenté côté Docker
 
 ```env
-MAPPY_CACHE_MISS_MODE=compute-sync
-MAPPY_SHADOW_MODE=rust-wgpu-vulkan
+MAPPY_FORCE_CACHE_ONLY=false
+MAPPY_BUILDINGS_SHADOW_MODE=rust-wgpu-vulkan
 ```
 
-Le serveur peut régénérer à la demande. Requiert le binaire Rust compilé dans l'image.
+Le serveur peut régénérer à la demande. Requiert le binaire Rust compilé dans
+l'image — l'image GHCR actuelle ne le contient pas (build serving-only). Pour
+ce mode, déploiement bare-metal recommandé (cf. `docs/deployment/server-setup.md`).
 
 ---
 
@@ -63,39 +92,49 @@ Quand une zone n'est pas encore couverte, le frontend affiche :
 
 > **Pas encore de soleil par ici**
 >
-> On n'a pas encore calculé l'ensoleillement pour cette zone.  
+> On n'a pas encore calculé l'ensoleillement pour cette zone.
 > Ta recherche est bien notée et nous aide à choisir les prochains coins à couvrir.
 >
 > Essaie une autre zone en attendant.
 
-Ce message doit se sentir comme une limitation de couverture géographique, pas comme une erreur technique.  
-Pas de stack trace, pas de "500", pas de spinner infini.
+Ce message doit se sentir comme une limitation de couverture géographique, pas
+comme une erreur technique. Pas de stack trace, pas de "500", pas de spinner
+infini.
 
 ---
 
-## Scripts futurs (non implémentés)
+## Scripts en place
 
-| Script | Rôle |
-|--------|------|
-| `cache-init.ps1` | Télécharge l'archive de cache depuis un GitHub Release, extrait dans le volume |
-| `export-cache-volume.ps1` | Exporte le volume vers une archive pour publication en Release |
-| `deploy-app.ps1` | Pull l'image GHCR, redémarre le Compose |
-| `inspect-cache-misses.ps1` | Lit les logs du mode `log-only`, affiche les tuiles manquantes par région |
-
----
-
-## Ce qui doit être fait avant de déployer
-
-1. Dockerfile + `.dockerignore` pour l'image Next.js
-2. `docker-compose.yml` avec les deux services + volume nommé
-3. Workflow GitHub Actions pour build + push GHCR
-4. Premier export de cache via `export-cache-volume.ps1`
-5. Test end-to-end sur le NUC : `cache-init` → `app` → vérification carte
+| Script | Rôle | Statut |
+|--------|------|--------|
+| `mitch-deploy-docker.ps1` | `git pull` + `docker compose pull` + `up -d` | ✅ actif (workflow GHA) |
+| `mitch-deploy.ps1` | Legacy Node.js natif (build + WMI restart) | ⚠️ legacy, conservé pour rollback |
+| `mitch-deploy-no-pull.ps1` | Variante Node.js natif sans `git pull` | ⚠️ legacy |
+| `setup-dev-machine.ps1` | Bootstrap dev (clé SSH + Tailscale) | ✅ actif |
+| `bootstrap-headless-access.ps1` | Bootstrap serveur (Tailscale + OpenSSH) | ✅ actif |
+| `scripts/deploy/setup-tailscale-ci-acl.sh` | Patch idempotent ACL `tag:ci` | ✅ actif |
 
 ---
 
 ## Prérequis sur le serveur
 
-- Docker Engine (sans Docker Desktop)
-- Accès à GHCR (login `docker login ghcr.io`)
-- Port 3000 ou 80 ouvert en local (pas besoin d'exposition publique si Tailscale suffit)
+- Windows 10/11 + WSL2 + Ubuntu (`wsl --install -d Ubuntu --web-download`)
+- Docker Engine **dans WSL2 côté session kiosque** (pas Docker Desktop, et **pas dans
+  la session devops** — WSL2 + NAT port forwarding sont scoped par session Windows ;
+  cf. `docs/deploy.md` §3 « Pourquoi kiosque et pas devops »)
+- Persistance WSL2 : trois conditions cumulatives (`/etc/wsl.conf` avec `systemd=true`,
+  `C:\Users\kiosque\.wslconfig` avec `vmIdleTimeout=-1`, scheduled task `WslKeepalive`
+  au logon kiosque avec `wsl ... --exec /usr/bin/sleep infinity`). Sans la 3e condition,
+  la VM cycle ~50s (symptôme : `dmesg | grep p9io` côté WSL).
+- Tailscale (login en session interactive `kiosque` pour les commandes `serve`/`funnel`)
+- OpenSSH Server (`AllowUsers devops kiosque` — devops pour la clé GHA, kiosque pour
+  exécuter les opérations Docker dans la bonne session)
+- Image GHCR publique → pas de `docker login` requis
+
+## Hardening compose retiré (à restaurer — task #14)
+
+`docker-compose.yml` ne contient **plus** `cap_drop: ALL`, `security_opt: no-new-privileges`,
+`read_only`, `tmpfs:/tmp`, ni `user: node`. Symptôme observé en les activant : Next.js 16
+crashe ~50s après `▲ Ready` avec `ELIFECYCLE Command failed.` sans stack trace. Surface
+de défense restante : isolation WSL2 VM + Funnel HTTPS + bind 127.0.0.1 + volume atlas RO
++ security headers. Trade-off explicitement documenté dans `docs/deploy.md` §11.

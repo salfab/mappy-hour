@@ -246,44 +246,54 @@ tailscale serve --https=443 off
 
 ## Déployer une mise à jour
 
-Après avoir pushé un commit sur `master`, connectez-vous à mitch via SSH et lancez le script de déploiement :
+Le déploiement courant utilise **Docker dans WSL2 côté session kiosque** sur mitch et
+est piloté par GitHub Actions (`.github/workflows/deploy-mitch.yml`) à chaque push sur
+`master`. Voir [`../../docs/deploy.md`](../../docs/deploy.md) pour la procédure complète
+(setup initial WSL2/Docker, image GHCR, bind-mount atlas, OAuth Tailscale CI/CD,
+persistance WSL2, diagnostic 502 Funnel).
+
+Pour déclencher un déploiement manuel :
 
 ```powershell
-ssh devops@mitch "powershell -File C:\srv\mappy-hour\scripts\headless-server-selfhosting\mitch-deploy.ps1"
+# Cible : kiosque (pas devops — explication dans deploy.md §3)
+ssh kiosque@mitch "powershell -File C:\srv\mappy-hour\scripts\headless-server-selfhosting\mitch-deploy-docker.ps1"
 ```
 
-Le script fait, dans l'ordre :
+Le script `mitch-deploy-docker.ps1` fait, dans l'ordre :
 
-1. `git pull` — récupère la dernière version du code
-2. `pnpm install --frozen-lockfile` — installe les éventuelles nouvelles dépendances
-3. `pnpm build` — recompile l'application Next.js (~2–4 min, serveur actuel toujours en ligne)
-4. Tue l'ancien processus Node sur le port 3000
-5. Redémarre le serveur via WMI (survit à la déconnexion SSH)
-6. Attend 20 s puis vérifie que `http://127.0.0.1:3000` répond
-
-> **Note :** la session SSH peut rester ouverte pendant le build (2–4 min).
-> Contrairement à `Start-Process`, le démarrage via WMI échappe au Job Object SSH
-> et le serveur continue de tourner après votre déconnexion.
+1. `git pull` — récupère la dernière version du `docker-compose.yml` / `.env.example`
+2. `wsl docker compose pull` — récupère la dernière image depuis GHCR
+3. `wsl docker compose up -d --remove-orphans` — redémarre les services
+4. Attend 25 s puis vérifie `http://127.0.0.1:3000/api/datasets`
 
 ### Voir les logs après déploiement
 
 ```powershell
-ssh devops@mitch "Get-Content C:\srv\mappy-hour\server.log -Tail 30"
-ssh devops@mitch "Get-Content C:\srv\mappy-hour\server.err -Tail 10"
+ssh devops@mitch "wsl -d Ubuntu -u root -e bash -c 'docker logs mappy-hour --tail 30'"
 ```
+
+### Flow legacy (Node.js natif, avant 2026-05)
+
+Pour mémoire, l'ancien script `mitch-deploy.ps1` faisait `git pull` → `pnpm install`
+→ `pnpm build` → kill + redémarrage WMI. Conservé dans le repo pour rollback ou
+pour les machines sans Docker, mais **plus utilisé sur mitch**.
+
+> **Note** : à l'heure actuelle, `.github/workflows/deploy-mitch.yml` pointe encore sur
+> `mitch-deploy.ps1` (legacy) et `MITCH_SSH_USER=devops`. C'est une dette identifiée
+> (task #16) : à corriger pour pointer sur `mitch-deploy-docker.ps1` et SSH-as-kiosque.
 
 ---
 
 ## Ce qui vient ensuite
 
-Une fois le SSH et Funnel établis, tout se fait à distance :
+Une fois le SSH et Funnel établis, le reste se fait à distance — voir
+[`../../docs/deploy.md`](../../docs/deploy.md) section "Étape 2" pour le détail :
 
-1. Installation de Docker Engine (sans Docker Desktop)
-2. Login GHCR : `docker login ghcr.io`
-3. Hydratation du volume de cache depuis un GitHub Release
-4. Démarrage de l'application avec Docker Compose
-
-Voir [`deploy-notes.md`](deploy-notes.md) pour l'architecture cible.
+1. Installation de WSL2 + Ubuntu + Docker Engine (pas Docker Desktop)
+2. Pull de l'image GHCR `ghcr.io/salfab/mappy-hour:latest` (publique, pas de login)
+3. Configuration du bind-mount atlas via `MAPPY_ATLAS_PATH` dans `.env`
+4. Peuplement de `C:\mappy-data\cache\sunlight\` (robocopy depuis machine de précompute, ou service `atlas-loader`)
+5. `docker compose up -d`
 
 ---
 

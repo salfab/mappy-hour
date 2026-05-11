@@ -16,6 +16,7 @@
 |---|---|---|---|
 | `MAPPY_DATA_ROOT` | `./data` (relatif au repo) | Racine du cache atlas, places, raw, processed | **Toujours** un chemin absolu hors repo en prod (`/data/mappy-hour`, `C:\mappy-data`) |
 | `MAPPY_CACHE_SUNLIGHT_DIR` | `$MAPPY_DATA_ROOT/cache/sunlight` | Override **seulement** du cache sunlight (atlas + shards + idx). Utile si l'atlas est sur un disque séparé du reste. | Laisser vide en prod |
+| `MAPPY_ATLAS_PATH` | `./data/cache/sunlight` (relatif au compose) | **Côté hôte uniquement** — lu par `docker-compose.yml` pour décider où bind-mount l'atlas dans le conteneur. Pas lu par l'app Node directement. | Sur mitch : `/mnt/c/mappy-data/cache/sunlight` (chemin WSL → Windows). Chemin absolu hôte recommandé. |
 | `MAPPY_FORCE_CACHE_ONLY` | `false` | Force tout l'app en lecture-seule depuis l'atlas. Effets :<br>• page server-side passe `forceCacheOnly=true` au client → diagnostics au click désactivés<br>• `/api/sunlight/point` et `/api/sunlight/instant/stream` retournent 503<br>• `/api/sunlight/timeline/stream` ignore le param client et force `cacheOnly=true`<br>• `/api/places/windows` skip le fallback GPU plutôt que de crasher | **`true` sur tout serveur sans GPU** (Mitch, headless cloud). `false` sur les machines de précompute. |
 | `MAPPY_TIMELINE_CACHE_PREFETCH` | `4` (Linux) / `1` (Windows headless) | Nombre de tuiles lues en parallèle pour la timeline cache-only. Plus haut = plus rapide mais plus de RAM/IO. | `1` sur petite VM avec disque lent (Mitch NUC), `8-16` sur serveur SSD beefy |
 | `MAPPY_ATLAS_MEMORY_CACHE_ENTRIES` | (cf. code) | Nombre de tuiles atlas gardées en mémoire entre requêtes. `0` = désactivé. | `0` sur petite VM ; laisser défaut sinon |
@@ -164,7 +165,11 @@ sudo systemctl restart mappy-hour
 
 ---
 
-### 3. Bare metal Windows (NSSM)
+### 3. Bare metal Windows (NSSM) — legacy
+
+> Approche **plus utilisée sur mitch** depuis la bascule Docker dans WSL2.
+> Conservée pour mémoire et pour les machines sans Docker.
+
 
 ```powershell
 nssm install MappyHour "C:\tools\node-v20.18.0\node.exe" `
@@ -232,7 +237,7 @@ spec:
 
 ## Exemples de profils par environnement
 
-### Profil **headless cache-only** (Mitch, cloud VM sans GPU)
+### Profil **headless cache-only** (cloud VM sans GPU)
 
 ```dotenv
 NODE_ENV=production
@@ -242,6 +247,18 @@ MAPPY_FORCE_CACHE_ONLY=true
 MAPPY_TIMELINE_CACHE_PREFETCH=1
 MAPPY_ATLAS_MEMORY_CACHE_ENTRIES=0
 ```
+
+### Profil **mitch** (Windows + WSL2 + Docker, bind-mount Windows)
+
+`C:\srv\mappy-hour\.env` (lu par `docker-compose.yml` côté hôte) :
+
+```dotenv
+MAPPY_ATLAS_PATH=/mnt/c/mappy-data/cache/sunlight
+```
+
+Le reste (`MAPPY_FORCE_CACHE_ONLY=true`, `MAPPY_DATA_ROOT=/data`, `NODE_ENV=production`)
+est déjà fixé dans la section `environment:` du compose — l'image est immuable,
+seul le chemin atlas hôte varie d'une machine à l'autre.
 
 ### Profil **serveur compute** (machine GPU avec précompute + serving)
 
