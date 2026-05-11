@@ -44,6 +44,13 @@ function normalizeAzimuth(azimuthDeg: number): number {
 }
 
 export async function POST(request: Request) {
+  if (process.env.MAPPY_FORCE_CACHE_ONLY === "true") {
+    return NextResponse.json(
+      { error: "Point queries are unavailable in cache-only mode (MAPPY_FORCE_CACHE_ONLY=true). No grid metadata on this server." },
+      { status: 503 },
+    );
+  }
+
   let payload: unknown;
 
   try {

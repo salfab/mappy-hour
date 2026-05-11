@@ -2978,6 +2978,7 @@ export function SunlightMapClient() {
       map.on("click", (event: LeafletMouseEvent) => {
         const message = `Lat ${event.latlng.lat.toFixed(5)}, Lon ${event.latlng.lng.toFixed(5)}`;
         map.attributionControl.setPrefix(`Mappy Hour - ${message}`);
+        if (forceCacheOnly) return;
         void runPointClickDiagnostics(event.latlng.lat, event.latlng.lng).catch(
           (error) => {
             console.error(
@@ -3230,15 +3231,17 @@ export function SunlightMapClient() {
           marker.on("click", (event: LeafletMouseEvent) => {
             L.DomEvent.stopPropagation(event);
             setSelectedVenueId(place.id);
-            void runPointClickDiagnostics(
-              place.evaluationLat ?? place.lat,
-              place.evaluationLon ?? place.lon,
-            ).catch((error) => {
-              console.error(
-                "[Mappy Hour][place] Point diagnostic failed:",
-                error instanceof Error ? error.message : error,
-              );
-            });
+            if (!forceCacheOnly) {
+              void runPointClickDiagnostics(
+                place.evaluationLat ?? place.lat,
+                place.evaluationLon ?? place.lon,
+              ).catch((error) => {
+                console.error(
+                  "[Mappy Hour][place] Point diagnostic failed:",
+                  error instanceof Error ? error.message : error,
+                );
+              });
+            }
           });
         }
       }
@@ -3291,14 +3294,16 @@ export function SunlightMapClient() {
             console.log("Horizon center:", terrainHorizonDebug.center);
             console.log("Horizon radius (km):", terrainHorizonDebug.radiusKm);
             console.groupEnd();
-            void runPointClickDiagnostics(ridgePoint.lat, ridgePoint.lon).catch(
-              (error) => {
-                console.error(
-                  "[Mappy Hour][ridge] Point diagnostic failed:",
-                  error instanceof Error ? error.message : error,
-                );
-              },
-            );
+            if (!forceCacheOnly) {
+              void runPointClickDiagnostics(ridgePoint.lat, ridgePoint.lon).catch(
+                (error) => {
+                  console.error(
+                    "[Mappy Hour][ridge] Point diagnostic failed:",
+                    error instanceof Error ? error.message : error,
+                  );
+                },
+              );
+            }
           });
         }
       }

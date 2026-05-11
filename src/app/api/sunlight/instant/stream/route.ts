@@ -78,6 +78,13 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 export async function GET(request: Request) {
+  if (process.env.MAPPY_FORCE_CACHE_ONLY === "true") {
+    return NextResponse.json(
+      { error: "Instant stream is unavailable in cache-only mode (MAPPY_FORCE_CACHE_ONLY=true). No grid metadata on this server." },
+      { status: 503 },
+    );
+  }
+
   const url = new URL(request.url);
   const rawQuery = Object.fromEntries(url.searchParams.entries());
   const parsed = querySchema.safeParse(rawQuery);
