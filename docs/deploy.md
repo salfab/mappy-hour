@@ -10,6 +10,51 @@ sont historiques ou des compléments topiques.
 
 ---
 
+## 0. Installation rapide via `mitch-bootstrap.ps1`
+
+Pour une install fresh from-scratch, un script PowerShell idempotent automatise les phases
+1 à 11 de ce guide. **Lis-le avant exécution** (cf. `scripts/deploy/README.md` pour les
+détails). La suite manuelle (§1-§16) reste la référence pour ceux qui n'utilisent pas le
+bootstrap, et pour comprendre / débugger ce qu'il fait.
+
+**Prérequis depuis une machine avec navigateur** (one-time, hors machine cible) :
+
+- Tailscale **OAuth client** (scopes `Devices > Core (Write)` + `Auth Keys (Write)`,
+  tag `tag:ci`) — récupérer `client_id` et `client_secret`. Cf. §5.2.
+- (Optionnel) Tailscale **API token** pour patcher l'ACL automatiquement (révoquer après).
+- (Optionnel) GitHub **PAT** scope `repo` pour pousser les secrets GHA automatiquement.
+
+**Sur la machine cible** (PowerShell admin) :
+
+```powershell
+iwr https://raw.githubusercontent.com/salfab/mappy-hour/master/scripts/deploy/mitch-bootstrap.ps1 -OutFile bootstrap.ps1
+.\bootstrap.ps1 `
+  -TailscaleOAuthClientId   <client-id> `
+  -TailscaleOAuthSecret     <client-secret> `
+  -TailscaleApiToken        <api-token>      `# optionnel
+  -GitHubPat                <ghp-...>        `# optionnel
+  -SshPublicKey             "ssh-ed25519 AAAA... github-actions-deploy"
+```
+
+Phases couvertes (idempotentes, skip si déjà fait) : features WSL2/VMP (reboot), git +
+clone repo, kernel WSL + Ubuntu, `/etc/wsl.conf`, Docker Engine dans WSL, `.wslconfig`
+kiosque, scheduled task `Mappy-WSL-Keepalive`, `sshd_config AllowUsers`, clé CI dans
+`administrators_authorized_keys`, `.env` (`MAPPY_ATLAS_PATH`), dossier atlas vide, ACL
+Tailscale via API, secrets GHA via `gh`, smoke test `docker compose up`.
+
+State file : `C:\ProgramData\MappyHour\bootstrap-state.json` — re-run avec les mêmes args
+après le reboot pour reprendre.
+
+**Reste manuel après le script** :
+
+- `tailscale up` (login interactif au premier run, en session kiosque)
+- `tailscale serve --bg --https=443 http://localhost:3000` + `tailscale funnel --bg 3000` (§5.4)
+- Peupler l'atlas dans `C:\mappy-data\cache\sunlight` (§7.3)
+- Auto-login Windows pour `kiosque` (Settings ou Sysinternals Autologon)
+- `MITCH_SSH_KEY` GHA secret (clé privée, push via web UI GitHub)
+
+---
+
 ## 1. Architecture effective
 
 ```
@@ -526,9 +571,25 @@ l'activation systemd) plutôt qu'à un manque de capability.
 
 ### 11.3 Reste à durcir
 
-- [ ] `user: node` (UID non-root) — corepack écrit `/home/node/.cache/` et
-      échoue sous `read_only`. Ajouter un `tmpfs /home/node:uid=1000,gid=1000`
-      ou un volume scratch pour activer.
+- [ ] **`user: node` (UID non-root)** — seul gap restant côté container. Avec
+      `read_only` + `tmpfs /home/node`, le tmpfs est monté `root:root` par
+      défaut et `node` (UID 1000) ne peut pas y écrire ; corepack échoue avec :
+
+      ```
+      errno: -13, code: 'EACCES', syscall: 'mkdir',
+      path: '/home/node/.cache/node/corepack/v1'
+      ```
+
+      Pistes (à benchmarker) :
+      - `tmpfs /home/node:uid=1000,gid=1000` dans le compose (le plus simple).
+      - `ENV COREPACK_HOME=/tmp/corepack` dans le Dockerfile — le tmpfs `/tmp`
+        existe déjà, pas besoin d'un second tmpfs.
+      - Pré-créer `/home/node/.cache` dans le Dockerfile + monter un volume
+        scratch dédié (plus lourd, à éviter si une des deux options
+        ci-dessus suffit).
+
+      Pas urgent : le hardening en place (cap_drop ALL + no-new-privileges +
+      read_only + isolation WSL2 + Funnel + bind loopback) est déjà très solide.
 - [ ] Compte deploy non-admin sur Windows (devops/kiosque sont admins, cf. §3.3).
 - [ ] Vérifier qu'aucun port-forwarding routeur ne contourne Funnel.
 - [ ] Windows Update + Tailscale auto-update activés.

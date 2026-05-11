@@ -7,7 +7,11 @@
 > **Source de vérité procédurale (from-scratch + diagnostic) : [`../../docs/deploy.md`](../../docs/deploy.md).**
 > Inclut les points critiques découverts après coup : pourquoi Docker tourne en session
 > kiosque, les 3 conditions de persistance WSL2 (wsl.conf + .wslconfig + scheduled task),
-> SSH `AllowUsers`, hardening retiré, pattern `scp+ps1`, diagnostic 502 Funnel.
+> SSH `AllowUsers`, hardening container (cap_drop ALL + no-new-privileges + read_only +
+> tmpfs, restauré et stable), pattern `scp+ps1`, diagnostic 502 Funnel.
+>
+> **Bootstrap automatisé** pour une install fresh : `scripts/deploy/mitch-bootstrap.ps1`
+> (cf. `scripts/deploy/README.md` et `docs/deploy.md` §0).
 
 ---
 
@@ -131,10 +135,18 @@ infini.
   exécuter les opérations Docker dans la bonne session)
 - Image GHCR publique → pas de `docker login` requis
 
-## Hardening compose retiré (à restaurer — task #14)
+## Hardening compose — restauré
 
-`docker-compose.yml` ne contient **plus** `cap_drop: ALL`, `security_opt: no-new-privileges`,
-`read_only`, `tmpfs:/tmp`, ni `user: node`. Symptôme observé en les activant : Next.js 16
-crashe ~50s après `▲ Ready` avec `ELIFECYCLE Command failed.` sans stack trace. Surface
-de défense restante : isolation WSL2 VM + Funnel HTTPS + bind 127.0.0.1 + volume atlas RO
-+ security headers. Trade-off explicitement documenté dans `docs/deploy.md` §11.
+`docker-compose.yml` applique maintenant `cap_drop: ALL`, `security_opt:
+no-new-privileges:true`, `read_only: true` et `tmpfs: /tmp`. Validé sur 120s+ avec l'image
+courante, Next.js 16 reste healthy (healthcheck `node -e GET /api/datasets`, interval 30s).
+
+Le crashloop transitoire `ELIFECYCLE Command failed.` observé pendant la mise en place
+initiale ne s'est pas reproduit après stabilisation de la WSL2 + rebuild de l'image —
+probablement lié à des cycles de la VM WSL2 d'avant l'activation systemd, pas à un vrai
+manque de capability.
+
+**Seul gap restant** : `user: node` (UID non-root). Avec `read_only` + tmpfs, corepack
+échoue sur `/home/node/.cache` (`EACCES`). Pistes : `tmpfs /home/node:uid=1000,gid=1000`,
+`ENV COREPACK_HOME=/tmp/corepack` dans le Dockerfile, ou volume scratch. Pas urgent, cf.
+`docs/deploy.md` §11.3.

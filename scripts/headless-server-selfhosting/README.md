@@ -3,6 +3,11 @@
 Ce dossier contient les outils pour prendre le contrôle d'un serveur Windows headless et le préparer
 à héberger MappyHour. C'est **la première étape** : établir un accès SSH distant fiable via Tailscale.
 
+> **Install fresh end-to-end (Tailscale + SSH + WSL2 + Docker + repo + secrets GHA) :**
+> utiliser `scripts/deploy/mitch-bootstrap.ps1` (cf. `scripts/deploy/README.md` et
+> `docs/deploy.md` §0). Ce dossier-ci reste utile pour comprendre / décomposer la phase
+> Tailscale+SSH du bootstrap, ou pour le faire à la main.
+
 ---
 
 ## Ce que ce dossier fait
