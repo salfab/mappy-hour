@@ -227,10 +227,15 @@ docker compose up -d
 
 ## Variables d'environnement disponibles
 
-| Variable | Défaut | Description |
-|---|---|---|
-| `MAPPY_DATA_ROOT` | `./data` | Racine des données (atlas, buildings, DEM) |
-| `MAPPY_CACHE_SUNLIGHT_DIR` | `$DATA_ROOT/cache/sunlight` | Override pour le cache atlas uniquement |
-| `MAPPY_FORCE_CACHE_ONLY` | `false` | `true` sur tout serveur sans GPU. Lu au **runtime** : la page server-rendered passe le flag au client, les routes API `/sunlight/point` et `/sunlight/instant/stream` retournent 503, et la route timeline force `cacheOnly=true`. **Architecture immuable** : même build, config injectée au démarrage. |
-| `PORT` | `3000` | Port d'écoute Next.js |
-| `NODE_ENV` | — | Mettre `production` en prod |
+La liste complète, les flow de configuration, et les méthodes pour passer
+les variables au déploiement (Docker, systemd, NSSM, k8s) sont dans
+[`environment-config.md`](./environment-config.md).
+
+Minimum vital pour un déploiement headless cache-only :
+
+```dotenv
+NODE_ENV=production
+PORT=3000
+MAPPY_DATA_ROOT=/data/mappy-hour
+MAPPY_FORCE_CACHE_ONLY=true
+```
