@@ -81,8 +81,8 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
     props.state === "compact"
       ? "h-[clamp(132px,17svh,158px)]"
       : props.state === "middle"
-        ? "h-[clamp(306px,48svh,430px)]"
-        : "h-[min(82dvh,720px)]";
+        ? "h-[min(calc(100dvh-112px),560px)]"
+        : "h-[calc(100dvh-48px)]";
 
   const goToNextState = (direction: "up" | "down") => {
     const states: BottomSheetState[] = ["compact", "middle", "expanded"];
