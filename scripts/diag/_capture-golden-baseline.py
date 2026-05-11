@@ -22,11 +22,12 @@ SELECTION_FILE = Path("data/processed/precompute/golden-dedup-terrain-2026-05-04
 CACHE_ROOT = Path("data/cache/sunlight")
 
 REGION_MODEL_HASH = {
-    "lausanne": None,  # to discover (most recent in cache)
-    "morges":   None,
-    "nyon":     None,
-    "geneve":   None,
-    "vevey":    None,
+    "lausanne":   None,  # to discover (most recent in cache)
+    "morges":     None,
+    "nyon":       None,
+    "geneve":     None,
+    "vevey":      None,
+    "vevey_city": None,
 }
 
 

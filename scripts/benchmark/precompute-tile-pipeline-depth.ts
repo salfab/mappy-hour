@@ -75,7 +75,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   for (const raw of argv) {
     if (raw.startsWith("--region=")) {
       const v = raw.slice("--region=".length);
-      if (v === "lausanne" || v === "nyon" || v === "morges" || v === "geneve" || v === "vevey") {
+      if (v === "lausanne" || v === "nyon" || v === "morges" || v === "geneve" || v === "vevey" || v === "vevey_city") {
         args.region = v;
       }
     } else if (raw.startsWith("--start-date=")) {

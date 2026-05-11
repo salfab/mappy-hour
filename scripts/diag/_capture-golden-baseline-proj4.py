@@ -20,7 +20,7 @@ SELECTION_FILE = Path("data/processed/precompute/golden-dedup-terrain-2026-05-04
 CACHE_ROOT = Path("data/cache/sunlight")
 GRID_META_ROOT = Path("data/cache/tile-grid-metadata")
 
-REGION_MODEL_HASH = {region: None for region in ["lausanne", "morges", "nyon", "geneve", "vevey"]}
+REGION_MODEL_HASH = {region: None for region in ["lausanne", "morges", "nyon", "geneve", "vevey", "vevey_city"]}
 
 
 def newest_hash_dir(base: Path) -> str | None:

@@ -5,6 +5,7 @@ from:
     on presence of `score` field)
   - commune-lausanne-west-tiles.json  (Lausanne + west communes)
   - commune-lausanne-east-tiles.json  (Pully → Saint-Saphorin Lavaux)
+  - commune-vevey-land-tiles.json     (Vevey commune, lake tiles filtered out)
   - commune-geneve-all-tiles.json     (Geneve + Carouge + Pregny + Le Grand-Saconnex)
 
 Replaces the previous bbox-based greater-lausanne + geneve-carouge additions
@@ -13,7 +14,8 @@ Replaces the previous bbox-based greater-lausanne + geneve-carouge additions
 Each tile gets a `group` field so the HTML can color-group them:
   - "top-priority"    : original places-density-scored tiles
   - "lausanne-west"   : EPFL, Renens, central Lausanne
-  - "lausanne-east"   : Pully, Lutry, Lavaux
+  - "lausanne-east"   : Pully, Lutry, Lavaux (region=lausanne|vevey selon easting)
+  - "vevey-city"      : Vevey commune (region=vevey_city, lake tiles filtered out)
   - "geneva"          : Genève + Carouge + Pregny-Chambésy + Le Grand-Saconnex
 
 Run: python scripts/tools/_merge-high-value-commune-based.py
@@ -70,6 +72,20 @@ def main():
         else: east_added_vev += 1
     print(f"East Lausanne (Lavaux): {len(east_ids)} commune tiles → {east_added_lau} lausanne + {east_added_vev} vevey new")
 
+    # 3b) Vevey commune (lake filtered out) — region=vevey_city, group=vevey-city
+    # Distinct region from "vevey" (which historically covers Lavaux + Vevey).
+    # Cf. memory project_region_regrouping_todo : un re-groupement scientifique
+    # est prévu pour rationaliser ces régions.
+    vevey_ids = load_tile_ids(ROOT / "commune-vevey-land-tiles.json")
+    vevey_added = 0
+    for tid in vevey_ids:
+        k = ("vevey_city", tid)
+        if k in existing: continue
+        existing.add(k)
+        additions.append({"region": "vevey_city", "tileId": tid, "group": "vevey-city"})
+        vevey_added += 1
+    print(f"Vevey-city commune (land only): {len(vevey_ids)} commune tiles → {vevey_added} new")
+
     # 4) Geneva — region=geneve
     geneve_ids = load_tile_ids(ROOT / "commune-geneve-all-tiles.json")
     geneve_added = 0
@@ -90,9 +106,10 @@ def main():
     current["source"] = (
         "high-value places-density scoring (top-priority) + "
         "commune outlines for Lausanne-west (EPFL, Renens, central), "
-        "Lausanne-east (Pully → Saint-Saphorin Lavaux), and "
+        "Lausanne-east (Pully → Saint-Saphorin Lavaux), "
+        "Vevey-city (commune de Vevey, lake tiles filtered out by Léman polygon), and "
         "Geneva-all (Genève, Carouge, Pregny-Chambésy, Le Grand-Saconnex). "
-        "Lake tiles excluded by commune boundary clipping."
+        "Lake tiles excluded by commune boundary clipping (and explicit Léman filter for Vevey)."
     )
 
     with open(OUT, "w", encoding="utf-8") as f:

@@ -42,6 +42,9 @@ REGIONS = {
     # Grandvaux, Rivaz, Saint-Saphorin. Extended north (1149→1150) for
     # upper Grandvaux slopes. Matches VEVEY_LOCAL_BBOX.
     "vevey":    {"minE": 2545000, "minN": 1141000, "maxE": 2558000, "maxN": 1150000},
+    # Vraie ville de Vevey (commune Vevey + La Tour-de-Peilz + Corseaux),
+    # sans Lavaux. Matches VEVEY_CITY_LOCAL_BBOX [6.83,46.45,6.89,46.48].
+    "vevey_city": {"minE": 2551500, "minN": 1144500, "maxE": 2557000, "maxN": 1148500},
 }
 
 

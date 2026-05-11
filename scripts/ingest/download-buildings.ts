@@ -14,6 +14,7 @@ import { NYON_CONFIG } from "../../src/lib/config/nyon";
 import { MORGES_CONFIG } from "../../src/lib/config/morges";
 import { GENEVE_CONFIG } from "../../src/lib/config/geneve";
 import { VEVEY_CONFIG } from "../../src/lib/config/vevey";
+import { VEVEY_CITY_CONFIG } from "../../src/lib/config/vevey_city";
 
 import { parseIngestCliArgs } from "./cli";
 import { ensureDirectory } from "./http";
@@ -27,13 +28,14 @@ const REGIONS: Record<string, { localBbox: readonly [number, number, number, num
   morges: MORGES_CONFIG,
   geneve: GENEVE_CONFIG,
   vevey: VEVEY_CONFIG,
+  vevey_city: VEVEY_CITY_CONFIG,
 };
 
 function parseRegion(argv: string[]): string {
   for (const arg of argv) {
     if (arg.startsWith("--region=")) return arg.slice(9);
   }
-  console.error("Usage: --region=lausanne|nyon|morges|geneve|vevey");
+  console.error("Usage: --region=lausanne|nyon|morges|geneve|vevey|vevey_city");
   process.exit(1);
 }
 

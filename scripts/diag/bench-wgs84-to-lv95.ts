@@ -20,7 +20,8 @@ const region = (ARGS.find((a) => a.startsWith("--region="))?.slice(9) ?? "geneve
   | "nyon"
   | "morges"
   | "geneve"
-  | "vevey";
+  | "vevey"
+  | "vevey_city";
 const gridStepMeters = Number(ARGS.find((a) => a.startsWith("--grid-step="))?.slice(12) ?? "1");
 const tileSizeMeters = Number(ARGS.find((a) => a.startsWith("--tile-size="))?.slice(12) ?? "250");
 

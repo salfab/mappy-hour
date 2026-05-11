@@ -3,7 +3,7 @@
  *
  * Usage:
  *   tsx scripts/release/build-release-manifest.ts \
- *     --regions=lausanne,nyon,morges,vevey,geneve \
+ *     --regions=lausanne,nyon,morges,vevey,vevey_city,geneve \
  *     --tag=atlas-v9-2026-05-08 \
  *     [--out-dir=dist/releases]
  *
