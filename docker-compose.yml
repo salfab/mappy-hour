@@ -1,17 +1,17 @@
-volumes:
-  mappy-cache: {}
-
+# MAPPY_ATLAS_PATH (env var, defaults to ./data/cache/sunlight) controls where the
+# atlas cache lives on the host. Bind-mount approach pour l'instant — TODO migration
+# vers un volume Docker ext4 quand on saura gérer les atlas shardés (cf. tasks).
 services:
   mappy-hour:
+    image: ghcr.io/salfab/mappy-hour:latest
     build:
       context: .
-    image: mappy-hour:latest
     container_name: mappy-hour
     restart: unless-stopped
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
+    # Note securite: cap_drop ALL et no-new-privileges cassent Next.js 16
+    # (crash apres "Ready", ELIFECYCLE Command failed). Perimetre de securite assure
+    # par WSL2 (isolation VM) + Tailscale Funnel (pas d'expo directe). A revoir si
+    # on identifie les capabilities exactes necessaires.
     environment:
       - NODE_ENV=production
       - MAPPY_DATA_ROOT=/data
@@ -21,24 +21,20 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      - type: volume
-        source: mappy-cache
+      - type: bind
+        source: ${MAPPY_ATLAS_PATH:-./data/cache/sunlight}
         target: /data/cache/sunlight
         read_only: true
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/datasets',r=>{process.exitCode=r.statusCode===200?0:1}).on('error',()=>{process.exitCode=1})"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+    # healthcheck retire temporairement: investiguer le crashloop "ELIFECYCLE
+    # Command failed" qui ne se produit pas avec docker run --rm direct.
 
   # One-shot container pour télécharger / mettre à jour les atlas.
   # Lancer manuellement : docker compose run --rm atlas-loader
   # Profil "loader" : n'est pas inclus dans `docker compose up`.
   atlas-loader:
+    image: ghcr.io/salfab/mappy-hour:latest
     build:
       context: .
-    image: mappy-hour:latest
     profiles:
       - loader
     entrypoint: ["pnpm", "atlas:download", "--"]
@@ -47,6 +43,6 @@ services:
       - MAPPY_DATA_ROOT=/data
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
     volumes:
-      - type: volume
-        source: mappy-cache
+      - type: bind
+        source: ${MAPPY_ATLAS_PATH:-./data/cache/sunlight}
         target: /data/cache/sunlight
