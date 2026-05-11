@@ -127,7 +127,7 @@ function MapStyleToggle(props: {
   onChange: (style: BaseMapStyle) => void;
 }) {
   return (
-    <div className="inline-grid grid-cols-2 gap-1 rounded-full border border-slate-200 bg-white/90 p-1 text-sm font-semibold shadow-sm">
+    <div className="inline-grid w-fit grid-cols-2 gap-0.5 rounded-full border border-slate-200 bg-white/90 p-0.5 text-xs font-semibold shadow-sm">
       {(["map", "satellite"] as const).map((style) => (
         <button
           key={style}
@@ -212,6 +212,14 @@ export function LayerFilters(props: LayerFiltersProps) {
           onChange={(event) => props.onIgnoreVegetationShadowChange(event.target.checked)}
         />
         <span>Ignorer vegetation</span>
+      </label>
+      <label className={chipClass}>
+        <input
+          type="checkbox"
+          checked={props.showPlaces}
+          onChange={(event) => props.onShowPlacesChange(event.target.checked)}
+        />
+        <span>Terrasses</span>
       </label>
     </div>
   );
