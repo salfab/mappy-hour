@@ -154,6 +154,45 @@ describe("sunlight cache storage", () => {
     await fs.rm(tempRoot, { recursive: true, force: true });
   });
 
+  it("detects atlas-only shard caches as model candidates", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mappy-hour-cache-"));
+    process.env.MAPPY_DATA_ROOT = tempRoot;
+    vi.resetModules();
+
+    const cache = await import("./sunlight-cache");
+    const atlasDir = path.join(
+      tempRoot,
+      "cache",
+      "sunlight",
+      "geneve",
+      "model-sharded",
+      "g1",
+      "atlas",
+      "r0.75",
+    );
+    await fs.mkdir(atlasDir, { recursive: true });
+    await fs.writeFile(
+      path.join(atlasDir, "e2500000_n1118000_s250.atlas.shards.json"),
+      "{}",
+    );
+
+    await expect(
+      cache.findCachedModelVersionHash({
+        region: "geneve",
+        date: "2026-05-11",
+        gridStepMeters: 1,
+        sampleEveryMinutes: 15,
+        startLocalTime: "06:00",
+        endLocalTime: "21:00",
+      }),
+    ).resolves.toEqual([
+      {
+        modelVersionHash: "model-sharded",
+        timeWindows: [{ startLocalTime: "06:00", endLocalTime: "21:00" }],
+      },
+    ]);
+  });
+
   it("returns null when the lookup model version does not match stored artifacts", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mappy-hour-cache-"));
     process.env.MAPPY_DATA_ROOT = tempRoot;

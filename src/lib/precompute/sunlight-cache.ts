@@ -250,7 +250,7 @@ export async function findCachedModelVersionHash(params: {
         const atlasDir = path.join(regionDir, hash, `g${params.gridStepMeters}`, "atlas", `r${res}`);
         try {
           const entries = await fs.readdir(atlasDir);
-          if (entries.some((f) => f.endsWith(".atlas.bin.gz"))) {
+          if (entries.some(isAtlasCacheFileName)) {
             hasAtlas = true;
             break;
           }
@@ -272,6 +272,15 @@ export async function findCachedModelVersionHash(params: {
   fallback.sort((a, b) => b.dateCount - a.dateCount);
 
   return [...primary, ...fallback].map(({ modelVersionHash, timeWindows }) => ({ modelVersionHash, timeWindows }));
+}
+
+function isAtlasCacheFileName(fileName: string): boolean {
+  return (
+    fileName.endsWith(".atlas.bin.gz") ||
+    fileName.endsWith(".atlas.shards.json") ||
+    fileName.endsWith(".atlas.base.bin.zst") ||
+    /^.+\.atlas\.shard-\d+\.bin\.zst$/.test(fileName)
+  );
 }
 
 function createCacheRunKey(params: {
