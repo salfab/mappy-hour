@@ -78,6 +78,18 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
   const dragStartYRef = useRef<number | null>(null);
   const [dragPreview, setDragPreview] = useState<"down-strong" | "down" | "up" | "up-strong" | null>(null);
 
+  const isInteractiveDragTarget = (target: EventTarget | null) => {
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+
+    return Boolean(
+      target.closest(
+        "button,input,select,textarea,a,label,summary,[role='button'],[data-bottom-sheet-no-drag]",
+      ),
+    );
+  };
+
   const getHeightClass = () => {
     if (dragPreview !== null) {
       if (props.state === "compact") {
@@ -172,6 +184,20 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
     <section
       className={`absolute inset-x-0 bottom-0 z-[460] grid grid-rows-[auto_1fr] overflow-hidden rounded-t-[2rem] border border-b-0 border-white/70 bg-white/92 px-4 pb-[calc(env(safe-area-inset-bottom)+34px)] pt-2 text-slate-900 shadow-2xl backdrop-blur transition-[height] duration-150 ${stateHeightClass}`}
       aria-label="Controle de la carte"
+      onPointerDownCapture={(event) => {
+        if (isInteractiveDragTarget(event.target)) {
+          return;
+        }
+        dragStartYRef.current = event.clientY;
+        setDragPreview(null);
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => updateDragPreview(event.clientY)}
+      onPointerUp={(event) => finishDrag(event.clientY)}
+      onPointerCancel={() => {
+        dragStartYRef.current = null;
+        setDragPreview(null);
+      }}
     >
       <div className="flex justify-center pb-3">
         <button
@@ -182,9 +208,13 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
             dragStartYRef.current = event.clientY;
             setDragPreview(null);
             event.currentTarget.setPointerCapture(event.pointerId);
+            event.stopPropagation();
           }}
           onPointerMove={(event) => updateDragPreview(event.clientY)}
-          onPointerUp={(event) => finishDrag(event.clientY)}
+          onPointerUp={(event) => {
+            finishDrag(event.clientY);
+            event.stopPropagation();
+          }}
           onPointerCancel={() => {
             dragStartYRef.current = null;
             setDragPreview(null);
