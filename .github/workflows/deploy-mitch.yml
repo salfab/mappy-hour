@@ -3,12 +3,7 @@ name: Deploy to Mitch
 on:
   push:
     branches: [master]
-  workflow_dispatch:
-    inputs:
-      skip_pull:
-        description: "Skip git pull (réutilise le code déjà checkout sur mitch)"
-        type: boolean
-        default: false
+  workflow_dispatch: {}
 
 concurrency:
   group: deploy-mitch
@@ -25,14 +20,15 @@ jobs:
       - name: Setup Tailscale
         uses: tailscale/github-action@v3
         with:
-          # Auth key éphémère (préféré — pas besoin de tag:ci dans l'ACL).
-          # Créer dans Tailscale admin → Settings → Keys → Generate auth key
-          # (cocher "Reusable" + "Ephemeral"), puis ajouter comme secret TS_AUTHKEY.
-          # Alternative OAuth (nécessite tag:ci dans tagOwners) :
-          #   oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          #   oauth-client-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
-          #   tags: tag:ci
-          authkey: ${{ secrets.TS_AUTHKEY }}
+          # OAuth client (approche recommandée — pas de rotation manuelle de clé).
+          # Créer dans Tailscale admin → Settings → OAuth clients → Generate client
+          # avec scope "devices:write", puis ajouter les secrets GitHub :
+          #   TS_OAUTH_CLIENT_ID     → client ID
+          #   TS_OAUTH_CLIENT_SECRET → client secret
+          # L'ACL Tailscale doit contenir "tag:ci" dans tagOwners (voir docs/deploy.md).
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-client-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          tags: tag:ci
 
       - name: Setup SSH agent
         uses: webfactory/ssh-agent@v0.9.0
@@ -49,15 +45,12 @@ jobs:
         env:
           HOST: ${{ secrets.MITCH_SSH_HOST }}
           USER: ${{ secrets.MITCH_SSH_USER }}
-          SKIP_PULL: ${{ inputs.skip_pull }}
         run: |
           set -e
-          SCRIPT="mitch-deploy.ps1"
-          if [ "$SKIP_PULL" = "true" ]; then
-            SCRIPT="mitch-deploy-no-pull.ps1"
-          fi
+          # Docker-based deploy: git pull + docker compose pull + up. Runs in kiosque
+          # session where WSL2/Docker live (cf. docs/deploy.md §3).
           ssh -o ConnectTimeout=15 "$USER@$HOST" \
-            "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\srv\\mappy-hour\\scripts\\headless-server-selfhosting\\$SCRIPT"
+            "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\srv\\mappy-hour\\scripts\\headless-server-selfhosting\\mitch-deploy-docker.ps1"
 
       - name: Health check
         env:
