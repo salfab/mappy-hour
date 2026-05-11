@@ -22,7 +22,9 @@ jobs:
         with:
           # OAuth client (approche recommandée — pas de rotation manuelle de clé).
           # Créer dans Tailscale admin → Settings → OAuth clients → Generate client
-          # avec scope "devices:write", puis ajouter les secrets GitHub :
+          # avec scopes "Devices Core (Write)" ET "Auth Keys (Write)" — les deux sont
+          # requis, sans auth_keys on a 403 "calling actor does not have enough permissions".
+          # Ajouter ensuite les secrets GitHub :
           #   TS_OAUTH_CLIENT_ID     → client ID
           #   TS_OAUTH_CLIENT_SECRET → client secret
           # L'ACL Tailscale doit contenir "tag:ci" dans tagOwners (voir docs/deploy.md).

@@ -260,8 +260,10 @@ TS_API_TOKEN=tskey-api-... scripts/deploy/setup-tailscale-ci-acl.sh
 **Créer le client OAuth :**
 
 1. Tailscale admin → **Settings → OAuth clients → Generate client**.
-2. **Scope** : **Devices → Core (Write)** — coche `devices:write`.
-3. **Tags** : cocher `tag:ci` (doit aussi exister dans `tagOwners`, cf. au-dessus).
+2. **Scopes — les deux sont requis** :
+   - **Devices → Core (Write)** : permet à l'OAuth client de gérer les devices.
+   - **Auth Keys (Write)** : permet à l'OAuth client de **créer** des auth keys éphémères au démarrage de la GHA. Sans ce scope, `tailscale up` échoue avec `Status: 403, calling actor does not have enough permissions to perform this function` même si Devices:Core est coché.
+3. **Tags** : ajouter `tag:ci` dans le champ Tags (doit aussi exister dans `tagOwners`, cf. au-dessus).
 4. Copier `client_id` et `client_secret`.
 
 ### 5.3 Secrets GitHub Actions
