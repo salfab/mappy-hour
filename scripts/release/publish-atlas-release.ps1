@@ -79,8 +79,11 @@ foreach ($region in $RegionList) {
         }
     }
 }
-# Copy generated places JSON to $OutDir
-$PlacesProcessedDir = Join-Path $PlacesTmpRoot "processed" "places"
+# Copy generated places JSON to $OutDir.
+# Note: Join-Path in Windows PowerShell 5.1 only accepts 2 positional args, so
+# we chain calls explicitly. The 3-arg form silently throws and aborts the
+# block on older shells (PositionalParameterNotFound + downstream Test-Path $null).
+$PlacesProcessedDir = Join-Path (Join-Path $PlacesTmpRoot "processed") "places"
 if (Test-Path $PlacesProcessedDir) {
     foreach ($f in (Get-ChildItem $PlacesProcessedDir -Filter "*-places.json")) {
         Copy-Item $f.FullName (Join-Path $OutDir $f.Name) -Force
