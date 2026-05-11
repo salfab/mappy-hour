@@ -1,0 +1,76 @@
+name: Deploy to Mitch
+
+on:
+  # Déclenchement automatique après un build Docker réussi sur master
+  workflow_run:
+    workflows: ["Build & publish Docker image"]
+    types: [completed]
+    branches: [master]
+  # Déclenchement manuel (pour redéployer sans push, ou skip pull)
+  workflow_dispatch:
+    inputs:
+      skip_pull:
+        description: "Skip git pull (réutilise le code déjà checkout sur mitch)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-mitch
+  cancel-in-progress: false   # Ne pas annuler un déploiement en cours
+
+jobs:
+  deploy:
+    # Pour workflow_run : ne s'exécute que si le build Docker a réussi
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production   # Optionnel : ajouter un reviewer requis dans Settings → Environments
+
+    steps:
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-client-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          tags: tag:ci
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.MITCH_SSH_KEY }}
+
+      - name: Pin Mitch host key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.MITCH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          HOST: ${{ secrets.MITCH_SSH_HOST }}
+          USER: ${{ secrets.MITCH_SSH_USER }}
+          SKIP_PULL: ${{ inputs.skip_pull }}
+        run: |
+          set -e
+          SCRIPT="mitch-deploy.ps1"
+          if [ "$SKIP_PULL" = "true" ]; then
+            SCRIPT="mitch-deploy-no-pull.ps1"
+          fi
+          ssh -o ConnectTimeout=15 "$USER@$HOST" \
+            "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\srv\\mappy-hour\\scripts\\headless-server-selfhosting\\$SCRIPT"
+
+      - name: Health check
+        env:
+          HOST: ${{ secrets.MITCH_SSH_HOST }}
+          USER: ${{ secrets.MITCH_SSH_USER }}
+        run: |
+          sleep 15
+          STATUS=$(ssh "$USER@$HOST" \
+            "powershell -NoProfile -Command \"(Invoke-WebRequest 'http://127.0.0.1:3000/api/datasets' -UseBasicParsing -TimeoutSec 10).StatusCode\"" \
+            2>&1 | tr -d '[:space:]')
+          echo "Health check status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "Health check failed (got '$STATUS')"
+            exit 1
+          fi
+          echo "Deployment successful"
