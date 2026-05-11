@@ -1364,9 +1364,12 @@ export async function precomputeCacheRuns(
     // Pipeline depth: same rationale as day-first sequential path. Multi-worker
     // is intentionally NOT wired here — the prototype runs sequential with
     // pipeline overlap, which matches the GPU-IPC=N=1 default (ADR-0019).
+    // Default 3: post-Phase-E sweet spot measured 88-92 tiles/min @ depth=3
+    // vs 70-77 @ depth=2 and regression @ depth=4 (lock contention).
+    // See memory: project_pipeline_depth_deadlock (2026-05-06 commit 0e86918).
     const PIPELINE_DEPTH = Math.max(
       1,
-      Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "5"),
+      Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "3"),
     );
     const inflight: Array<Promise<void>> = [];
 
@@ -1836,11 +1839,16 @@ export async function precomputeCacheRuns(
       // payloads are smaller and the pipeline supports more concurrency
       // before contention.
       //
-      // Default 5. Override via MAPPY_TILE_PIPELINE_DEPTH=N to experiment.
+      // Default 3 (aligned with the tile-first sweet spot, project_pipeline_depth_deadlock
+      // memory 2026-05-06 commit 0e86918: 88-92 tiles/min @ depth=3 vs 70-77 @ depth=2
+      // and lock contention regression @ depth=4). The pre-revert comment above
+      // observed that the day-first path could handle more, but in practice the
+      // operator-facing default value should match across orchestrators.
+      // Override via MAPPY_TILE_PIPELINE_DEPTH=N to experiment.
       // Setting 1 falls back to legacy strict-sequential behavior.
       const PIPELINE_DEPTH = Math.max(
         1,
-        Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "5"),
+        Number(process.env.MAPPY_TILE_PIPELINE_DEPTH ?? "3"),
       );
       // Sanity warning: pipelining only overlaps Node-side prep with GPU-IPC
       // eval. CPU shadow modes (detailed, two-level, prism, gpu-raster) have

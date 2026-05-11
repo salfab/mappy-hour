@@ -1,23 +1,28 @@
 /**
- * Download and install atlas files from a GitHub Release.
+ * Download and install atlas (+ optional grid-metadata, + optional shared
+ * buildings index) from a GitHub Release.
+ *
+ * Per the 2026-05-12 packaging redesign, a release is composed of:
+ *   - {region}-atlas.tar          (one per region, required for serving sunlight)
+ *   - {region}-grid-metadata.tar  (one per region, optional — only needed if
+ *                                  the deploy can re-precompute or wants to
+ *                                  serve the indoor mask directly)
+ *   - buildings-shared.tar        (single global, optional — only needed if
+ *                                  the deploy will re-precompute atlases)
+ *   - {region}-places.json        (optional sidecar)
+ *
+ * Cache-only headless deploys (Mitch) should run the default
+ * (atlas + places only). Re-precompute-capable hosts pass
+ * --with-grid-metadata --with-buildings.
  *
  * Usage:
  *   tsx scripts/release/download-atlas.ts \
+ *     --repo=salfab/mappy-hour \
  *     [--regions=lausanne,nyon] \
- *     [--release=latest | --release=atlas-v9-2026-05-08] \
- *     [--repo=owner/repo] \
- *     [--out=data/cache/sunlight]
- *
- * The script:
- *   1. Downloads release-manifest.json from the GitHub release
- *   2. Checks algorithmVersion + artifactFormatVersion compatibility
- *   3. For each requested region:
- *      a. Skips if atlas already installed with same modelVersionHash
- *      b. Downloads .tar (or all .tar.partN)
- *      c. Verifies SHA256
- *      d. Extracts into CACHE_SUNLIGHT_DIR/{region}/{modelVersionHash}/g1/atlas/r0.75/
- *   4. For each requested region, downloads {region}-places.json if manifest has a "places" section
- *   5. Writes atlas-version.json marker
+ *     [--release=latest | --release=v9.2.20260512000] \
+ *     [--out=data/cache/sunlight] \
+ *     [--with-grid-metadata] \
+ *     [--with-buildings]
  */
 
 import crypto from "node:crypto";
@@ -26,7 +31,12 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { CACHE_SUNLIGHT_DIR, PROCESSED_PLACES_DIR } from "@/lib/storage/data-paths";
+import {
+  CACHE_SUNLIGHT_DIR,
+  CACHE_TILE_GRID_METADATA_DIR,
+  PROCESSED_BUILDINGS_DIR,
+  PROCESSED_PLACES_DIR,
+} from "@/lib/storage/data-paths";
 import {
   SUNLIGHT_CACHE_ALGORITHM_VERSION,
   SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION,
@@ -34,6 +44,48 @@ import {
 
 const GRID_STEP = "1";
 const ATLAS_RESOLUTION_DEG = "0.75";
+
+interface PartInfo {
+  name: string;
+  sha256: string;
+  bytes: number;
+}
+
+interface ArchiveSummary {
+  archiveName: string;
+  isSplit: boolean;
+  parts: PartInfo[];
+  assetName?: string;
+  sha256?: string;
+  bytes?: number;
+}
+
+interface ManifestRegion {
+  modelVersionHash: string;
+  gridMetadataHash: string;
+  tileCount: number;
+  atlas: ArchiveSummary | null;
+  gridMetadata: ArchiveSummary | null;
+  gridMetadataTileCount: number;
+}
+
+interface BuildingsSharedManifest {
+  archiveName: "buildings-shared.tar";
+  assetName: string;
+  sha256: string;
+  bytes: number;
+  indexBytes?: number;
+  indexSha256?: string;
+  uniqueObstaclesCount?: number;
+  generatedAt?: string;
+  indexVersion?: number;
+}
+
+interface PlacesManifestEntry {
+  assetName: string;
+  sha256: string;
+  bytes: number;
+}
 
 function tileIdFromAtlasFile(fileName: string): string | null {
   const match = fileName.match(/^(.*)\.atlas\.(?:bin\.gz|idx|shards\.json|base\.bin\.zst|shard-\d+\.bin\.zst)$/);
@@ -50,33 +102,31 @@ function countAtlasTiles(files: string[]): number {
 }
 
 function parseArgs() {
-  const args = Object.fromEntries(
-    process.argv
-      .slice(2)
-      .filter((a) => a.startsWith("--"))
-      .map((a) => {
-        const [k, v] = a.slice(2).split("=");
-        return [k, v ?? "true"];
-      }),
-  );
+  const kv: Record<string, string> = {};
+  const flags = new Set<string>();
+  for (const a of process.argv.slice(2)) {
+    if (!a.startsWith("--")) continue;
+    const idx = a.indexOf("=");
+    if (idx === -1) flags.add(a.slice(2));
+    else kv[a.slice(2, idx)] = a.slice(idx + 1);
+  }
   return {
-    regions: args["regions"]
-      ? args["regions"].split(",").map((r) => r.trim()).filter(Boolean)
+    regions: kv["regions"]
+      ? kv["regions"].split(",").map((r) => r.trim()).filter(Boolean)
       : null,
-    release: args["release"] ?? "latest",
-    repo: args["repo"] ?? null,
-    out: args["out"]
-      ? path.isAbsolute(args["out"])
-        ? args["out"]
-        : path.resolve(process.cwd(), args["out"])
+    release: kv["release"] ?? "latest",
+    repo: kv["repo"] ?? null,
+    out: kv["out"]
+      ? path.isAbsolute(kv["out"])
+        ? kv["out"]
+        : path.resolve(process.cwd(), kv["out"])
       : CACHE_SUNLIGHT_DIR,
+    withGridMetadata: flags.has("with-grid-metadata") || kv["with-grid-metadata"] === "true",
+    withBuildings: flags.has("with-buildings") || kv["with-buildings"] === "true",
   };
 }
 
-function buildAssetUrl(
-  baseReleaseUrl: string,
-  assetName: string,
-): string {
+function buildAssetUrl(baseReleaseUrl: string, assetName: string): string {
   return `${baseReleaseUrl}/${assetName}`;
 }
 
@@ -166,29 +216,66 @@ async function concatenateParts(partPaths: string[], outPath: string): Promise<v
   await new Promise<void>((r) => writer.end(r));
 }
 
-interface ManifestRegion {
-  modelVersionHash: string;
-  tileCount: number;
-  isSplit: boolean;
-  parts?: Array<{ name: string; sha256: string; bytes: number }>;
-  assetName?: string;
-  sha256?: string;
-  bytes?: number;
+/** Download one ArchiveSummary (single or multi-part) into `regionTmp` and
+ *  return the local path of the assembled tar. */
+async function downloadArchive(
+  archive: ArchiveSummary,
+  baseUrl: string,
+  regionTmp: string,
+  fallbackName: string,
+): Promise<string> {
+  if (archive.isSplit) {
+    const downloadedParts: string[] = [];
+    for (const part of archive.parts) {
+      const partUrl = buildAssetUrl(baseUrl, part.name);
+      const partDest = path.join(regionTmp, part.name);
+      console.error(`[download-atlas]   Téléchargement ${part.name} (${(part.bytes / 1e6).toFixed(1)} MB)`);
+      await downloadWithProgress(partUrl, partDest);
+
+      const actualSha = await sha256File(partDest);
+      if (actualSha !== part.sha256) {
+        throw new Error(`SHA256 mismatch pour ${part.name}\n  attendu : ${part.sha256}\n  obtenu  : ${actualSha}`);
+      }
+      console.error(`[download-atlas]   ✓ SHA256 OK`);
+      downloadedParts.push(partDest);
+    }
+
+    const tarPath = path.join(regionTmp, fallbackName);
+    console.error(`[download-atlas]   Concaténation des ${downloadedParts.length} parts…`);
+    await concatenateParts(downloadedParts, tarPath);
+    for (const p of downloadedParts) await fsp.unlink(p);
+    return tarPath;
+  }
+  if (!archive.assetName || !archive.sha256) {
+    throw new Error(`Manifest incomplet pour ${archive.archiveName} (assetName ou sha256 manquant)`);
+  }
+  const assetUrl = buildAssetUrl(baseUrl, archive.assetName);
+  const tarPath = path.join(regionTmp, archive.assetName);
+  console.error(
+    `[download-atlas]   Téléchargement ${archive.assetName} (${archive.bytes ? (archive.bytes / 1e6).toFixed(1) + " MB" : "taille inconnue"})`,
+  );
+  await downloadWithProgress(assetUrl, tarPath);
+
+  const actualSha = await sha256File(tarPath);
+  if (actualSha !== archive.sha256) {
+    throw new Error(`SHA256 mismatch pour ${archive.assetName}\n  attendu : ${archive.sha256}\n  obtenu  : ${actualSha}`);
+  }
+  console.error(`[download-atlas]   ✓ SHA256 OK`);
+  return tarPath;
 }
 
-interface PlacesManifestEntry {
-  assetName: string;
-  sha256: string;
-  bytes: number;
-}
-
-async function processRegion(
+async function processRegionAtlas(
   region: string,
   regionMeta: ManifestRegion,
   baseUrl: string,
   outDir: string,
   tmpDir: string,
 ): Promise<void> {
+  if (!regionMeta.atlas) {
+    console.error(`[download-atlas] ↩ ${region} : pas d'atlas dans la release — skip.`);
+    return;
+  }
+
   const destAtlasDir = path.join(
     outDir,
     region,
@@ -198,84 +285,32 @@ async function processRegion(
     `r${ATLAS_RESOLUTION_DEG}`,
   );
 
-  // Idempotency check: count existing atlas tiles. Sharded releases may not
-  // include monoliths, so `.atlas.idx` / shard manifests count too.
   let existingCount = 0;
   try {
     const existing = await fsp.readdir(destAtlasDir);
     existingCount = countAtlasTiles(existing);
-  } catch {
-    // dir doesn't exist yet
-  }
+  } catch { /* dir doesn't exist yet */ }
 
   if (existingCount >= regionMeta.tileCount) {
     console.error(
-      `[download-atlas] ↩ ${region} déjà installé (${existingCount}/${regionMeta.tileCount} tuiles, hash=${regionMeta.modelVersionHash.slice(0, 8)}...) — skip`,
+      `[download-atlas] ↩ ${region} atlas déjà installé (${existingCount}/${regionMeta.tileCount} tuiles, hash=${regionMeta.modelVersionHash.slice(0, 8)}…) — skip`,
     );
     return;
   }
 
   console.error(
-    `\n[download-atlas] ▶ ${region}  (${regionMeta.tileCount} tuiles, hash=${regionMeta.modelVersionHash.slice(0, 8)}...)`,
+    `\n[download-atlas] ▶ ${region} atlas (${regionMeta.tileCount} tuiles, hash=${regionMeta.modelVersionHash.slice(0, 8)}…)`,
   );
 
-  const regionTmp = path.join(tmpDir, region);
+  const regionTmp = path.join(tmpDir, `${region}-atlas`);
   await fsp.mkdir(regionTmp, { recursive: true });
 
-  let tarPath: string;
+  const tarPath = await downloadArchive(regionMeta.atlas, baseUrl, regionTmp, `${region}-atlas.tar`);
 
-  if (regionMeta.isSplit && regionMeta.parts) {
-    // Download each part and verify SHA256
-    const downloadedParts: string[] = [];
-    for (const part of regionMeta.parts) {
-      const partUrl = buildAssetUrl(baseUrl, part.name);
-      const partDest = path.join(regionTmp, part.name);
-      console.error(`[download-atlas]   Téléchargement ${part.name} (${(part.bytes / 1e6).toFixed(1)} MB)`);
-      await downloadWithProgress(partUrl, partDest);
-
-      const actualSha = await sha256File(partDest);
-      if (actualSha !== part.sha256) {
-        throw new Error(
-          `SHA256 mismatch pour ${part.name}\n  attendu : ${part.sha256}\n  obtenu  : ${actualSha}`,
-        );
-      }
-      console.error(`[download-atlas]   ✓ SHA256 OK`);
-      downloadedParts.push(partDest);
-    }
-
-    // Concatenate parts
-    tarPath = path.join(regionTmp, `${region}-atlas.tar`);
-    console.error(`[download-atlas]   Concaténation des ${downloadedParts.length} parts...`);
-    await concatenateParts(downloadedParts, tarPath);
-    for (const p of downloadedParts) await fsp.unlink(p);
-  } else {
-    // Single file
-    if (!regionMeta.assetName || !regionMeta.sha256) {
-      throw new Error(`Manifest incomplet pour ${region} (assetName ou sha256 manquant)`);
-    }
-    const assetUrl = buildAssetUrl(baseUrl, regionMeta.assetName);
-    tarPath = path.join(regionTmp, regionMeta.assetName);
-    console.error(
-      `[download-atlas]   Téléchargement ${regionMeta.assetName} (${regionMeta.bytes ? (regionMeta.bytes / 1e6).toFixed(1) + " MB" : "taille inconnue"})`,
-    );
-    await downloadWithProgress(assetUrl, tarPath);
-
-    const actualSha = await sha256File(tarPath);
-    if (actualSha !== regionMeta.sha256) {
-      throw new Error(
-        `SHA256 mismatch pour ${regionMeta.assetName}\n  attendu : ${regionMeta.sha256}\n  obtenu  : ${actualSha}`,
-      );
-    }
-    console.error(`[download-atlas]   ✓ SHA256 OK`);
-  }
-
-  // Extract — the tar contains release-info.json + atlas/r0.75 atlas files
-  // (legacy monoliths and/or sharded .zst payloads + manifests + .idx).
   const stagingDir = path.join(regionTmp, "extracted");
   await extractTar(tarPath, stagingDir);
   await fsp.unlink(tarPath);
 
-  // Move atlas files to final destination
   const srcAtlasDir = path.join(stagingDir, "atlas", `r${ATLAS_RESOLUTION_DEG}`);
   await fsp.mkdir(destAtlasDir, { recursive: true });
 
@@ -285,7 +320,6 @@ async function processRegion(
     await fsp.rename(path.join(srcAtlasDir, f), path.join(destAtlasDir, f));
   }
 
-  // Also copy release-info.json one level up (next to atlas/)
   const releaseInfoSrc = path.join(stagingDir, "release-info.json");
   const releaseInfoDest = path.join(
     outDir,
@@ -296,14 +330,145 @@ async function processRegion(
   );
   try {
     await fsp.rename(releaseInfoSrc, releaseInfoDest);
-  } catch {
-    // non-critical
-  }
+  } catch { /* non-critical */ }
 
   await fsp.rm(regionTmp, { recursive: true, force: true });
 
   const installed = countAtlasTiles(await fsp.readdir(destAtlasDir));
-  console.error(`[download-atlas]   ✓ ${region} installé — ${installed}/${regionMeta.tileCount} tuiles`);
+  console.error(`[download-atlas]   ✓ ${region} atlas installé — ${installed}/${regionMeta.tileCount} tuiles`);
+}
+
+async function processRegionGridMetadata(
+  region: string,
+  regionMeta: ManifestRegion,
+  baseUrl: string,
+  tmpDir: string,
+): Promise<void> {
+  if (!regionMeta.gridMetadata) {
+    console.error(`[download-atlas] ↩ ${region} grid-metadata : pas dans la release — skip.`);
+    return;
+  }
+  if (!regionMeta.gridMetadataHash) {
+    console.error(`[download-atlas] ↩ ${region} grid-metadata : gridMetadataHash absent du manifest — skip.`);
+    return;
+  }
+
+  const destGridDir = path.join(
+    CACHE_TILE_GRID_METADATA_DIR,
+    region,
+    regionMeta.gridMetadataHash,
+    `g${GRID_STEP}`,
+  );
+
+  let existingCount = 0;
+  try {
+    const existing = await fsp.readdir(destGridDir);
+    existingCount = existing.filter((f) => f.endsWith(".json.gz")).length;
+  } catch { /* dir doesn't exist yet */ }
+
+  if (existingCount >= regionMeta.gridMetadataTileCount) {
+    console.error(
+      `[download-atlas] ↩ ${region} grid-metadata déjà installé (${existingCount}/${regionMeta.gridMetadataTileCount} tuiles, hash=${regionMeta.gridMetadataHash.slice(0, 8)}…) — skip`,
+    );
+    return;
+  }
+
+  console.error(
+    `\n[download-atlas] ▶ ${region} grid-metadata (${regionMeta.gridMetadataTileCount} tuiles, hash=${regionMeta.gridMetadataHash.slice(0, 8)}…)`,
+  );
+
+  const regionTmp = path.join(tmpDir, `${region}-grid-meta`);
+  await fsp.mkdir(regionTmp, { recursive: true });
+
+  const tarPath = await downloadArchive(
+    regionMeta.gridMetadata,
+    baseUrl,
+    regionTmp,
+    `${region}-grid-metadata.tar`,
+  );
+
+  const stagingDir = path.join(regionTmp, "extracted");
+  await extractTar(tarPath, stagingDir);
+  await fsp.unlink(tarPath);
+
+  const srcDir = path.join(stagingDir, "tile-grid-metadata", `g${GRID_STEP}`);
+  await fsp.mkdir(destGridDir, { recursive: true });
+
+  const extracted = await fsp.readdir(srcDir);
+  for (const f of extracted) {
+    await fsp.rm(path.join(destGridDir, f), { force: true });
+    await fsp.rename(path.join(srcDir, f), path.join(destGridDir, f));
+  }
+
+  await fsp.rm(regionTmp, { recursive: true, force: true });
+
+  console.error(`[download-atlas]   ✓ ${region} grid-metadata installé — ${extracted.length} tuiles`);
+}
+
+async function processBuildingsShared(
+  meta: BuildingsSharedManifest,
+  baseUrl: string,
+  tmpDir: string,
+): Promise<void> {
+  const destPath = path.join(PROCESSED_BUILDINGS_DIR, "lausanne-buildings-index.json");
+
+  // Idempotency: cheap byte-size pre-check, then sha256 confirm if the manifest
+  // provides one. sha256 over 71 MB takes <1 s and is the only way to be sure
+  // the on-disk index is bit-identical to the released one (different builds
+  // can produce same-sized but different content).
+  try {
+    const stat = await fsp.stat(destPath);
+    const sizeMatches = meta.indexBytes && stat.size === meta.indexBytes;
+    if (sizeMatches && meta.indexSha256) {
+      const localSha = await sha256File(destPath);
+      if (localSha === meta.indexSha256) {
+        console.error(
+          `[download-atlas] ↩ buildings-shared déjà installé (${(stat.size / 1e6).toFixed(1)} MB, sha256 OK) — skip`,
+        );
+        return;
+      }
+      console.error(
+        `[download-atlas] buildings-shared : taille match mais sha256 diffère → re-download`,
+      );
+    } else if (sizeMatches) {
+      // Older manifest without indexSha256 — fall back to size-only (legacy).
+      console.error(
+        `[download-atlas] ↩ buildings-shared déjà installé (${(stat.size / 1e6).toFixed(1)} MB, no sha256 in manifest) — skip`,
+      );
+      return;
+    }
+  } catch { /* file absent */ }
+
+  console.error(
+    `\n[download-atlas] ▶ buildings-shared (${meta.uniqueObstaclesCount ?? "?"} obstacles, indexVersion=${meta.indexVersion ?? "?"})`,
+  );
+
+  const sharedTmp = path.join(tmpDir, "buildings-shared");
+  await fsp.mkdir(sharedTmp, { recursive: true });
+
+  const archive: ArchiveSummary = {
+    archiveName: meta.archiveName,
+    isSplit: false,
+    parts: [],
+    assetName: meta.assetName,
+    sha256: meta.sha256,
+    bytes: meta.bytes,
+  };
+  const tarPath = await downloadArchive(archive, baseUrl, sharedTmp, meta.archiveName);
+
+  const stagingDir = path.join(sharedTmp, "extracted");
+  await extractTar(tarPath, stagingDir);
+  await fsp.unlink(tarPath);
+
+  await fsp.mkdir(PROCESSED_BUILDINGS_DIR, { recursive: true });
+  const srcIndexPath = path.join(stagingDir, "buildings", "lausanne-buildings-index.json");
+  await fsp.rm(destPath, { force: true });
+  await fsp.rename(srcIndexPath, destPath);
+
+  await fsp.rm(sharedTmp, { recursive: true, force: true });
+
+  const stat = await fsp.stat(destPath);
+  console.error(`[download-atlas]   ✓ buildings-shared installé → ${destPath} (${(stat.size / 1e6).toFixed(1)} MB)`);
 }
 
 async function processPlacesFile(
@@ -314,21 +479,16 @@ async function processPlacesFile(
 ): Promise<void> {
   const destPath = path.join(placesDir, entry.assetName);
 
-  // Idempotency check: if file exists and SHA256 matches, skip
   try {
     const existingSha = await sha256File(destPath);
     if (existingSha === entry.sha256) {
-      console.error(
-        `[download-atlas] ↩ ${entry.assetName} déjà présent (SHA256 OK) — skip`,
-      );
+      console.error(`[download-atlas] ↩ ${entry.assetName} déjà présent (SHA256 OK) — skip`);
       return;
     }
-  } catch {
-    // file doesn't exist yet, proceed with download
-  }
+  } catch { /* file absent */ }
 
   console.error(
-    `\n[download-atlas] ▶ Téléchargement places ${region} : ${entry.assetName} (${(entry.bytes / 1e3).toFixed(1)} KB)`,
+    `\n[download-atlas] ▶ places ${region} : ${entry.assetName} (${(entry.bytes / 1e3).toFixed(1)} KB)`,
   );
 
   await fsp.mkdir(placesDir, { recursive: true });
@@ -345,9 +505,7 @@ async function processPlacesFile(
     );
   }
 
-  await fsp.writeFile(destPath, await fsp.readFile(tmpPath));
-  await fsp.unlink(tmpPath);
-
+  await fsp.rename(tmpPath, destPath);
   console.error(`[download-atlas]   ✓ ${entry.assetName} installé → ${destPath}`);
 }
 
@@ -356,7 +514,7 @@ async function main() {
 
   if (!args.repo) {
     console.error(
-      "Usage: tsx download-atlas.ts --repo=owner/repo [--regions=lausanne,nyon] [--release=latest] [--out=data/cache/sunlight]",
+      "Usage: tsx download-atlas.ts --repo=owner/repo [--regions=lausanne,nyon] [--release=latest] [--out=data/cache/sunlight] [--with-grid-metadata] [--with-buildings]",
     );
     process.exit(1);
   }
@@ -368,58 +526,64 @@ async function main() {
 
   const manifest = await fetchManifest(baseUrl);
 
-  // Compatibility check
   const mAlgVersion = manifest["algorithmVersion"] as string;
   const mFmtVersion = manifest["artifactFormatVersion"] as number;
 
   if (mAlgVersion !== SUNLIGHT_CACHE_ALGORITHM_VERSION) {
     console.error(
-      `[download-atlas] ✗ algorithmVersion incompatible.\n` +
-        `  Manifest    : ${mAlgVersion}\n` +
-        `  Code local  : ${SUNLIGHT_CACHE_ALGORITHM_VERSION}\n` +
-        `  → Mettez à jour le code source ou utilisez une release compatible.`,
+      `[download-atlas] ✗ algorithmVersion incompatible.\n  Manifest    : ${mAlgVersion}\n  Code local  : ${SUNLIGHT_CACHE_ALGORITHM_VERSION}`,
     );
     process.exit(1);
   }
   if (mFmtVersion !== SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION) {
     console.error(
-      `[download-atlas] ✗ artifactFormatVersion incompatible.\n` +
-        `  Manifest    : ${mFmtVersion}\n` +
-        `  Code local  : ${SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION}\n` +
-        `  → Mettez à jour le code source ou utilisez une release compatible.`,
+      `[download-atlas] ✗ artifactFormatVersion incompatible.\n  Manifest    : ${mFmtVersion}\n  Code local  : ${SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION}`,
     );
     process.exit(1);
   }
 
-  const allRegions = Object.keys(manifest["regions"] as Record<string, unknown>);
+  const regionsMap = manifest["regions"] as Record<string, ManifestRegion>;
+  const allRegions = Object.keys(regionsMap);
   const targetRegions = args.regions ?? allRegions;
   const unknownRegions = targetRegions.filter((r) => !allRegions.includes(r));
   if (unknownRegions.length > 0) {
     console.error(
-      `[download-atlas] ✗ Régions inconnues dans la release : ${unknownRegions.join(", ")}\n` +
-        `  Régions disponibles : ${allRegions.join(", ")}`,
+      `[download-atlas] ✗ Régions inconnues : ${unknownRegions.join(", ")}\n  Disponibles : ${allRegions.join(", ")}`,
     );
     process.exit(1);
   }
 
-  console.error(`\n[download-atlas] Release   : ${args.release}`);
-  console.error(`[download-atlas] Tag        : ${manifest["releaseTag"]}`);
-  console.error(`[download-atlas] Régions    : ${targetRegions.join(", ")}`);
-  console.error(`[download-atlas] Destination: ${args.out}\n`);
+  console.error(`\n[download-atlas] Release       : ${args.release}`);
+  console.error(`[download-atlas] Tag           : ${manifest["releaseTag"]}`);
+  console.error(`[download-atlas] Régions       : ${targetRegions.join(", ")}`);
+  console.error(`[download-atlas] Destination   : ${args.out}`);
+  console.error(`[download-atlas] Grid-metadata : ${args.withGridMetadata ? "yes" : "no"}`);
+  console.error(`[download-atlas] Buildings     : ${args.withBuildings ? "yes" : "no"}\n`);
 
   const tmpDir = path.join(args.out, ".download-tmp");
   await fsp.mkdir(tmpDir, { recursive: true });
 
   try {
     for (const region of targetRegions) {
-      const regionMeta = (manifest["regions"] as Record<string, ManifestRegion>)[region];
-      await processRegion(region, regionMeta, baseUrl, args.out, tmpDir);
+      const regionMeta = regionsMap[region];
+      await processRegionAtlas(region, regionMeta, baseUrl, args.out, tmpDir);
+      if (args.withGridMetadata) {
+        await processRegionGridMetadata(region, regionMeta, baseUrl, tmpDir);
+      }
+    }
+    if (args.withBuildings) {
+      const buildingsMeta = manifest["buildingsShared"] as BuildingsSharedManifest | undefined;
+      if (buildingsMeta) {
+        await processBuildingsShared(buildingsMeta, baseUrl, tmpDir);
+      } else {
+        console.error("[download-atlas] ⚠ --with-buildings demandé mais buildingsShared absent du manifest.");
+      }
     }
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true });
   }
 
-  // Download places files if manifest has a "places" section
+  // Places sidecars
   const manifestPlaces = manifest["places"] as Record<string, PlacesManifestEntry> | undefined;
   const installedPlacesRegions: string[] = [];
   if (manifestPlaces) {
@@ -432,7 +596,7 @@ async function main() {
     }
   }
 
-  // Write marker file
+  // Marker file
   const markerPath = path.join(args.out, "atlas-version.json");
   const existingMarker = await fsp
     .readFile(markerPath, "utf8")
@@ -457,6 +621,8 @@ async function main() {
         ...installedPlacesRegions,
       ]),
     ).sort(),
+    gridMetadataInstalled: args.withGridMetadata,
+    buildingsInstalled: args.withBuildings,
   };
   await fsp.writeFile(markerPath, JSON.stringify(updatedMarker, null, 2));
 

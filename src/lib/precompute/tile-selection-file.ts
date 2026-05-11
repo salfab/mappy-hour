@@ -95,12 +95,32 @@ export async function loadTileSelectionForRegion(params: {
     return false;
   });
   if (droppedTileIds.length > 0) {
-    const preview = droppedTileIds.slice(0, 3).join(", ");
-    const suffix = droppedTileIds.length > 3 ? ` (+${droppedTileIds.length - 3} more)` : "";
+    // Bright-red bold banner — silently dropping tiles is the kind of mistake
+    // that's trivially missed in a verbose precompute log (e.g. a region bbox
+    // that excludes part of its declared selection). Make it impossible to miss.
+    const RED = "\x1b[1;91m";
+    const RESET = "\x1b[0m";
+    const PREVIEW_LIMIT = 20;
+    const previewList = droppedTileIds.slice(0, PREVIEW_LIMIT).map((id) => `      ${id}`).join("\n");
+    const previewSuffix =
+      droppedTileIds.length > PREVIEW_LIMIT
+        ? `\n      … (+${droppedTileIds.length - PREVIEW_LIMIT} more)`
+        : "";
     console.warn(
-      `[tile-selection] ${droppedTileIds.length} tile id(s) in ${path.basename(resolvedPath)} ` +
-        `claim region=${params.region} but are not part of buildRegionTiles(${params.region}). ` +
-        `Skipping: ${preview}${suffix}. Regenerate the selection to fix.`,
+      `${RED}` +
+        `[tile-selection] ╔══ WARNING: ${droppedTileIds.length} TILE(S) SILENTLY DROPPED ═══════════════════════\n` +
+        `[tile-selection] ║ Source: ${path.basename(resolvedPath)}\n` +
+        `[tile-selection] ║ These tiles declare region="${params.region}" but fall OUTSIDE\n` +
+        `[tile-selection] ║ buildRegionTiles("${params.region}"). They will NOT be precomputed.\n` +
+        `[tile-selection] ║\n` +
+        `[tile-selection] ║ Likely cause: the region's localBbox excludes part of its selection.\n` +
+        `[tile-selection] ║ Fix: widen the bbox in src/lib/config/<region>.ts, OR regenerate the\n` +
+        `[tile-selection] ║       selection to match the current bbox.\n` +
+        `[tile-selection] ║\n` +
+        `[tile-selection] ║ Dropped tile ids:\n` +
+        `[tile-selection] ${previewList}${previewSuffix}\n` +
+        `[tile-selection] ╚══════════════════════════════════════════════════════════════════════` +
+        `${RESET}`,
     );
   }
   const tileIds = Array.from(new Set(validEntries.map((entry) => entry.tileId))).sort();

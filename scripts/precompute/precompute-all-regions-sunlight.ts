@@ -167,6 +167,18 @@ function parseGridStepMetersArg(argv: string[]): number {
   return 1;
 }
 
+function parseSkipPreflightArg(argv: string[]): boolean {
+  // Accept both `--skip-preflight` and `--skip-preflight=true|false`.
+  for (const arg of argv) {
+    if (arg === "--skip-preflight") return true;
+    if (arg.startsWith("--skip-preflight=")) {
+      const v = arg.slice("--skip-preflight=".length).trim().toLowerCase();
+      return v === "true" || v === "1" || v === "yes";
+    }
+  }
+  return false;
+}
+
 /**
  * Preflight : garantit que la grid metadata est présente pour TOUTES les tuiles
  * de TOUTES les régions du fichier de sélection, AVANT de commencer quelque
@@ -214,10 +226,14 @@ function ensureGridMetadataForAllRegions(
 }
 
 function main() {
-  // pnpm passes a literal "--" separator when using `pnpm script -- args`, strip it
-  const passthrough = process.argv
-    .slice(2)
-    .filter((a) => a !== "--" && !a.startsWith("--region="));
+  // pnpm passes a literal "--" separator when using `pnpm script -- args`, strip it.
+  // Also strip --region= (we iterate regions ourselves) and --skip-preflight
+  // (this orchestrator consumes it; child precompute scripts don't know it).
+  const rawArgs = process.argv.slice(2).filter((a) => a !== "--");
+  const skipPreflight = parseSkipPreflightArg(rawArgs);
+  const passthrough = rawArgs.filter(
+    (a) => !a.startsWith("--region=") && a !== "--skip-preflight" && !a.startsWith("--skip-preflight="),
+  );
 
   const selectionFile = parseSelectionFileArg(passthrough);
   if (!selectionFile) {
@@ -256,12 +272,20 @@ function main() {
     );
   }
 
-  try {
-    ensureGridMetadataForAllRegions(regions, selectionFile, gridStepMeters, buildingsShadowMode);
-  } catch (err) {
-    console.error(`[precompute-all] ✗ ${(err as Error).message}`);
-    process.exitCode = 1;
-    return;
+  if (skipPreflight) {
+    console.warn(
+      "\x1b[1;93m[precompute-all] ⚠ --skip-preflight : la grid-metadata ne sera PAS régénérée.\x1b[0m\n" +
+        "[precompute-all]   Suppose que tile-grid-metadata/<region>/<gridMetadataHash>/g<step>/ contient\n" +
+        "[precompute-all]   déjà les fichiers requis. Si une tuile manque, le précompute en aval échouera.",
+    );
+  } else {
+    try {
+      ensureGridMetadataForAllRegions(regions, selectionFile, gridStepMeters, buildingsShadowMode);
+    } catch (err) {
+      console.error(`[precompute-all] ✗ ${(err as Error).message}`);
+      process.exitCode = 1;
+      return;
+    }
   }
 
   const computeStart = Date.now();

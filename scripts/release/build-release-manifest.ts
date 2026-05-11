@@ -1,74 +1,81 @@
 /**
- * Aggregate per-region packaging summaries into a single release-manifest.json.
+ * Aggregate per-region atlas + grid-metadata summaries (plus the shared
+ * buildings-index summary) into a single release-manifest.json.
  *
- * Usage:
- *   tsx scripts/release/build-release-manifest.ts \
- *     --regions=lausanne,nyon,morges,vevey,vevey_city,geneve \
- *     --tag=atlas-v9-2026-05-08 \
- *     [--out-dir=dist/releases]
+ * Each region produces TWO archives (`<region>-atlas.tar` +
+ * `<region>-grid-metadata.tar`); the buildings-shared packager produces ONE
+ * additional shared archive containing the global obstacle index. This script
+ * aggregates everything into a manifest that download-atlas.ts can consume
+ * selectively (atlas always, grid-metadata optionally, buildings optionally).
  *
- * Each region must already be packaged (package-atlas-region.ts must have run).
- * The script reads the per-region JSON summaries produced by package-atlas-region.ts
- * via stdout capture (it re-runs the packager in --dry-run=false mode and reads
- * the cached result files, or accepts pre-computed summaries via stdin with --from-stdin).
+ * Usage (called from publish-atlas-release.ps1):
+ *   echo '<jsonl on stdin>' | tsx build-release-manifest.ts \
+ *     --tag=v9.2.20260512000 \
+ *     --from-stdin=true \
+ *     [--out-dir=dist/releases] \
+ *     [--places-dir=dist/releases]
  *
- * Outputs:
- *   dist/releases/release-manifest.json
+ * stdin is a JSON-lines stream where each line is one of:
+ *   - a region summary (from package-atlas-region.ts):
+ *       { region, modelVersionHash, gridMetadataHash, tileCount,
+ *         atlas: ArchiveSummary | null,
+ *         gridMetadata: ArchiveSummary | null, gridMetadataTileCount }
+ *   - the buildings-shared summary (from package-buildings-shared.ts):
+ *       { archiveName: "buildings-shared.tar", assetName, sha256, bytes,
+ *         uniqueObstaclesCount, generatedAt, indexVersion }
  */
 
 import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 
 import {
   SUNLIGHT_CACHE_ALGORITHM_VERSION,
   SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION,
 } from "@/lib/precompute/model-version";
 
-function parseArgs() {
-  const args = Object.fromEntries(
-    process.argv
-      .slice(2)
-      .filter((a) => a.startsWith("--"))
-      .map((a) => {
-        const [k, v] = a.slice(2).split("=");
-        return [k, v ?? "true"];
-      }),
-  );
-  return {
-    regions: args["regions"]
-      ? args["regions"].split(",").map((r) => r.trim()).filter(Boolean)
-      : [],
-    tag: args["tag"] ?? null,
-    outDir: args["out-dir"] ?? path.join(process.cwd(), "dist", "releases"),
-    fromStdin: args["from-stdin"] === "true",
-    placesDir: args["places-dir"] ?? null,
-  };
-}
-
-interface RegionPartInfo {
+interface PartInfo {
   name: string;
   sha256: string;
   bytes: number;
+}
+
+interface ArchiveSummary {
+  archiveName: string;
+  isSplit: boolean;
+  parts: PartInfo[];
+  assetName?: string;
+  sha256?: string;
+  bytes?: number;
+}
+
+interface RegionSummary {
+  region: string;
+  modelVersionHash: string;
+  gridMetadataHash: string;
+  tileCount: number;
+  atlas: ArchiveSummary | null;
+  gridMetadata: ArchiveSummary | null;
+  gridMetadataTileCount: number;
+}
+
+interface BuildingsSharedSummary {
+  archiveName: "buildings-shared.tar";
+  assetName: string;
+  sha256: string;
+  bytes: number;
+  indexBytes?: number;
+  indexSha256?: string;
+  uniqueObstaclesCount?: number;
+  generatedAt?: string;
+  indexVersion?: number;
 }
 
 interface PlacesFileInfo {
   assetName: string;
   sha256: string;
   bytes: number;
-}
-
-interface RegionSummary {
-  region: string;
-  modelVersionHash: string;
-  tileCount: number;
-  isSplit: boolean;
-  parts: RegionPartInfo[];
-  assetName?: string;
-  sha256?: string;
-  bytes?: number;
 }
 
 interface ReleaseManifest {
@@ -81,15 +88,33 @@ interface ReleaseManifest {
     string,
     {
       modelVersionHash: string;
+      gridMetadataHash: string;
       tileCount: number;
-      isSplit: boolean;
-      parts?: RegionPartInfo[];
-      assetName?: string;
-      sha256?: string;
-      bytes?: number;
+      atlas: ArchiveSummary | null;
+      gridMetadata: ArchiveSummary | null;
+      gridMetadataTileCount: number;
     }
   >;
+  buildingsShared?: BuildingsSharedSummary;
   places?: Record<string, PlacesFileInfo>;
+}
+
+function parseArgs() {
+  const args = Object.fromEntries(
+    process.argv
+      .slice(2)
+      .filter((a) => a.startsWith("--"))
+      .map((a) => {
+        const [k, v] = a.slice(2).split("=");
+        return [k, v ?? "true"];
+      }),
+  );
+  return {
+    tag: args["tag"] ?? null,
+    outDir: args["out-dir"] ?? path.join(process.cwd(), "dist", "releases"),
+    fromStdin: args["from-stdin"] === "true",
+    placesDir: args["places-dir"] ?? null,
+  };
 }
 
 async function sha256File(filePath: string): Promise<string> {
@@ -102,28 +127,15 @@ async function sha256File(filePath: string): Promise<string> {
   });
 }
 
-function packageRegion(region: string, outDir: string): RegionSummary {
-  const script = path.resolve(
-    process.cwd(),
-    "scripts/release/package-atlas-region.ts",
-  );
-  console.error(`[build-manifest] Packaging région ${region}...`);
-  const result = spawnSync(
-    "npx",
-    ["tsx", script, `--region=${region}`, `--out-dir=${outDir}`],
-    {
-      shell: process.platform === "win32",
-      encoding: "utf8",
-    },
-  );
-  if (result.status !== 0) {
-    console.error(result.stderr ?? "");
-    throw new Error(`package-atlas-region échoué pour ${region} (exit ${result.status})`);
-  }
-  const stdout = (result.stdout ?? "").trim();
-  // stdout may contain extra lines before the JSON; take the last line
-  const lastLine = stdout.split("\n").filter(Boolean).at(-1) ?? "";
-  return JSON.parse(lastLine) as RegionSummary;
+function isBuildingsSharedSummary(o: unknown): o is BuildingsSharedSummary {
+  return typeof o === "object" && o !== null &&
+    (o as { archiveName?: unknown }).archiveName === "buildings-shared.tar";
+}
+
+function isRegionSummary(o: unknown): o is RegionSummary {
+  return typeof o === "object" && o !== null &&
+    typeof (o as { region?: unknown }).region === "string" &&
+    "atlas" in (o as object);
 }
 
 async function main() {
@@ -131,53 +143,54 @@ async function main() {
 
   if (!args.tag) {
     console.error(
-      "Usage: tsx build-release-manifest.ts --tag=atlas-v9-2026-05-08 --regions=lausanne,nyon [--out-dir=dist/releases]",
+      "Usage: tsx build-release-manifest.ts --tag=v9.2.20260512000 --from-stdin=true [--places-dir=...]",
+    );
+    process.exit(1);
+  }
+  if (!args.fromStdin) {
+    console.error(
+      "[build-manifest] --from-stdin=true required (the publish orchestrator pipes JSONL summaries via stdin).",
     );
     process.exit(1);
   }
 
   await fsp.mkdir(args.outDir, { recursive: true });
 
-  let summaries: RegionSummary[];
-
-  if (args.fromStdin) {
-    const raw = fs.readFileSync(0, "utf8"); // fd 0 = stdin
-    summaries = raw
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as RegionSummary);
-  } else {
-    if (args.regions.length === 0) {
-      console.error("[build-manifest] --regions= requis (ou --from-stdin).");
-      process.exit(1);
-    }
-    summaries = [];
-    for (const region of args.regions) {
-      summaries.push(packageRegion(region, args.outDir));
+  const raw = fs.readFileSync(0, "utf8");
+  const lines = raw.trim().split("\n").filter(Boolean);
+  const regionSummaries: RegionSummary[] = [];
+  let buildingsShared: BuildingsSharedSummary | undefined = undefined;
+  for (const line of lines) {
+    const parsed = JSON.parse(line) as unknown;
+    if (isBuildingsSharedSummary(parsed)) {
+      buildingsShared = parsed;
+    } else if (isRegionSummary(parsed)) {
+      regionSummaries.push(parsed);
+    } else {
+      console.error(`[build-manifest] Warning: unrecognised summary on stdin, skipping: ${line.slice(0, 120)}`);
     }
   }
 
   const regionsMap: ReleaseManifest["regions"] = {};
-  for (const s of summaries) {
+  for (const s of regionSummaries) {
     regionsMap[s.region] = {
       modelVersionHash: s.modelVersionHash,
+      gridMetadataHash: s.gridMetadataHash,
       tileCount: s.tileCount,
-      isSplit: s.isSplit,
-      ...(s.isSplit
-        ? { parts: s.parts }
-        : { assetName: s.assetName, sha256: s.sha256, bytes: s.bytes }),
+      atlas: s.atlas,
+      gridMetadata: s.gridMetadata,
+      gridMetadataTileCount: s.gridMetadataTileCount,
     };
   }
 
-  // Build places record if --places-dir was provided
+  // Optional places sidecar files
   const placesMap: Record<string, PlacesFileInfo> = {};
   if (args.placesDir) {
     let placesFiles: string[] = [];
     try {
       placesFiles = await fsp.readdir(args.placesDir);
     } catch {
-      console.error(`[build-manifest] Warning: impossible de lire --places-dir=${args.placesDir}`);
+      console.error(`[build-manifest] Warning: --places-dir=${args.placesDir} unreadable`);
     }
     for (const fileName of placesFiles) {
       const match = fileName.match(/^(.+)-places\.json$/);
@@ -197,22 +210,22 @@ async function main() {
     generatedAt: new Date().toISOString(),
     contentHash: crypto
       .createHash("sha256")
-      .update(JSON.stringify(regionsMap))
+      .update(JSON.stringify({ regionsMap, buildingsShared }))
       .digest("hex")
       .slice(0, 16),
     regions: regionsMap,
+    ...(buildingsShared ? { buildingsShared } : {}),
     ...(Object.keys(placesMap).length > 0 ? { places: placesMap } : {}),
   };
 
   const outPath = path.join(args.outDir, "release-manifest.json");
   await fsp.writeFile(outPath, JSON.stringify(manifest, null, 2));
 
-  console.error(`[build-manifest] ✓ release-manifest.json écrit → ${outPath}`);
-  console.error(`[build-manifest]   ${summaries.length} région(s) : ${summaries.map((s) => s.region).join(", ")}`);
+  console.error(`[build-manifest] ✓ release-manifest.json → ${outPath}`);
+  console.error(
+    `[build-manifest]   ${regionSummaries.length} région(s), buildings-shared=${buildingsShared ? "yes" : "no"}, places=${Object.keys(placesMap).length}`,
+  );
   console.error(`[build-manifest]   tag=${args.tag}`);
-  if (Object.keys(placesMap).length > 0) {
-    console.error(`[build-manifest]   ${Object.keys(placesMap).length} places file(s) : ${Object.keys(placesMap).join(", ")}`);
-  }
 
   process.stdout.write(JSON.stringify(manifest));
 }

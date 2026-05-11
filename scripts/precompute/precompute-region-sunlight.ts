@@ -215,24 +215,64 @@ function progressBar(percent: number, width = 24): string {
   return "█".repeat(filled) + "░".repeat(width - filled);
 }
 
+/** Sliding window of recent tile-completion wall-clock timestamps (ms since epoch). */
+const RECENT_WINDOW_SIZE = 5;
+
+/**
+ * Compute ETA using wall-clock throughput. Three-tier estimator, all pipeline-aware:
+ *
+ *   1. **Steady-state**: 2+ completions in the recent window
+ *      → `(window_span / (N-1)) × remaining`
+ *      Naturally captures pipeline depth (N tiles finishing in T wall-time =
+ *      throughput N/T, not avg(individual_durations) which overcounts by depth×).
+ *
+ *   2. **Bootstrap**: ≥1 completion ever, but <2 in window (e.g. very first
+ *      tile just landed) → `(now - firstCompletionTs) / completedCount × remaining`.
+ *      Same physical interpretation, longer baseline, less recency.
+ *
+ *   3. **Warming**: 0 completions → return null (caller displays "warming").
+ *      Falsely-confident early ETAs (e.g. extrapolating from in-flight tile
+ *      fraction) are worse than admitting we don't know yet.
+ */
 function computeEta(stats: {
-  computedCount: number;
-  computedMs: number;
+  recentCompletionTimestamps: number[];
+  firstCompletionTs: number | null;
+  completedCount: number;
   totalTiles: number;
   completedTiles: number;
   currentTileRunningFrac: number;
-  currentTileRunningMs: number;
+  nowMs: number;
 }): number | null {
-  const effectiveComputed = stats.computedCount + stats.currentTileRunningFrac;
-  const effectiveMs = stats.computedMs + stats.currentTileRunningMs;
-  if (effectiveComputed < 0.05 || effectiveMs <= 0) return null;
-
-  const avgMs = effectiveMs / effectiveComputed;
-  // Treat every remaining tile as needing full computation.
-  // Pessimistic but converges fast: cached days zip through and
-  // reduce `remaining` without inflating the compute average.
   const remaining = Math.max(stats.totalTiles - stats.completedTiles - stats.currentTileRunningFrac, 0);
-  return Math.max(0, Math.round((avgMs * remaining) / 1000));
+  if (remaining <= 0) return 0;
+
+  // Tier 1: recent-window wall-clock throughput.
+  const ts = stats.recentCompletionTimestamps;
+  if (ts.length >= 2) {
+    const windowSpanMs = ts[ts.length - 1] - ts[0];
+    const intervals = ts.length - 1;
+    if (windowSpanMs > 0) {
+      return Math.max(0, Math.round((windowSpanMs / intervals) * remaining / 1000));
+    }
+  }
+
+  // Tier 2: full-history wall-clock since first completion.
+  if (stats.firstCompletionTs !== null && stats.completedCount >= 1) {
+    const elapsedSinceFirst = stats.nowMs - stats.firstCompletionTs;
+    if (elapsedSinceFirst > 0 && stats.completedCount > 0) {
+      // Use completedCount as the "intervals" denominator: from t=firstCompletion
+      // to now, we observed completedCount tile-completions (the 1st marked t=0,
+      // and N more arrived since — but the simpler model treats it as N tiles
+      // completing in the elapsed interval). For N=1 we don't yet have an
+      // interval; we'd need a 2nd completion. Use msPerTile = elapsedSinceFirst /
+      // completedCount as a rough rate.
+      const msPerTile = elapsedSinceFirst / stats.completedCount;
+      return Math.max(0, Math.round((msPerTile * remaining) / 1000));
+    }
+  }
+
+  // Tier 3: no completions yet — honest "--".
+  return null;
 }
 
 // ── multi-worker live display helpers ───────────────────────────────────────
@@ -321,12 +361,13 @@ async function main() {
   const runningSlots = new Map<number, RunningSlot>();
   let liveLineCount = 0;
 
-  // ETA tracking: only count time spent actually computing tiles
+  // ETA tracking: a sliding wall-clock window for steady-state throughput,
+  // plus the timestamp of the first ever completion as a tier-2 fallback.
   let computedTileCount = 0;
-  let computedTileMs = 0;
-  let firstTileStartMs = 0;
+  let firstCompletionTs: number | null = null;
   let currentComputeTileIndex = -1;
   let currentTileStartMs = 0;
+  const recentCompletionTimestamps: number[] = [];
 
   // Day context for live zone
   let currentDayLabel = "";
@@ -402,37 +443,37 @@ async function main() {
     },
     {
       onProgress: (progress) => {
-        // ── track compute-only ETA metrics ─────────────────────────────
+        // ── wall-clock-only ETA tracking ─────────────────────────────
         const now = Date.now();
         let currentTileRunningFrac = 0;
-        let currentTileRunningMs = 0;
 
         if (progress.currentTileState === "running") {
           if (progress.tileIndex !== currentComputeTileIndex) {
             currentComputeTileIndex = progress.tileIndex;
             currentTileStartMs = now;
-            if (firstTileStartMs === 0) firstTileStartMs = now;
           }
           currentTileRunningFrac =
             typeof progress.currentTileProgressPercent === "number"
               ? Math.max(0, Math.min(1, progress.currentTileProgressPercent / 100))
               : 0;
-          currentTileRunningMs = now - currentTileStartMs;
         } else if (progress.currentTileState === "computed") {
-          if (currentComputeTileIndex >= 0) {
-            computedTileMs += now - currentTileStartMs;
-          }
           computedTileCount++;
           currentComputeTileIndex = -1;
+          recentCompletionTimestamps.push(now);
+          if (firstCompletionTs === null) firstCompletionTs = now;
+          while (recentCompletionTimestamps.length > RECENT_WINDOW_SIZE) {
+            recentCompletionTimestamps.shift();
+          }
         }
 
         const eta = computeEta({
-          computedCount: computedTileCount,
-          computedMs: computedTileMs,
+          recentCompletionTimestamps,
+          firstCompletionTs,
+          completedCount: computedTileCount,
           totalTiles: progress.totalTiles,
           completedTiles: progress.completedTiles,
           currentTileRunningFrac,
-          currentTileRunningMs,
+          nowMs: now,
         });
         const etaStr = eta != null ? formatDuration(eta) : "--";
         const globalBar = progressBar(progress.percent, 24);

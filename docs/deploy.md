@@ -408,17 +408,28 @@ WSL lira le compose via `/mnt/c/srv/mappy-hour/docker-compose.yml`.
 
 ### 7.2 `.env` — bind-mount Windows
 
+Deux bind-mounts sont nécessaires (depuis la release `v9.2.20260512xxx`) :
+- `MAPPY_ATLAS_PATH` → cache atlas sunlight (~10-30 GB)
+- `MAPPY_BUILDINGS_PATH` → global obstacle index `lausanne-buildings-index.json` (~70 MB)
+
 ```powershell
 @"
 MAPPY_ATLAS_PATH=/mnt/c/mappy-data/cache/sunlight
+MAPPY_BUILDINGS_PATH=/mnt/c/mappy-data/processed/buildings
 "@ | Set-Content C:\srv\mappy-hour\.env -Encoding UTF8
 
 New-Item -ItemType Directory -Force C:\mappy-data\cache\sunlight | Out-Null
+New-Item -ItemType Directory -Force C:\mappy-data\processed\buildings | Out-Null
 ```
+
+> **Pourquoi 2 bind-mounts ?** L'image Docker est immuable et ne contient plus
+> le global buildings index (trop volumineux pour bake dans chaque build). Il
+> est livré comme un asset partagé de la release (`buildings-shared.tar`) et
+> peuplé côte à côte avec l'atlas. Cf. ADR-0024 / commit du 2026-05-12.
 
 Autres variables (`MAPPY_FORCE_CACHE_ONLY=true`, `MAPPY_DATA_ROOT=/data`,
 `NODE_ENV=production`) sont déjà fixées dans `docker-compose.yml` — l'image est immuable
-quel que soit l'environnement, seul le chemin atlas hôte varie.
+quel que soit l'environnement, seuls les chemins host varient.
 
 ### 7.3 Peupler l'atlas
 
@@ -431,12 +442,16 @@ robocopy "D:\mappy-hour-data\cache\sunlight" "\\mitch\C$\mappy-data\cache\sunlig
 **Option B — via le service `atlas-loader` (profil `loader`) :**
 
 ```powershell
+# Cache-only minimum (Mitch typique) — atlas + places seulement
 wsl -d Ubuntu -u root -e bash -c '
 cd /mnt/c/srv/mappy-hour
 docker compose --profile loader run --rm atlas-loader \
   --repo=salfab/mappy-hour \
   --regions=lausanne,nyon,morges,vevey,vevey_city,geneve
 '
+
+# Si l'hôte doit aussi pouvoir re-précomputer (NUC GPU plus tard) :
+# ajouter --with-grid-metadata --with-buildings à la fin de la command
 ```
 
 Vérifier :
@@ -444,6 +459,45 @@ Vérifier :
 ```powershell
 Get-ChildItem C:\mappy-data\cache\sunlight -Recurse -Filter "*.idx" | Measure-Object
 ```
+
+---
+
+## 7bis. Lifecycle des releases atlas
+
+Une release sur GitHub est composée de plusieurs archives indépendantes
+(décidé 2026-05-12 pour minimiser le téléchargement sur Mitch) :
+
+| Archive | Contenu | Requis pour |
+|---|---|---|
+| `<region>-atlas.tar` | Shards atlas zstd-10 + `.atlas.idx` | **Toutes** les régions servies |
+| `<region>-grid-metadata.tar` | Indoor/outdoor masks + élévations par tuile | Re-précompute uniquement |
+| `buildings-shared.tar` | Global `lausanne-buildings-index.json` (~70 MB) | Re-précompute uniquement |
+| `<region>-places.json` | Sidecar OSM places | Lausanne, Nyon uniquement |
+| `release-manifest.json` | sha256s + hashes + tile counts | Toujours téléchargé en premier |
+
+Naming : `vMAJOR.MINOR.YYYYMMDDNNN` — auto-généré par `publish-atlas-release.ps1`
+en scrutant les tags du jour et incrémentant le compteur `NNN` (000-999).
+
+### Refresh atlas Mitch — workflow_dispatch
+
+GitHub Actions → **Refresh atlas on Mitch** → Run workflow.
+
+Inputs :
+- `release` (default `latest`) — tag spécifique ou `latest`
+- `with_grid_metadata` (default `false`) — pour Mitch headless : laisser `false`
+- `with_buildings` (default `false`) — idem, `false` sauf si re-précompute prévu
+- `regions` (default vide = toutes celles du manifest)
+
+Idempotency : `download-atlas.ts` skip per-region si `<region>/<modelVersionHash>/g1/atlas/r0.75/`
+sur disque contient déjà tous les fichiers attendus. Même hash → no-op. Hash différent
+(ex. ingest buildings refait) → nouveau dossier, download obligatoire.
+
+Le workflow restart `mappy-hour` après le téléchargement pour que le runtime
+re-scan les hashes disponibles (`findCachedModelVersionHash`).
+
+> ⚠️ **Pic disque temporaire pendant le download** ≈ 1.5× la taille du plus
+> gros tar (download tmp + extracted). `download-atlas.ts` nettoie au fur et à
+> mesure (per-archive `unlink` puis `rm -rf` du staging dir).
 
 ---
 

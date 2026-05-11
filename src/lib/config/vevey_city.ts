@@ -12,7 +12,11 @@ export const VEVEY_CITY_CENTER = {
   lon: 6.8419,
 };
 
-export const VEVEY_CITY_LOCAL_BBOX: BBox = [6.83, 46.45, 6.89, 46.48];
+// Bbox élargie pour couvrir les 97 tuiles 250m de la sélection vevey_city :
+// - 56 tuiles issues de commune-vevey-land-tiles.json (commune OSM ∖ Lac Léman)
+// - 41 tuiles ajoutées manuellement 2026-05-11 (annexes de la ville)
+// Union LV95 : E 2552000-2556000, N 1144000-1148000 ≈ WGS84 [6.82, 46.44, 6.89, 46.49].
+export const VEVEY_CITY_LOCAL_BBOX: BBox = [6.82, 46.44, 6.89, 46.49];
 
 export const VEVEY_CITY_HORIZON_RADIUS_KM = 120;
 

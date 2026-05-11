@@ -5,12 +5,16 @@ export const VEVEY_CENTER = {
   lon: 6.8419,
 };
 
-// Vevey + La Tour-de-Peilz + Corseaux + Corsier + Chardonne
-// Extended westward (minLon 6.80→6.76) to cover the Lavaux gap between
-// Lausanne region and Vevey proper: Villette, Cully, Grandvaux, Riex,
-// Epesses, Rivaz, Saint-Saphorin. Extended north (maxLat 46.49→46.50)
-// to include upper Grandvaux slopes.
-export const VEVEY_LOCAL_BBOX: BBox = [6.76, 46.44, 6.89, 46.50];
+// Vevey + La Tour-de-Peilz + Corseaux + Corsier + Chardonne + Lavaux foothills.
+// Historical "Lavaux + Vevey extended" region (the city of Vevey itself is
+// now handled by vevey_city). Widened to cover the full LV95 envelope
+// E:2545000→2550000, N:1147000→1154000 of the 268 high-value tiles tagged
+// region=vevey (commune-lausanne-east-tiles.json, E≥2545000). WGS84 envelope
+// derived from the four LV95 corners via lv95ToWgs84Precise:
+//   lon 6.72167 → 6.79089, lat 46.47206 → 46.53769
+// plus a ~0.003° safety margin on every side for tile-corner protrusion
+// due to the non-orthogonal LV95↔WGS84 mapping.
+export const VEVEY_LOCAL_BBOX: BBox = [6.715, 46.468, 6.795, 46.541];
 
 export const VEVEY_HORIZON_RADIUS_KM = 120;
 

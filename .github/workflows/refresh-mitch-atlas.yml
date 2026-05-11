@@ -1,0 +1,115 @@
+name: Refresh atlas on Mitch
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Release tag to install (default: latest)"
+        required: false
+        default: "latest"
+      with_grid_metadata:
+        description: "Also fetch grid-metadata archives (needed if re-precompute on host)"
+        required: false
+        type: boolean
+        default: false
+      with_buildings:
+        description: "Also fetch the global buildings index (needed if re-precompute on host)"
+        required: false
+        type: boolean
+        default: false
+      regions:
+        description: "Comma-separated regions (default: all in manifest)"
+        required: false
+        default: ""
+
+concurrency:
+  group: refresh-mitch-atlas
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+
+    steps:
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          tags: tag:ci
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.MITCH_SSH_KEY }}
+
+      - name: Pin Mitch host key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.MITCH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Wait for Tailscale propagation
+        run: |
+          sleep 10
+          tailscale status | head -5
+
+      - name: Build atlas:download command
+        id: cmd
+        run: |
+          ARGS="--repo=salfab/mappy-hour --release=${{ inputs.release }}"
+          if [ -n "${{ inputs.regions }}" ]; then
+            ARGS="$ARGS --regions=${{ inputs.regions }}"
+          fi
+          if [ "${{ inputs.with_grid_metadata }}" = "true" ]; then
+            ARGS="$ARGS --with-grid-metadata"
+          fi
+          if [ "${{ inputs.with_buildings }}" = "true" ]; then
+            ARGS="$ARGS --with-buildings"
+          fi
+          echo "args=$ARGS" >> "$GITHUB_OUTPUT"
+          echo "Will run: pnpm atlas:download -- $ARGS"
+
+      - name: Refresh atlas on Mitch
+        env:
+          HOST: ${{ secrets.MITCH_SSH_HOST }}
+          USER: ${{ secrets.MITCH_SSH_USER }}
+          ATLAS_ARGS: ${{ steps.cmd.outputs.args }}
+        run: |
+          set -e
+          # Run atlas:download via the atlas-loader compose profile so the
+          # bind-mounts (MAPPY_ATLAS_PATH + MAPPY_BUILDINGS_PATH) are honoured
+          # and write happens inside the container (chmod-clean on host).
+          # The download script is idempotent per-modelVersionHash: regions
+          # already up to date are skipped without re-fetching the tars.
+          ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 "$USER@$HOST" \
+            "powershell -NoProfile -Command \"Set-Location C:\\srv\\mappy-hour; git pull --ff-only; if (\$LASTEXITCODE -ne 0) { exit 1 }; wsl -d Ubuntu -u root -e bash -c \\\"cd /mnt/c/srv/mappy-hour && docker compose --profile loader run --rm atlas-loader $ATLAS_ARGS\\\"\""
+
+      - name: Restart mappy-hour to pick up new atlas
+        env:
+          HOST: ${{ secrets.MITCH_SSH_HOST }}
+          USER: ${{ secrets.MITCH_SSH_USER }}
+        run: |
+          set -e
+          # The runtime caches the manifest scan; a bounce ensures the new
+          # modelVersionHash directories are picked up immediately.
+          ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 "$USER@$HOST" \
+            "powershell -NoProfile -Command \"wsl -d Ubuntu -u root -e bash -c \\\"cd /mnt/c/srv/mappy-hour && docker compose restart mappy-hour\\\"\""
+
+      - name: Health check
+        env:
+          HOST: ${{ secrets.MITCH_SSH_HOST }}
+          USER: ${{ secrets.MITCH_SSH_USER }}
+        run: |
+          sleep 15
+          STATUS=$(ssh "$USER@$HOST" \
+            "powershell -NoProfile -Command \"(Invoke-WebRequest 'http://127.0.0.1:3000/api/datasets' -UseBasicParsing -TimeoutSec 10).StatusCode\"" \
+            2>&1 | tr -d '[:space:]')
+          echo "Health check status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "Health check failed (got '$STATUS')"
+            exit 1
+          fi
+          echo "Atlas refresh successful"

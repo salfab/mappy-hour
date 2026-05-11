@@ -77,6 +77,7 @@ export const CACHE_SUNLIGHT_DIR =
       ? ENV_CACHE_SUNLIGHT_DIR
       : path.resolve(PROJECT_ROOT, ENV_CACHE_SUNLIGHT_DIR)
     : path.join(CACHE_ROOT, "sunlight");
+export const CACHE_TILE_GRID_METADATA_DIR = path.join(CACHE_ROOT, "tile-grid-metadata");
 export const PROCESSED_HORIZON_DIR = path.join(PROCESSED_ROOT, "horizon");
 export const PROCESSED_HORIZON_SHARING_DIR = path.join(
   PROCESSED_HORIZON_DIR,

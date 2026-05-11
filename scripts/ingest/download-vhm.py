@@ -44,13 +44,19 @@ REGIONS = {
     "lausanne": {"minE": 2531000, "minN": 1148000, "maxE": 2545000, "maxN": 1163000},
     "morges":   {"minE": 2524000, "minN": 1149000, "maxE": 2531000, "maxN": 1155000},
     "geneve":   {"minE": 2495000, "minN": 1113000, "maxE": 2508000, "maxN": 1125000},
-    # Extended westward (2548→2545) for Lavaux gap: Villette, Cully,
-    # Grandvaux, Rivaz, Saint-Saphorin. Extended north (1149→1150) for
-    # upper Grandvaux slopes. Matches VEVEY_LOCAL_BBOX.
-    "vevey":    {"minE": 2545000, "minN": 1141000, "maxE": 2558000, "maxN": 1150000},
+    # Lavaux + Vevey extended (Pully → Saint-Saphorin + Vevey).
+    # Widened 2026-05-11 to match VEVEY_LOCAL_BBOX [6.715, 46.468, 6.795, 46.541]
+    # after the "180 TILE(S) SILENTLY DROPPED" warning revealed 180/268 selection
+    # tiles were north or west of the previous bbox. New northern strip
+    # (1150000→1154500) covers the upper Lavaux foothills.
+    # NB : tous les minE/minN/maxE/maxN ci-dessous DOIVENT être multiples de
+    # TILE_SIZE=1000m, sinon la boucle d'itération `range(minN, maxN, TILE_SIZE)`
+    # produit un dernier tile dont la fin déborde maxN → slice vhm_data négative
+    # → ZeroDivisionError dans transform_from_bounds(..., 0, 0).
+    "vevey":    {"minE": 2544000, "minN": 1141000, "maxE": 2558000, "maxN": 1155000},
     # Vraie ville de Vevey (commune Vevey + La Tour-de-Peilz + Corseaux),
-    # sans Lavaux. Matches VEVEY_CITY_LOCAL_BBOX [6.83,46.45,6.89,46.48].
-    "vevey_city": {"minE": 2551500, "minN": 1144500, "maxE": 2557000, "maxN": 1148500},
+    # sans Lavaux. Matches VEVEY_CITY_LOCAL_BBOX [6.82, 46.44, 6.89, 46.49].
+    "vevey_city": {"minE": 2551000, "minN": 1143000, "maxE": 2557000, "maxN": 1149000},
 }
 
 

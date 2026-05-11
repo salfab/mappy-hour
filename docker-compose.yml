@@ -1,6 +1,11 @@
-# MAPPY_ATLAS_PATH (env var, defaults to ./data/cache/sunlight) controls where the
-# atlas cache lives on the host. Bind-mount approach pour l'instant — TODO migration
-# vers un volume Docker ext4 quand on saura gérer les atlas shardés (cf. tasks).
+# Bind-mounts (host → container) :
+#   MAPPY_ATLAS_PATH     → /data/cache/sunlight       (atlases, gros)
+#   MAPPY_BUILDINGS_PATH → /data/processed/buildings  (lausanne-buildings-index.json, ~70 MB)
+# Les deux bind-mounts sont placés CÔTE À CÔTE sur le host (par défaut sous
+# ./data/...) pour qu'un opérateur les retrouve dans le même répertoire racine
+# (typiquement C:\mappy-data\ sur mitch).
+# TODO migration vers un volume Docker ext4 quand on saura gérer le format final
+# des atlas shardés (cf. tasks).
 services:
   mappy-hour:
     image: ghcr.io/salfab/mappy-hour:latest
@@ -32,6 +37,10 @@ services:
         source: ${MAPPY_ATLAS_PATH:-./data/cache/sunlight}
         target: /data/cache/sunlight
         read_only: true
+      - type: bind
+        source: ${MAPPY_BUILDINGS_PATH:-./data/processed/buildings}
+        target: /data/processed/buildings
+        read_only: true
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:3000/api/datasets',r=>{process.exitCode=r.statusCode===200?0:1}).on('error',()=>{process.exitCode=1})\""]
       interval: 30s
@@ -41,6 +50,8 @@ services:
 
   # One-shot container pour télécharger / mettre à jour les atlas.
   # Lancer manuellement : docker compose run --rm atlas-loader
+  # Ajouter `--with-buildings` à la fin pour aussi récupérer le global
+  # buildings index (~70 MB), nécessaire seulement si l'hôte peut re-précomputer.
   # Profil "loader" : n'est pas inclus dans `docker compose up`.
   atlas-loader:
     image: ghcr.io/salfab/mappy-hour:latest
@@ -57,3 +68,6 @@ services:
       - type: bind
         source: ${MAPPY_ATLAS_PATH:-./data/cache/sunlight}
         target: /data/cache/sunlight
+      - type: bind
+        source: ${MAPPY_BUILDINGS_PATH:-./data/processed/buildings}
+        target: /data/processed/buildings

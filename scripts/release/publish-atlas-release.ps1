@@ -91,16 +91,21 @@ Remove-Item $PlacesTmpRoot -Recurse -Force -ErrorAction SilentlyContinue
 $env:MAPPY_DATA_ROOT = $null
 
 # ── Packaging ─────────────────────────────────────────────────────────────────
+# Each region produces TWO archives: <region>-atlas.tar + <region>-grid-metadata.tar.
+# A single shared archive `buildings-shared.tar` is also generated. All sha256
+# sidecars + release-manifest.json land in $OutDir alongside the tars.
 Write-Host "`n[publish] ▶ Packaging des régions : $Regions"
 $RegionList = $Regions -split "," | ForEach-Object { $_.Trim() }
+$TileSelectionFile = "data/processed/precompute/high-value-tile-selection.top-priority.json"
 
 $Summaries = @()
 foreach ($Region in $RegionList) {
-    Write-Host "[publish]   · packaging $Region..."
-    # Capture stdout (JSON summary) avec stderr passant à la console parent.
-    # NB: pas de redirection 2>&1 — les logs progressifs vont s'afficher live.
+    Write-Host "[publish]   · packaging $Region (atlas + grid-metadata)..."
     $tmpOut = [System.IO.Path]::GetTempFileName()
-    & npx tsx scripts/release/package-atlas-region.ts "--region=$Region" "--out-dir=$OutDir" 1> $tmpOut
+    & npx tsx scripts/release/package-atlas-region.ts `
+        "--region=$Region" `
+        "--out-dir=$OutDir" `
+        "--tile-selection-file=$TileSelectionFile" 1> $tmpOut
     $packExit = $LASTEXITCODE
     $Output = Get-Content $tmpOut -Raw
     Remove-Item $tmpOut -ErrorAction SilentlyContinue
@@ -117,6 +122,22 @@ foreach ($Region in $RegionList) {
         exit 1
     }
     $Summaries += $JsonLine
+}
+
+Write-Host "[publish]   · packaging buildings-shared..."
+$tmpOut = [System.IO.Path]::GetTempFileName()
+& npx tsx scripts/release/package-buildings-shared.ts "--out-dir=$OutDir" 1> $tmpOut
+$buildingsExit = $LASTEXITCODE
+$BuildingsOutput = Get-Content $tmpOut -Raw
+Remove-Item $tmpOut -ErrorAction SilentlyContinue
+
+if ($buildingsExit -ne 0) {
+    Write-Host "[publish] ✗ package-buildings-shared échoué (exit $buildingsExit)"
+    exit 1
+}
+$BuildingsJsonLine = (($BuildingsOutput -split "`r?`n") | Where-Object { $_.TrimStart().StartsWith("{") } | Select-Object -Last 1)
+if ($BuildingsJsonLine) {
+    $Summaries += $BuildingsJsonLine
 }
 
 # ── Manifest ─────────────────────────────────────────────────────────────────
@@ -149,8 +170,18 @@ foreach ($R in $Manifest.regions.PSObject.Properties) {
     $RName = $R.Name
     $RData = $R.Value
     $Hash = $RData.modelVersionHash.Substring(0, 8)
+    $GHash = if ($RData.gridMetadataHash) { $RData.gridMetadataHash.Substring(0, 8) } else { "—" }
     $Tiles = $RData.tileCount
-    $RegionLines += "- **$RName** : $Tiles tuiles (hash $Hash...)`n"
+    $GTiles = if ($RData.gridMetadataTileCount) { $RData.gridMetadataTileCount } else { 0 }
+    $RegionLines += "- **$RName** : $Tiles atlas tuiles (hash $Hash) + $GTiles grid-meta (hash $GHash)`n"
+}
+
+$BuildingsLine = ""
+if ($Manifest.buildingsShared) {
+    $bs = $Manifest.buildingsShared
+    $obstacleCount = if ($bs.uniqueObstaclesCount) { $bs.uniqueObstaclesCount } else { "?" }
+    $bsBytes = [math]::Round($bs.bytes / 1MB, 1)
+    $BuildingsLine = "`n### Buildings shared`n- ``buildings-shared.tar`` : $bsBytes MB, $obstacleCount obstacles (indexVersion=$($bs.indexVersion))`n"
 }
 
 $PlacesLines = ""
@@ -178,14 +209,19 @@ $DescHead = @"
 Algorithme : ``$($Manifest.algorithmVersion)`` — Format : v$($Manifest.artifactFormatVersion)
 
 ### Régions packagées
-$RegionLines$PlacesSectionHead
+$RegionLines$BuildingsLine$PlacesSectionHead
 ### Installation
 
 "@
 
 $DescCode = @'
 ```bash
+# Cache-only deploy (atlas + places only — Mitch use case)
 pnpm atlas:download -- --repo={REPO} --regions=lausanne,nyon --release={TAG}
+
+# Re-precompute-capable host (also pulls grid-metadata + global buildings index)
+pnpm atlas:download -- --repo={REPO} --regions=lausanne,nyon --release={TAG} \
+    --with-grid-metadata --with-buildings
 ```
 '@ -replace '\{REPO\}', $RepoFromGh -replace '\{TAG\}', $Tag
 
