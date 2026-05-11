@@ -499,27 +499,14 @@ Workflow `.github/workflows/deploy-mitch.yml` :
 - **Trigger** : `push: branches: [master]` + `workflow_dispatch`
 - **Tailscale** : OAuth via `tailscale/github-action@v3` (tag `tag:ci`)
 - **SSH** : via `webfactory/ssh-agent` + clé `MITCH_SSH_KEY` + host key pinned
-- **Cible SSH** : `${{ secrets.MITCH_SSH_USER }}@${{ secrets.MITCH_SSH_HOST }}`
-- **Script lancé** : actuellement `mitch-deploy.ps1` ⚠️ — c'est le **flow Node.js natif
-  legacy**, plus utilisé. **TODO (task #16) : pointer vers `mitch-deploy-docker.ps1`**.
+- **Cible SSH** : `kiosque@<host>` (secret `MITCH_SSH_USER=kiosque`, `MITCH_SSH_HOST` = hostname tailnet)
+- **Bootstrap inline** : `git pull --ff-only` exécuté directement depuis SSH (avant
+  d'invoquer le script du repo), pour éviter le chicken-and-egg quand le script n'est pas
+  encore checkout sur la cible.
+- **Script lancé** : `mitch-deploy-docker.ps1` (git pull + docker compose pull + up
+  + healthcheck loopback HTTP 200).
 
-### 10.2 Correctifs requis (task #16)
-
-Dans `.github/workflows/deploy-mitch.yml`, l'étape `Deploy` doit lancer
-`mitch-deploy-docker.ps1` :
-
-```yaml
-SCRIPT="mitch-deploy-docker.ps1"
-if [ "$SKIP_PULL" = "true" ]; then
-  SCRIPT="mitch-deploy-docker-no-pull.ps1"   # à créer si nécessaire
-fi
-```
-
-Et `MITCH_SSH_USER` doit valoir `kiosque` (pas `devops`) — voir §3. Sinon, le script SSH
-lance `wsl ...` dans la session devops, qui n'a pas de distro Ubuntu (et le mapping NAT
-WSL2 n'est de toute façon pas visible côté kiosque).
-
-### 10.3 Déclenchement manuel
+### 10.2 Déclenchement manuel
 
 ```powershell
 ssh kiosque@mitch "powershell -File C:\srv\mappy-hour\scripts\headless-server-selfhosting\mitch-deploy-docker.ps1"
