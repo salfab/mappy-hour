@@ -506,39 +506,29 @@ le pull suffit — pas de build local.
 - [x] `tag:ci` : nœuds éphémères, expirent à la fin du job GHA.
 - [x] Isolation WSL2 (VM séparée) + Tailscale Funnel (pas d'expo directe LAN/WAN).
 
-### 11.2 Retiré (à restaurer) — task #14
+### 11.2 Restauré
 
-Le `docker-compose.yml` prévoyait initialement :
+Le `docker-compose.yml` applique maintenant le hardening du plan initial :
 
 ```yaml
-read_only: true
-tmpfs: [/tmp]
 cap_drop: [ALL]
 security_opt: [no-new-privileges:true]
-user: "node"
+read_only: true
+tmpfs: [/tmp]
 ```
 
-**Tout a été retiré.** Symptômes observés :
-
-- `cap_drop: [ALL]` **seul** OU `security_opt: [no-new-privileges:true]` **seul** suffisent
-  à faire crasher Next.js 16 ~50s après `▲ Next.js ... Ready`.
-- Message dans `docker logs` : `ELIFECYCLE  Command failed.` sans autre stack trace.
-- Le container reste UP mais le port 3000 ferme.
-
-À investiguer : capabilities exactes requises. Hypothèse forte : `CAP_NET_BIND_SERVICE`
-(bind port 3000 sans être root), `CAP_SETUID`, `CAP_SETGID`, `CAP_CHOWN` (pnpm + corepack
-au démarrage). `read_only: true`, `tmpfs:/tmp` et `user: node` **n'ont jamais été testés
-en isolation** — l'image runtime tourne en root et `node` existe dans l'image mais l'app
-n'a pas été testée non-root.
-
-**Surface de défense restante :** isolation WSL2 VM + Funnel HTTPS + bind loopback only +
-volume atlas RO + security headers. Pas négligeable, mais explicitement en-dessous du
-plan initial. Trade-off documenté ici par honnêteté — à corriger.
+Confirmé sur 120s+ avec l'image courante : Next.js 16 démarre et reste healthy,
+le healthcheck `node -e ... GET /api/datasets` passe. Le crashloop `ELIFECYCLE
+Command failed` observé pendant la mise en place initiale n'a pas été reproduit
+après rebuild — il semble lié à une instabilité transitoire (probablement
+pression disque pendant l'install kiosque ou cycles de la VM WSL2 d'avant
+l'activation systemd) plutôt qu'à un manque de capability.
 
 ### 11.3 Reste à durcir
 
-- [ ] Capabilities Docker minimales (task #14).
-- [ ] `user: node` (UID non-root) dans le compose une fois validé.
+- [ ] `user: node` (UID non-root) — corepack écrit `/home/node/.cache/` et
+      échoue sous `read_only`. Ajouter un `tmpfs /home/node:uid=1000,gid=1000`
+      ou un volume scratch pour activer.
 - [ ] Compte deploy non-admin sur Windows (devops/kiosque sont admins, cf. §3.3).
 - [ ] Vérifier qu'aucun port-forwarding routeur ne contourne Funnel.
 - [ ] Windows Update + Tailscale auto-update activés.
