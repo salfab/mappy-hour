@@ -1,6 +1,16 @@
 "use client";
 
-import { ChevronDownIcon, SunIcon } from "./icons";
+import type { ComponentType } from "react";
+
+import {
+  ChevronDownIcon,
+  HeatmapIcon,
+  LayersIcon,
+  LeafOffIcon,
+  MountainIcon,
+  SunIcon,
+  TerraceIcon,
+} from "./icons";
 
 export type AreaMode = "instant" | "daily";
 export type MapPanelTab = "map" | "terraces";
@@ -74,8 +84,38 @@ interface DailyCoverageProps {
   placesError: string | null;
 }
 
-const chipClass =
-  "items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-slate-700 shadow-sm transition hover:border-amber-200 hover:bg-amber-50";
+interface ToggleIconButtonProps {
+  label: string;
+  pressed: boolean;
+  disabled?: boolean;
+  desktopOnly?: boolean;
+  icon: ComponentType<{ className?: string }>;
+  onPressedChange: (pressed: boolean) => void;
+}
+
+function ToggleIconButton(props: ToggleIconButtonProps) {
+  const Icon = props.icon;
+
+  return (
+    <button
+      type="button"
+      className={`group grid h-11 w-11 place-items-center rounded-full border text-slate-600 shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45 ${
+        props.desktopOnly ? "hidden lg:grid" : ""
+      } ${
+        props.pressed
+          ? "border-amber-300 bg-amber-200 text-slate-950 shadow-amber-200/50"
+          : "border-slate-200 bg-white/92 hover:border-amber-200 hover:bg-amber-50"
+      }`}
+      aria-label={props.label}
+      aria-pressed={props.pressed}
+      title={props.label}
+      disabled={props.disabled}
+      onClick={() => props.onPressedChange(!props.pressed)}
+    >
+      <Icon className="h-5 w-5 transition group-hover:scale-105" />
+    </button>
+  );
+}
 
 function formatDisplayDate(date: string): string {
   const [year, month, day] = date.split("-").map(Number);
@@ -148,48 +188,45 @@ export function CalculationControls(props: CalculationControlsProps) {
 
 export function LayerFilters(props: LayerFiltersProps) {
   const showLight = props.showSunny || props.showShadow;
-  const filters = [
-    ["Lumiere", showLight, props.onShowSunShadowChange],
-    ["Relief", props.showTerrain, props.onShowTerrainChange],
-  ] as const;
 
   return (
-    <div className="flex flex-wrap items-center gap-2 text-sm">
-      {filters.map(([label, checked, onChange]) => (
-        <label key={label} className={`hidden lg:inline-flex ${chipClass}`}>
-          <input
-            type="checkbox"
-            checked={checked}
-            onChange={(event) => onChange(event.target.checked)}
-          />
-          <span>{label}</span>
-        </label>
-      ))}
-      <label className={`inline-flex ${chipClass}`}>
-        <input
-          type="checkbox"
-          checked={props.showHeatmap}
-          disabled={!props.canShowHeatmap}
-          onChange={(event) => props.onShowHeatmapChange(event.target.checked)}
-        />
-        <span>Heatmap</span>
-      </label>
-      <label className={`inline-flex ${chipClass}`}>
-        <input
-          type="checkbox"
-          checked={props.ignoreVegetationShadow}
-          onChange={(event) => props.onIgnoreVegetationShadowChange(event.target.checked)}
-        />
-        <span>Ignorer vegetation</span>
-      </label>
-      <label className={`inline-flex ${chipClass}`}>
-        <input
-          type="checkbox"
-          checked={props.showPlaces}
-          onChange={(event) => props.onShowPlacesChange(event.target.checked)}
-        />
-        <span>Terrasses carte</span>
-      </label>
+    <div className="flex flex-wrap items-center gap-2 text-sm" aria-label="Couches de carte">
+      <ToggleIconButton
+        desktopOnly
+        label="Lumiere"
+        pressed={showLight}
+        icon={SunIcon}
+        onPressedChange={props.onShowSunShadowChange}
+      />
+      <ToggleIconButton
+        desktopOnly
+        label="Relief"
+        pressed={props.showTerrain}
+        icon={MountainIcon}
+        onPressedChange={props.onShowTerrainChange}
+      />
+      <ToggleIconButton
+        label="Heatmap"
+        pressed={props.showHeatmap}
+        disabled={!props.canShowHeatmap}
+        icon={HeatmapIcon}
+        onPressedChange={props.onShowHeatmapChange}
+      />
+      <ToggleIconButton
+        label="Ignorer vegetation"
+        pressed={props.ignoreVegetationShadow}
+        icon={LeafOffIcon}
+        onPressedChange={props.onIgnoreVegetationShadowChange}
+      />
+      <ToggleIconButton
+        label="Terrasses carte"
+        pressed={props.showPlaces}
+        icon={TerraceIcon}
+        onPressedChange={props.onShowPlacesChange}
+      />
+      <span className="sr-only">
+        {props.cacheOnly || props.forceCacheOnly ? "Cache only actif." : "Cache only inactif."}
+      </span>
     </div>
   );
 }
