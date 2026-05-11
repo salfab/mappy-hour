@@ -4558,7 +4558,12 @@ export function SunlightMapClient() {
       }}
       onShowTerrainChange={setShowTerrain}
       onShowHeatmapChange={setShowHeatmap}
-      onShowPlacesChange={setShowPlaces}
+      onShowPlacesChange={(value) => {
+        setShowPlaces(value);
+        if (value && sunlitPlaces.length > 0) {
+          setIsMobileBarsOpen(true);
+        }
+      }}
       onIgnoreVegetationShadowChange={setIgnoreVegetationShadow}
       onCacheOnlyChange={setCacheOnly}
     />

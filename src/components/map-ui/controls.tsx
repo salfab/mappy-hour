@@ -188,7 +188,7 @@ export function LayerFilters(props: LayerFiltersProps) {
           checked={props.showPlaces}
           onChange={(event) => props.onShowPlacesChange(event.target.checked)}
         />
-        <span>Terrasses</span>
+        <span>Terrasses carte</span>
       </label>
     </div>
   );
