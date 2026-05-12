@@ -24,7 +24,7 @@ export function getVenueSunStatus(place: VenueSunStatusInput): VenueSunStatus {
   }
 
   return place.sunnyMinutes > 0
-    ? { tone: "window", label: "Creneau" }
+    ? { tone: "window", label: "Créneau" }
     : { tone: "shadow", label: "Ombre" };
 }
 

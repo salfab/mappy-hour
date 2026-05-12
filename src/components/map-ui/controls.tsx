@@ -259,7 +259,7 @@ export function LayerFilters(props: LayerFiltersProps) {
         onPressedChange={props.onShowTerrainChange}
       />
       <ToggleIconButton
-        label="Ignorer vegetation"
+        label="Ignorer végétation"
         shortLabel="Sans arbres"
         pressed={props.ignoreVegetationShadow}
         icon={LeafOffIcon}
@@ -320,7 +320,7 @@ export function TimeSlider(props: TimeSliderProps) {
 
   // Compute progress is rendered as a colored fill UNDER the slider track.
   // Indeterminate (null) → striped + animated. Determinate → static amber fill
-  // matching `computeProgress` %. No more "Tuiles recues: X, Y points" line —
+  // matching `computeProgress` %. No more "Tuiles reçues: X, Y points" line —
   // it caused layout shift every tile flush and the slider fill now carries the
   // same info more cleanly (Phase 2 UX 2026-05-12).
   const showProgress = computeProgress !== undefined;
@@ -400,7 +400,7 @@ export function ProgressStatus(props: ProgressStatusProps) {
           ? ` - ETA: ${progress.etaSeconds === null ? "-" : props.formatDuration(progress.etaSeconds)}`
           : ""}
         {progress.elapsedMs != null
-          ? ` - ${props.formatDuration(Math.round(progress.elapsedMs / 1000))} ecoule`
+          ? ` - ${props.formatDuration(Math.round(progress.elapsedMs / 1000))} écoulé`
           : ""}
       </p>
     </div>

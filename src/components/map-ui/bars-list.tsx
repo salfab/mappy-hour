@@ -16,7 +16,7 @@ export function BarsList(props: BarsListProps) {
     <div className="grid gap-2">
       {props.places.length === 0 && !props.isLoading ? (
         <p className="px-2 py-2 text-xs text-slate-500">
-          Aucun etablissement ensoleille pour les filtres actuels.
+          Aucun établissement ensoleillé pour les filtres actuels.
         </p>
       ) : null}
       {props.places.map((place) => (

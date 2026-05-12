@@ -54,7 +54,7 @@ export async function GET(request: Request) {
   const results = (await response.json()) as NominatimResult[];
   const first = results[0];
   if (!first) {
-    return NextResponse.json({ error: "Aucun resultat trouve." }, { status: 404 });
+    return NextResponse.json({ error: "Aucun résultat trouvé." }, { status: 404 });
   }
 
   const lat = Number(first.lat);

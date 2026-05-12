@@ -4211,7 +4211,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           }
         | null;
       if (!response.ok || !result?.lat || !result?.lon) {
-        throw new Error(result?.error ?? "Aucun resultat trouve.");
+        throw new Error(result?.error ?? "Aucun résultat trouvé.");
       }
       const map = mapRef.current;
       if (map) {
@@ -5086,12 +5086,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         }
       }}
       onShowTerrainChange={setShowTerrain}
-      onShowPlacesChange={(value) => {
-        setShowPlaces(value);
-        if (value && sunlitPlaces.length > 0) {
-          setIsMobileBarsOpen(true);
-        }
-      }}
+      onShowPlacesChange={setShowPlaces}
       onIgnoreVegetationShadowChange={setIgnoreVegetationShadow}
       onCacheOnlyChange={setCacheOnly}
     />
@@ -5206,8 +5201,8 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           <p className="text-sm font-semibold">Terrasses au soleil</p>
           <p className="text-xs text-slate-500">
             {isPlacesLoading
-              ? "Calcul terrasses en cours..."
-              : `${sunlitPlaces.length} etablissements visibles`}
+              ? "Calcul des terrasses en cours..."
+              : `${sunlitPlaces.length} établissements visibles`}
           </p>
         </div>
         <div className="h-[calc(100dvh-106px)] overflow-y-auto px-3 py-3">

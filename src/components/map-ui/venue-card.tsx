@@ -50,7 +50,7 @@ export function VenueCard(props: VenueCardProps) {
     props.mode === "instant"
       ? props.place.isSunnyNow
         ? `Soleil maintenant (${props.localTime})`
-        : "A l'ombre maintenant"
+        : "À l'ombre maintenant"
       : `${props.place.sunlightStartLocalTime ?? "--:--"} -> ${
           props.place.sunlightEndLocalTime ?? "--:--"
         } (${props.place.sunnyMinutes} min)`;
@@ -106,7 +106,7 @@ export function VenueCard(props: VenueCardProps) {
       <div className="pl-14 text-xs font-medium text-slate-500">{sunlightLabel}</div>
       {props.place.selectionStrategy !== "original" ? (
         <div className="pl-14 text-[11px] text-amber-700">
-          Terrasse decalee ({props.place.selectionOffsetMeters}m) pour eviter un point indoor.
+          Terrasse décalée ({props.place.selectionOffsetMeters}m) pour éviter un point indoor.
         </div>
       ) : null}
     </button>

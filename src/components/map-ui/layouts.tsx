@@ -77,6 +77,7 @@ export function DesktopMapLayout(props: DesktopMapLayoutProps) {
 
 export function MobileBottomSheet(props: MobileBottomSheetProps) {
   const dragStartYRef = useRef<number | null>(null);
+  const suppressNextClickRef = useRef(false);
   const [dragPreview, setDragPreview] = useState<"down-strong" | "down" | "up" | "up-strong" | null>(null);
 
   const isInteractiveDragTarget = (target: EventTarget | null) => {
@@ -86,7 +87,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
 
     return Boolean(
       target.closest(
-        "button,input,select,textarea,a,label,summary,[role='button'],[data-bottom-sheet-no-drag]",
+        "input[type='range'],input[type='text'],input[type='search'],select,textarea,a,summary,[data-bottom-sheet-no-drag]",
       ),
     );
   };
@@ -191,13 +192,14 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
     if (Math.abs(deltaY) < DRAG_COMMIT_PX) {
       return;
     }
+    suppressNextClickRef.current = true;
     goToNextState(deltaY < 0 ? "up" : "down");
   };
 
   return (
     <section
       className={`absolute inset-x-0 bottom-0 z-[460] grid grid-rows-[auto_1fr] overflow-hidden rounded-t-[2rem] border border-b-0 border-white/70 bg-white/92 px-4 pb-[calc(env(safe-area-inset-bottom)+34px)] pt-2 text-slate-900 shadow-2xl backdrop-blur transition-[height] duration-150 ${stateHeightClass}`}
-      aria-label="Controle de la carte"
+      aria-label="Contrôle de la carte"
       onPointerDownCapture={(event) => {
         if (isInteractiveDragTarget(event.target)) {
           return;
@@ -212,6 +214,14 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
         dragStartYRef.current = null;
         setDragPreview(null);
       }}
+      onClickCapture={(event) => {
+        if (!suppressNextClickRef.current) {
+          return;
+        }
+        suppressNextClickRef.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
     >
       {/* Full-width drag affordance: the entire top strip (not just the visible
           handle pill) catches pointer events. The container handles drag via
@@ -223,7 +233,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
         <button
           type="button"
           className="grid h-10 w-32 touch-none place-items-center rounded-full outline-none transition focus-visible:ring-2 focus-visible:ring-amber-300"
-          aria-label="Glisser pour agrandir ou reduire le panneau"
+          aria-label="Glisser pour agrandir ou réduire le panneau"
           onPointerDown={(event) => {
             dragStartYRef.current = event.clientY;
             setDragPreview(null);
@@ -280,10 +290,10 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
                 <span className="text-base font-semibold leading-tight">Terrasses au soleil</span>
                 <span className="text-xs font-medium text-slate-500">
                   {props.venueCount === 0
-                    ? "Aucun etablissement trouve"
+                    ? "Aucun établissement trouvé"
                     : props.venueCount === 1
-                      ? "1 etablissement visible"
-                      : `${props.venueCount} etablissements visibles`}
+                      ? "1 établissement visible"
+                      : `${props.venueCount} établissements visibles`}
                 </span>
               </span>
               <span className="inline-flex items-center gap-2">
@@ -313,7 +323,7 @@ export function MobileBarsView(props: MobileBarsViewProps) {
         <button
           type="button"
           className="grid h-10 w-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-800 shadow-sm"
-          aria-label="Retour a la carte"
+          aria-label="Retour à la carte"
           onClick={props.onClose}
         >
           <BackIcon />
@@ -321,7 +331,9 @@ export function MobileBarsView(props: MobileBarsViewProps) {
         <div>
           <h2 className="text-lg font-semibold">Terrasses au soleil</h2>
           <p className="text-xs text-slate-500">
-            {props.isLoading ? "Calcul terrasses en cours..." : `${props.places.length} etablissements visibles`}
+            {props.isLoading
+              ? "Calcul des terrasses en cours..."
+              : `${props.places.length} établissements visibles`}
           </p>
         </div>
       </header>
