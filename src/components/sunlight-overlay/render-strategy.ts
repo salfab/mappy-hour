@@ -74,6 +74,14 @@ const VECTOR_TILES_EXIT = 9; // exit if >
 const MIN_RES_PX = 8; // floor — below that the tile is unreadable anyway
 const MAX_DPR = 2; // cap — at DPR ≥ 3 (some phones) the canvas RAM cost
 //                      // explodes (50 tiles × 250 × 250 × 4 bytes × 9 = 113 MB)
+// Supersample factor applied to `targetPx`. Without it, the formula
+// `tileSizeMeters × pxPerMeter × DPR` only reaches native resolution above
+// z≈17 — at z=14 we'd paint 76 of 250 cells and discard 70% of the source
+// data. The unified-viewport vector overlay (which runs on the native grid)
+// then revealed boundary detail that the bitmap had thrown away. With
+// SUPERSAMPLE = 2.5 we reach the native cap at z≈13.5 and keep full
+// fidelity at all useful zooms.
+const SUPERSAMPLE = 2.5;
 
 function pxPerMeterAtZoomLat(zoom: number, latDeg: number): number {
   const latRad = (latDeg * Math.PI) / 180;
@@ -105,7 +113,7 @@ export function selectRenderStrategy(input: RenderStrategyInput): RenderStrategy
   // Resolution target. Both modes compute it the same way; vector uses it as
   // an internal grid resolution for d3-contour, bitmap as canvas physical size.
   const pxPerMeter = pxPerMeterAtZoomLat(input.zoom, REFERENCE_LAT_DEG);
-  const targetPx = Math.ceil(input.tileSizeMeters * pxPerMeter * dpr);
+  const targetPx = Math.ceil(input.tileSizeMeters * pxPerMeter * dpr * SUPERSAMPLE);
   const bitmapResolution = Math.min(input.tileNativeSizePx, Math.max(MIN_RES_PX, targetPx));
 
   return { mode, bitmapResolution };
