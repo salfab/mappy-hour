@@ -408,29 +408,29 @@ WSL lira le compose via `/mnt/c/srv/mappy-hour/docker-compose.yml`.
 
 ### 7.2 `.env` — bind-mount Windows
 
-Trois bind-mounts sont nécessaires (depuis la release `v9.2.20260512xxx`) :
+Deux bind-mounts sont nécessaires (depuis Posture 4, cf. §7quinquies) :
 - `MAPPY_ATLAS_PATH` → cache atlas sunlight (~10-30 GB)
 - `MAPPY_BUILDINGS_PATH` → global obstacle index `lausanne-buildings-index.json` (~70 MB)
-- `MAPPY_PLACES_PATH` → sidecars `<region>-places.json` (~100 KB) — **sans ça, l'overlay terrasses est vide**
+
+Les places (`<region>-places.json`) ne sont **plus** un bind-mount : elles
+sont bakées dans l'image Docker et propagées au runtime via un check
+GitHub Releases fail-soft. Cf. §7quinquies.
 
 ```powershell
 @"
 MAPPY_ATLAS_PATH=/mnt/c/mappy-data/cache/sunlight
 MAPPY_BUILDINGS_PATH=/mnt/c/mappy-data/processed/buildings
-MAPPY_PLACES_PATH=/mnt/c/mappy-data/processed/places
 "@ | Set-Content C:\srv\mappy-hour\.env -Encoding UTF8
 
 New-Item -ItemType Directory -Force C:\mappy-data\cache\sunlight | Out-Null
 New-Item -ItemType Directory -Force C:\mappy-data\processed\buildings | Out-Null
-New-Item -ItemType Directory -Force C:\mappy-data\processed\places | Out-Null
 ```
 
-> **Pourquoi 3 bind-mounts ?** L'image Docker est immuable et ne contient ni
-> le global buildings index (trop volumineux), ni les places sidecars
-> (`data/processed/` est gitignored, jamais bake). Sans bind-mount places,
-> `loadAllPlaces()` retourne null et le timeline stream n'émet jamais d'event
-> `places` → overlay terrasses vide côté UI. Cf. ADR-0024 / commit du
-> 2026-05-12.
+> **Pourquoi 2 bind-mounts ?** L'image Docker est immuable et ne contient
+> pas le global buildings index (trop volumineux, ~70 MB).
+> Les places (`<region>-places.json`, ~100 KB) sont en revanche bakées
+> dans l'image (Posture 4) avec un check runtime qui télécharge la
+> dernière release `places-v*` si plus récente. Cf. §7quinquies.
 
 Autres variables (`MAPPY_FORCE_CACHE_ONLY=true`, `MAPPY_DATA_ROOT=/data`,
 `NODE_ENV=production`) sont déjà fixées dans `docker-compose.yml` — l'image est immuable
@@ -506,45 +506,115 @@ re-scan les hashes disponibles (`findCachedModelVersionHash`).
 
 ---
 
-## 7ter. Migration d'une install existante — ajout des bind-mounts buildings + places
+## 7ter. Migration d'une install existante — ajout du bind-mount buildings
 
 À faire **une seule fois** sur les hôtes déployés **avant le 2026-05-12** (avant
-l'introduction des bind-mounts `MAPPY_BUILDINGS_PATH` et `MAPPY_PLACES_PATH`).
-Sans ça, l'overlay terrasses est vide (le SSE `event: places` ne sort pas) et
-toute tentative de re-précompute manque l'index buildings global.
+l'introduction du bind-mount `MAPPY_BUILDINGS_PATH`). Sans ça, toute
+tentative de re-précompute manque l'index buildings global.
+
+> **Note Posture 4** : si tu migres depuis une install qui utilisait
+> `MAPPY_PLACES_PATH`, supprime-la du `.env` — les places sont
+> maintenant bakées dans l'image (§7quinquies). Tu peux aussi
+> supprimer `C:\mappy-data\processed\places` côté host, il n'est plus lu.
 
 ```powershell
 # Sur Mitch, en session kiosque (ou SSH vers kiosque)
 
-# 1) Créer les répertoires host
+# 1) Créer le répertoire host
 New-Item -ItemType Directory -Force C:\mappy-data\processed\buildings | Out-Null
-New-Item -ItemType Directory -Force C:\mappy-data\processed\places    | Out-Null
 
-# 2) Étendre le .env existant
+# 2) Étendre le .env existant (et retirer MAPPY_PLACES_PATH si présent)
 $envPath = "C:\srv\mappy-hour\.env"
 Add-Content -Path $envPath -Value "MAPPY_BUILDINGS_PATH=/mnt/c/mappy-data/processed/buildings"
-Add-Content -Path $envPath -Value "MAPPY_PLACES_PATH=/mnt/c/mappy-data/processed/places"
+# Optionnel : nettoyer l'ancienne var places
+(Get-Content $envPath) | Where-Object { $_ -notmatch '^MAPPY_PLACES_PATH=' } | Set-Content $envPath
 
-# 3) Pull du compose à jour (déjà fait si deploy-mitch.yml a tourné depuis 5527a40)
+# 3) Pull du compose à jour
 Set-Location C:\srv\mappy-hour
 git pull --ff-only
 
 # 4) Recréer le container avec la nouvelle config (pas juste restart — le bind-mount change)
 wsl -d Ubuntu -u root -e bash -c 'cd /mnt/c/srv/mappy-hour && docker compose up -d --force-recreate mappy-hour'
 
-# 5) Peupler les bind-mounts via le profil loader (download depuis la release latest)
-wsl -d Ubuntu -u root -e bash -c 'cd /mnt/c/srv/mappy-hour && docker compose --profile loader run --rm atlas-loader --repo=salfab/mappy-hour --release=latest'
-# Pour aussi récupérer le global buildings index (~70 MB) :
-# ... atlas-loader --repo=salfab/mappy-hour --release=latest --with-buildings
-
-# 6) Verif : le fichier places doit être présent côté host
-Get-ChildItem C:\mappy-data\processed\places
-# → lausanne-places.json (et nyon-places.json si la release l'inclut)
+# 5) Peupler le bind-mount buildings via le profil loader si re-précompute prévu
+wsl -d Ubuntu -u root -e bash -c 'cd /mnt/c/srv/mappy-hour && docker compose --profile loader run --rm atlas-loader --repo=salfab/mappy-hour --release=latest --with-buildings'
 ```
 
 > **Note** : `docker compose up -d --force-recreate` (étape 4) est obligatoire
 > à cause du changement de spec volumes. Un simple `restart` ne réapplique pas
 > les bind-mounts.
+
+---
+
+## 7quinquies. Lifecycle places (Posture 4)
+
+Depuis Posture 4, les fichiers OSM places (~100 KB) suivent un modèle
+**baked image + fail-soft startup check** :
+
+1. **Build time** : le workflow `Publish places` (manual ou cron hebdo
+   le lundi 03:00 UTC) régénère le combined `places.json` via Overpass
+   et publie une GitHub release `places-vX.Y.Z`. Le workflow
+   `Build & publish Docker image` est chaîné dessus (`workflow_run`)
+   et bake les places dans l'image via une layer dédiée près de la
+   fin (cache-friendly).
+
+2. **Container startup** : `docker-entrypoint.sh` copie les fichiers
+   bakés dans un tmpfs writable (`/data/processed/places`,
+   `size=4m`), puis lance `scripts/runtime/check-places-update.mjs`.
+
+3. **Runtime check** (résilience garantie) :
+   - Timeout dur **5 secondes** via `AbortController`.
+   - Catch sur **toutes** les classes d'erreur (DNS, réseau, HTTP,
+     parse, disque).
+   - Process-level guards : `uncaughtException` + `unhandledRejection`
+     → warn + exit 0.
+   - **Exit 0 quoi qu'il arrive.** Le serveur Next.js démarre toujours,
+     y compris en offline/airgapped.
+
+4. **Garanties** : l'image reste source de vérité stricte. Le check
+   runtime est un raccourci pour propager une nouvelle release places
+   sans attendre le rebuild d'image (ex. corrections rapides Overpass).
+
+### Publier une nouvelle release places
+
+```bash
+# Manuel (depuis la dev box) — par défaut --draft
+pnpm places:publish -- --bump=patch
+
+# Auto-publié (workflow_dispatch)
+gh workflow run "Publish places" --field bump=patch
+
+# Cron hebdo (automatique tous les lundis 03:00 UTC, bump=patch)
+```
+
+La première release `places-v*` doit être créée manuellement par
+l'opérateur (le workflow scheduled prend la relève ensuite).
+
+### Vérifier la version places en cours dans un container
+
+```bash
+# Inspecter rapidement la version chargée
+docker exec mappy-hour cat /data/processed/places/places.json | head -c 200
+
+# Logs du startup check
+docker logs mappy-hour 2>&1 | grep '\[places-check\]'
+# Attendu :
+#   [places-check] baked version: 0.1.3
+#   [places-check] baked is up-to-date (latest published = 0.1.3)
+# ou si une nouvelle release a été publiée entre 2 rebuilds :
+#   [places-check] newer release available: 0.1.4 > baked
+#   [places-check] updated to version 0.1.4 from release places-v0.1.4
+```
+
+### Tester le fail-soft offline
+
+```bash
+docker run --rm \
+  -e MAPPY_PLACES_RELEASE_API_BASE=https://api.invalid-host-for-test.example/repos/x/y/releases \
+  ghcr.io/salfab/mappy-hour:latest \
+  node /app/scripts/runtime/check-places-update.mjs
+# Doit logger un warning DNS et exit 0.
+```
 
 ---
 
