@@ -11,6 +11,14 @@ import type {
 } from "leaflet";
 import type { CacheRunDetailResponse } from "@/lib/admin/cache-run-detail";
 import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
+import { BitmapTileOverlay } from "@/components/sunlight-overlay/bitmap-tile-overlay";
+import { paintTileImageData } from "@/components/sunlight-overlay/paint-tile";
+import {
+  selectRenderStrategy,
+  shouldRerasterize,
+  type RenderMode,
+} from "@/components/sunlight-overlay/render-strategy";
+import { useModeOverride } from "@/components/sunlight-overlay/use-mode-override";
 import { BarsList } from "@/components/map-ui/bars-list";
 import {
   CalculationControls,
@@ -1237,6 +1245,52 @@ const CANVAS_OVERLAY_THRESHOLD = 10_000;
 const SUNNY_RGBA = [250, 204, 21, 180] as const; // yellow-400 @ 70%
 const SHADOW_RGBA = [100, 116, 139, 160] as const; // slate-500 @ 63%
 
+// Phase 2 overlay LOD: shared palette (used by paint-tile.ts when rendering
+// bitmap tiles). Mirrors SUNNY_RGBA / SHADOW_RGBA + an indoor-grey color
+// matching the legacy vector mode building footprint blue tint.
+const PAINT_TILE_PALETTE = {
+  sunny: { r: SUNNY_RGBA[0], g: SUNNY_RGBA[1], b: SUNNY_RGBA[2], a: SUNNY_RGBA[3] },
+  shadow: { r: SHADOW_RGBA[0], g: SHADOW_RGBA[1], b: SHADOW_RGBA[2], a: SHADOW_RGBA[3] },
+  indoor: { r: 37, g: 99, b: 235, a: 50 }, // blue-600 @ 20% — match buildings layer
+};
+
+const SUNLIGHT_TILE_SIZE_METERS = 250;
+
+/**
+ * Count how many `tiles` intersect the current viewport `bounds`. Used by the
+ * Phase 2 render-strategy LOD to choose vector vs bitmap. If `bounds` is
+ * missing (pre-mount), fall back to the unfiltered tile count.
+ */
+function countVisibleTiles(
+  tiles: TimelineTile[],
+  bounds: L.LatLngBounds | null,
+): number {
+  if (!bounds) return tiles.length;
+  let n = 0;
+  for (const t of tiles) {
+    if (!t.tileCorners) {
+      // Without corners we can't cull cheaply — count it as visible.
+      n++;
+      continue;
+    }
+    const c = t.tileCorners;
+    const tileMinLat = Math.min(c.nw.lat, c.ne.lat, c.sw.lat, c.se.lat);
+    const tileMaxLat = Math.max(c.nw.lat, c.ne.lat, c.sw.lat, c.se.lat);
+    const tileMinLon = Math.min(c.nw.lon, c.ne.lon, c.sw.lon, c.se.lon);
+    const tileMaxLon = Math.max(c.nw.lon, c.ne.lon, c.sw.lon, c.se.lon);
+    // AABB ∩ AABB
+    if (
+      tileMaxLat >= bounds.getSouth() &&
+      tileMinLat <= bounds.getNorth() &&
+      tileMaxLon >= bounds.getWest() &&
+      tileMinLon <= bounds.getEast()
+    ) {
+      n++;
+    }
+  }
+  return n;
+}
+
 interface SunShadowGrid {
   /** Pixel coordinates for each tile's outdoor points (tile index → array of {x, y, outdoorIndex}) */
   tilePixelMaps: Array<{ x: number; y: number }[]>;
@@ -2129,6 +2183,18 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const perTileOverlaysRef = useRef<Map<string, PerTileOverlay>>(new Map());
   const perTileHeatmapOverlaysRef = useRef<Map<string, PerTileOverlay>>(new Map());
   const contourLayerRef = useRef<L.LayerGroup | null>(null);
+  // ── Phase 2 overlay LOD ──────────────────────────────────────────────────
+  // Bitmap overlays keyed by tileId. Each owns its <canvas>, ctx, and the CSS
+  // matrix transform. Lifecycle: created on first paint, repainted on slider /
+  // re-rasterize, transform refreshed on map move/zoom, disposed when the
+  // tile leaves the timeline or the user re-enters vector mode.
+  const bitmapOverlaysRef = useRef<Map<string, BitmapTileOverlay>>(new Map());
+  // Stores the strategy's last-chosen mode so the next call can apply
+  // hysteresis. Read in the useMemo below, written after the strategy runs.
+  const previousRenderModeRef = useRef<RenderMode | null>(null);
+  // Logged DPR (captured once after mount — SSR-safe). Tracked separately so
+  // it doesn't trigger renders.
+  const dprRef = useRef<number>(1);
   const ignoreVegetationShadowRef = useRef(false);
   const sunnyLayerRef = useRef<LayerGroup | null>(null);
   const shadowLayerRef = useRef<LayerGroup | null>(null);
@@ -2223,6 +2289,45 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     () => (deepLinkParamsFromUrl ? deepLinkToken(deepLinkParamsFromUrl) : null),
     [deepLinkParamsFromUrl],
   );
+
+  // ── Phase 2 overlay LOD: state ──────────────────────────────────────────
+  // Map zoom & viewport-tile-count drive the vector ↔ bitmap decision. We
+  // track them as state (not refs) so the strategy memo can be a useMemo —
+  // changes here flow through to the rendering effects below.
+  const [mapZoom, setMapZoom] = useState<number | null>(null);
+  const [mapBounds, setMapBounds] = useState<L.LatLngBounds | null>(null);
+  const [modeOverride] = useModeOverride({ forceEnable: true });
+
+  // Capture DPR once after mount (SSR-safe).
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      dprRef.current = window.devicePixelRatio || 1;
+    }
+  }, []);
+
+  const renderStrategy = useMemo(() => {
+    const tiles = dailyTimeline?.tiles ?? [];
+    // tileNativeSizePx = grid_size_m × cells_per_meter. Tile = 250m,
+    // grid_step = 1m typically → 250 cells. Use the first tile's grid
+    // width as the actual native size if available.
+    const sample = tiles.find((t) => t.grid);
+    const tileNativeSizePx = sample?.grid?.width ?? 250;
+    const zoom = mapZoom ?? 18;
+    const visibleTileCount = countVisibleTiles(tiles, mapBounds);
+    const out = selectRenderStrategy({
+      zoom,
+      visibleTileCount,
+      devicePixelRatio: dprRef.current,
+      tileSizeMeters: SUNLIGHT_TILE_SIZE_METERS,
+      tileNativeSizePx,
+      previousMode: previousRenderModeRef.current,
+    });
+    previousRenderModeRef.current = out.mode;
+    return out;
+  }, [dailyTimeline, mapZoom, mapBounds]);
+
+  // Effective mode: user override (Shift+B/V) wins; null = follow strategy.
+  const effectiveRenderMode: RenderMode = modeOverride ?? renderStrategy.mode;
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -3007,7 +3112,21 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           lon: Number(center.lng.toFixed(6)),
           zoom: map.getZoom(),
         });
+        // Phase 2 overlay LOD: keep strategy inputs fresh.
+        setMapBounds(map.getBounds());
+        setMapZoom(map.getZoom());
+        // Refresh bitmap overlay transforms (cheap; no repaint).
+        for (const overlay of bitmapOverlaysRef.current.values()) {
+          overlay.updateTransform(map);
+        }
       });
+      map.on("zoomend", () => {
+        setMapZoom(map.getZoom());
+        setMapBounds(map.getBounds());
+      });
+      // Initialize on first ready
+      setMapZoom(map.getZoom());
+      setMapBounds(map.getBounds());
     };
 
     void initMap();
@@ -3384,6 +3503,8 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         ov.overlay.remove();
       }
       perTileOverlaysRef.current.clear();
+      for (const ov of bitmapOverlaysRef.current.values()) ov.dispose();
+      bitmapOverlaysRef.current.clear();
       sunShadowGridRef.current = null;
       return;
     }
@@ -3402,6 +3523,8 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         ov.overlay.remove();
       }
       perTileOverlaysRef.current.clear();
+      for (const ov of bitmapOverlaysRef.current.values()) ov.dispose();
+      bitmapOverlaysRef.current.clear();
       if (contourLayerRef.current) {
         contourLayerRef.current.clearLayers();
       }
@@ -3416,10 +3539,91 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     const map = mapRef.current;
     if (!map) return;
 
-    // Vectorial contour rendering: marching squares produces ~20-50 polygons
-    // per tile, positioned vertex-by-vertex via bilinear interpolation from
-    // tile corners → pixel-perfect alignment, no canvas stretching artifacts.
-    const useVectorial = dailyTimeline.tiles.some(t => t.tileCorners);
+    // ── Phase 2 overlay LOD: strategy-driven mode selection ───────────────
+    // Replaces the binary `tiles.some(t => t.tileCorners)` toggle. We still
+    // require tileCorners (without them neither pipeline can place the tile
+    // precisely) — when they're missing we fall through to the legacy
+    // per-tile L.imageOverlay branch further down.
+    const hasCorners = dailyTimeline.tiles.some((t) => t.tileCorners);
+    const useVectorial = hasCorners && effectiveRenderMode === "vector";
+    const useBitmapTileOverlay = hasCorners && effectiveRenderMode === "bitmap";
+
+    // Clean up the OTHER mode's overlays each time the effect runs.
+    if (useVectorial || useBitmapTileOverlay) {
+      // Dispose bitmap overlays if we're not in bitmap mode this pass.
+      if (!useBitmapTileOverlay) {
+        for (const ov of bitmapOverlaysRef.current.values()) ov.dispose();
+        bitmapOverlaysRef.current.clear();
+      }
+    }
+
+    if (useBitmapTileOverlay) {
+      // Clean up vector contour layer + legacy per-tile overlays.
+      if (contourLayerRef.current) contourLayerRef.current.clearLayers();
+      for (const ov of perTileOverlaysRef.current.values()) {
+        const customImg = (ov.overlay as unknown as { _customImg?: HTMLElement })._customImg;
+        if (customImg) customImg.remove();
+        ov.overlay.remove();
+      }
+      perTileOverlaysRef.current.clear();
+
+      const pane = map.getPane("overlayPane");
+      if (!pane) return;
+      const targetRes = renderStrategy.bitmapResolution;
+      const dpr = dprRef.current;
+      const activeTileIds = new Set<string>();
+
+      for (const tile of dailyTimeline.tiles) {
+        if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) continue;
+        activeTileIds.add(tile.tileId);
+
+        let overlay = bitmapOverlaysRef.current.get(tile.tileId);
+        // Re-rasterize if resolution drifted by > 50% (zoom changed enough).
+        if (overlay && shouldRerasterize(overlay.bitmapResolution, targetRes)) {
+          overlay.dispose();
+          overlay = undefined;
+        }
+        if (!overlay) {
+          overlay = new BitmapTileOverlay({
+            tileId: tile.tileId,
+            corners: tile.tileCorners,
+            bitmapResolution: targetRes,
+            devicePixelRatio: dpr,
+            container: pane,
+          });
+          bitmapOverlaysRef.current.set(tile.tileId, overlay);
+        }
+
+        // Paint current frame.
+        const sunMask = getTileMask(tile, dailyFrameIndex, ignoreVegetationShadow, decodedTimelineMaskCacheRef.current);
+        if (!sunMask) continue;
+        const outdoorMask = getTileOutdoorMask(tile, decodedTimelineMaskCacheRef.current);
+        const img = paintTileImageData({
+          width: targetRes,
+          height: targetRes,
+          gridWidth: tile.grid.width,
+          gridHeight: tile.grid.height,
+          mode: {
+            kind: "sunShadow",
+            sunMask,
+            outdoorMask,
+            palette: PAINT_TILE_PALETTE,
+          },
+          downsampleMode: "box",
+        });
+        overlay.paint(img);
+        overlay.updateTransform(map);
+      }
+
+      // Dispose overlays whose tile is no longer present.
+      for (const [id, ov] of bitmapOverlaysRef.current) {
+        if (!activeTileIds.has(id)) {
+          ov.dispose();
+          bitmapOverlaysRef.current.delete(id);
+        }
+      }
+      return; // bitmap path complete
+    }
 
     if (useVectorial) {
       // Clean up canvas overlays
@@ -3619,7 +3823,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         ov.overlay.setUrl(dataUrl);
       }
     }
-  }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showShadow, showSunny]);
+  }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showShadow, showSunny, effectiveRenderMode, renderStrategy.bitmapResolution]);
 
   // Canvas heatmap for large grids
   useEffect(() => {
@@ -4748,6 +4952,19 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           Mappy Hour
         </div>
         {desktopSearch}
+        {/* Phase 2 overlay LOD debug badge — shows effective render mode
+            and whether the user is overriding the strategy (Shift+B/V/R).
+            Always rendered (the keyboard listener itself is dev-gated via
+            useModeOverride's NODE_ENV check, but we use forceEnable=true so
+            QA can A/B in any build by adding ?debug-overlay=1 later if
+            wanted). Costs ~30 bytes of DOM and zero JS work. */}
+        <div
+          className="rounded-full border border-white/40 bg-slate-900/75 px-3 py-1 text-xs font-mono text-white shadow-md backdrop-blur"
+          title="Phase 2 overlay LOD — Shift+B bitmap, Shift+V vector, Shift+R reset"
+        >
+          {effectiveRenderMode}
+          {modeOverride !== null ? " (forced)" : ""}
+        </div>
       </div>
 
       <div className="absolute left-5 top-20 z-[450] hidden max-h-[calc(100dvh-104px)] w-[360px] gap-4 overflow-y-auto rounded-3xl border border-white/70 bg-white/90 p-4 text-slate-900 shadow-2xl backdrop-blur lg:grid">

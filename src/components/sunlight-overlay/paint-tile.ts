@@ -52,7 +52,41 @@ export interface PaintTilePalette {
 
 export type DownsampleMode = "box" | "max-shadow";
 
-export interface PaintTileInput {
+/**
+ * Discriminated paint mode. Phase 2 added `heatmap` so the global
+ * exposure-ratio canvas (formerly painted inline in `sunlight-map-client.tsx`)
+ * can share the same tile-walking routine as the sun/shadow path.
+ *
+ *   - "sunShadow": bit-packed sunMask → palette.sunny / palette.shadow, optional
+ *     indoor masking via outdoorMask.
+ *   - "heatmap":   one Float32 per native cell (NaN ⇒ indoor / no data), color
+ *     comes from a caller-supplied mapping function. Used by Pipeline C.
+ */
+export type PaintMode =
+  | {
+      kind: "sunShadow";
+      sunMask: Uint8Array;
+      outdoorMask?: Uint8Array;
+      palette: PaintTilePalette;
+    }
+  | {
+      kind: "heatmap";
+      /** One value per native cell, length `gridWidth*gridHeight`. Cell order
+       *  is `iy*gridWidth + ix` with `iy=0` south. `NaN` ⇒ indoor / no data
+       *  ⇒ leaves the pixel fully transparent. */
+      exposureGrid: Float32Array;
+      mapExposureToRGBA: (exposure: number) => RGBA;
+    };
+
+/**
+ * Phase 2 input shape: takes a discriminated `mode`.
+ *
+ * Backward compatibility: the legacy flat shape (with `sunMask`, `outdoorMask`,
+ * `palette` at top level) is still accepted by `paintTileImageData` so we can
+ * migrate call sites incrementally. The flat form is internally normalized to
+ * `{ kind: "sunShadow", ... }`.
+ */
+export interface PaintTileInputV2 {
   /** Output canvas width in pixels. Must be ≤ `gridWidth`. */
   width: number;
   /** Output canvas height in pixels. Must be ≤ `gridHeight`. */
@@ -61,13 +95,22 @@ export interface PaintTileInput {
   gridWidth: number;
   /** Native cells along y. */
   gridHeight: number;
-  /** Bit-packed sun mask, length `ceil(gridWidth*gridHeight / 8)`. */
+  mode: PaintMode;
+  /** Default `"box"`. Only relevant when width<gridWidth or height<gridHeight.
+   *  Ignored in `heatmap` mode (always uses average). */
+  downsampleMode?: DownsampleMode;
+}
+
+/** Legacy shape kept for backward compat. Equivalent to a `PaintTileInputV2`
+ *  with `mode = { kind: "sunShadow", sunMask, outdoorMask, palette }`. */
+export interface PaintTileInput {
+  width: number;
+  height: number;
+  gridWidth: number;
+  gridHeight: number;
   sunMask: Uint8Array;
-  /** Optional bit-packed outdoor mask. Bit=1 ⇒ outdoor. Missing ⇒ all cells
-   *  treated as outdoor. */
   outdoorMask?: Uint8Array;
   palette: PaintTilePalette;
-  /** Default `"box"`. Only relevant when width<gridWidth or height<gridHeight. */
   downsampleMode?: DownsampleMode;
 }
 
@@ -88,17 +131,34 @@ function makeImageData(width: number, height: number): ImageData {
   return { data, width, height, colorSpace: "srgb" } as unknown as ImageData;
 }
 
-export function paintTileImageData(input: PaintTileInput): ImageData {
-  const {
-    width,
-    height,
-    gridWidth,
-    gridHeight,
-    sunMask,
-    outdoorMask,
-    palette,
-    downsampleMode = "box",
-  } = input;
+function isV2Input(
+  input: PaintTileInput | PaintTileInputV2,
+): input is PaintTileInputV2 {
+  return (input as PaintTileInputV2).mode !== undefined;
+}
+
+export function paintTileImageData(
+  input: PaintTileInput | PaintTileInputV2,
+): ImageData {
+  // Normalize legacy flat shape into the discriminated form.
+  const v2: PaintTileInputV2 = isV2Input(input)
+    ? input
+    : {
+        width: input.width,
+        height: input.height,
+        gridWidth: input.gridWidth,
+        gridHeight: input.gridHeight,
+        mode: {
+          kind: "sunShadow",
+          sunMask: input.sunMask,
+          outdoorMask: input.outdoorMask,
+          palette: input.palette,
+        },
+        downsampleMode: input.downsampleMode,
+      };
+
+  const { width, height, gridWidth, gridHeight, mode } = v2;
+  const downsampleMode: DownsampleMode = v2.downsampleMode ?? "box";
 
   if (width <= 0 || height <= 0) {
     throw new Error(`paintTileImageData: invalid output size ${width}×${height}`);
@@ -134,42 +194,64 @@ export function paintTileImageData(input: PaintTileInput): ImageData {
       const ixStart = Math.floor(ixStartF + 1e-9);
       const ixEnd = Math.min(gridWidth, Math.ceil(ixEndF - 1e-9));
 
-      let outdoorCount = 0;
-      let indoorCount = 0;
-      let sunnyCount = 0;
-      let anyShadow = false;
+      let color: RGBA | null = null;
 
-      for (let iy = iyStart; iy < iyEnd; iy++) {
-        for (let ix = ixStart; ix < ixEnd; ix++) {
-          const cellIdx = iy * gridWidth + ix;
-          const isOutdoor = outdoorMask ? readBit(outdoorMask, cellIdx) === 1 : true;
-          if (!isOutdoor) {
-            indoorCount++;
-            continue;
-          }
-          outdoorCount++;
-          const isSunny = readBit(sunMask, cellIdx) === 1;
-          if (isSunny) {
-            sunnyCount++;
-          } else {
-            anyShadow = true;
+      if (mode.kind === "sunShadow") {
+        const { sunMask, outdoorMask, palette } = mode;
+        let outdoorCount = 0;
+        let indoorCount = 0;
+        let sunnyCount = 0;
+        let anyShadow = false;
+
+        for (let iy = iyStart; iy < iyEnd; iy++) {
+          for (let ix = ixStart; ix < ixEnd; ix++) {
+            const cellIdx = iy * gridWidth + ix;
+            const isOutdoor = outdoorMask
+              ? readBit(outdoorMask, cellIdx) === 1
+              : true;
+            if (!isOutdoor) {
+              indoorCount++;
+              continue;
+            }
+            outdoorCount++;
+            const isSunny = readBit(sunMask, cellIdx) === 1;
+            if (isSunny) {
+              sunnyCount++;
+            } else {
+              anyShadow = true;
+            }
           }
         }
-      }
 
-      let color: RGBA;
-      if (outdoorCount === 0 && indoorCount > 0) {
-        // Entirely indoor — use indoor color.
-        color = palette.indoor;
-      } else if (outdoorCount === 0) {
-        // No source cell at all (shouldn't happen given the loop bounds, but
-        // be safe). Render shadow so we don't leak the canvas background.
-        color = palette.shadow;
-      } else if (downsampleMode === "max-shadow") {
-        color = anyShadow ? palette.shadow : palette.sunny;
+        if (outdoorCount === 0 && indoorCount > 0) {
+          color = palette.indoor;
+        } else if (outdoorCount === 0) {
+          color = palette.shadow;
+        } else if (downsampleMode === "max-shadow") {
+          color = anyShadow ? palette.shadow : palette.sunny;
+        } else {
+          color = sunnyCount * 2 >= outdoorCount ? palette.sunny : palette.shadow;
+        }
       } else {
-        // "box" — threshold sunny fraction at 0.5.
-        color = sunnyCount * 2 >= outdoorCount ? palette.sunny : palette.shadow;
+        // heatmap: aggregate exposure values, ignoring NaN (indoor / no-data).
+        const { exposureGrid, mapExposureToRGBA } = mode;
+        let sum = 0;
+        let count = 0;
+        for (let iy = iyStart; iy < iyEnd; iy++) {
+          for (let ix = ixStart; ix < ixEnd; ix++) {
+            const v = exposureGrid[iy * gridWidth + ix];
+            if (!Number.isNaN(v)) {
+              sum += v;
+              count++;
+            }
+          }
+        }
+        if (count > 0) {
+          color = mapExposureToRGBA(sum / count);
+        } else {
+          // All cells are NaN (indoor / missing). Leave transparent.
+          color = { r: 0, g: 0, b: 0, a: 0 };
+        }
       }
 
       const off = (py * width + px) * 4;

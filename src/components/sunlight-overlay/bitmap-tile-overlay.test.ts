@@ -83,7 +83,7 @@ afterEach(() => {
 });
 
 describe("BitmapTileOverlay", () => {
-  it("creates a canvas, sizes it, and appends it to the provided container", () => {
+  it("creates a canvas, sizes it (DPR-scaled physical, CSS logical), and appends it to the provided container", () => {
     const container = makeFakeElement("div");
     const overlay = new BitmapTileOverlay({
       tileId: "tile-001",
@@ -95,8 +95,13 @@ describe("BitmapTileOverlay", () => {
 
     expect(container.children.length).toBe(1);
     expect(container.children[0].tagName).toBe("CANVAS");
-    expect(container.children[0].width).toBe(128);
-    expect(container.children[0].height).toBe(128);
+    // Physical buffer = bitmapResolution × DPR.
+    expect(container.children[0].width).toBe(256);
+    expect(container.children[0].height).toBe(256);
+    // CSS dimensions stay at the logical resolution — the CSS matrix maps
+    // these onto the 4 tile corners regardless of DPR.
+    expect(container.children[0].style.width).toBe("128px");
+    expect(container.children[0].style.height).toBe("128px");
     expect(container.children[0].dataset.tileId).toBe("tile-001");
     expect(container.children[0].style.position).toBe("absolute");
     expect(container.children[0].style.imageRendering).toBe("pixelated");

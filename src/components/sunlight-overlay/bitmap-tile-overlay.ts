@@ -69,9 +69,24 @@ export class BitmapTileOverlay {
     this.devicePixelRatio = opts.devicePixelRatio;
     this.container = opts.container;
 
+    // ── DPR split between physical and CSS dimensions ──────────────────────
+    // The canvas's INTRINSIC pixel size is `bitmapResolution × dpr` — that's
+    // how many real pixels we actually draw (more pixels = sharper on HiDPI).
+    //
+    // Its CSS (logical) size is `bitmapResolution` — that's what the CSS
+    // matrix maps onto the 4 tile-edge corners. Decoupling the two means
+    // the CSS transform doesn't change when DPR changes; only the canvas's
+    // intrinsic buffer does.
+    //
+    // The transform produced by `cornersToMatrix(..., bitmapResolution, ...)`
+    // therefore maps LOGICAL canvas coords to layer points. The browser then
+    // applies its own DPR scaling when rasterizing the canvas content.
     const canvas = document.createElement("canvas") as HTMLCanvasElement;
-    canvas.width = opts.bitmapResolution;
-    canvas.height = opts.bitmapResolution;
+    const dpr = Math.max(1, opts.devicePixelRatio || 1);
+    canvas.width = Math.round(opts.bitmapResolution * dpr);
+    canvas.height = Math.round(opts.bitmapResolution * dpr);
+    canvas.style.width = `${opts.bitmapResolution}px`;
+    canvas.style.height = `${opts.bitmapResolution}px`;
     canvas.dataset.tileId = opts.tileId;
     canvas.style.position = "absolute";
     canvas.style.left = "0";
@@ -98,10 +113,12 @@ export class BitmapTileOverlay {
    *  on every Leaflet `move`/`zoom` event. */
   updateTransform(map: MapLike): void {
     if (this.disposed) return;
+    // Map LOGICAL (CSS) dimensions onto the 4 corners — not the physical
+    // pixel dims. See constructor comment for the DPR decoupling rationale.
     const m = cornersToMatrix(
       this.corners,
-      this.canvas.width,
-      this.canvas.height,
+      this.bitmapResolution,
+      this.bitmapResolution,
       map,
     );
     this.canvas.style.transform = formatCSSMatrix(m);
