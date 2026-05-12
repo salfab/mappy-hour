@@ -4538,6 +4538,25 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         pendingTilesRef.current.push(tileEntry);
         pendingStatsRef.current.gridPointCount += data.gridPointCount;
         pendingStatsRef.current.indoorPointsExcluded += data.indoorPointsExcluded;
+        // Per-tile progress update — the SSE backend only emits `event: progress`
+        // for indeterminate phases (loading-cache etc.). Once tiles start
+        // streaming there's no explicit progress event, so the slider would
+        // jump 0 → 100 % at `event: done`. Compute progress from tileIndex /
+        // totalTiles directly so the slider fill advances smoothly.
+        if (typeof data.totalTiles === "number" && data.totalTiles > 0) {
+          const doneCount = data.tileIndex + 1;
+          const tileFraction = Math.min(1, doneCount / data.totalTiles);
+          setDailyProgress((previous) => ({
+            phase: "computing",
+            done: doneCount,
+            total: data.totalTiles,
+            percent: tileFraction * 100,
+            tileIndex: doneCount,
+            totalTiles: data.totalTiles,
+            etaSeconds: previous?.etaSeconds ?? null,
+            elapsedMs: previous?.elapsedMs,
+          }));
+        }
         const msSinceFlush = performance.now() - lastTileFlushRef.current;
         if (msSinceFlush > 3000 || pendingTilesRef.current.length >= 5) {
           flushPendingTiles();
@@ -4812,16 +4831,27 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     return () => window.clearTimeout(timeout);
   }, [bottomSheetState, isMobileBarsOpen]);
 
+  // Compute progress for the slider fill — null = indeterminate, undefined = idle.
+  // Daily run uses tile-arrival progress (incremental). Phases without a known
+  // tile total ⇒ null (animated stripe).
+  const timelineComputeProgress: number | null | undefined =
+    mode === "daily" && dailyProgress
+      ? dailyProgress.phase === "loading-cache" ||
+        dailyProgress.phase === "loading-scene" ||
+        dailyProgress.phase === "reconnecting"
+        ? null
+        : Math.max(0, Math.min(100, dailyProgress.percent))
+      : undefined;
+
   const timelineControl = (
     <TimeSlider
       mode={mode}
       activeFrameTime={activeFrameTime}
       frameCount={dailyTimeline?.frameCount ?? 0}
-      tileCount={dailyTimeline?.tiles.length ?? 0}
-      pointCount={dailyTimeline?.pointCount ?? 0}
       frameIndex={dailyFrameIndex}
       disabled={!dailyTimeline || dailyTimeline.tiles.length === 0}
       onFrameIndexChange={setDailyFrameIndex}
+      computeProgress={timelineComputeProgress}
     />
   );
 

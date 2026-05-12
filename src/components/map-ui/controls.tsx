@@ -53,11 +53,16 @@ interface TimeSliderProps {
   mode: AreaMode;
   activeFrameTime: string | null;
   frameCount: number;
-  tileCount: number;
-  pointCount: number;
   frameIndex: number;
   disabled: boolean;
   onFrameIndexChange: (value: number) => void;
+  /**
+   * Compute progress in [0, 100], or null when indeterminate (loading-cache /
+   * loading-scene / reconnecting phases where no tile count is known yet).
+   * Pass `undefined` to render the slider track in its default solid color
+   * (idle state, no run in flight).
+   */
+  computeProgress?: number | null;
 }
 
 interface ProgressStatusProps {
@@ -208,28 +213,32 @@ function DaySelector(props: {
 }
 
 export function CalculationControls(props: CalculationControlsProps) {
+  // Single morphing button : `Calculer` while idle, `Interrompre` while a daily
+  // run is in flight. Same DOM slot → zero layout shift when the run starts.
+  // (Previously a secondary rose button appeared underneath, pushing every
+  // other panel row down by ~52 px on the precise moment the user wanted
+  // to focus on the slider that was about to appear.)
+  const isCancelMode = props.mode === "daily" && props.isLoading;
+  const disabled = !isCancelMode && (props.isLoading || (props.mode === "daily" && props.isDailyRangeInvalid));
+
   return (
     <div className="grid gap-3">
       <div className="flex flex-wrap items-center gap-3">
         <DaySelector date={props.date} onDateChange={props.onDateChange} />
         <button
           type="button"
-          className="min-h-14 rounded-[1.35rem] bg-amber-400 px-5 py-3 text-base font-semibold text-white shadow-sm shadow-amber-300/40 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
-          onClick={props.onRunCalculation}
-          disabled={props.isLoading || (props.mode === "daily" && props.isDailyRangeInvalid)}
+          className={`min-h-14 rounded-[1.35rem] px-5 py-3 text-base font-semibold text-white shadow-sm transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 ${
+            isCancelMode
+              ? "bg-rose-500 shadow-rose-400/40 hover:bg-rose-400"
+              : "bg-amber-400 shadow-amber-300/40 hover:bg-amber-300"
+          }`}
+          onClick={isCancelMode ? props.onCancelDailyCalculation : props.onRunCalculation}
+          disabled={disabled}
+          aria-label={isCancelMode ? "Interrompre le calcul" : "Calculer l'ensoleillement"}
         >
-          {props.isLoading ? "Calcul..." : "Calculer"}
+          {isCancelMode ? "Interrompre" : props.isLoading ? "Calcul..." : "Calculer"}
         </button>
       </div>
-      {props.mode === "daily" && props.isLoading ? (
-        <button
-          type="button"
-          className="rounded-xl bg-rose-500 px-4 py-2 font-semibold text-white shadow-sm transition hover:bg-rose-400"
-          onClick={props.onCancelDailyCalculation}
-        >
-          Interrompre
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -307,6 +316,27 @@ export function TimeSlider(props: TimeSliderProps) {
   }
 
   const max = Math.max(0, props.frameCount - 1);
+  const { computeProgress } = props;
+
+  // Compute progress is rendered as a colored fill UNDER the slider track.
+  // Indeterminate (null) → striped + animated. Determinate → static amber fill
+  // matching `computeProgress` %. No more "Tuiles recues: X, Y points" line —
+  // it caused layout shift every tile flush and the slider fill now carries the
+  // same info more cleanly (Phase 2 UX 2026-05-12).
+  const showProgress = computeProgress !== undefined;
+  const fillStyle: React.CSSProperties = {};
+  let fillClass = "h-full bg-amber-300";
+  if (showProgress) {
+    if (computeProgress === null) {
+      // Indeterminate — animated diagonal stripes
+      fillClass = "h-full w-full animate-pulse bg-amber-200";
+    } else {
+      fillStyle.width = `${Math.max(0, Math.min(100, computeProgress))}%`;
+    }
+  } else {
+    // Idle / no run in flight — solid full amber so the slider doesn't look broken
+    fillStyle.width = "100%";
+  }
 
   return (
     <div className="grid gap-2 text-sm">
@@ -316,25 +346,36 @@ export function TimeSlider(props: TimeSliderProps) {
           {props.activeFrameTime ?? "--:--:--"}
         </span>
       </div>
-      <input
-        className="accent-amber-300"
-        type="range"
-        min={0}
-        max={max}
-        step={1}
-        value={Math.min(props.frameIndex, max)}
-        onChange={(event) => props.onFrameIndexChange(Number(event.target.value))}
-        disabled={props.disabled}
-      />
-      <p className="text-xs text-slate-500">
-        Tuiles recues: {props.tileCount}, {props.pointCount} points
-      </p>
+      <div className="relative h-6 w-full">
+        {/* Backing track + progress fill. Sits behind the slider; the slider's
+            own track is made invisible via appearance-none + bg-transparent. */}
+        <div className="absolute inset-y-[10px] left-0 right-0 overflow-hidden rounded-full bg-slate-200">
+          <div className={fillClass} style={fillStyle} />
+        </div>
+        <input
+          className="absolute inset-0 h-full w-full appearance-none bg-transparent accent-amber-500 disabled:opacity-60"
+          type="range"
+          min={0}
+          max={max}
+          step={1}
+          value={Math.min(props.frameIndex, max)}
+          onChange={(event) => props.onFrameIndexChange(Number(event.target.value))}
+          disabled={props.disabled}
+        />
+      </div>
     </div>
   );
 }
 
 export function ProgressStatus(props: ProgressStatusProps) {
-  const progress = props.mode === "daily" ? props.dailyProgress : props.instantProgress;
+  // For daily mode, the slider track now carries the progress (cf. TimeSlider's
+  // `computeProgress` prop, 2026-05-12). Rendering the status here too would
+  // duplicate info AND re-introduce the layout shift this refactor is meant
+  // to eliminate. Daily → nothing emitted here; the slider does the job.
+  if (props.mode === "daily") {
+    return null;
+  }
+  const progress = props.instantProgress;
   if (!progress) {
     return null;
   }
