@@ -48,10 +48,8 @@ COPY --from=builder /app/public             ./public
 COPY --from=builder /app/scripts            ./scripts
 COPY --from=builder /app/src                ./src
 COPY --from=builder /app/tsconfig.json      ./tsconfig.json
-
-# Runtime scripts used by the entrypoint (places startup check + split).
-COPY scripts/runtime/check-places-update.mjs   ./scripts/runtime/check-places-update.mjs
-COPY scripts/runtime/split-places-per-region.mjs ./scripts/runtime/split-places-per-region.mjs
+# scripts/runtime/check-places-update.mjs and split-places-per-region.mjs
+# come along with the scripts/ COPY above (used by docker-entrypoint.sh).
 
 # Posture 4 — baked places dataset. Kept as a separate, near-the-end COPY
 # so changing places.json invalidates only this layer (not the giant
