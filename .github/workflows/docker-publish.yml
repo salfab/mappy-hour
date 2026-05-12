@@ -41,18 +41,21 @@ jobs:
         run: |
           mkdir -p data/processed/places
           LATEST=$(gh release list --limit 100 --json tagName --jq '.[].tagName' | grep '^places-v' | sort -V | tail -1)
-          if [ -n "$LATEST" ]; then
-            echo "[publish] baking places release: $LATEST"
-            gh release download "$LATEST" -p 'places.json' -D data/processed/places
-            node scripts/runtime/split-places-per-region.mjs data/processed/places/places.json data/processed/places/
-          else
-            # No places release yet → write an empty placeholder so the
-            # Dockerfile `COPY data/processed/places/*.json` step has something
-            # to read. The runtime startup check will fetch the real dataset
-            # once the operator publishes the first `places-v*` release.
-            echo "[publish] no places-v* release found yet — baking an empty placeholder"
-            printf '%s' '{"version":"0.0.0","generatedAt":"1970-01-01T00:00:00Z","source":"placeholder","bbox":[0,0,0,0],"totalPlaces":0,"categories":{"parks":0,"terraceCandidates":0,"outdoorSeatingYes":0},"places":[]}' > data/processed/places/places.json
+          if [ -z "$LATEST" ]; then
+            # Fail-loud, not fail-soft. A missing places-v* release is a real
+            # operational problem (publish-places.yml never ran, or its first
+            # run failed silently). Baking an empty placeholder would silently
+            # ship a prod image with zero terraces — the operator must see this
+            # surface.
+            echo "[publish] ✗ no places-v* release found. Dispatch the 'Publish places'" >&2
+            echo "[publish]   workflow first (or check why publish-places.yml hasn't" >&2
+            echo "[publish]   completed successfully). The image refuses to build" >&2
+            echo "[publish]   without a real places dataset." >&2
+            exit 1
           fi
+          echo "[publish] baking places release: $LATEST"
+          gh release download "$LATEST" -p 'places.json' -D data/processed/places
+          node scripts/runtime/split-places-per-region.mjs data/processed/places/places.json data/processed/places/
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
