@@ -3918,6 +3918,12 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     // override is meant for clean A/B comparisons, and an automatic
     // vector overlay on top of a forced "bitmap" defeats the purpose.
     if (modeOverride !== null) return;
+    // Skip the upgrade at zoom ≤ 17: each source cell is sub-pixel
+    // (or close to it) at this scale, so the bitmap's chunky cell
+    // edges aren't perceptible and the vector overlay adds no visible
+    // value — only cost. The upgrade kicks in above z=17, where each
+    // 1m cell starts spanning multiple device pixels.
+    if (mapZoom === null || mapZoom <= 17) return;
 
     const IDLE_DELAY_MS = 400;
     idleVectorTimerRef.current = setTimeout(() => {
