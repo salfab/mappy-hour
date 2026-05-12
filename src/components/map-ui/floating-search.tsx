@@ -65,10 +65,10 @@ export function FloatingSearch(props: FloatingSearchProps) {
     <form
       ref={formRef}
       data-mobile-search-root
-      className="mobile-search-panel absolute left-4 right-4 top-4 z-[500] grid gap-2 rounded-[1.75rem] border border-white/[0.62] bg-white/[0.42] p-2 text-slate-900 shadow-2xl shadow-slate-900/[0.16] backdrop-blur-2xl backdrop-saturate-150 lg:hidden"
+      className="mobile-search-panel absolute left-4 right-4 top-4 z-[500] grid gap-2 text-slate-900 lg:hidden"
       onSubmit={handleSubmit}
     >
-      <div className="flex items-center gap-2 rounded-[1.35rem] border border-white/[0.68] bg-white/[0.34] p-1 pl-4 shadow-inner shadow-white/[0.28] backdrop-blur-xl">
+      <div className="flex items-center gap-2 rounded-[1.75rem] border border-white/[0.68] bg-white/[0.42] p-1 pl-4 shadow-2xl shadow-slate-900/[0.16] backdrop-blur-2xl backdrop-saturate-150">
         <input
           ref={inputRef}
           className="min-w-0 flex-1 bg-transparent px-1 py-2 text-base font-medium text-slate-950 outline-none placeholder:text-slate-500"
@@ -86,7 +86,9 @@ export function FloatingSearch(props: FloatingSearchProps) {
         </button>
       </div>
       {props.error ? (
-        <p className="px-4 pb-1 text-xs font-semibold text-rose-700">{props.error}</p>
+        <p className="mx-2 rounded-full border border-white/[0.62] bg-white/[0.58] px-4 py-2 text-xs font-semibold text-rose-700 shadow-lg shadow-slate-900/[0.08] backdrop-blur-xl">
+          {props.error}
+        </p>
       ) : null}
     </form>
   );
