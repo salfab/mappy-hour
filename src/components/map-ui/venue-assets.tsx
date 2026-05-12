@@ -43,9 +43,9 @@ export function VenueSunStatusIcon(props: { tone: VenueSunTone; className?: stri
         strokeWidth="2"
         viewBox="0 0 24 24"
       >
-        <path d="M4 15a8 8 0 0 1 13.5-5.8" />
-        <path d="M18 14.5A5.5 5.5 0 0 1 8.5 18" />
-        <path d="M5 5l14 14" />
+        <path d="M4 15a8 8 0 0 1 13.5-5.8" stroke="#64748b" />
+        <path d="M18 14.5A5.5 5.5 0 0 1 8.5 18" stroke="#64748b" />
+        <path d="M5 5l14 14" stroke="#24384a" />
       </svg>
     );
   }
@@ -62,15 +62,15 @@ export function VenueSunStatusIcon(props: { tone: VenueSunTone; className?: stri
         strokeWidth="2"
         viewBox="0 0 24 24"
       >
-        <circle cx="12" cy="12" r="3.5" />
-        <path d="M12 3v2" />
-        <path d="M12 19v2" />
-        <path d="M3 12h2" />
-        <path d="M19 12h2" />
-        <path d="M17.7 6.3 16.3 7.7" />
-        <path d="M6.3 17.7 7.7 16.3" />
-        <path d="M16 18h5" />
-        <path d="M18.5 15.5V20.5" />
+        <circle cx="12" cy="12" r="3.5" fill="#fbbf24" stroke="#f59e0b" />
+        <path d="M12 3v2" stroke="#f59e0b" />
+        <path d="M12 19v2" stroke="#f59e0b" />
+        <path d="M3 12h2" stroke="#f59e0b" />
+        <path d="M19 12h2" stroke="#f59e0b" />
+        <path d="M17.7 6.3 16.3 7.7" stroke="#f59e0b" />
+        <path d="M6.3 17.7 7.7 16.3" stroke="#f59e0b" />
+        <path d="M16 18h5" stroke="#24384a" />
+        <path d="M18.5 15.5V20.5" stroke="#24384a" />
       </svg>
     );
   }
@@ -86,15 +86,15 @@ export function VenueSunStatusIcon(props: { tone: VenueSunTone; className?: stri
       strokeWidth="2"
       viewBox="0 0 24 24"
     >
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2" />
-      <path d="M12 20v2" />
-      <path d="M2 12h2" />
-      <path d="M20 12h2" />
-      <path d="m4.9 4.9 1.4 1.4" />
-      <path d="m17.7 17.7 1.4 1.4" />
-      <path d="m4.9 19.1 1.4-1.4" />
-      <path d="m17.7 6.3 1.4-1.4" />
+      <circle cx="12" cy="12" r="4" fill="#fbbf24" stroke="#f59e0b" />
+      <path d="M12 2v2" stroke="#f59e0b" />
+      <path d="M12 20v2" stroke="#f59e0b" />
+      <path d="M2 12h2" stroke="#f59e0b" />
+      <path d="M20 12h2" stroke="#f59e0b" />
+      <path d="m4.9 4.9 1.4 1.4" stroke="#f59e0b" />
+      <path d="m17.7 17.7 1.4 1.4" stroke="#f59e0b" />
+      <path d="m4.9 19.1 1.4-1.4" stroke="#f59e0b" />
+      <path d="m17.7 6.3 1.4-1.4" stroke="#f59e0b" />
     </svg>
   );
 }
@@ -111,12 +111,13 @@ export function VenueTerraceIcon(props: { className?: string }) {
       strokeWidth="2"
       viewBox="0 0 24 24"
     >
-      <path d="M4 10a8 8 0 0 1 16 0H4Z" />
-      <path d="M12 10v9" />
-      <path d="M7 14h10" />
-      <path d="M8 19h8" />
-      <path d="M8 14v4" />
-      <path d="M16 14v4" />
+      <path d="M4 10a8 8 0 0 1 16 0H4Z" fill="#fbbf24" stroke="#24384a" />
+      <path d="M8 10a4 4 0 0 1 8 0" stroke="#f59e0b" strokeWidth="1.5" />
+      <path d="M12 10v9" stroke="#24384a" />
+      <path d="M7 14h10" stroke="#24384a" />
+      <path d="M8 19h8" stroke="#24384a" />
+      <path d="M8 14v4" stroke="#24384a" />
+      <path d="M16 14v4" stroke="#24384a" />
     </svg>
   );
 }
@@ -142,10 +143,11 @@ export function buildVenueMarkerHtml(className: string): string {
       <span class="sunlit-venue-marker__halo"></span>
       <span class="sunlit-venue-marker__pin">
         <svg aria-hidden="true" viewBox="0 0 24 24">
-          <path d="M4 10a8 8 0 0 1 16 0H4Z"></path>
-          <path d="M12 10v8"></path>
-          <path d="M8 14h8"></path>
-          <path d="M8.5 18h7"></path>
+          <path d="M4 10a8 8 0 0 1 16 0H4Z" fill="#fbbf24" stroke="#24384a"></path>
+          <path d="M8 10a4 4 0 0 1 8 0" fill="none" stroke="#f59e0b" stroke-width="1.5"></path>
+          <path d="M12 10v8" fill="none" stroke="#24384a"></path>
+          <path d="M8 14h8" fill="none" stroke="#24384a"></path>
+          <path d="M8.5 18h7" fill="none" stroke="#24384a"></path>
         </svg>
       </span>
     </span>`;

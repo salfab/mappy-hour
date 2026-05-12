@@ -97,8 +97,8 @@ function ToggleIconButton(props: ToggleIconButtonProps) {
   return (
     <button
       type="button"
-      className={`group grid w-[5.5rem] place-items-center gap-1 rounded-2xl border px-2 py-2 text-slate-600 shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45 ${
-        props.desktopOnly ? "hidden lg:grid" : ""
+      className={`group w-[5.5rem] place-items-center gap-1 rounded-2xl border px-2 py-2 text-slate-600 shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45 ${
+        props.desktopOnly ? "hidden lg:grid" : "grid"
       } ${
         props.pressed
           ? "border-amber-300 bg-amber-200 text-slate-950 shadow-amber-200/50"
