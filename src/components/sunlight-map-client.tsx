@@ -2193,7 +2193,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const [showPlaces, setShowPlaces] = useState(true);
   const [activeDesktopTab, setActiveDesktopTab] = useState<MapPanelTab>("map");
   const [bottomSheetState, setBottomSheetState] =
-    useState<BottomSheetState>("compact");
+    useState<BottomSheetState>("middle");
   const [isMobileBarsOpen, setIsMobileBarsOpen] = useState(false);
   const [selectedVenueId, setSelectedVenueId] = useState<string | null>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
