@@ -72,31 +72,20 @@ jobs:
           echo "args=$ARGS" >> "$GITHUB_OUTPUT"
           echo "Will run: pnpm atlas:download -- $ARGS"
 
-      - name: Refresh atlas on Mitch
+      - name: Refresh atlas + restart on Mitch
         env:
           HOST: ${{ secrets.MITCH_SSH_HOST }}
           USER: ${{ secrets.MITCH_SSH_USER }}
           ATLAS_ARGS: ${{ steps.cmd.outputs.args }}
         run: |
           set -e
-          # Run atlas:download via the atlas-loader compose profile so the
-          # bind-mounts (MAPPY_ATLAS_PATH + MAPPY_BUILDINGS_PATH) are honoured
-          # and write happens inside the container (chmod-clean on host).
-          # The download script is idempotent per-modelVersionHash: regions
-          # already up to date are skipped without re-fetching the tars.
+          # Delegate to a script on the host to avoid the PowerShell 5.x
+          # `&&` parser limitation (PS5 treats nested `\"...\"` as ending
+          # the outer -Command "..." string, causing `&&` to be seen as a
+          # bare operator). The script does git pull + atlas-loader run +
+          # compose restart + health check, all in one place.
           ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 "$USER@$HOST" \
-            "powershell -NoProfile -Command \"Set-Location C:\\srv\\mappy-hour; git pull --ff-only; if (\$LASTEXITCODE -ne 0) { exit 1 }; wsl -d Ubuntu -u root -e bash -c \\\"cd /mnt/c/srv/mappy-hour && docker compose --profile loader run --rm atlas-loader $ATLAS_ARGS\\\"\""
-
-      - name: Restart mappy-hour to pick up new atlas
-        env:
-          HOST: ${{ secrets.MITCH_SSH_HOST }}
-          USER: ${{ secrets.MITCH_SSH_USER }}
-        run: |
-          set -e
-          # The runtime caches the manifest scan; a bounce ensures the new
-          # modelVersionHash directories are picked up immediately.
-          ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 "$USER@$HOST" \
-            "powershell -NoProfile -Command \"wsl -d Ubuntu -u root -e bash -c \\\"cd /mnt/c/srv/mappy-hour && docker compose restart mappy-hour\\\"\""
+            "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\srv\\mappy-hour\\scripts\\headless-server-selfhosting\\mitch-refresh-atlas.ps1 -AtlasArgs '$ATLAS_ARGS'"
 
       - name: Health check
         env:
