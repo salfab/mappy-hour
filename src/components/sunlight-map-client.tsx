@@ -14,6 +14,10 @@ import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
 import { BitmapTileOverlay } from "@/components/sunlight-overlay/bitmap-tile-overlay";
 import { paintTileImageData } from "@/components/sunlight-overlay/paint-tile";
 import {
+  buildUnifiedViewportContours,
+  type VisibleTileInput,
+} from "@/components/sunlight-overlay/unified-viewport-contours";
+import {
   selectRenderStrategy,
   shouldRerasterize,
   type RenderMode,
@@ -2189,6 +2193,13 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   // re-rasterize, transform refreshed on map move/zoom, disposed when the
   // tile leaves the timeline or the user re-enters vector mode.
   const bitmapOverlaysRef = useRef<Map<string, BitmapTileOverlay>>(new Map());
+  // ── Idle vector upgrade ───────────────────────────────────────────────
+  // When bitmap mode is active and the user pauses interaction (~400ms),
+  // we compute a single unified-viewport marching-squares pass and layer
+  // its polygons on top of the bitmaps. Any interaction (slider, zoom,
+  // pan, mode toggle) tears the layer down and re-arms the timer.
+  const unifiedVectorLayerRef = useRef<L.LayerGroup | null>(null);
+  const idleVectorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Stores the strategy's last-chosen mode so the next call can apply
   // hysteresis. Read in the useMemo below, written after the strategy runs.
   const previousRenderModeRef = useRef<RenderMode | null>(null);
@@ -3847,6 +3858,121 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       }
     }
   }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showShadow, showSunny, effectiveRenderMode, renderStrategy.bitmapResolution]);
+
+  // ── Idle vector upgrade ────────────────────────────────────────────────
+  // When we're in bitmap LOD mode AND the user pauses interaction, run a
+  // single unified-viewport marching-squares pass and overlay the resulting
+  // polygons on top of the bitmaps. The bitmaps stay underneath so the
+  // teardown is instant on the next interaction.
+  //
+  // Re-armed on every change of the deps array — slider, zoom, pan, mode
+  // toggle, toggles for sunny/shadow/buildings. The teardown happens
+  // synchronously at the top of the effect so we never paint a stale
+  // upgrade against a moved-on viewport.
+  useEffect(() => {
+    if (!isMapReady || mode !== "daily" || !dailyTimeline) return;
+    const map = mapRef.current;
+    const L = leafletModuleRef.current;
+    if (!map || !L) return;
+
+    // Always tear down the previous upgrade synchronously.
+    if (unifiedVectorLayerRef.current) {
+      unifiedVectorLayerRef.current.remove();
+      unifiedVectorLayerRef.current = null;
+    }
+    if (idleVectorTimerRef.current) {
+      clearTimeout(idleVectorTimerRef.current);
+      idleVectorTimerRef.current = null;
+    }
+
+    // Only upgrade when the strategy chose bitmap. In vector mode the
+    // existing per-tile path already shows polygons.
+    if (effectiveRenderMode !== "bitmap") return;
+
+    const IDLE_DELAY_MS = 400;
+    idleVectorTimerRef.current = setTimeout(() => {
+      idleVectorTimerRef.current = null;
+      const bounds = map.getBounds();
+
+      // Filter to tiles intersecting the viewport. We compare lat/lon
+      // bounding boxes — cheap and good enough since tiles are small.
+      const visible: VisibleTileInput[] = [];
+      for (const tile of dailyTimeline.tiles) {
+        if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) continue;
+        const c = tile.tileCorners;
+        const tileSouth = Math.min(c.sw.lat, c.se.lat);
+        const tileNorth = Math.max(c.nw.lat, c.ne.lat);
+        const tileWest = Math.min(c.nw.lon, c.sw.lon);
+        const tileEast = Math.max(c.ne.lon, c.se.lon);
+        if (tileEast < bounds.getWest()) continue;
+        if (tileWest > bounds.getEast()) continue;
+        if (tileNorth < bounds.getSouth()) continue;
+        if (tileSouth > bounds.getNorth()) continue;
+
+        const sunMask = getTileMask(tile, dailyFrameIndex, ignoreVegetationShadow, decodedTimelineMaskCacheRef.current);
+        if (!sunMask) continue;
+        const outdoorMask = getTileOutdoorMask(tile, decodedTimelineMaskCacheRef.current);
+        visible.push({
+          tileId: tile.tileId,
+          corners: c,
+          gridWidth: tile.grid.width,
+          gridHeight: tile.grid.height,
+          sunMask,
+          outdoorMask: outdoorMask ?? undefined,
+        });
+      }
+
+      if (visible.length === 0) return;
+
+      const t0 = performance.now();
+      const result = buildUnifiedViewportContours(visible);
+      const elapsedMs = performance.now() - t0;
+      // Empirical telemetry — feeds the future "skip upgrade above N
+      // cells" cap. Cheap on the console, gone in prod via the strategy
+      // gating once we pick a threshold.
+      if (typeof window !== "undefined") {
+        console.debug(
+          `[idle-vector] ${visible.length} tiles, ${result.stats.totalCells} cells, ${elapsedMs.toFixed(0)}ms`,
+        );
+      }
+
+      const layer = L.layerGroup();
+      const pushPolygons = (
+        polygons: Array<[number, number][][]>,
+        style: L.PathOptions,
+      ) => {
+        for (const polygon of polygons) {
+          const rings = polygon.map((ring) => ring.map(([lat, lon]) => [lat, lon] as [number, number]));
+          L.polygon(rings, style).addTo(layer);
+        }
+      };
+      if (showSunny) {
+        pushPolygons(result.sunnyPolygons, { color: "#eab308", fillColor: "#facc15", weight: 0, fillOpacity: 0.4 });
+      }
+      if (showShadow) {
+        pushPolygons(result.shadowPolygons, { color: "#475569", fillColor: "#334155", weight: 0, fillOpacity: 0.35 });
+      }
+      if (showBuildings) {
+        pushPolygons(result.buildingPolygons, { color: "#2563eb", fillColor: "#2563eb", weight: 0.5, opacity: 0.5, fillOpacity: 0.2 });
+      }
+      layer.addTo(map);
+      unifiedVectorLayerRef.current = layer;
+    }, IDLE_DELAY_MS);
+
+    return () => {
+      if (idleVectorTimerRef.current) {
+        clearTimeout(idleVectorTimerRef.current);
+        idleVectorTimerRef.current = null;
+      }
+      if (unifiedVectorLayerRef.current) {
+        unifiedVectorLayerRef.current.remove();
+        unifiedVectorLayerRef.current = null;
+      }
+    };
+  }, [
+    isMapReady, mode, dailyTimeline, dailyFrameIndex, effectiveRenderMode,
+    ignoreVegetationShadow, showSunny, showShadow, showBuildings, mapBounds, mapZoom,
+  ]);
 
   // Canvas heatmap for large grids
   useEffect(() => {
