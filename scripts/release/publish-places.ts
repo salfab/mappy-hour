@@ -122,6 +122,11 @@ function main() {
   console.log(`[publish-places] wrote version=${nextVersion} into ${combinedPath}`);
 
   // (3) gh release create
+  // `--latest=false` prevents this places release from clobbering the
+  // atlas `v9.2.YYYYMMDDNNN` release as GitHub's "Latest" tag — atlas-loader
+  // uses `--release=latest` to find the atlas manifest, so latest must
+  // stay on the atlas track. Places releases are addressed by their tag
+  // prefix (`places-v*`) via the runtime check, no need to mark them latest.
   const args = [
     "release",
     "create",
@@ -131,6 +136,7 @@ function main() {
     `Places ${nextVersion}`,
     "--notes",
     `Auto-generated places dataset for regions: ${cli.regions}\n\nTotal places: ${json.totalPlaces}\nGenerated at: ${json.generatedAt}`,
+    "--latest=false",
   ];
   if (!cli.publishNow) args.push("--draft");
 
