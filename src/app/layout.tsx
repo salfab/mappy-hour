@@ -18,10 +18,11 @@ const title = "Mappy Hour";
 const description =
   "Trouve les terrasses au soleil autour de Lausanne, Nyon et du Léman grâce aux cartes d'ombre et d'ensoleillement.";
 const ogImage = {
-  url: "/og/mappy-hour.png",
+  url: "/og/mappy-hour-v2.jpg",
   width: 1200,
   height: 630,
   alt: "Mappy Hour montre les zones ensoleillées autour du Léman au coucher du soleil.",
+  type: "image/jpeg",
 };
 
 export const metadata: Metadata = {
