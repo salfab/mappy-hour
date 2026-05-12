@@ -126,8 +126,13 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
       }
     }
 
+    // Compact bumped from clamp(124,16svh,152) to clamp(176,22svh,210) because
+    // the previous size left ~85 px of content room, while the timeline label +
+    // slider + tile-count line need ~95-100 px → forced overflow-y-auto to
+    // scroll, with the bottom text getting clipped on every restart. The new
+    // floor fits everything without scroll on standard mobile viewports.
     return props.state === "compact"
-      ? "h-[clamp(124px,16svh,152px)]"
+      ? "h-[clamp(176px,22svh,210px)]"
       : props.state === "middle"
         ? "h-[clamp(292px,38svh,360px)]"
         : "h-[clamp(430px,64svh,560px)]";
@@ -136,6 +141,13 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
   const stateHeightClass = getHeightClass();
   const contentGapClass = props.state === "compact" ? "gap-2.5" : "gap-3";
 
+  // Drag preview / commit thresholds — tuned 2026-05-12 to be more responsive.
+  // Previous 36 px commit threshold felt sluggish; 24 px still rejects accidental
+  // micro-pans (≤ 20 px) while triggering on intentional swipes.
+  const DRAG_PREVIEW_SMALL_PX = 14;
+  const DRAG_PREVIEW_STRONG_PX = 80;
+  const DRAG_COMMIT_PX = 24;
+
   const updateDragPreview = (clientY: number) => {
     const startY = dragStartYRef.current;
     if (startY === null) {
@@ -143,13 +155,13 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
     }
 
     const deltaY = clientY - startY;
-    if (deltaY < -96) {
+    if (deltaY < -DRAG_PREVIEW_STRONG_PX) {
       setDragPreview("up-strong");
-    } else if (deltaY < -18) {
+    } else if (deltaY < -DRAG_PREVIEW_SMALL_PX) {
       setDragPreview("up");
-    } else if (deltaY > 96) {
+    } else if (deltaY > DRAG_PREVIEW_STRONG_PX) {
       setDragPreview("down-strong");
-    } else if (deltaY > 18) {
+    } else if (deltaY > DRAG_PREVIEW_SMALL_PX) {
       setDragPreview("down");
     } else {
       setDragPreview(null);
@@ -175,7 +187,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
     }
 
     const deltaY = clientY - startY;
-    if (Math.abs(deltaY) < 36) {
+    if (Math.abs(deltaY) < DRAG_COMMIT_PX) {
       return;
     }
     goToNextState(deltaY < 0 ? "up" : "down");
@@ -200,10 +212,16 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
         setDragPreview(null);
       }}
     >
-      <div className="flex justify-center pb-2">
+      {/* Full-width drag affordance: the entire top strip (not just the visible
+          handle pill) catches pointer events. The container handles drag via
+          the section-level onPointerDownCapture; the button keeps its keyboard
+          + screen-reader semantics. Hit area went from 32×112 px → effectively
+          ~52 px tall × full width because the section captures pointer events
+          on this whole strip (which is non-interactive markup). */}
+      <div className="flex justify-center px-12 py-2">
         <button
           type="button"
-          className="grid h-8 w-28 touch-none place-items-center rounded-full outline-none transition focus-visible:ring-2 focus-visible:ring-amber-300"
+          className="grid h-10 w-32 touch-none place-items-center rounded-full outline-none transition focus-visible:ring-2 focus-visible:ring-amber-300"
           aria-label="Glisser pour agrandir ou reduire le panneau"
           onPointerDown={(event) => {
             dragStartYRef.current = event.clientY;
