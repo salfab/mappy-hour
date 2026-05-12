@@ -11,7 +11,7 @@ import {
 } from "../../src/lib/precompute/sunlight-cache-atlas";
 
 const REGION = (process.env.REGION ?? "lausanne") as
-  | "lausanne" | "nyon" | "morges" | "geneve" | "vevey" | "vevey_city" | "neuchatel";
+  | "lausanne" | "nyon" | "morges" | "geneve" | "vevey" | "vevey_city" | "neuchatel" | "la_chaux_de_fonds";
 const MODEL_HASH = "d43fe24cbb9190af";
 const GRID = 1;
 const SUSPECT_BUCKET_THRESHOLD = 500;

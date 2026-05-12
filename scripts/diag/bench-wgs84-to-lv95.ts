@@ -22,7 +22,8 @@ const region = (ARGS.find((a) => a.startsWith("--region="))?.slice(9) ?? "geneve
   | "geneve"
   | "vevey"
   | "vevey_city"
-  | "neuchatel";
+  | "neuchatel"
+  | "la_chaux_de_fonds";
 const gridStepMeters = Number(ARGS.find((a) => a.startsWith("--grid-step="))?.slice(12) ?? "1");
 const tileSizeMeters = Number(ARGS.find((a) => a.startsWith("--tile-size="))?.slice(12) ?? "250");
 

@@ -21,7 +21,7 @@ import {
 const gunzip = promisify(gunzipCallback);
 const RAD_TO_DEG = 180 / Math.PI;
 
-const REGION = (process.env.REGION ?? "lausanne") as "lausanne" | "nyon" | "morges" | "geneve" | "vevey" | "vevey_city" | "neuchatel";
+const REGION = (process.env.REGION ?? "lausanne") as "lausanne" | "nyon" | "morges" | "geneve" | "vevey" | "vevey_city" | "neuchatel" | "la_chaux_de_fonds";
 const MODEL_HASH = "d43fe24cbb9190af";
 const GRID = 1;
 

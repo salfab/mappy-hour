@@ -13,6 +13,7 @@ import { VEVEY_CONFIG } from "../../src/lib/config/vevey";
 import { GENEVE_CONFIG } from "../../src/lib/config/geneve";
 import { VEVEY_CITY_CONFIG } from "../../src/lib/config/vevey_city";
 import { NEUCHATEL_CONFIG } from "../../src/lib/config/neuchatel";
+import { LA_CHAUX_DE_FONDS_CONFIG } from "../../src/lib/config/la_chaux_de_fonds";
 
 const regions: Record<string, readonly [number, number, number, number]> = {
   lausanne: LAUSANNE_CONFIG.localBbox,
@@ -21,6 +22,7 @@ const regions: Record<string, readonly [number, number, number, number]> = {
   vevey: VEVEY_CONFIG.localBbox,
   vevey_city: VEVEY_CITY_CONFIG.localBbox,
   neuchatel: NEUCHATEL_CONFIG.localBbox,
+  la_chaux_de_fonds: LA_CHAUX_DE_FONDS_CONFIG.localBbox,
   geneve: GENEVE_CONFIG.localBbox,
 };
 

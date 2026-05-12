@@ -15,7 +15,7 @@ param(
 # pnpm passes a literal "--" separator before the script args, and the standard
 # param() binding treats "--" as an ambiguous parameter prefix. Use
 # ValueFromRemainingArguments + manual --key=value parsing to avoid that.
-$Regions = "lausanne,nyon,morges,vevey,vevey_city,neuchatel,geneve"
+$Regions = "lausanne,nyon,morges,vevey,vevey_city,neuchatel,la_chaux_de_fonds,geneve"
 $Tag = ""
 $OutDir = "dist\releases"
 

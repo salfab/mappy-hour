@@ -25,7 +25,7 @@ const GRID_METADATA_SCRIPT = path.resolve(
   "scripts/precompute/precompute-tile-grid-metadata.ts",
 );
 
-const REGION_PRIORITY: string[] = ["lausanne", "morges", "nyon", "vevey", "vevey_city", "neuchatel", "geneve"];
+const REGION_PRIORITY: string[] = ["lausanne", "morges", "nyon", "vevey", "vevey_city", "neuchatel", "la_chaux_de_fonds", "geneve"];
 type ExperimentalBuildingsShadowMode = "gpu-raster" | "rust-wgpu-vulkan";
 
 function readRegionsFromSelectionFile(filePath: string): string[] {

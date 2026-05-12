@@ -57,9 +57,15 @@ REGIONS = {
     # Vraie ville de Vevey (commune Vevey + La Tour-de-Peilz + Corseaux),
     # sans Lavaux. Matches VEVEY_CITY_LOCAL_BBOX [6.82, 46.44, 6.89, 46.49].
     "vevey_city": {"minE": 2551000, "minN": 1143000, "maxE": 2557000, "maxN": 1149000},
-    # Ville de Neuchâtel (commune OSM minus Lac de Neuchâtel).
-    # Matches NEUCHATEL_LOCAL_BBOX [6.92, 46.97, 6.98, 47.01].
-    "neuchatel": {"minE": 2560000, "minN": 1202000, "maxE": 2566000, "maxN": 1207000},
+    # Ville de Neuchâtel (commune OSM minus Lac de Neuchâtel) + Auvernier
+    # (rattaché à Milvignes, ~3 km SW). Matches NEUCHATEL_LOCAL_BBOX
+    # [6.84, 46.95, 7.00, 47.07]. Auvernier LV95 ≈ E[2555750..2557250]
+    # N[1200500..1201750] : on étend vers le SW (minE 2560k→2554k, minN
+    # 1202k→1198k) en alignement 1000m.
+    "neuchatel": {"minE": 2554000, "minN": 1198000, "maxE": 2566000, "maxN": 1207000},
+    # Ville de La Chaux-de-Fonds (centre urbain uniquement, hors forêts du Jura).
+    # Matches LA_CHAUX_DE_FONDS_LOCAL_BBOX [6.79, 47.085, 6.86, 47.12].
+    "la_chaux_de_fonds": {"minE": 2550000, "minN": 1215000, "maxE": 2557000, "maxN": 1219000},
 }
 
 

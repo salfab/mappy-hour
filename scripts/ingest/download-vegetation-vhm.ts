@@ -33,7 +33,7 @@ import path from "node:path";
 const DEFAULT_PYTHON =
   "C:\\Users\\fabio.salvalai\\AppData\\Local\\Programs\\Python\\Python312\\python.exe";
 
-const REGIONS = ["lausanne", "morges", "nyon", "geneve", "vevey", "vevey_city", "neuchatel"] as const;
+const REGIONS = ["lausanne", "morges", "nyon", "geneve", "vevey", "vevey_city", "neuchatel", "la_chaux_de_fonds"] as const;
 type Region = typeof REGIONS[number];
 
 function parseArgs(argv: string[]): {

@@ -16,6 +16,7 @@ import { GENEVE_CONFIG } from "../../src/lib/config/geneve";
 import { VEVEY_CONFIG } from "../../src/lib/config/vevey";
 import { VEVEY_CITY_CONFIG } from "../../src/lib/config/vevey_city";
 import { NEUCHATEL_CONFIG } from "../../src/lib/config/neuchatel";
+import { LA_CHAUX_DE_FONDS_CONFIG } from "../../src/lib/config/la_chaux_de_fonds";
 
 import { parseIngestCliArgs } from "./cli";
 import { ensureDirectory } from "./http";
@@ -31,13 +32,14 @@ const REGIONS: Record<string, { localBbox: readonly [number, number, number, num
   vevey: VEVEY_CONFIG,
   vevey_city: VEVEY_CITY_CONFIG,
   neuchatel: NEUCHATEL_CONFIG,
+  la_chaux_de_fonds: LA_CHAUX_DE_FONDS_CONFIG,
 };
 
 function parseRegion(argv: string[]): string {
   for (const arg of argv) {
     if (arg.startsWith("--region=")) return arg.slice(9);
   }
-  console.error("Usage: --region=lausanne|nyon|morges|geneve|vevey|vevey_city|neuchatel");
+  console.error("Usage: --region=lausanne|nyon|morges|geneve|vevey|vevey_city|neuchatel|la_chaux_de_fonds");
   process.exit(1);
 }
 

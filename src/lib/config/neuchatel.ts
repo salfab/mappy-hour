@@ -11,10 +11,12 @@ export const NEUCHATEL_CENTER = {
 
 // Bbox locale élargie pour englober toute l'enveloppe LV95 du polygone
 // commune réel (E=[2554750, 2566250] N=[1203000, 1212750] d'après l'OSM
-// relation 1685519, BFS 6458). Une bbox plus étroite filtrait les tuiles
-// nord/est du précompute via `getIntersectingTileIds`. Marge ~150m sur
-// chaque axe pour absorber les arrondis de projection LV95↔WGS84.
-export const NEUCHATEL_LOCAL_BBOX: BBox = [6.90, 46.97, 7.00, 47.04];
+// relation 1685519, BFS 6458) + l'extension Auvernier (village rattaché à
+// Milvignes, OSM relation 2758642, ~3 km SW de Neuchâtel ; bbox de coverage
+// [6.86, 46.945, 6.90, 46.965]). Tiles centers s'étendent jusqu'à
+// lon=6.845/lat=46.955 (SW) et lon=6.993/lat=47.064 (NE). Marge ~150m
+// (~0.0014° lat, ~0.002° lon) absorbée par l'arrondi extérieur.
+export const NEUCHATEL_LOCAL_BBOX: BBox = [6.84, 46.95, 7.00, 47.07];
 
 // Lac de Neuchâtel rétroprojette des obstacles montagneux jusqu'au Jura
 // occidental + Alpes bernoises ; même rayon que les autres régions lakeside.

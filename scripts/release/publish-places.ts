@@ -1,7 +1,7 @@
 /**
  * Orchestrator for places releases.
  *
- *  1. Run `download-places-osm.ts --regions=lausanne,nyon,vevey_city,neuchatel` to
+ *  1. Run `download-places-osm.ts --regions=lausanne,nyon,vevey_city,neuchatel,la_chaux_de_fonds` to
  *     regenerate the combined `data/processed/places/places.json`.
  *  2. Pick the next semver tag by querying `gh release list` filtered on
  *     `places-v*`. Bump policy controlled by `--bump=major|minor|patch`
@@ -34,7 +34,7 @@ function parseArgs(argv: string[]): Cli {
   // timeline stream's `event: places` is empty for that area (e.g. White
   // Horse Pub in Morges was invisible until v0.1.0 because morges was
   // missing from this list).
-  let regions = "lausanne,morges,nyon,vevey,vevey_city,neuchatel,geneve";
+  let regions = "lausanne,morges,nyon,vevey,vevey_city,neuchatel,la_chaux_de_fonds,geneve";
   for (const arg of argv) {
     if (arg.startsWith("--bump=")) {
       const v = arg.slice("--bump=".length);
