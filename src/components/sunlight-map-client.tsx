@@ -2307,11 +2307,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   // changes here flow through to the rendering effects below.
   const [mapZoom, setMapZoom] = useState<number | null>(null);
   const [mapBounds, setMapBounds] = useState<L.LatLngBounds | null>(null);
-  const [modeOverride, setModeOverride] = useModeOverride({ forceEnable: true });
-  const cycleModeOverride = useCallback(() => {
-    // strategy (null) → bitmap → vector → strategy
-    setModeOverride((modeOverride === null) ? "bitmap" : modeOverride === "bitmap" ? "vector" : null);
-  }, [modeOverride, setModeOverride]);
+  const [modeOverride] = useModeOverride({ forceEnable: true });
 
   // Capture DPR once after mount (SSR-safe).
   useEffect(() => {
@@ -5181,32 +5177,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           Mappy Hour
         </div>
         {desktopSearch}
-        {/* Phase 2 overlay LOD debug toggle — click to cycle
-            strategy → bitmap → vector → strategy. Also reacts to
-            Shift+B/V/R on desktop keyboards (useModeOverride). */}
-        <button
-          type="button"
-          onClick={cycleModeOverride}
-          className="rounded-full border border-white/40 bg-slate-900/75 px-3 py-1 text-xs font-mono text-white shadow-md backdrop-blur transition hover:bg-slate-900/90"
-          title="Toggle LOD render mode — click to cycle, or Shift+B/V/R"
-        >
-          {effectiveRenderMode}
-          {modeOverride !== null ? " (forced)" : ""}
-          {mapZoom !== null ? ` · z${mapZoom.toFixed(1)}` : ""}
-        </button>
       </div>
-
-      {/* Mobile counterpart of the LOD toggle — floats top-right under the
-          search bar so it doesn't fight the bottom sheet. Same handler. */}
-      <button
-        type="button"
-        onClick={cycleModeOverride}
-        className="pointer-events-auto absolute right-3 top-16 z-[450] rounded-full border border-white/40 bg-slate-900/75 px-3 py-1 text-xs font-mono text-white shadow-md backdrop-blur transition active:bg-slate-900/90 lg:hidden"
-        title="Toggle LOD render mode"
-      >
-        {effectiveRenderMode}
-        {modeOverride !== null ? " (forced)" : ""}
-      </button>
 
       <div className="absolute left-5 top-20 z-[450] hidden max-h-[calc(100dvh-104px)] w-[360px] gap-4 overflow-y-auto rounded-3xl border border-white/70 bg-white/90 p-4 text-slate-900 shadow-2xl backdrop-blur lg:grid">
         <ViewTabs
