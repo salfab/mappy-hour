@@ -16,6 +16,19 @@ Write-Host "=== docker compose up -d ==="
 wsl -d Ubuntu -u root -e bash -c "cd /mnt/c/srv/mappy-hour && docker compose up -d --remove-orphans"
 if ($LASTEXITCODE -ne 0) { Write-Host "docker compose up failed"; exit 1 }
 
+# Reclaim space — Mitch is space-constrained and each `pull` keeps the
+# previous image as dangling layers, plus the build cache that the compose
+# build profile accumulates. Without prune, the WSL2 vhdx grows monotonically
+# until creation of new containers fails with E_FAIL (cf. incident 2026-05-12).
+#
+# `--until=2h` buffer keeps the previous image addressable for ~2 hours in
+# case we need to revert quickly. `image prune -af` (not `-a`) wipes
+# everything not currently referenced by a running container.
+Write-Host "=== docker prune (reclaim space) ==="
+wsl -d Ubuntu -u root -e bash -c "docker image prune -af --filter 'until=2h' 2>&1 | tail -5"
+wsl -d Ubuntu -u root -e bash -c "docker builder prune -af --filter 'until=24h' 2>&1 | tail -5"
+wsl -d Ubuntu -u root -e bash -c "docker system df 2>&1"
+
 Write-Host "=== Waiting 25s for container to start ==="
 Start-Sleep 25
 
