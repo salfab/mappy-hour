@@ -76,10 +76,16 @@ export function buildUnifiedViewportContours(
   const cols = uniqueLons.length;
   const rows = uniqueLats.length;
 
-  // Assume regular grid: tile width/height consistent. If not, fall back to
-  // the first tile's dimensions and accept some distortion at boundaries.
-  const tileW = tiles[0].gridWidth;
-  const tileH = tiles[0].gridHeight;
+  // Use the MAX grid dimension across visible tiles so an edge tile with a
+  // truncated grid (e.g. 43 × 250 at a region's west edge) doesn't shrink
+  // the unified slot for its column — it'd otherwise crush every other
+  // tile in that column into a 43-cell-wide strip.
+  let tileW = 0;
+  let tileH = 0;
+  for (const t of tiles) {
+    if (t.gridWidth > tileW) tileW = t.gridWidth;
+    if (t.gridHeight > tileH) tileH = t.gridHeight;
+  }
 
   const W = cols * tileW;
   const H = rows * tileH;
@@ -152,13 +158,25 @@ export function buildUnifiedViewportContours(
   const buildingContours = contourGen(Array.from(buildingsGrid));
 
   // ── 6. Pad-grid coords → lat/lon via the visible footprint's bbox ──────
-  // The visible footprint is a regular `cols × rows` arrangement of tiles
-  // with corners on a regular LV95 grid. Bilinear interpolation from the
-  // four extreme corners is exact for an aligned regular grid.
-  const sw = minMaxCorner(tiles, "sw", "min");
-  const se = minMaxCorner(tiles, "se", "min", "max");
-  const nw = minMaxCorner(tiles, "nw", "max", "min");
-  const ne = minMaxCorner(tiles, "ne", "max", "max");
+  // Compute the actual union bbox by walking ALL four corners of every
+  // tile. Previous attempts pulled lat/lon from the SAME corner-key across
+  // tiles (e.g. all `sw`), which gave a synthetic point — wrong whenever
+  // the visible set isn't a fully-filled rectangle.
+  let minLat = Infinity, maxLat = -Infinity;
+  let minLon = Infinity, maxLon = -Infinity;
+  for (const t of tiles) {
+    for (const key of ["nw", "ne", "sw", "se"] as const) {
+      const c = t.corners[key];
+      if (c.lat < minLat) minLat = c.lat;
+      if (c.lat > maxLat) maxLat = c.lat;
+      if (c.lon < minLon) minLon = c.lon;
+      if (c.lon > maxLon) maxLon = c.lon;
+    }
+  }
+  const sw = { lat: minLat, lon: minLon };
+  const se = { lat: minLat, lon: maxLon };
+  const nw = { lat: maxLat, lon: minLon };
+  const ne = { lat: maxLat, lon: maxLon };
 
   const toLatLon = (fx: number, fy: number): [number, number] => {
     // fx in [0..W], fy in [0..H]; pad shift of -0.5 applied by caller.
@@ -208,21 +226,3 @@ function rankOf(value: number, sorted: number[], tol: number): number {
   return -1;
 }
 
-/** Pick the extreme corner across all visible tiles. `latMode`/`lonMode`
- *  determine which end of the lat/lon range we want — e.g. for `nw`,
- *  latMode="max" + lonMode="min". */
-function minMaxCorner(
-  tiles: VisibleTileInput[],
-  cornerKey: "nw" | "ne" | "sw" | "se",
-  latMode: "min" | "max" = "min",
-  lonMode: "min" | "max" = "min",
-): LatLon {
-  let lat = tiles[0].corners[cornerKey].lat;
-  let lon = tiles[0].corners[cornerKey].lon;
-  for (const t of tiles) {
-    const c = t.corners[cornerKey];
-    if (latMode === "max" ? c.lat > lat : c.lat < lat) lat = c.lat;
-    if (lonMode === "max" ? c.lon > lon : c.lon < lon) lon = c.lon;
-  }
-  return { lat, lon };
-}
