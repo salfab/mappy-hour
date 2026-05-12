@@ -1246,8 +1246,8 @@ function buildSunAndShadowContours(response: AreaApiResponse): {
 const CANVAS_OVERLAY_THRESHOLD = 10_000;
 
 // RGBA colors for canvas pixels
-const SUNNY_RGBA = [250, 204, 21, 180] as const; // yellow-400 @ 70%
-const SHADOW_RGBA = [100, 116, 139, 160] as const; // slate-500 @ 63%
+const SUNNY_RGBA = [250, 204, 21, 102] as const; // yellow-400 @ 40% (mirrors vector fillOpacity 0.4)
+const SHADOW_RGBA = [100, 116, 139, 89] as const; // slate-500 @ 35% (mirrors vector fillOpacity 0.35)
 
 // Phase 2 overlay LOD: shared palette (used by paint-tile.ts when rendering
 // bitmap tiles). Mirrors SUNNY_RGBA / SHADOW_RGBA + an indoor-grey color
@@ -3674,20 +3674,11 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       }
       contourLayerRef.current.clearLayers();
 
-      let __vectorTilesProcessed = 0;
-      let __vectorSunnyPolys = 0;
-      let __vectorShadowPolys = 0;
-      let __vectorBuildingPolys = 0;
-
       for (const tile of dailyTimeline.tiles) {
         if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) continue;
-        __vectorTilesProcessed++;
         const contours = buildTileContourPolygons(
           tile, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow,
         );
-        __vectorSunnyPolys += contours.sunnyPolygons.length;
-        __vectorShadowPolys += contours.shadowPolygons.length;
-        __vectorBuildingPolys += contours.buildingPolygons.length;
         if (showSunny && showShadow) {
           // Both layers: yellow sunny polygons + gray shadow polygons
           for (const polygon of contours.sunnyPolygons) {
@@ -3754,9 +3745,6 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           }
         }
       }
-      console.debug(
-        `[vector-pertile] tiles=${dailyTimeline.tiles.length} processed=${__vectorTilesProcessed} sunny=${__vectorSunnyPolys} shadow=${__vectorShadowPolys} buildings=${__vectorBuildingPolys} hasCorners=${hasCorners} showSunny=${showSunny} showShadow=${showShadow} showBuildings=${showBuildings} layer=${contourLayerRef.current ? "yes" : "no"}`,
-      );
       return; // skip canvas path
     }
 
