@@ -3,6 +3,10 @@ import { NextResponse } from "next/server";
 import { loadAllPlaces } from "@/lib/places/lausanne-places";
 
 export const runtime = "nodejs";
+// Always evaluate at request time — `q` is user input, no point caching the
+// per-prefix response, and the underlying places dataset can change between
+// container restarts (Posture 4 startup check).
+export const dynamic = "force-dynamic";
 
 type SuggestionSource = "local" | "nominatim";
 
