@@ -3674,11 +3674,20 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       }
       contourLayerRef.current.clearLayers();
 
+      let __vectorTilesProcessed = 0;
+      let __vectorSunnyPolys = 0;
+      let __vectorShadowPolys = 0;
+      let __vectorBuildingPolys = 0;
+
       for (const tile of dailyTimeline.tiles) {
         if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) continue;
+        __vectorTilesProcessed++;
         const contours = buildTileContourPolygons(
           tile, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow,
         );
+        __vectorSunnyPolys += contours.sunnyPolygons.length;
+        __vectorShadowPolys += contours.shadowPolygons.length;
+        __vectorBuildingPolys += contours.buildingPolygons.length;
         if (showSunny && showShadow) {
           // Both layers: yellow sunny polygons + gray shadow polygons
           for (const polygon of contours.sunnyPolygons) {
@@ -3745,6 +3754,9 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           }
         }
       }
+      console.debug(
+        `[vector-pertile] tiles=${dailyTimeline.tiles.length} processed=${__vectorTilesProcessed} sunny=${__vectorSunnyPolys} shadow=${__vectorShadowPolys} buildings=${__vectorBuildingPolys} hasCorners=${hasCorners} showSunny=${showSunny} showShadow=${showShadow} showBuildings=${showBuildings} layer=${contourLayerRef.current ? "yes" : "no"}`,
+      );
       return; // skip canvas path
     }
 
