@@ -96,11 +96,11 @@ describe("BitmapTileOverlay", () => {
 
     expect(container.children.length).toBe(1);
     expect(container.children[0].tagName).toBe("CANVAS");
-    // Physical buffer = bitmapResolution × DPR.
-    expect(container.children[0].width).toBe(256);
-    expect(container.children[0].height).toBe(256);
-    // CSS dimensions stay at the logical resolution — the CSS matrix maps
-    // these onto the 4 tile corners regardless of DPR.
+    // Phase 2: buffer = logical (painter is logical-resolution; DPR-scaled
+    // painting is Phase 3). `devicePixelRatio` is accepted but currently
+    // ignored — the browser handles HiDPI by scaling the CSS box.
+    expect(container.children[0].width).toBe(128);
+    expect(container.children[0].height).toBe(128);
     expect(container.children[0].style.width).toBe("128px");
     expect(container.children[0].style.height).toBe("128px");
     expect(container.children[0].dataset.tileId).toBe("tile-001");

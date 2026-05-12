@@ -73,23 +73,19 @@ export class BitmapTileOverlay {
     this.devicePixelRatio = opts.devicePixelRatio;
     this.container = opts.container;
 
-    // ── DPR split between physical and CSS dimensions ──────────────────────
-    // The canvas's INTRINSIC pixel size is `widthPx × dpr` × `heightPx × dpr`
-    // — that's how many real pixels we actually draw (more pixels = sharper
-    // on HiDPI).
+    // Intrinsic canvas buffer = LOGICAL dimensions (Phase 2). The painter
+    // produces an `ImageData` of size `widthPx × heightPx`, and `putImageData`
+    // ignores any transform, so the buffer MUST match the painter output —
+    // otherwise we end up with a partially-filled buffer (top-left quadrant
+    // only at DPR=2) and tiles appear "scattered/disjoint" on HiDPI.
     //
-    // Its CSS (logical) size is `widthPx × heightPx` — that's what the CSS
-    // matrix maps onto the 4 tile-edge corners. Decoupling the two means
-    // the CSS transform doesn't change when DPR changes; only the canvas's
-    // intrinsic buffer does.
-    //
-    // The transform produced by `cornersToMatrix(..., widthPx, heightPx, ...)`
-    // therefore maps LOGICAL canvas coords to layer points. The browser then
-    // applies its own DPR scaling when rasterizing the canvas content.
+    // The `devicePixelRatio` parameter is plumbed through for Phase 3, where
+    // the painter will produce DPR-scaled output and we'll re-introduce
+    // `width = widthPx × dpr`. For now the browser handles HiDPI by scaling
+    // the canvas's CSS box; `image-rendering: pixelated` keeps it crisp.
     const canvas = document.createElement("canvas") as HTMLCanvasElement;
-    const dpr = Math.max(1, opts.devicePixelRatio || 1);
-    canvas.width = Math.round(opts.widthPx * dpr);
-    canvas.height = Math.round(opts.heightPx * dpr);
+    canvas.width = opts.widthPx;
+    canvas.height = opts.heightPx;
     canvas.style.width = `${opts.widthPx}px`;
     canvas.style.height = `${opts.heightPx}px`;
     canvas.dataset.tileId = opts.tileId;
