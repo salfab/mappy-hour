@@ -73,8 +73,14 @@ jobs:
           # Bootstrap: pull latest repo state first (the deploy script lives in the
           # repo, so we can't trust the local copy to be current). Then run the
           # freshly-pulled script which does the actual docker compose pull/up.
+          #
+          # NOTE: `$LASTEXITCODE` is escaped via single quotes around the PS
+          # body so bash leaves it alone — previously the `\$` escape inside a
+          # double-quoted bash heredoc still got eaten, leaving PowerShell to
+          # parse `if ( -ne 0)` (cosmetic CommandNotFoundException). Switching
+          # to a single-quoted bash argument keeps the PS variable intact.
           ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 "$USER@$HOST" \
-            "powershell -NoProfile -Command \"Set-Location C:\\srv\\mappy-hour; git pull --ff-only; if (\$LASTEXITCODE -ne 0) { exit 1 }; & powershell -NoProfile -ExecutionPolicy Bypass -File C:\\srv\\mappy-hour\\scripts\\headless-server-selfhosting\\mitch-deploy-docker.ps1\""
+            'powershell -NoProfile -Command "Set-Location C:\srv\mappy-hour; git pull --ff-only; if ($LASTEXITCODE -ne 0) { exit 1 }; & powershell -NoProfile -ExecutionPolicy Bypass -File C:\srv\mappy-hour\scripts\headless-server-selfhosting\mitch-deploy-docker.ps1"'
 
       - name: Health check
         env:
