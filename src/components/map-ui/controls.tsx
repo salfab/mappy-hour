@@ -13,6 +13,7 @@ import {
 
 export type AreaMode = "instant" | "daily";
 export type MapPanelTab = "map" | "terraces";
+export type OverlayMode = "sunlight" | "heatmap";
 
 export interface TimelineProgressView {
   phase: string;
@@ -34,18 +35,15 @@ interface CalculationControlsProps {
 }
 
 interface LayerFiltersProps {
-  showSunny: boolean;
-  showShadow: boolean;
+  overlayMode: OverlayMode;
   showTerrain: boolean;
-  showHeatmap: boolean;
   showPlaces: boolean;
   ignoreVegetationShadow: boolean;
   canShowHeatmap: boolean;
   cacheOnly: boolean;
   forceCacheOnly: boolean;
-  onShowSunShadowChange: (value: boolean) => void;
+  onOverlayModeChange: (value: OverlayMode) => void;
   onShowTerrainChange: (value: boolean) => void;
-  onShowHeatmapChange: (value: boolean) => void;
   onShowPlacesChange: (value: boolean) => void;
   onIgnoreVegetationShadowChange: (value: boolean) => void;
   onCacheOnlyChange: (value: boolean) => void;
@@ -120,6 +118,53 @@ function ToggleIconButton(props: ToggleIconButtonProps) {
   );
 }
 
+interface OverlaySelectorProps {
+  mode: OverlayMode;
+  canShowHeatmap: boolean;
+  onModeChange: (mode: OverlayMode) => void;
+}
+
+function OverlaySelector(props: OverlaySelectorProps) {
+  const pillBase =
+    "group grid place-items-center gap-1 rounded-2xl px-3 py-2 text-slate-600 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45";
+  const pillActive = "bg-amber-200 text-slate-950 shadow-sm shadow-amber-200/50";
+  const pillInactive = "hover:bg-amber-50 hover:text-slate-900";
+
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Type de surcouche"
+      className="inline-flex items-center gap-1 rounded-2xl border border-slate-200 bg-white/92 p-1 shadow-sm"
+    >
+      <button
+        type="button"
+        role="radio"
+        aria-checked={props.mode === "sunlight"}
+        title="Ensoleillement"
+        aria-label="Ensoleillement"
+        className={`${pillBase} ${props.mode === "sunlight" ? pillActive : pillInactive}`}
+        onClick={() => props.onModeChange("sunlight")}
+      >
+        <SunIcon className="h-5 w-5 transition group-hover:scale-105" />
+        <span className="text-[10px] font-semibold leading-none">Soleil</span>
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={props.mode === "heatmap"}
+        title="Heatmap d'ensoleillement journalier"
+        aria-label="Heatmap"
+        disabled={!props.canShowHeatmap}
+        className={`${pillBase} ${props.mode === "heatmap" ? pillActive : pillInactive}`}
+        onClick={() => props.onModeChange("heatmap")}
+      >
+        <HeatmapIcon className="h-5 w-5 transition group-hover:scale-105" />
+        <span className="text-[10px] font-semibold leading-none">Chaleur</span>
+      </button>
+    </div>
+  );
+}
+
 function formatDisplayDate(date: string): string {
   const [year, month, day] = date.split("-").map(Number);
   if (!year || !month || !day) {
@@ -190,17 +235,12 @@ export function CalculationControls(props: CalculationControlsProps) {
 }
 
 export function LayerFilters(props: LayerFiltersProps) {
-  const showLight = props.showSunny || props.showShadow;
-
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm" aria-label="Couches de carte">
-      <ToggleIconButton
-        desktopOnly
-        label="Lumiere"
-        shortLabel="Soleil"
-        pressed={showLight}
-        icon={SunIcon}
-        onPressedChange={props.onShowSunShadowChange}
+      <OverlaySelector
+        mode={props.overlayMode}
+        canShowHeatmap={props.canShowHeatmap}
+        onModeChange={props.onOverlayModeChange}
       />
       <ToggleIconButton
         desktopOnly
@@ -208,14 +248,6 @@ export function LayerFilters(props: LayerFiltersProps) {
         pressed={props.showTerrain}
         icon={MountainIcon}
         onPressedChange={props.onShowTerrainChange}
-      />
-      <ToggleIconButton
-        label="Heatmap"
-        shortLabel="Chaleur"
-        pressed={props.showHeatmap}
-        disabled={!props.canShowHeatmap}
-        icon={HeatmapIcon}
-        onPressedChange={props.onShowHeatmapChange}
       />
       <ToggleIconButton
         label="Ignorer vegetation"

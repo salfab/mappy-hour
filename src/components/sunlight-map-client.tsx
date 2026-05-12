@@ -16,6 +16,7 @@ import {
   CalculationControls,
   DailyCoverage,
   LayerFilters,
+  type OverlayMode,
   ProgressStatus,
   TimeSlider,
   ViewTabs,
@@ -2332,6 +2333,16 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     [dailyExposureCells, dailyTimeline?.pointCount, dailyTimeline?.stats, dailyTimeline?.tiles.length, mode],
   );
 
+  // Auto-fallback to sunlight overlay when heatmap becomes unavailable
+  // (e.g. user switches to instant mode while heatmap was active).
+  useEffect(() => {
+    if (!canShowHeatmap && showHeatmap && !showSunny && !showShadow) {
+      setShowHeatmap(false);
+      setShowSunny(true);
+      setShowShadow(true);
+    }
+  }, [canShowHeatmap, showHeatmap, showShadow, showSunny]);
+
   const isDailyRangeInvalid = useMemo(() => {
     if (mode !== "daily") {
       return false;
@@ -4622,23 +4633,30 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     />
   );
 
+  const overlayMode: OverlayMode =
+    showHeatmap && !showSunny && !showShadow ? "heatmap" : "sunlight";
+
   const layerFilters = (
     <LayerFilters
-      showSunny={showSunny}
-      showShadow={showShadow}
+      overlayMode={overlayMode}
       showTerrain={showTerrain}
-      showHeatmap={showHeatmap}
       showPlaces={showPlaces}
       ignoreVegetationShadow={ignoreVegetationShadow}
       canShowHeatmap={canShowHeatmap}
       cacheOnly={cacheOnly}
       forceCacheOnly={forceCacheOnly}
-      onShowSunShadowChange={(value) => {
-        setShowSunny(value);
-        setShowShadow(value);
+      onOverlayModeChange={(value) => {
+        if (value === "heatmap") {
+          setShowSunny(false);
+          setShowShadow(false);
+          setShowHeatmap(true);
+        } else {
+          setShowSunny(true);
+          setShowShadow(true);
+          setShowHeatmap(false);
+        }
       }}
       onShowTerrainChange={setShowTerrain}
-      onShowHeatmapChange={setShowHeatmap}
       onShowPlacesChange={(value) => {
         setShowPlaces(value);
         if (value && sunlitPlaces.length > 0) {
