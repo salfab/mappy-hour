@@ -6,6 +6,7 @@ from:
   - commune-lausanne-west-tiles.json  (Lausanne + west communes)
   - commune-lausanne-east-tiles.json  (Pully → Saint-Saphorin Lavaux)
   - commune-vevey-land-tiles.json     (Vevey commune, lake tiles filtered out)
+  - commune-neuchatel-land-tiles.json (Neuchâtel commune, Lac de Neuchâtel filtered out)
   - commune-geneve-all-tiles.json     (Geneve + Carouge + Pregny + Le Grand-Saconnex)
 
 Replaces the previous bbox-based greater-lausanne + geneve-carouge additions
@@ -16,6 +17,7 @@ Each tile gets a `group` field so the HTML can color-group them:
   - "lausanne-west"   : EPFL, Renens, central Lausanne
   - "lausanne-east"   : Pully, Lutry, Lavaux (region=lausanne|vevey selon easting)
   - "vevey-city"      : Vevey commune (region=vevey_city, lake tiles filtered out)
+  - "neuchatel-city"  : Neuchâtel commune (region=neuchatel, lake tiles filtered out)
   - "geneva"          : Genève + Carouge + Pregny-Chambésy + Le Grand-Saconnex
 
 Run: python scripts/tools/_merge-high-value-commune-based.py
@@ -86,6 +88,17 @@ def main():
         vevey_added += 1
     print(f"Vevey-city commune (land only): {len(vevey_ids)} commune tiles → {vevey_added} new")
 
+    # 3c) Neuchâtel commune (Lac de Neuchâtel filtered out) — region=neuchatel, group=neuchatel-city
+    neuch_ids = load_tile_ids(ROOT / "commune-neuchatel-land-tiles.json")
+    neuch_added = 0
+    for tid in neuch_ids:
+        k = ("neuchatel", tid)
+        if k in existing: continue
+        existing.add(k)
+        additions.append({"region": "neuchatel", "tileId": tid, "group": "neuchatel-city"})
+        neuch_added += 1
+    print(f"Neuchâtel commune (land only): {len(neuch_ids)} commune tiles → {neuch_added} new")
+
     # 4) Geneva — region=geneve
     geneve_ids = load_tile_ids(ROOT / "commune-geneve-all-tiles.json")
     geneve_added = 0
@@ -107,9 +120,10 @@ def main():
         "high-value places-density scoring (top-priority) + "
         "commune outlines for Lausanne-west (EPFL, Renens, central), "
         "Lausanne-east (Pully → Saint-Saphorin Lavaux), "
-        "Vevey-city (commune de Vevey, lake tiles filtered out by Léman polygon), and "
+        "Vevey-city (commune de Vevey, lake tiles filtered out by Léman polygon), "
+        "Neuchâtel-city (commune de Neuchâtel, Lac de Neuchâtel filtered out), and "
         "Geneva-all (Genève, Carouge, Pregny-Chambésy, Le Grand-Saconnex). "
-        "Lake tiles excluded by commune boundary clipping (and explicit Léman filter for Vevey)."
+        "Lake tiles excluded by commune boundary clipping (and explicit Léman / Lac de Neuchâtel filters)."
     )
 
     with open(OUT, "w", encoding="utf-8") as f:

@@ -73,7 +73,8 @@ function parseArgs(argv: string[]): ParsedArgs {
         region === "morges" ||
         region === "geneve" ||
         region === "vevey" ||
-        region === "vevey_city"
+        region === "vevey_city" ||
+        region === "neuchatel"
       ) {
         result.region = region;
       } else {
@@ -81,7 +82,7 @@ function parseArgs(argv: string[]): ParsedArgs {
         // the default "lausanne" and the misrouted run looked successful but
         // produced no atlas under the intended region cache dir.
         throw new Error(
-          `Unknown --region=${region}. Expected lausanne|nyon|morges|geneve|vevey|vevey_city.`,
+          `Unknown --region=${region}. Expected lausanne|nyon|morges|geneve|vevey|vevey_city|neuchatel.`,
         );
       }
       continue;

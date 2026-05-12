@@ -72,7 +72,7 @@ services:
     profiles:
       - loader
     entrypoint: ["pnpm", "atlas:download", "--"]
-    command: ["--repo=salfab/mappy-hour", "--regions=lausanne,nyon,morges,vevey,vevey_city,geneve"]
+    command: ["--repo=salfab/mappy-hour", "--regions=lausanne,nyon,morges,vevey,vevey_city,neuchatel,geneve"]
     environment:
       - MAPPY_DATA_ROOT=/data
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}

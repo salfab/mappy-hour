@@ -28,6 +28,7 @@ REGION_MODEL_HASH = {
     "geneve":     None,
     "vevey":      None,
     "vevey_city": None,
+    "neuchatel":  None,
 }
 
 

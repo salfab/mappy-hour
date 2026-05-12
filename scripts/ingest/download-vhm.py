@@ -57,6 +57,9 @@ REGIONS = {
     # Vraie ville de Vevey (commune Vevey + La Tour-de-Peilz + Corseaux),
     # sans Lavaux. Matches VEVEY_CITY_LOCAL_BBOX [6.82, 46.44, 6.89, 46.49].
     "vevey_city": {"minE": 2551000, "minN": 1143000, "maxE": 2557000, "maxN": 1149000},
+    # Ville de Neuchâtel (commune OSM minus Lac de Neuchâtel).
+    # Matches NEUCHATEL_LOCAL_BBOX [6.92, 46.97, 6.98, 47.01].
+    "neuchatel": {"minE": 2560000, "minN": 1202000, "maxE": 2566000, "maxN": 1207000},
 }
 
 

@@ -452,7 +452,7 @@ wsl -d Ubuntu -u root -e bash -c '
 cd /mnt/c/srv/mappy-hour
 docker compose --profile loader run --rm atlas-loader \
   --repo=salfab/mappy-hour \
-  --regions=lausanne,nyon,morges,vevey,vevey_city,geneve
+  --regions=lausanne,nyon,morges,vevey,vevey_city,neuchatel,geneve
 '
 
 # Si l'hôte doit aussi pouvoir re-précomputer (NUC GPU plus tard) :
@@ -937,7 +937,7 @@ Get-ScheduledTask -TaskName WslKeepalive | Get-ScheduledTaskInfo
 ```powershell
 # Le bind-mount est-il bien populé ?
 wsl -d Ubuntu -u root -e bash -c "docker exec mappy-hour ls /data/cache/sunlight"
-# Doit lister lausanne/, nyon/, morges/, vevey/, vevey_city/, geneve/
+# Doit lister lausanne/, nyon/, morges/, vevey/, vevey_city/, neuchatel/, geneve/
 
 # .env côté hôte ?
 Get-Content C:\srv\mappy-hour\.env
@@ -1032,7 +1032,7 @@ wsl -d Ubuntu -u root -e bash -c '
 cd /mnt/c/srv/mappy-hour
 docker compose --profile loader run --rm atlas-loader \
   --repo=salfab/mappy-hour \
-  --regions=lausanne,nyon,morges,vevey,vevey_city,geneve
+  --regions=lausanne,nyon,morges,vevey,vevey_city,neuchatel,geneve
 '
 
 # Restart pour rafraîchir le cache mémoire
