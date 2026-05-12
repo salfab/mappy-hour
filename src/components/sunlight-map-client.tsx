@@ -3901,10 +3901,21 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     const L = leafletModuleRef.current;
     if (!map || !L) return;
 
+    // Helper: toggle the visibility of every bitmap overlay's <canvas>.
+    // We show the bitmap by default and hide it while the unified vector
+    // overlay is displayed on top — otherwise the two layers stack and
+    // their alpha channels compound, washing out the colors.
+    const setBitmapsVisible = (visible: boolean) => {
+      for (const ov of bitmapOverlaysRef.current.values()) {
+        ov.element.style.display = visible ? "" : "none";
+      }
+    };
+
     // Always tear down the previous upgrade synchronously.
     if (unifiedVectorLayerRef.current) {
       unifiedVectorLayerRef.current.remove();
       unifiedVectorLayerRef.current = null;
+      setBitmapsVisible(true);
     }
     if (idleVectorTimerRef.current) {
       clearTimeout(idleVectorTimerRef.current);
@@ -3993,6 +4004,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       }
       layer.addTo(map);
       unifiedVectorLayerRef.current = layer;
+      setBitmapsVisible(false);
     }, IDLE_DELAY_MS);
 
     return () => {
@@ -4003,6 +4015,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       if (unifiedVectorLayerRef.current) {
         unifiedVectorLayerRef.current.remove();
         unifiedVectorLayerRef.current = null;
+        setBitmapsVisible(true);
       }
     };
   }, [
