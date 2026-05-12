@@ -22,6 +22,10 @@ import {
 } from "@/components/map-ui/controls";
 import { FloatingSearch } from "@/components/map-ui/floating-search";
 import {
+  PlaceSuggestionsDropdown,
+  type PlaceSuggestion,
+} from "@/components/map-ui/place-suggestions-dropdown";
+import {
   MobileBarsView,
   MobileBottomSheet,
   type BottomSheetState,
@@ -3828,6 +3832,22 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     }
   }, [searchQuery]);
 
+  const handleSelectSuggestion = useCallback(
+    (suggestion: PlaceSuggestion) => {
+      const map = mapRef.current;
+      if (map) {
+        map.setView([suggestion.lat, suggestion.lon], Math.max(map.getZoom(), 17), {
+          animate: true,
+        });
+      }
+      setSearchQuery(suggestion.name);
+      setLastSearchQuery(suggestion.name);
+      setSearchError(null);
+      setIsSearchOpen(false);
+    },
+    [],
+  );
+
   const loadSunlitPlaces = useCallback(
     async (bbox: [number, number, number, number]) => {
       const placesPayload = {
@@ -4631,27 +4651,34 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   );
 
   const desktopSearch = (
-    <form
-      className="hidden items-center gap-2 rounded-full border border-white/70 bg-white/88 p-2 text-slate-900 shadow-xl backdrop-blur lg:flex"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void handleSubmitSearch();
-      }}
-    >
-      <input
-        className="w-72 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-amber-300"
-        value={searchQuery}
-        placeholder="Chercher une adresse ou un lieu"
-        onChange={(event) => setSearchQuery(event.target.value)}
-      />
-      <button
-        type="submit"
-        className="rounded-full bg-amber-300 px-4 py-2 text-sm font-semibold text-slate-950 disabled:bg-slate-300 disabled:text-slate-500"
-        disabled={isSearchLoading || searchQuery.trim().length === 0}
+    <div className="relative hidden lg:inline-block">
+      <form
+        className="flex items-center gap-2 rounded-full border border-white/70 bg-white/88 p-2 text-slate-900 shadow-xl backdrop-blur"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void handleSubmitSearch();
+        }}
       >
-        {isSearchLoading ? "..." : "OK"}
-      </button>
-    </form>
+        <input
+          className="w-72 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-amber-300"
+          value={searchQuery}
+          placeholder="Chercher une adresse ou un lieu"
+          onChange={(event) => setSearchQuery(event.target.value)}
+        />
+        <button
+          type="submit"
+          className="rounded-full bg-amber-300 px-4 py-2 text-sm font-semibold text-slate-950 disabled:bg-slate-300 disabled:text-slate-500"
+          disabled={isSearchLoading || searchQuery.trim().length === 0}
+        >
+          {isSearchLoading ? "..." : "OK"}
+        </button>
+      </form>
+      <PlaceSuggestionsDropdown
+        query={searchQuery}
+        onSelect={handleSelectSuggestion}
+        variant="inline"
+      />
+    </div>
   );
 
   return (
@@ -4668,6 +4695,16 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         onQueryChange={setSearchQuery}
         onSubmit={() => void handleSubmitSearch()}
       />
+      {/* Mobile suggestions dropdown — only when FloatingSearch is open. */}
+      {isSearchOpen ? (
+        <div className="pointer-events-auto absolute inset-x-0 top-0 z-[600] lg:hidden">
+          <PlaceSuggestionsDropdown
+            query={searchQuery}
+            onSelect={handleSelectSuggestion}
+            variant="floating"
+          />
+        </div>
+      ) : null}
 
       <div className="absolute left-5 top-5 z-[450] hidden items-center gap-3 lg:flex">
         <div className="rounded-full border border-white/70 bg-white/88 px-4 py-2 text-sm font-semibold text-slate-900 shadow-xl backdrop-blur">
