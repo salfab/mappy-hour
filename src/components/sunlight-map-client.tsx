@@ -3687,8 +3687,21 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       }
       contourLayerRef.current.clearLayers();
 
+      const vectorViewportBounds = map.getBounds();
+
       for (const tile of dailyTimeline.tiles) {
         if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) continue;
+        // Viewport filter — marching-squares is the expensive bit, no point
+        // running it on tiles the user can't see. Mirrors the bitmap path.
+        const vc = tile.tileCorners;
+        const vSouth = Math.min(vc.sw.lat, vc.se.lat);
+        const vNorth = Math.max(vc.nw.lat, vc.ne.lat);
+        const vWest = Math.min(vc.nw.lon, vc.sw.lon);
+        const vEast = Math.max(vc.ne.lon, vc.se.lon);
+        if (vEast < vectorViewportBounds.getWest()) continue;
+        if (vWest > vectorViewportBounds.getEast()) continue;
+        if (vNorth < vectorViewportBounds.getSouth()) continue;
+        if (vSouth > vectorViewportBounds.getNorth()) continue;
         const contours = buildTileContourPolygons(
           tile, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow,
         );
