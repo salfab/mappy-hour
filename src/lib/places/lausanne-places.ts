@@ -1,10 +1,12 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 
 import { z } from "zod";
 
 import {
   PROCESSED_LAUSANNE_PLACES_PATH,
   PROCESSED_NYON_PLACES_PATH,
+  PROCESSED_PLACES_DIR,
 } from "@/lib/storage/data-paths";
 
 const placeSchema = z.object({
@@ -83,11 +85,26 @@ export async function loadAllPlaces(): Promise<PlacesFile | null> {
     return combinedCache;
   }
 
-  const files = await Promise.all(
-    (Object.keys(REGION_PATHS) as PlacesRegion[]).map((region) =>
-      loadPlacesByRegion(region),
-    ),
-  );
+  // Scan PROCESSED_PLACES_DIR for every `<region>-places.json` we can find,
+  // rather than iterating a hardcoded {lausanne, nyon} list. Without this,
+  // morges/geneve/vevey/vevey_city sidecars are present on disk (written by
+  // download-places-osm.ts split + Posture 4 startup check + bake) but never
+  // read → SSE `event: places` is empty for those bboxes, and the venue
+  // typeahead is missing the corresponding entries (Morges' White Horse Pub
+  // was invisible from places-v0.1.1 deploy → this commit).
+  // The combined `places.json` is deliberately skipped (already merged data;
+  // including it would double-count every venue).
+  let candidatePaths: string[];
+  try {
+    const entries = await fs.readdir(PROCESSED_PLACES_DIR);
+    candidatePaths = entries
+      .filter((entry) => /^[a-zA-Z0-9_-]+-places\.json$/.test(entry))
+      .map((entry) => path.join(PROCESSED_PLACES_DIR, entry));
+  } catch {
+    candidatePaths = [];
+  }
+
+  const files = await Promise.all(candidatePaths.map((p) => loadPlacesFromPath(p)));
   const existing = files.filter((file): file is PlacesFile => file !== null);
   if (existing.length === 0) {
     combinedCache = null;
