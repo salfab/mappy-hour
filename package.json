@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "diag:adaptive-horizon": "tsx scripts/diag/check-adaptive-horizon-assignments.ts",
     "benchmark:precompute:lausanne": "tsx scripts/benchmark/precompute-lausanne-benchmark.ts",
     "benchmark:parallax:nyon": "tsx scripts/benchmark/nyon-parallax-impact.ts",
     "benchmark:horizon:macro:lausanne": "tsx scripts/benchmark/lausanne-horizon-macro-tiling.ts",
