@@ -5173,6 +5173,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         >
           {effectiveRenderMode}
           {modeOverride !== null ? " (forced)" : ""}
+          {mapZoom !== null ? ` · z${mapZoom.toFixed(1)}` : ""}
         </button>
       </div>
 
