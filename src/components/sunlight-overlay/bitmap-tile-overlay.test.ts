@@ -88,7 +88,8 @@ describe("BitmapTileOverlay", () => {
     const overlay = new BitmapTileOverlay({
       tileId: "tile-001",
       corners: CORNERS,
-      bitmapResolution: 128,
+      widthPx: 128,
+      heightPx: 128,
       devicePixelRatio: 2,
       container: container as unknown as HTMLElement,
     });
@@ -113,7 +114,8 @@ describe("BitmapTileOverlay", () => {
     const overlay = new BitmapTileOverlay({
       tileId: "t",
       corners: CORNERS,
-      bitmapResolution: 8,
+      widthPx: 8,
+      heightPx: 8,
       devicePixelRatio: 1,
       container: container as unknown as HTMLElement,
     });
@@ -131,7 +133,8 @@ describe("BitmapTileOverlay", () => {
     const overlay = new BitmapTileOverlay({
       tileId: "t",
       corners: CORNERS,
-      bitmapResolution: 100,
+      widthPx: 100,
+      heightPx: 100,
       devicePixelRatio: 1,
       container: container as unknown as HTMLElement,
     });
@@ -148,7 +151,8 @@ describe("BitmapTileOverlay", () => {
     const overlay = new BitmapTileOverlay({
       tileId: "t",
       corners: CORNERS,
-      bitmapResolution: 8,
+      widthPx: 8,
+      heightPx: 8,
       devicePixelRatio: 1,
       container: container as unknown as HTMLElement,
     });

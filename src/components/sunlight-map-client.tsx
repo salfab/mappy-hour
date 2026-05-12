@@ -3577,9 +3577,20 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) continue;
         activeTileIds.add(tile.tileId);
 
+        // Edge tiles (region bbox truncates one axis) have rectangular grids
+        // — e.g. 43 × 250 on the west edge of Vevey. Per-axis clamp avoids
+        // `paintTileImageData` throwing "upsampling not supported" when the
+        // square targetRes exceeds the actual grid in one dimension.
+        const widthPx = Math.min(targetRes, tile.grid.width);
+        const heightPx = Math.min(targetRes, tile.grid.height);
+
         let overlay = bitmapOverlaysRef.current.get(tile.tileId);
-        // Re-rasterize if resolution drifted by > 50% (zoom changed enough).
-        if (overlay && shouldRerasterize(overlay.bitmapResolution, targetRes)) {
+        // Re-rasterize if EITHER axis drifted by > 50% (zoom changed enough).
+        if (
+          overlay &&
+          (shouldRerasterize(overlay.widthPx, widthPx) ||
+            shouldRerasterize(overlay.heightPx, heightPx))
+        ) {
           overlay.dispose();
           overlay = undefined;
         }
@@ -3587,7 +3598,8 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           overlay = new BitmapTileOverlay({
             tileId: tile.tileId,
             corners: tile.tileCorners,
-            bitmapResolution: targetRes,
+            widthPx,
+            heightPx,
             devicePixelRatio: dpr,
             container: pane,
           });
@@ -3599,8 +3611,8 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         if (!sunMask) continue;
         const outdoorMask = getTileOutdoorMask(tile, decodedTimelineMaskCacheRef.current);
         const img = paintTileImageData({
-          width: targetRes,
-          height: targetRes,
+          width: widthPx,
+          height: heightPx,
           gridWidth: tile.grid.width,
           gridHeight: tile.grid.height,
           mode: {

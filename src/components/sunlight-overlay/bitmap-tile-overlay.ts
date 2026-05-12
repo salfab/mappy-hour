@@ -39,13 +39,15 @@ import {
 export interface BitmapTileOverlayOptions {
   tileId: string;
   corners: TileCornersLatLon;
-  /** Square physical resolution of the canvas (in pixels, post-DPR).
-   *  Both width and height of the `<canvas>` are set to this value. */
-  bitmapResolution: number;
+  /** Logical canvas width in pixels (cell-extent count along x). Set
+   *  separately from `heightPx` to support edge tiles where the region bbox
+   *  truncates one axis (e.g. a 43 × 250 grid at the west edge of Vevey). */
+  widthPx: number;
+  /** Logical canvas height in pixels (cell-extent count along y). */
+  heightPx: number;
   /** DPR cap (already clamped by the caller — see `render-strategy.ts`).
-   *  Currently informational — we honour it by setting the canvas intrinsic
-   *  size to `bitmapResolution` (which the caller computed as
-   *  `targetCssPx × dpr`). Stored for future use (e.g. CSS sizing). */
+   *  Used to size the intrinsic canvas buffer = `widthPx × dpr` ×
+   *  `heightPx × dpr`. CSS dimensions remain `widthPx × heightPx`. */
   devicePixelRatio: number;
   /** Where to mount the canvas. Typically `map.getPane("overlayPane")`. */
   container: HTMLElement;
@@ -54,7 +56,8 @@ export interface BitmapTileOverlayOptions {
 export class BitmapTileOverlay {
   readonly tileId: string;
   readonly corners: TileCornersLatLon;
-  readonly bitmapResolution: number;
+  readonly widthPx: number;
+  readonly heightPx: number;
   readonly devicePixelRatio: number;
 
   private readonly canvas: HTMLCanvasElement;
@@ -65,28 +68,30 @@ export class BitmapTileOverlay {
   constructor(opts: BitmapTileOverlayOptions) {
     this.tileId = opts.tileId;
     this.corners = opts.corners;
-    this.bitmapResolution = opts.bitmapResolution;
+    this.widthPx = opts.widthPx;
+    this.heightPx = opts.heightPx;
     this.devicePixelRatio = opts.devicePixelRatio;
     this.container = opts.container;
 
     // ── DPR split between physical and CSS dimensions ──────────────────────
-    // The canvas's INTRINSIC pixel size is `bitmapResolution × dpr` — that's
-    // how many real pixels we actually draw (more pixels = sharper on HiDPI).
+    // The canvas's INTRINSIC pixel size is `widthPx × dpr` × `heightPx × dpr`
+    // — that's how many real pixels we actually draw (more pixels = sharper
+    // on HiDPI).
     //
-    // Its CSS (logical) size is `bitmapResolution` — that's what the CSS
+    // Its CSS (logical) size is `widthPx × heightPx` — that's what the CSS
     // matrix maps onto the 4 tile-edge corners. Decoupling the two means
     // the CSS transform doesn't change when DPR changes; only the canvas's
     // intrinsic buffer does.
     //
-    // The transform produced by `cornersToMatrix(..., bitmapResolution, ...)`
+    // The transform produced by `cornersToMatrix(..., widthPx, heightPx, ...)`
     // therefore maps LOGICAL canvas coords to layer points. The browser then
     // applies its own DPR scaling when rasterizing the canvas content.
     const canvas = document.createElement("canvas") as HTMLCanvasElement;
     const dpr = Math.max(1, opts.devicePixelRatio || 1);
-    canvas.width = Math.round(opts.bitmapResolution * dpr);
-    canvas.height = Math.round(opts.bitmapResolution * dpr);
-    canvas.style.width = `${opts.bitmapResolution}px`;
-    canvas.style.height = `${opts.bitmapResolution}px`;
+    canvas.width = Math.round(opts.widthPx * dpr);
+    canvas.height = Math.round(opts.heightPx * dpr);
+    canvas.style.width = `${opts.widthPx}px`;
+    canvas.style.height = `${opts.heightPx}px`;
     canvas.dataset.tileId = opts.tileId;
     canvas.style.position = "absolute";
     canvas.style.left = "0";
@@ -117,8 +122,8 @@ export class BitmapTileOverlay {
     // pixel dims. See constructor comment for the DPR decoupling rationale.
     const m = cornersToMatrix(
       this.corners,
-      this.bitmapResolution,
-      this.bitmapResolution,
+      this.widthPx,
+      this.heightPx,
       map,
     );
     this.canvas.style.transform = formatCSSMatrix(m);
