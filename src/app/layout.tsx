@@ -13,10 +13,40 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://mitch.tail63c42d.ts.net";
+const title = "Mappy Hour";
+const description =
+  "Trouve les terrasses au soleil autour de Lausanne, Nyon et du Léman grâce aux cartes d'ombre et d'ensoleillement.";
+const ogImage = {
+  url: "/og/mappy-hour.png",
+  width: 1200,
+  height: 630,
+  alt: "Mappy Hour montre les zones ensoleillées autour du Léman au coucher du soleil.",
+};
+
 export const metadata: Metadata = {
-  title: "Mappy Hour - Ensoleillement Lausanne + Nyon",
-  description:
-    "Application Next.js pour calculer l'ensoleillement à Lausanne et Nyon avec relief transfrontalier et bâtiments 3D.",
+  metadataBase: new URL(siteUrl),
+  applicationName: title,
+  title: {
+    default: title,
+    template: `%s - ${title}`,
+  },
+  description,
+  openGraph: {
+    title,
+    description,
+    url: "/",
+    siteName: title,
+    locale: "fr_CH",
+    type: "website",
+    images: [ogImage],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
+    images: [ogImage],
+  },
 };
 
 export default function RootLayout({
