@@ -168,14 +168,27 @@ export async function GET(request: Request) {
       undefined,
   }));
 
-  // If the local dataset has no match (typical for city/commune queries like
-  // "Renens" or "Lutry"), fall back to Nominatim so the typeahead still works
-  // for geographic place names. Local is always preferred when present —
-  // bars/restaurants are higher signal in this app's context.
-  if (localSuggestions.length === 0) {
-    const geo = await fetchNominatimSuggestions(query, limit);
-    return NextResponse.json({ query, suggestions: geo });
-  }
+  // Always query Nominatim in parallel — even when we have local hits, we
+  // want city/commune names to surface (e.g. typing "renens" should show
+  // "Le Monde Snack Renens" as a venue *and* "Renens" as a town). Cap each
+  // source's contribution so neither dominates the dropdown:
+  //   - Local: up to `limit` (full quota — venues are the app's primary signal)
+  //   - Nominatim: up to 3 supplemental geographic hits, appended after locals
+  //     and deduped against them by (lat,lon) proximity.
+  const nominatimSlots = Math.min(3, limit);
+  const geoSuggestions = await fetchNominatimSuggestions(query, nominatimSlots);
 
-  return NextResponse.json({ query, suggestions: localSuggestions });
+  const isDuplicate = (a: Suggestion, b: Suggestion) => {
+    // ~50 m at lat 46 — tight enough to catch the same venue, loose enough
+    // to merge a Nominatim point on top of a local venue.
+    const dLat = Math.abs(a.lat - b.lat);
+    const dLon = Math.abs(a.lon - b.lon);
+    return dLat < 0.0005 && dLon < 0.0007;
+  };
+  const dedupedGeo = geoSuggestions.filter(
+    (g) => !localSuggestions.some((l) => isDuplicate(g, l)),
+  );
+
+  const merged = [...localSuggestions, ...dedupedGeo].slice(0, limit);
+  return NextResponse.json({ query, suggestions: merged });
 }
