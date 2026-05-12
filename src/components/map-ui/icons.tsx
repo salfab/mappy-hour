@@ -10,14 +10,18 @@ export function SearchIcon({ className = "h-5 w-5" }: IconProps) {
       aria-hidden="true"
       className={className}
       fill="none"
-      stroke="currentColor"
       strokeLinecap="round"
       strokeLinejoin="round"
       strokeWidth="2"
       viewBox="0 0 24 24"
     >
-      <circle cx="11" cy="11" r="7" />
-      <path d="m20 20-3.5-3.5" />
+      <circle cx="10.5" cy="10.5" r="6.5" fill="#fef3c7" stroke="#24384a" />
+      <circle cx="10.5" cy="10.5" r="2.4" fill="#fbbf24" stroke="#f59e0b" strokeWidth="1.5" />
+      <path d="M10.5 4.9v1.3" stroke="#f59e0b" strokeWidth="1.5" />
+      <path d="M10.5 14.8v1.3" stroke="#f59e0b" strokeWidth="1.5" />
+      <path d="M4.9 10.5h1.3" stroke="#f59e0b" strokeWidth="1.5" />
+      <path d="M14.8 10.5h1.3" stroke="#f59e0b" strokeWidth="1.5" />
+      <path d="m15.7 15.7 4.3 4.3" stroke="#24384a" strokeWidth="2.4" />
     </svg>
   );
 }

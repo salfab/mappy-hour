@@ -5163,7 +5163,10 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       />
       {/* Mobile suggestions dropdown — only when FloatingSearch is open. */}
       {isSearchOpen ? (
-        <div className="pointer-events-auto absolute inset-x-0 top-0 z-[600] lg:hidden">
+        <div
+          className="pointer-events-auto absolute inset-x-0 top-0 z-[600] lg:hidden"
+          data-mobile-search-root
+        >
           <PlaceSuggestionsDropdown
             query={searchQuery}
             onSelect={handleSelectSuggestion}
