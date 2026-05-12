@@ -29,7 +29,13 @@ services:
       # Posture 4 : tmpfs writable pour les places (baked dans l'image
       # puis copiés ici par docker-entrypoint.sh, et potentiellement
       # overlayés par check-places-update.mjs au démarrage).
-      - /data/processed/places:size=4m
+      #
+      # 16 MB : taille au 2026-05-12 = ~5.4 MB (combined places.json 2.7 MB +
+      # 6 splits per-region 0.03-1.5 MB chacun, total ~2.6 MB). Le 4 MB
+      # initial faisait crasher la cp à mi-chemin → JSON tronqués → 500
+      # sur /api/places/suggest et timeline event:places vide. La marge à 16
+      # absorbe la croissance OSM (~2× la valeur actuelle).
+      - /data/processed/places:size=16m
     environment:
       - NODE_ENV=production
       - MAPPY_DATA_ROOT=/data
