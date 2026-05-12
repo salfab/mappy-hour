@@ -3888,6 +3888,10 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     // Only upgrade when the strategy chose bitmap. In vector mode the
     // existing per-tile path already shows polygons.
     if (effectiveRenderMode !== "bitmap") return;
+    // Disabled when the user has forced a mode via the toggle — the
+    // override is meant for clean A/B comparisons, and an automatic
+    // vector overlay on top of a forced "bitmap" defeats the purpose.
+    if (modeOverride !== null) return;
 
     const IDLE_DELAY_MS = 400;
     idleVectorTimerRef.current = setTimeout(() => {
@@ -3972,6 +3976,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   }, [
     isMapReady, mode, dailyTimeline, dailyFrameIndex, effectiveRenderMode,
     ignoreVegetationShadow, showSunny, showShadow, showBuildings, mapBounds, mapZoom,
+    modeOverride,
   ]);
 
   // Canvas heatmap for large grids
