@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 
 import { BarsList } from "./bars-list";
 import { BackIcon, ChevronRightIcon } from "./icons";
+import { VenueTerraceIcon } from "./venue-assets";
 import type { VenueCardPlace } from "./venue-card";
 
 export type BottomSheetState = "compact" | "middle" | "expanded";
@@ -269,13 +270,29 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
             {props.coverage}
             <button
               type="button"
-              className="flex items-center justify-between rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-left text-sm text-slate-900 transition hover:bg-amber-100"
+              className="group grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-[1.75rem] border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-orange-50 px-3.5 py-3.5 text-left text-slate-950 shadow-sm shadow-amber-100/70 transition hover:-translate-y-0.5 hover:border-amber-300 hover:shadow-md hover:shadow-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
               onClick={props.onOpenBars}
             >
-              <span>Terrasses au soleil</span>
-              <span className="inline-flex items-center gap-2 text-slate-500">
-                {props.venueCount}
-                <ChevronRightIcon className="h-4 w-4" />
+              <span className="grid h-12 w-12 place-items-center rounded-2xl bg-amber-100 text-slate-900 ring-1 ring-inset ring-amber-200">
+                <VenueTerraceIcon className="h-7 w-7" />
+              </span>
+              <span className="grid min-w-0 gap-0.5">
+                <span className="text-base font-semibold leading-tight">Terrasses au soleil</span>
+                <span className="text-xs font-medium text-slate-500">
+                  {props.venueCount === 0
+                    ? "Aucun etablissement trouve"
+                    : props.venueCount === 1
+                      ? "1 etablissement visible"
+                      : `${props.venueCount} etablissements visibles`}
+                </span>
+              </span>
+              <span className="inline-flex items-center gap-2">
+                <span className="rounded-full bg-white px-2.5 py-1 text-sm font-semibold text-amber-900 ring-1 ring-inset ring-amber-200">
+                  {props.venueCount}
+                </span>
+                <span className="grid h-9 w-9 place-items-center rounded-full bg-slate-950 text-white shadow-sm transition group-hover:bg-amber-500">
+                  <ChevronRightIcon className="h-4 w-4" />
+                </span>
               </span>
             </button>
           </>
