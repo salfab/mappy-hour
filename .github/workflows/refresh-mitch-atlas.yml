@@ -84,8 +84,10 @@ jobs:
           # the outer -Command "..." string, causing `&&` to be seen as a
           # bare operator). The script does git pull + atlas-loader run +
           # compose restart + health check, all in one place.
+          # Bootstrap pattern: pull latest first (inline, no nested quotes
+          # that would trip PS5), then invoke the freshly-pulled script.
           ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 "$USER@$HOST" \
-            "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\srv\\mappy-hour\\scripts\\headless-server-selfhosting\\mitch-refresh-atlas.ps1 -AtlasArgs '$ATLAS_ARGS'"
+            "powershell -NoProfile -Command \"Set-Location C:\\srv\\mappy-hour; git pull --ff-only; if (\$LASTEXITCODE -ne 0) { exit 1 }; & powershell -NoProfile -ExecutionPolicy Bypass -File C:\\srv\\mappy-hour\\scripts\\headless-server-selfhosting\\mitch-refresh-atlas.ps1 -AtlasArgs '$ATLAS_ARGS'\""
 
       - name: Health check
         env:
