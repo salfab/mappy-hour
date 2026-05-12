@@ -3587,9 +3587,22 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       const targetRes = renderStrategy.bitmapResolution;
       const dpr = dprRef.current;
       const activeTileIds = new Set<string>();
+      const viewportBounds = map.getBounds();
 
       for (const tile of dailyTimeline.tiles) {
         if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) continue;
+        // Viewport filter — tiles outside the visible bounds are not painted
+        // and their overlay is disposed below. Avoids paying paint cost for
+        // tiles the user can't see (huge win on large precomputed zones).
+        const c = tile.tileCorners;
+        const tileSouth = Math.min(c.sw.lat, c.se.lat);
+        const tileNorth = Math.max(c.nw.lat, c.ne.lat);
+        const tileWest = Math.min(c.nw.lon, c.sw.lon);
+        const tileEast = Math.max(c.ne.lon, c.se.lon);
+        if (tileEast < viewportBounds.getWest()) continue;
+        if (tileWest > viewportBounds.getEast()) continue;
+        if (tileNorth < viewportBounds.getSouth()) continue;
+        if (tileSouth > viewportBounds.getNorth()) continue;
         activeTileIds.add(tile.tileId);
 
         // Edge tiles (region bbox truncates one axis) have rectangular grids
@@ -3857,7 +3870,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         ov.overlay.setUrl(dataUrl);
       }
     }
-  }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showShadow, showSunny, effectiveRenderMode, renderStrategy.bitmapResolution]);
+  }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showShadow, showSunny, effectiveRenderMode, renderStrategy.bitmapResolution, mapBounds]);
 
   // ── Idle vector upgrade ────────────────────────────────────────────────
   // When we're in bitmap LOD mode AND the user pauses interaction, run a
