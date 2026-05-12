@@ -367,6 +367,8 @@ async function main() {
   let firstCompletionTs: number | null = null;
   let currentComputeTileIndex = -1;
   let currentTileStartMs = 0;
+  let firstTileStartMs = 0; // timestamp of the very first "running" callback — used in the cold-start breakdown
+  let computedTileMs = 0; // accumulator of per-tile compute duration (running → computed) — used in the gap breakdown
   const recentCompletionTimestamps: number[] = [];
 
   // Day context for live zone
@@ -451,6 +453,7 @@ async function main() {
           if (progress.tileIndex !== currentComputeTileIndex) {
             currentComputeTileIndex = progress.tileIndex;
             currentTileStartMs = now;
+            if (firstTileStartMs === 0) firstTileStartMs = now;
           }
           currentTileRunningFrac =
             typeof progress.currentTileProgressPercent === "number"
@@ -458,6 +461,9 @@ async function main() {
               : 0;
         } else if (progress.currentTileState === "computed") {
           computedTileCount++;
+          if (currentTileStartMs > 0) {
+            computedTileMs += now - currentTileStartMs;
+          }
           currentComputeTileIndex = -1;
           recentCompletionTimestamps.push(now);
           if (firstCompletionTs === null) firstCompletionTs = now;
@@ -666,8 +672,9 @@ async function main() {
 }
 
 void main().catch((error) => {
-  console.error(
-    `[precompute] fatal: ${error instanceof Error ? error.message : "unknown error"}`,
-  );
+  // ANSI red + bright so the fatal stands out among the (otherwise plain)
+  // tile-progress chatter — previously easy to miss when scrolling back.
+  const msg = error instanceof Error ? (error.stack ?? error.message) : "unknown error";
+  process.stderr.write(`\x1b[1;31m[precompute] fatal: ${msg}\x1b[0m\n`);
   process.exitCode = 1;
 });
