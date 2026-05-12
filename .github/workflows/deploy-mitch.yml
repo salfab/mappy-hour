@@ -1,7 +1,15 @@
 name: Deploy to Mitch
 
 on:
-  push:
+  # IMPORTANT: wait for the image build to complete before deploying. If we
+  # listen to `push: branches: [master]` directly, this workflow can finish
+  # BEFORE `docker-publish.yml` has pushed the new image to GHCR — Mitch then
+  # pulls the previous `:latest` tag and the deploy is effectively a no-op.
+  # `workflow_run` only fires after `Build & publish Docker image` completes;
+  # the `conclusion == 'success'` check below skips failed builds.
+  workflow_run:
+    workflows: ["Build & publish Docker image"]
+    types: [completed]
     branches: [master]
   workflow_dispatch: {}
 
@@ -11,6 +19,11 @@ concurrency:
 
 jobs:
   deploy:
+    # Skip deploy when triggered by a failed `Build & publish Docker image`
+    # run — we don't want to ship a half-built image. workflow_dispatch has
+    # no `workflow_run` context so the conclusion is empty, hence the
+    # explicit `!= 'failure'` (not `== 'success'`).
+    if: ${{ github.event.workflow_run == null || github.event.workflow_run.conclusion == 'success' }}
 
     runs-on: ubuntu-latest
     timeout-minutes: 20
