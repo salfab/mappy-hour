@@ -29,7 +29,12 @@ interface Cli {
 function parseArgs(argv: string[]): Cli {
   let bump: Cli["bump"] = "patch";
   let publishNow = false;
-  let regions = "lausanne,nyon,vevey_city";
+  // Default: every region the atlas pipeline currently knows about. Missing
+  // a region here means OSM venues in its bbox won't be indexed, so the
+  // timeline stream's `event: places` is empty for that area (e.g. White
+  // Horse Pub in Morges was invisible until v0.1.0 because morges was
+  // missing from this list).
+  let regions = "lausanne,morges,nyon,vevey,vevey_city,geneve";
   for (const arg of argv) {
     if (arg.startsWith("--bump=")) {
       const v = arg.slice("--bump=".length);
