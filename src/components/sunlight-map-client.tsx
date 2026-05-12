@@ -3832,13 +3832,32 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     }
   }, [searchQuery]);
 
+  // Suggestion target zoom: 17 for a single venue (one 250 m × 250 m tile fits
+  // ~300 px on screen at lat 46.5). For city/region suggestions, use the
+  // Nominatim bbox to fitBounds instead — way more natural than a fixed zoom.
+  // No fancy heuristic on what counts as "a city": if Nominatim returns a bbox,
+  // we trust it; otherwise default to zoom 17 (small enough for venues, large
+  // enough to avoid the "you see 5 tiles" zoom 19 trap).
+  const SUGGESTION_TARGET_ZOOM = 17;
+
   const handleSelectSuggestion = useCallback(
     (suggestion: PlaceSuggestion) => {
       const map = mapRef.current;
       if (map) {
-        map.setView([suggestion.lat, suggestion.lon], Math.max(map.getZoom(), 17), {
-          animate: true,
-        });
+        if (suggestion.bbox) {
+          const [minLon, minLat, maxLon, maxLat] = suggestion.bbox;
+          map.fitBounds(
+            [
+              [minLat, minLon],
+              [maxLat, maxLon],
+            ],
+            { padding: [40, 40], animate: true, maxZoom: SUGGESTION_TARGET_ZOOM },
+          );
+        } else {
+          map.setView([suggestion.lat, suggestion.lon], SUGGESTION_TARGET_ZOOM, {
+            animate: true,
+          });
+        }
       }
       setSearchQuery(suggestion.name);
       setLastSearchQuery(suggestion.name);

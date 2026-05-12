@@ -7,9 +7,15 @@ export interface PlaceSuggestion {
   name: string;
   lat: number;
   lon: number;
-  category: "park" | "terrace_candidate";
+  /** `geo` = Nominatim fallback (cities, addresses); other values come from local dataset. */
+  category: "park" | "terrace_candidate" | "geo";
   subcategory: string;
   hasOutdoorSeating: boolean;
+  source: "local" | "nominatim";
+  /** Best-effort city/suburb name (OSM `addr:city`/`addr:suburb` for local, address segment for Nominatim). */
+  locality?: string;
+  /** Bounding box `[minLon, minLat, maxLon, maxLat]` — present for Nominatim city/town results. */
+  bbox?: [number, number, number, number];
 }
 
 interface PlaceSuggestionsDropdownProps {
@@ -41,9 +47,20 @@ const SUBCATEGORY_LABEL: Record<string, string> = {
   fast_food: "Fast-food",
   food_court: "Food court",
   park: "Parc",
+  city: "Ville",
+  town: "Ville",
+  village: "Village",
+  suburb: "Quartier",
+  neighbourhood: "Quartier",
+  hamlet: "Hameau",
+  residential: "Quartier",
+  administrative: "Commune",
 };
 
 function formatLabel(suggestion: PlaceSuggestion): string {
+  if (suggestion.source === "nominatim") {
+    return SUBCATEGORY_LABEL[suggestion.subcategory] ?? "Adresse";
+  }
   return SUBCATEGORY_LABEL[suggestion.subcategory] ?? suggestion.subcategory;
 }
 
@@ -118,7 +135,10 @@ export function PlaceSuggestionsDropdown(props: PlaceSuggestionsDropdownProps) {
             }}
           >
             <span className="text-sm font-semibold text-slate-950">{suggestion.name}</span>
-            <span className="text-xs text-slate-500">{formatLabel(suggestion)}</span>
+            <span className="text-xs text-slate-500">
+              {formatLabel(suggestion)}
+              {suggestion.locality ? ` · ${suggestion.locality}` : null}
+            </span>
           </button>
         </li>
       ))}
