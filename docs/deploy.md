@@ -954,6 +954,61 @@ tailscale cert <hostname>.<tailnet>.ts.net
 # Si erreur : DNS → "HTTPS Certificates" off dans l'admin Tailscale → §5.1
 ```
 
+### 12.6 `Wsl/Service/CreateInstance/E_FAIL` ou HCS `0x800706b5`
+
+Symptôme : `wsl -d Ubuntu echo OK` retourne soit
+`Wsl/Service/CreateInstance/E_FAIL` soit
+`Wsl/Service/CreateInstance/CreateVm/HCS/0x800706b5` ("The interface is
+unknown"). Le container ne démarre pas et le workflow `Deploy to Mitch`
+échoue à l'étape WSL.
+
+Causes typiques observées sur mitch :
+- **Disque C: plein** (< 500 MB libre) — Hyper-V ne peut pas allouer
+  son scratch et abandonne l'init de la VM.
+- **`vmcompute` ou `LxssManager` en état dégradé** après un cycle
+  hôte / installation Windows Update / pause Hyper-V.
+
+Procédure de recovery (du moins invasif au plus invasif) :
+
+```powershell
+# 1) Reset doux des services
+wsl --shutdown
+Start-Sleep 5
+Restart-Service vmcompute -Force
+wsl -d Ubuntu echo OK
+# Si OK : terminé. Sinon →
+
+# 2) Reset complet des deux services (vmcompute + LxssManager)
+Stop-Service vmcompute   -Force
+Stop-Service LxssManager -Force
+Start-Sleep 3
+Start-Service vmcompute
+Start-Service LxssManager
+Start-Sleep 3
+wsl --shutdown
+Start-Sleep 5
+wsl -d Ubuntu echo OK
+# Si OK : terminé. Sinon → 3
+
+# 3) Vérifier l'espace disque
+Get-PSDrive C
+# Si Free < 1 GB : nettoyer avant de retenter (voir §14)
+```
+
+Si l'erreur survient après une session de travail intense (atlas
+refresh, builds Docker successifs), le VHDX WSL peut avoir grossi de
+plusieurs GB sans qu'on s'en rende compte — voir §14.2 pour le compact.
+
+Une fois WSL relancé :
+
+```powershell
+# Le scheduled task est probablement à terre — la relancer manuellement
+Start-ScheduledTask -TaskName "Mappy-WSL-Keepalive"
+
+# Le container peut avoir été stoppé par l'arrêt de WSL — vérifier
+wsl -d Ubuntu -u root -e bash -c "cd /mnt/c/srv/mappy-hour && docker compose up -d"
+```
+
 ---
 
 ## 13. Maintenance
@@ -1007,16 +1062,18 @@ tailscale serve reset       # nettoie tout serve+funnel
 
 ## 14. Gestion de l'espace disque
 
-mitch a un disque C: d'environ **118 GB**. Inventaire approximatif :
+mitch a un disque C: d'environ **118 GB**. Inventaire approximatif (mai 2026) :
 
 | Emplacement | Taille | Note |
 |---|---|---|
-| `C:\mappy-data\cache\sunlight\` | ~30 GB | Atlas 5 régions — **load-bearing**, ne pas toucher |
-| `C:\Users\kiosque\AppData\Local\Plex Media Server` | ~20 GB | Metadata + thumbnails Plex (pas les médias). Anciens `library.db-YYYY-MM-DD` peuvent être supprimés, Plex recrée |
-| Distro Ubuntu WSL kiosque | ~8 GB | Là où tourne Docker — **load-bearing** |
-| Distro Ubuntu WSL devops | ~8.85 GB | **Obsolète** (cf. §3) — à supprimer (task #15) : `wsl --unregister Ubuntu` en session devops |
+| `C:\mappy-data\cache\sunlight\` | ~33 GB | Atlas 6 régions (lausanne, geneve, vevey, vevey_city, morges, nyon) — **load-bearing**, ne pas toucher |
+| Distro Ubuntu WSL kiosque (`AppData\Local\WSL\<guid>\ext4.vhdx`) | ~6-10 GB après compact, peut gonfler à 25+ GB après pulls successifs | Là où tourne Docker — **load-bearing**. Compactable, voir §14.2 |
 | `C:\srv\mappy-hour` | < 1 GB | Repo (sans node_modules — le build vit dans le conteneur) |
 | Windows + Tailscale + reste | reste | |
+
+**Historique** (déjà nettoyés, ne pas recréer) :
+- Distro Ubuntu WSL **devops** (~8.85 GB) — supprimée (cf. §3, Docker tourne uniquement côté kiosque)
+- **Plex Media Server** (~20 GB) — désinstallé : la machine est dédiée mappy-hour
 
 ### 14.1 Commandes utiles
 
@@ -1036,6 +1093,61 @@ Get-ChildItem "C:\Users\kiosque\AppData\Local\Plex Media Server\Plug-in Support\
 wsl -d Ubuntu -u root -e bash -c "docker system df"
 wsl -d Ubuntu -u root -e bash -c "docker system prune -af"   # purge images dangling + cache
 ```
+
+### 14.2 Compacter le VHDX WSL (récupérer le sparse space)
+
+Le `ext4.vhdx` qui héberge la distro kiosque grossit avec les
+`docker pull` successifs, les rebuilds, le cache buildkit, etc. Même
+après `docker system prune` qui libère l'espace **dans** le fs ext4, le
+fichier `.vhdx` côté Windows reste à sa taille maximale historique
+(VHDX dynamique = sparse, mais Windows ne le rapetisse pas tout seul).
+Observé sur mitch : VHDX à **28.9 GB** alors que l'ext4 interne
+n'utilisait que ~5 GB après prune.
+
+**Procédure** (avec WSL **complètement arrêtée**) :
+
+```powershell
+# 0. Libérer de l'espace DANS le VHDX d'abord (sinon compact ne récupère rien)
+wsl -d Ubuntu -u root -e bash -c "docker system prune -a -f --volumes"
+
+# 1. Localiser le VHDX
+$vhdx = (Get-ChildItem "C:\Users\kiosque\AppData\Local\WSL" -Recurse -Filter "ext4.vhdx").FullName
+"VHDX: $vhdx"
+"Avant: $([math]::Round((Get-Item $vhdx).Length / 1GB, 2)) GB"
+
+# 2. Arrêter WSL complètement
+wsl --shutdown
+Start-Sleep 8
+
+# 3. Compact via diskpart (écrire les commandes dans un fichier pour éviter
+#    l'enfer du quoting sur le path avec accolades)
+$dpFile = "$env:TEMP\compact-vhdx.txt"
+@"
+select vdisk file=`"$vhdx`"
+attach vdisk readonly
+compact vdisk
+detach vdisk
+exit
+"@ | Set-Content -Path $dpFile -Encoding ASCII
+& diskpart /s $dpFile
+
+# 4. Vérifier le gain
+"Apres: $([math]::Round((Get-Item $vhdx).Length / 1GB, 2)) GB"
+Remove-Item $dpFile -Force
+
+# 5. Relancer WSL + Docker
+Restart-Service vmcompute -Force
+wsl -d Ubuntu -u root -e bash -c "cd /mnt/c/srv/mappy-hour && docker compose up -d"
+Start-ScheduledTask -TaskName "Mappy-WSL-Keepalive"
+```
+
+Observé : gain de **22 GB** sur mitch (28.94 → 6.73 GB) — sans le
+moindre impact sur les données / l'atlas / le container après restart.
+
+> **Hyper-V Module non installé** : la cmdlet PowerShell native
+> `Optimize-VHD` n'est PAS disponible par défaut sur Windows 10 Pro
+> sans installer le rôle Hyper-V (lourd, non recommandé). `diskpart`
+> est builtin et fait le job, c'est ce qu'on utilise.
 
 ---
 
