@@ -159,7 +159,7 @@ function OverlaySelector(props: OverlaySelectorProps) {
         onClick={() => props.onModeChange("heatmap")}
       >
         <HeatmapIcon className="h-5 w-5 transition group-hover:scale-105" />
-        <span className="text-[10px] font-semibold leading-none">Chaleur</span>
+        <span className="text-[10px] font-semibold leading-none">Heatmap</span>
       </button>
     </div>
   );
