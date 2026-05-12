@@ -41,6 +41,13 @@ COPY --from=builder /app/.next              ./.next
 COPY --from=builder /app/node_modules       ./node_modules
 COPY --from=builder /app/package.json       ./package.json
 COPY --from=builder /app/public             ./public
+# Scripts + src + tsconfig sont nécessaires au profil compose `atlas-loader`,
+# qui lance `pnpm atlas:download` (tsx scripts/release/download-atlas.ts).
+# Ils ne sont PAS chargés par le serveur Next.js (seul .next l'est) donc
+# overhead négligeable côté runtime et zéro impact sur la surface d'attaque.
+COPY --from=builder /app/scripts            ./scripts
+COPY --from=builder /app/src                ./src
+COPY --from=builder /app/tsconfig.json      ./tsconfig.json
 
 VOLUME /data
 
