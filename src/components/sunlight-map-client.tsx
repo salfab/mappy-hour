@@ -53,11 +53,11 @@ import type { VenueCardPlace } from "@/components/map-ui/venue-card";
 type AreaMode = "instant" | "daily";
 type BaseMapStyle =
   | "osm"
-  | "carto-positron"
   | "carto-voyager"
-  | "carto-no-labels"
-  | "esri-gray"
+  | "carto-dark"
   | "esri-street"
+  | "esri-topo"
+  | "open-topo"
   | "satellite";
 type MapPanelTab = "map" | "terraces";
 
@@ -71,13 +71,6 @@ interface BaseMapOption {
 
 const BASE_MAP_OPTIONS: BaseMapOption[] = [
   {
-    id: "carto-positron",
-    label: "CARTO Positron",
-    url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-    attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
-    maxNativeZoom: 20,
-  },
-  {
     id: "carto-voyager",
     label: "CARTO Voyager",
     url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
@@ -85,25 +78,32 @@ const BASE_MAP_OPTIONS: BaseMapOption[] = [
     maxNativeZoom: 20,
   },
   {
-    id: "carto-no-labels",
-    label: "CARTO sans labels",
-    url: "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
-    attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
-    maxNativeZoom: 20,
-  },
-  {
-    id: "esri-gray",
-    label: "Esri gris clair",
-    url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-    attribution: "Tiles &copy; Esri",
-    maxNativeZoom: 16,
-  },
-  {
     id: "esri-street",
     label: "Esri rues",
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
     attribution: "Tiles &copy; Esri",
     maxNativeZoom: 19,
+  },
+  {
+    id: "esri-topo",
+    label: "Esri topo",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Tiles &copy; Esri",
+    maxNativeZoom: 19,
+  },
+  {
+    id: "open-topo",
+    label: "OpenTopoMap",
+    url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+    attribution: "Map data &copy; OpenStreetMap contributors, SRTM | Map style &copy; OpenTopoMap",
+    maxNativeZoom: 17,
+  },
+  {
+    id: "carto-dark",
+    label: "CARTO Dark Matter",
+    url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+    attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+    maxNativeZoom: 20,
   },
   {
     id: "osm",
@@ -680,7 +680,7 @@ function loadStoredUiParams(): StoredUiParams | null {
           ? "osm"
           : isBaseMapStyle(baseMapStyle)
             ? baseMapStyle
-            : "carto-positron",
+            : "carto-voyager",
       ignoreVegetationShadow: ignoreVegetationShadow ?? false,
       showSunny,
       showShadow,
@@ -2246,9 +2246,9 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     active: BaseMapStyle;
   }>({
     layers: {},
-    active: "carto-positron",
+    active: "carto-voyager",
   });
-  const baseMapStyleRef = useRef<BaseMapStyle>("carto-positron");
+  const baseMapStyleRef = useRef<BaseMapStyle>("carto-voyager");
   const instantStreamRef = useRef<EventSource | null>(null);
   const instantCancelledRef = useRef(false);
   const timelineAbortRef = useRef<AbortController | null>(null);
@@ -2322,7 +2322,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const [gridStepMeters, setGridStepMeters] = useState(1);
   const [sampleEveryMinutes, setSampleEveryMinutes] = useState(15);
   const [buildingHeightBiasMeters, setBuildingHeightBiasMeters] = useState(0);
-  const [baseMapStyle, setBaseMapStyle] = useState<BaseMapStyle>("carto-positron");
+  const [baseMapStyle, setBaseMapStyle] = useState<BaseMapStyle>("carto-voyager");
   const [ignoreVegetationShadow, setIgnoreVegetationShadow] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3142,7 +3142,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         ]),
       ) as Record<BaseMapStyle, TileLayer>;
       const initialBaseMapStyle = baseMapStyleRef.current;
-      const selectedBaseLayer = baseLayers[initialBaseMapStyle] ?? baseLayers["carto-positron"];
+      const selectedBaseLayer = baseLayers[initialBaseMapStyle] ?? baseLayers["carto-voyager"];
       selectedBaseLayer.addTo(map);
       baseTileLayersRef.current = {
         layers: baseLayers,
@@ -3243,7 +3243,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       clickHighlightLayerRef.current = null;
       baseTileLayersRef.current = {
         layers: {},
-        active: "carto-positron",
+        active: "carto-voyager",
       };
       leafletModuleRef.current = null;
       setIsMapReady(false);
