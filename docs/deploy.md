@@ -753,6 +753,60 @@ Le script fait :
 L'image étant rebuilée à chaque push master par `.github/workflows/docker-publish.yml`,
 le pull suffit — pas de build local.
 
+### 10.3 Build & publication de l'image Docker — workflow `docker-publish.yml`
+
+`.github/workflows/docker-publish.yml` produit l'image `ghcr.io/salfab/mappy-hour:latest`
+(+ tags `sha-<short>` et `v*` selon le contexte). C'est cette image que Mitch pull à
+chaque deploy.
+
+**Triggers** (déclencheurs) :
+
+| Évènement | Quand | Pourquoi |
+|---|---|---|
+| `push: branches: [master]` | À **chaque commit pushé** sur master | Cas standard : code change → nouvelle image |
+| `push: tags: [v*]` | Création d'un tag versionné `vN.M.P` | Snapshot stable, image avec tag versionné |
+| `workflow_run: ["Publish places"]` | Quand `publish-places.yml` se termine (cron weekly OU dispatch manuel) | Une nouvelle release `places-v*` → rebuild image avec places bakées (Posture 4 strict path) |
+| `workflow_dispatch` | Manuel depuis l'UI GitHub Actions | Reforce un build sans code change |
+
+**Conséquence** : tout `git push origin master` rebuild l'image et déclenche en chaîne
+`deploy-mitch.yml` (qui fait `docker compose pull`+`up`). Pas de filtre `paths:` actuellement :
+même un push de doc/CI pure rebuild → si on veut éviter ça plus tard, on ajoute des `paths-ignore`
+sur la section `on:`.
+
+**Étapes du build** (résumé) :
+
+1. **Checkout** + setup buildx + login GHCR.
+2. **Pre-build : download des places** (`Download latest places release (bake into image)`)
+   Pull la dernière release `places-v*` (semver desc) et écrit `data/processed/places/places.json`
+   + split per-region. Si **aucune** release `places-v*` n'existe encore, écrit un placeholder
+   `{ version: "0.0.0", places: [] }` pour que le `COPY` Dockerfile passe sans erreur (sinon
+   buildkit fail sur `lstat /data/processed/places: no such file or directory`).
+3. **Docker build & push** vers GHCR.
+4. **Cosign signature** (si configuré).
+
+**Lien avec Posture 4** : l'image bake les places actuelles. Le runtime check
+(`scripts/runtime/check-places-update.mjs`) est le filet de sécurité fail-soft pour
+récupérer une release `places-v*` plus récente publiée **entre deux rebuilds image** —
+notamment quand on dispatch `publish-places.yml` manuellement et qu'on ne veut pas
+attendre les ~2-3 min de `workflow_run` → build → push → Mitch pull.
+
+### 10.4 Build & publication du dataset places — workflow `publish-places.yml`
+
+`.github/workflows/publish-places.yml` :
+
+- **Triggers** : `schedule: cron weekly` (lundi 03:00 UTC) + `workflow_dispatch`.
+- Lance `pnpm places:publish -- --publish-now` :
+  - Auto-bump du semver depuis le dernier tag `places-v*`
+  - Re-ingest OSM via Overpass (lausanne + nyon + vevey_city + ...)
+  - `gh release create places-vN.M.P data/processed/places/places.json`
+- Le succès de ce workflow déclenche `docker-publish.yml` via `workflow_run`,
+  qui rebuild l'image avec les places fraîches bakées.
+
+### 10.5 Refresh atlas sur Mitch — workflow `refresh-mitch-atlas.yml`
+
+Découplé du build image. Voir §7quater. Inputs : `release`, `regions`,
+`with_grid_metadata`, `with_buildings`. Idempotent par `modelVersionHash`.
+
 ---
 
 ## 11. Hardening — état actuel et trade-offs
