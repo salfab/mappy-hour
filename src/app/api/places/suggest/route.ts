@@ -53,6 +53,11 @@ async function fetchNominatimSuggestions(query: string, limit: number): Promise<
   url.searchParams.set("addressdetails", "0");
   url.searchParams.set("viewbox", LAKE_GENEVA_VIEWBOX);
   url.searchParams.set("bounded", "0");
+  // Hard-restrict to Switzerland — a search for "morges" should never bring
+  // up the French commune of "Morges-Mareyssac". The Lake Geneva viewbox
+  // already biases toward CH results, but `countrycodes=ch` is a hard filter
+  // (Nominatim drops anything else regardless of relevance score).
+  url.searchParams.set("countrycodes", "ch");
   url.searchParams.set("q", query);
 
   const controller = new AbortController();
