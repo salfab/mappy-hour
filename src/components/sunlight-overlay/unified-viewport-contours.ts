@@ -14,17 +14,15 @@
  * Cost is paid once per idle-snapshot, not per frame: this is the upgrade
  * path triggered when the user pauses interaction in bitmap LOD mode.
  *
- * ## Layout assumptions
+ * ## Layout
  *
- * Tiles in this project are placed on a regular LV95 grid with consistent
- * `gridWidth × gridHeight` per tile. We derive the layout from the unique
- * `nw.lat` / `nw.lon` of the visible tiles (rank-based, not coordinate-based,
- * so sub-µm drift between tile corners doesn't fragment the layout).
- *
- * Holes in the visible footprint (missing or not-yet-computed tiles) are
- * filled with the same zero sentinel as the legacy per-tile path; the result
- * is an artificial edge around the hole. Acceptable for v1 — typical
- * viewport is fully covered.
+ * Tile placement is **bbox-relative**, not rank-based: each tile's NW corner
+ * is converted to a cell offset by `(lon - minLon) * cellsPerDegLon`. This
+ * means a hole in the visible footprint (a missing tile in the middle)
+ * leaves a literal gap in the unified grid, instead of compressing the
+ * layout into a fully-packed grid where the surviving tiles end up at the
+ * wrong lat/lon. The gap is then filled from any valid neighbor in the
+ * indoor-fill pass so it doesn't produce artificial contour boundaries.
  */
 
 import { contours as d3Contours } from "d3-contour";
@@ -66,53 +64,58 @@ export function buildUnifiedViewportContours(
   };
   if (tiles.length === 0) return empty;
 
-  // ── 1. Derive tile-grid layout from unique NW lats/lons ────────────────
-  // Rank-based, not coord-based, so floating-point noise doesn't fragment
-  // the layout. Tiles are sorted: lon ascending = column index from W→E,
-  // lat ascending = row index from S→N.
-  const SORT_TOL = 1e-7; // ~1cm at this latitude — well below any tile pitch
-  const uniqueLons = uniqueSorted(tiles.map((t) => t.corners.nw.lon), SORT_TOL);
-  const uniqueLats = uniqueSorted(tiles.map((t) => t.corners.sw.lat), SORT_TOL);
-  const cols = uniqueLons.length;
-  const rows = uniqueLats.length;
-
-  // Use the MAX grid dimension across visible tiles so an edge tile with a
-  // truncated grid (e.g. 43 × 250 at a region's west edge) doesn't shrink
-  // the unified slot for its column — it'd otherwise crush every other
-  // tile in that column into a 43-cell-wide strip.
-  let tileW = 0;
-  let tileH = 0;
+  // ── 1. Union bbox over ALL 4 corners of EVERY tile ─────────────────────
+  let minLat = Infinity, maxLat = -Infinity;
+  let minLon = Infinity, maxLon = -Infinity;
   for (const t of tiles) {
-    if (t.gridWidth > tileW) tileW = t.gridWidth;
-    if (t.gridHeight > tileH) tileH = t.gridHeight;
+    for (const key of ["nw", "ne", "sw", "se"] as const) {
+      const c = t.corners[key];
+      if (c.lat < minLat) minLat = c.lat;
+      if (c.lat > maxLat) maxLat = c.lat;
+      if (c.lon < minLon) minLon = c.lon;
+      if (c.lon > maxLon) maxLon = c.lon;
+    }
   }
+  const lonSpan = maxLon - minLon;
+  const latSpan = maxLat - minLat;
+  if (lonSpan <= 0 || latSpan <= 0) return empty;
 
-  const W = cols * tileW;
-  const H = rows * tileH;
+  // ── 2. Cell density (cells per degree) from a representative tile ──────
+  // All tiles share the same LV95 cell pitch in this project. We compute
+  // density per-axis from the first valid tile and use it to size the
+  // unified grid.
+  const ref = tiles[0];
+  const refLonSpan = Math.abs(ref.corners.ne.lon - ref.corners.nw.lon);
+  const refLatSpan = Math.abs(ref.corners.nw.lat - ref.corners.sw.lat);
+  if (refLonSpan <= 0 || refLatSpan <= 0) return empty;
+  const cellsPerDegLon = ref.gridWidth / refLonSpan;
+  const cellsPerDegLat = ref.gridHeight / refLatSpan;
+
+  const W = Math.max(1, Math.round(lonSpan * cellsPerDegLon));
+  const H = Math.max(1, Math.round(latSpan * cellsPerDegLat));
   const padW = W + 2;
   const padH = H + 2;
 
-  // ── 2. Allocate unified grids ──────────────────────────────────────────
+  // ── 3. Allocate unified grids ──────────────────────────────────────────
   const sunnyGrid = new Float64Array(padW * padH);
   const shadowGrid = new Float64Array(padW * padH);
   const buildingsGrid = new Float64Array(padW * padH);
-  // Validity = cell falls inside some tile. Used by the indoor-fill pass.
-  const outdoorFlags = new Uint8Array(W * H); // 0 = indoor or absent, 1 = outdoor
-  const validFlags = new Uint8Array(W * H); // 0 = absent (hole), 1 = covered
+  const outdoorFlags = new Uint8Array(W * H); // 1 = outdoor, 0 = indoor/absent
+  const validFlags = new Uint8Array(W * H); // 1 = covered by a tile
 
-  // ── 3. Copy each tile's cells into the unified grid ────────────────────
+  // ── 4. Place each tile by bbox-relative offset ────────────────────────
+  // Holes in the visible footprint stay as un-flagged cells, which the
+  // gap-fill pass below resolves before marching-squares runs.
   for (const tile of tiles) {
-    const col = rankOf(tile.corners.nw.lon, uniqueLons, SORT_TOL);
-    const row = rankOf(tile.corners.sw.lat, uniqueLats, SORT_TOL);
-    if (col < 0 || row < 0) continue;
-    // Per-tile dims may vary at edges; use min to stay safe.
-    const tw = Math.min(tile.gridWidth, tileW);
-    const th = Math.min(tile.gridHeight, tileH);
+    const startX = Math.round((tile.corners.nw.lon - minLon) * cellsPerDegLon);
+    const startY = Math.round((tile.corners.sw.lat - minLat) * cellsPerDegLat);
 
-    for (let iy = 0; iy < th; iy++) {
-      const unifiedY = row * tileH + iy;
-      for (let ix = 0; ix < tw; ix++) {
-        const unifiedX = col * tileW + ix;
+    for (let iy = 0; iy < tile.gridHeight; iy++) {
+      const unifiedY = startY + iy;
+      if (unifiedY < 0 || unifiedY >= H) continue;
+      for (let ix = 0; ix < tile.gridWidth; ix++) {
+        const unifiedX = startX + ix;
+        if (unifiedX < 0 || unifiedX >= W) continue;
         const cellIdx = iy * tile.gridWidth + ix;
         const isOutdoor = tile.outdoorMask ? bit(tile.outdoorMask, cellIdx) === 1 : true;
         const isSunny = isOutdoor && bit(tile.sunMask, cellIdx) === 1;
@@ -129,63 +132,49 @@ export function buildUnifiedViewportContours(
     }
   }
 
-  // ── 4. Indoor-fill pass (cross-tile aware) ─────────────────────────────
-  // Spread the nearest outdoor neighbor's sunny/shadow value into indoor
-  // cells. Same idea as the per-tile path, but neighbors may now live in a
-  // different source tile — that's the whole point.
-  for (let uy = 0; uy < H; uy++) {
-    for (let ux = 0; ux < W; ux++) {
-      const idx = uy * W + ux;
-      if (!validFlags[idx] || outdoorFlags[idx]) continue;
+  // ── 5. Fill indoor cells AND gap cells from valid outdoor neighbors ────
+  // A two-pass BFS-lite: cells that are (indoor) or (absent) inherit their
+  // nearest valid-outdoor neighbor's sunny/shadow value. Without this, the
+  // 0-init contour at the gap/indoor boundary produces artificial polygons
+  // and the result looks like scattered fragments — same root cause as the
+  // earlier 0-padding seam at tile borders.
+  for (let iy = 0; iy < H; iy++) {
+    for (let ix = 0; ix < W; ix++) {
+      const idx = iy * W + ix;
+      if (validFlags[idx] && outdoorFlags[idx]) continue;
+      // Search neighbors for a valid outdoor source.
       for (const [dx, dy] of NEIGHBOURS) {
-        const nx = ux + dx, ny = uy + dy;
+        const nx = ix + dx, ny = iy + dy;
         if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
         const nIdx = ny * W + nx;
         if (!validFlags[nIdx] || !outdoorFlags[nIdx]) continue;
         const nPadIdx = (ny + 1) * padW + (nx + 1);
-        const padIdx = (uy + 1) * padW + (ux + 1);
+        const padIdx = (iy + 1) * padW + (ix + 1);
         sunnyGrid[padIdx] = sunnyGrid[nPadIdx];
         shadowGrid[padIdx] = shadowGrid[nPadIdx];
+        // Note: buildings grid stays as the per-cell indoor/outdoor decision
+        // for actually-valid cells. Gaps (validFlags=0) inherit 0 by default,
+        // which means buildings are NOT drawn through gaps — preferable to
+        // an artificial "everything-is-a-building" stripe.
         break;
       }
     }
   }
 
-  // ── 5. Marching-squares on the unified grid ────────────────────────────
+  // ── 6. Marching-squares on the unified grid ────────────────────────────
   const contourGen = d3Contours().size([padW, padH]).thresholds([0.5]);
   const sunnyContours = contourGen(Array.from(sunnyGrid));
   const shadowContours = contourGen(Array.from(shadowGrid));
   const buildingContours = contourGen(Array.from(buildingsGrid));
 
-  // ── 6. Pad-grid coords → lat/lon via the visible footprint's bbox ──────
-  // Compute the actual union bbox by walking ALL four corners of every
-  // tile. Previous attempts pulled lat/lon from the SAME corner-key across
-  // tiles (e.g. all `sw`), which gave a synthetic point — wrong whenever
-  // the visible set isn't a fully-filled rectangle.
-  let minLat = Infinity, maxLat = -Infinity;
-  let minLon = Infinity, maxLon = -Infinity;
-  for (const t of tiles) {
-    for (const key of ["nw", "ne", "sw", "se"] as const) {
-      const c = t.corners[key];
-      if (c.lat < minLat) minLat = c.lat;
-      if (c.lat > maxLat) maxLat = c.lat;
-      if (c.lon < minLon) minLon = c.lon;
-      if (c.lon > maxLon) maxLon = c.lon;
-    }
-  }
-  const sw = { lat: minLat, lon: minLon };
-  const se = { lat: minLat, lon: maxLon };
-  const nw = { lat: maxLat, lon: minLon };
-  const ne = { lat: maxLat, lon: maxLon };
-
+  // ── 7. Pad-grid coords → lat/lon ───────────────────────────────────────
+  // Bbox-relative bilinear. By construction, cell (x, y) corresponds to
+  // (minLon + x/W * lonSpan, minLat + y/H * latSpan). The pad shift of -0.5
+  // applied by `convert` keeps the contour vertices aligned with cell
+  // boundaries (same convention as the per-tile pipeline).
   const toLatLon = (fx: number, fy: number): [number, number] => {
-    // fx in [0..W], fy in [0..H]; pad shift of -0.5 applied by caller.
-    const tx = W > 0 ? fx / W : 0.5;
-    const ty = H > 0 ? fy / H : 0.5;
-    const lat = sw.lat * (1 - tx) * (1 - ty) + se.lat * tx * (1 - ty)
-              + nw.lat * (1 - tx) * ty + ne.lat * tx * ty;
-    const lon = sw.lon * (1 - tx) * (1 - ty) + se.lon * tx * (1 - ty)
-              + nw.lon * (1 - tx) * ty + ne.lon * tx * ty;
+    const lat = minLat + (fy / H) * latSpan;
+    const lon = minLon + (fx / W) * lonSpan;
     return [lat, lon];
   };
 
@@ -207,22 +196,3 @@ export function buildUnifiedViewportContours(
 const NEIGHBOURS: ReadonlyArray<readonly [number, number]> = [
   [0, -1], [0, 1], [-1, 0], [1, 0],
 ];
-
-function uniqueSorted(values: number[], tol: number): number[] {
-  const sorted = [...values].sort((a, b) => a - b);
-  const out: number[] = [];
-  for (const v of sorted) {
-    if (out.length === 0 || Math.abs(v - out[out.length - 1]) > tol) {
-      out.push(v);
-    }
-  }
-  return out;
-}
-
-function rankOf(value: number, sorted: number[], tol: number): number {
-  for (let i = 0; i < sorted.length; i++) {
-    if (Math.abs(value - sorted[i]) <= tol) return i;
-  }
-  return -1;
-}
-
