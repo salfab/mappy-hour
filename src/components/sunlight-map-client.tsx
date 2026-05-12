@@ -53,6 +53,7 @@ import type { VenueCardPlace } from "@/components/map-ui/venue-card";
 type AreaMode = "instant" | "daily";
 type BaseMapStyle =
   | "osm"
+  | "osm-hot"
   | "carto-voyager"
   | "carto-dark"
   | "esri-street"
@@ -70,6 +71,18 @@ interface BaseMapOption {
 }
 
 const BASE_MAP_OPTIONS: BaseMapOption[] = [
+  {
+    id: "osm-hot",
+    label: "OSM Humanitarian",
+    // OSM HOT (Humanitarian OpenStreetMap) — vivid red/yellow/green palette,
+    // strong road hierarchy, and noticeably fewer POI icons at z≥16 than the
+    // standard OSM tiles. No API key required. Default for MappyHour since
+    // CARTO Voyager felt too washed-out against the sun/shadow overlay.
+    url: "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
+    attribution:
+      "&copy; OpenStreetMap contributors, Tiles style by Humanitarian OpenStreetMap Team",
+    maxNativeZoom: 19,
+  },
   {
     id: "carto-voyager",
     label: "CARTO Voyager",
@@ -2248,7 +2261,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     layers: {},
     active: "carto-voyager",
   });
-  const baseMapStyleRef = useRef<BaseMapStyle>("carto-voyager");
+  const baseMapStyleRef = useRef<BaseMapStyle>("osm-hot");
   const instantStreamRef = useRef<EventSource | null>(null);
   const instantCancelledRef = useRef(false);
   const timelineAbortRef = useRef<AbortController | null>(null);
@@ -2322,7 +2335,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const [gridStepMeters, setGridStepMeters] = useState(1);
   const [sampleEveryMinutes, setSampleEveryMinutes] = useState(15);
   const [buildingHeightBiasMeters, setBuildingHeightBiasMeters] = useState(0);
-  const [baseMapStyle, setBaseMapStyle] = useState<BaseMapStyle>("carto-voyager");
+  const [baseMapStyle, setBaseMapStyle] = useState<BaseMapStyle>("osm-hot");
   const [ignoreVegetationShadow, setIgnoreVegetationShadow] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
