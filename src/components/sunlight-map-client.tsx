@@ -3611,12 +3611,19 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         }
 
         // Paint current frame.
+        // IMPORTANT: paint at the OVERLAY's actual canvas size, not the
+        // re-computed target. When we're inside the rerasterize hysteresis
+        // band (±50%) we keep the existing canvas — painting a smaller
+        // ImageData onto a larger canvas would only fill the top-left,
+        // leaving stale pixels from the previous frame visible after the
+        // CSS matrix stretches the canvas onto a larger geographic area
+        // (yellow "spill" outside the tile after zoom-out).
         const sunMask = getTileMask(tile, dailyFrameIndex, ignoreVegetationShadow, decodedTimelineMaskCacheRef.current);
         if (!sunMask) continue;
         const outdoorMask = getTileOutdoorMask(tile, decodedTimelineMaskCacheRef.current);
         const img = paintTileImageData({
-          width: widthPx,
-          height: heightPx,
+          width: overlay.widthPx,
+          height: overlay.heightPx,
           gridWidth: tile.grid.width,
           gridHeight: tile.grid.height,
           mode: {
