@@ -669,6 +669,66 @@ async function main() {
         .join(", ")}${result.atlasDriftRecords.length > 5 ? ", ..." : ""}`,
     );
   }
+
+  // ── End-of-run sanity check: scan adaptive-horizon assignment JSONs ────
+  // ADR-0023: non-atomic writes in `persistAssignment()` can leave a
+  // corrupt JSON behind (trailing garbage / truncation) — invisible until
+  // a runtime SSE request surfaces the warning. Running the scan here gives
+  // operators an immediate signal about which tile/date pairs are now
+  // impaired in the region they just precomputed.
+  try {
+    const { scanAdaptiveHorizonAssignments } = await import(
+      "../../src/lib/diag/adaptive-horizon-check"
+    );
+    const path = await import("node:path");
+    const scanRoot = path.resolve(
+      process.cwd(),
+      "data/processed/horizon/adaptive-sharing",
+      args.region,
+    );
+    const scan = await scanAdaptiveHorizonAssignments({ root: scanRoot });
+    console.log("");
+    if (scan.corrupt.length === 0) {
+      console.log(
+        `[precompute] adaptive-horizon sanity: ✓ ${scan.okCount} assignment(s) parse cleanly`,
+      );
+    } else {
+      // Group by (date, window) so the operator sees the tile-dates impacted,
+      // not just raw JSON paths.
+      console.warn(
+        `\x1b[1;31m[precompute] adaptive-horizon sanity: ✗ ${scan.corrupt.length}/${scan.corrupt.length + scan.okCount} assignment(s) corrupt\x1b[0m`,
+      );
+      console.warn(
+        `   Atlas binaries themselves are unaffected — but tiles served for the dates`,
+      );
+      console.warn(
+        `   below will log "missing terrain horizon mask" warnings and skip far-horizon`,
+      );
+      console.warn(`   blocking until the assignments are regenerated.`);
+      console.warn("");
+      const byDate = new Map<string, Set<string>>();
+      for (const c of scan.corrupt) {
+        const key = c.date ?? "<unknown-date>";
+        if (!byDate.has(key)) byDate.set(key, new Set());
+        byDate.get(key)!.add(c.window ?? "<unknown-window>");
+      }
+      for (const [date, windows] of [...byDate.entries()].sort()) {
+        console.warn(`     ${date}  windows: ${[...windows].sort().join(", ")}`);
+      }
+      console.warn("");
+      console.warn(
+        `   Run \x1b[1mpnpm diag:adaptive-horizon --quarantine\x1b[0m to mark them for`,
+      );
+      console.warn(
+        `   regeneration on the next precompute touching these tile/date pairs.`,
+      );
+    }
+  } catch (err) {
+    // Sanity check failure shouldn't fail the run — log and move on.
+    console.warn(
+      `[precompute] adaptive-horizon sanity scan failed: ${err instanceof Error ? err.message : err}`,
+    );
+  }
 }
 
 void main().catch((error) => {
