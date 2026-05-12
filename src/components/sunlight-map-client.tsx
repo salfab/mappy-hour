@@ -51,8 +51,81 @@ import {
 import type { VenueCardPlace } from "@/components/map-ui/venue-card";
 
 type AreaMode = "instant" | "daily";
-type BaseMapStyle = "map" | "satellite";
+type BaseMapStyle =
+  | "osm"
+  | "carto-positron"
+  | "carto-voyager"
+  | "carto-no-labels"
+  | "esri-gray"
+  | "esri-street"
+  | "satellite";
 type MapPanelTab = "map" | "terraces";
+
+interface BaseMapOption {
+  id: BaseMapStyle;
+  label: string;
+  url: string;
+  attribution: string;
+  maxNativeZoom: number;
+}
+
+const BASE_MAP_OPTIONS: BaseMapOption[] = [
+  {
+    id: "carto-positron",
+    label: "CARTO Positron",
+    url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+    attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+    maxNativeZoom: 20,
+  },
+  {
+    id: "carto-voyager",
+    label: "CARTO Voyager",
+    url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+    attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+    maxNativeZoom: 20,
+  },
+  {
+    id: "carto-no-labels",
+    label: "CARTO sans labels",
+    url: "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
+    attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+    maxNativeZoom: 20,
+  },
+  {
+    id: "esri-gray",
+    label: "Esri gris clair",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Tiles &copy; Esri",
+    maxNativeZoom: 16,
+  },
+  {
+    id: "esri-street",
+    label: "Esri rues",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Tiles &copy; Esri",
+    maxNativeZoom: 19,
+  },
+  {
+    id: "osm",
+    label: "OSM standard",
+    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: "&copy; OpenStreetMap contributors",
+    maxNativeZoom: 19,
+  },
+  {
+    id: "satellite",
+    label: "Satellite",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics",
+    maxNativeZoom: 19,
+  },
+];
+
+const BASE_MAP_OPTION_BY_ID = new Map(BASE_MAP_OPTIONS.map((option) => [option.id, option]));
+
+function isBaseMapStyle(value: unknown): value is BaseMapStyle {
+  return typeof value === "string" && BASE_MAP_OPTION_BY_ID.has(value as BaseMapStyle);
+}
 
 interface AreaInstantPoint {
   id: string;
@@ -544,7 +617,7 @@ function loadStoredUiParams(): StoredUiParams | null {
     const gridStepMeters = parsed.gridStepMeters;
     const sampleEveryMinutes = parsed.sampleEveryMinutes;
     const buildingHeightBiasMeters = parsed.buildingHeightBiasMeters;
-    const baseMapStyle = parsed.baseMapStyle;
+    const baseMapStyle = parsed.baseMapStyle as BaseMapStyle | "map" | undefined;
     const ignoreVegetationShadow = parsed.ignoreVegetationShadow;
     const showSunny = parsed.showSunny;
     const showShadow = parsed.showShadow;
@@ -579,9 +652,7 @@ function loadStoredUiParams(): StoredUiParams | null {
           buildingHeightBiasMeters >= -20 &&
           buildingHeightBiasMeters <= 20
         : buildingHeightBiasMeters === undefined) &&
-      (baseMapStyle === "map" ||
-        baseMapStyle === "satellite" ||
-        baseMapStyle === undefined) &&
+      (isBaseMapStyle(baseMapStyle) || baseMapStyle === "map" || baseMapStyle === undefined) &&
       (typeof ignoreVegetationShadow === "boolean" ||
         ignoreVegetationShadow === undefined) &&
       typeof showSunny === "boolean" &&
@@ -604,7 +675,12 @@ function loadStoredUiParams(): StoredUiParams | null {
       gridStepMeters,
       sampleEveryMinutes,
       buildingHeightBiasMeters: buildingHeightBiasMeters ?? 0,
-      baseMapStyle: baseMapStyle ?? "map",
+      baseMapStyle:
+        baseMapStyle === "map"
+          ? "osm"
+          : isBaseMapStyle(baseMapStyle)
+            ? baseMapStyle
+            : "carto-positron",
       ignoreVegetationShadow: ignoreVegetationShadow ?? false,
       showSunny,
       showShadow,
@@ -776,7 +852,10 @@ function parseDeepLinkParams(searchParams: URLSearchParams): DeepLinkParams | nu
   }
 
   const baseMapStyle = searchParams.get(DEEP_LINK_QUERY_KEYS.baseMapStyle);
-  if (baseMapStyle === "map" || baseMapStyle === "satellite") {
+  if (baseMapStyle === "map") {
+    parsed.baseMapStyle = "osm";
+    hasValue = true;
+  } else if (isBaseMapStyle(baseMapStyle)) {
     parsed.baseMapStyle = baseMapStyle;
     hasValue = true;
   }
@@ -2163,15 +2242,13 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
   const baseTileLayersRef = useRef<{
-    map: TileLayer | null;
-    satellite: TileLayer | null;
+    layers: Partial<Record<BaseMapStyle, TileLayer>>;
     active: BaseMapStyle;
   }>({
-    map: null,
-    satellite: null,
-    active: "map",
+    layers: {},
+    active: "carto-positron",
   });
-  const baseMapStyleRef = useRef<BaseMapStyle>("map");
+  const baseMapStyleRef = useRef<BaseMapStyle>("carto-positron");
   const instantStreamRef = useRef<EventSource | null>(null);
   const instantCancelledRef = useRef(false);
   const timelineAbortRef = useRef<AbortController | null>(null);
@@ -2245,7 +2322,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const [gridStepMeters, setGridStepMeters] = useState(1);
   const [sampleEveryMinutes, setSampleEveryMinutes] = useState(15);
   const [buildingHeightBiasMeters, setBuildingHeightBiasMeters] = useState(0);
-  const [baseMapStyle, setBaseMapStyle] = useState<BaseMapStyle>("map");
+  const [baseMapStyle, setBaseMapStyle] = useState<BaseMapStyle>("carto-positron");
   const [ignoreVegetationShadow, setIgnoreVegetationShadow] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3054,40 +3131,37 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         storedView?.zoom ?? DEFAULT_MAP_ZOOM,
       );
 
-      const streetLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxNativeZoom: MAP_MAX_NATIVE_ZOOM,
-        maxZoom: MAP_MAX_ZOOM,
-        attribution: "&copy; OpenStreetMap contributors",
-      });
-      const satelliteLayer = L.tileLayer(
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        {
-          maxNativeZoom: MAP_MAX_NATIVE_ZOOM,
-          maxZoom: MAP_MAX_ZOOM,
-          attribution:
-            "Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics",
-        },
-      );
+      const baseLayers = Object.fromEntries(
+        BASE_MAP_OPTIONS.map((option) => [
+          option.id,
+          L.tileLayer(option.url, {
+            maxNativeZoom: Math.min(option.maxNativeZoom, MAP_MAX_NATIVE_ZOOM),
+            maxZoom: MAP_MAX_ZOOM,
+            attribution: option.attribution,
+          }),
+        ]),
+      ) as Record<BaseMapStyle, TileLayer>;
       const initialBaseMapStyle = baseMapStyleRef.current;
-      const selectedBaseLayer =
-        initialBaseMapStyle === "satellite" ? satelliteLayer : streetLayer;
+      const selectedBaseLayer = baseLayers[initialBaseMapStyle] ?? baseLayers["carto-positron"];
       selectedBaseLayer.addTo(map);
       baseTileLayersRef.current = {
-        map: streetLayer,
-        satellite: satelliteLayer,
+        layers: baseLayers,
         active: initialBaseMapStyle,
       };
 
       L.control.layers(
-        { "Carte": streetLayer, "Satellite": satelliteLayer },
+        Object.fromEntries(BASE_MAP_OPTIONS.map((option) => [option.label, baseLayers[option.id]])),
         {},
         { position: "topleft", collapsed: true },
       ).addTo(map);
 
       map.on("baselayerchange", (event: L.LayersControlEvent) => {
-        const newStyle = event.name === "Satellite" ? "satellite" : "map";
-        baseMapStyleRef.current = newStyle;
-        setBaseMapStyle(newStyle as BaseMapStyle);
+        const option = BASE_MAP_OPTIONS.find((candidate) => candidate.label === event.name);
+        if (!option) {
+          return;
+        }
+        baseMapStyleRef.current = option.id;
+        setBaseMapStyle(option.id);
       });
 
       sunnyLayerRef.current = L.layerGroup().addTo(map);
@@ -3168,9 +3242,8 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       placesLayerRef.current = null;
       clickHighlightLayerRef.current = null;
       baseTileLayersRef.current = {
-        map: null,
-        satellite: null,
-        active: "map",
+        layers: {},
+        active: "carto-positron",
       };
       leafletModuleRef.current = null;
       setIsMapReady(false);
@@ -3179,23 +3252,23 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
 
   useEffect(() => {
     const map = mapRef.current;
-    const layers = baseTileLayersRef.current;
-    if (!map || !layers.map || !layers.satellite) {
+    const layerState = baseTileLayersRef.current;
+    if (!map) {
       return;
     }
-    if (layers.active === baseMapStyle) {
+    const previousLayer = layerState.layers[layerState.active];
+    const nextLayer = layerState.layers[baseMapStyle];
+    if (layerState.active === baseMapStyle || !previousLayer || !nextLayer) {
       return;
     }
 
-    const previousLayer = layers.active === "satellite" ? layers.satellite : layers.map;
-    const nextLayer = baseMapStyle === "satellite" ? layers.satellite : layers.map;
     if (map.hasLayer(previousLayer)) {
       map.removeLayer(previousLayer);
     }
     if (!map.hasLayer(nextLayer)) {
       nextLayer.addTo(map);
     }
-    layers.active = baseMapStyle;
+    layerState.active = baseMapStyle;
   }, [baseMapStyle]);
 
   const renderLayers = useCallback(
@@ -5142,6 +5215,30 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     </div>
   );
 
+  const baseMapTrialSelector = (
+    <label className="absolute right-4 top-20 z-[500] grid gap-1 rounded-2xl border border-white/70 bg-white/88 px-3 py-2 text-xs font-semibold text-slate-800 shadow-xl backdrop-blur lg:right-[390px] lg:top-5">
+      <span className="text-[0.68rem] uppercase tracking-wide text-slate-500">
+        Fond carte (test)
+      </span>
+      <select
+        className="max-w-[11rem] rounded-xl border border-slate-200 bg-white px-2 py-1.5 text-sm font-semibold text-slate-950 outline-none focus:border-amber-300"
+        value={baseMapStyle}
+        onChange={(event) => {
+          const nextStyle = event.target.value;
+          if (isBaseMapStyle(nextStyle)) {
+            setBaseMapStyle(nextStyle);
+          }
+        }}
+      >
+        {BASE_MAP_OPTIONS.map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+
   return (
     <section className="relative h-dvh max-h-dvh overflow-hidden bg-slate-950 text-white">
       <div ref={mapContainerRef} className="absolute inset-0 z-0 h-full w-full" />
@@ -5169,6 +5266,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           />
         </div>
       ) : null}
+      {baseMapTrialSelector}
 
       <div className="absolute left-5 top-5 z-[450] hidden items-center gap-3 lg:flex">
         <div className="rounded-full border border-white/70 bg-white/88 px-4 py-2 text-sm font-semibold text-slate-900 shadow-xl backdrop-blur">
