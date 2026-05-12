@@ -46,7 +46,12 @@ jobs:
             gh release download "$LATEST" -p 'places.json' -D data/processed/places
             node scripts/runtime/split-places-per-region.mjs data/processed/places/places.json data/processed/places/
           else
-            echo "[publish] no places-v* release found yet — building without baked places"
+            # No places release yet → write an empty placeholder so the
+            # Dockerfile `COPY data/processed/places/*.json` step has something
+            # to read. The runtime startup check will fetch the real dataset
+            # once the operator publishes the first `places-v*` release.
+            echo "[publish] no places-v* release found yet — baking an empty placeholder"
+            printf '%s' '{"version":"0.0.0","generatedAt":"1970-01-01T00:00:00Z","source":"placeholder","bbox":[0,0,0,0],"totalPlaces":0,"categories":{"parks":0,"terraceCandidates":0,"outdoorSeatingYes":0},"places":[]}' > data/processed/places/places.json
           fi
 
       - name: Log in to GitHub Container Registry
