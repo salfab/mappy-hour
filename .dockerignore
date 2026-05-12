@@ -5,6 +5,10 @@ node_modules
 data/
 dist/releases/
 
+# Exception : les fichiers places sont BAKED dans l'image (Posture 4).
+# Doit venir APRES la règle data/ pour la ré-inclure.
+!data/processed/places/*.json
+
 # Build artifacts locaux
 .next
 

@@ -49,8 +49,23 @@ COPY --from=builder /app/scripts            ./scripts
 COPY --from=builder /app/src                ./src
 COPY --from=builder /app/tsconfig.json      ./tsconfig.json
 
+# Runtime scripts used by the entrypoint (places startup check + split).
+COPY scripts/runtime/check-places-update.mjs   ./scripts/runtime/check-places-update.mjs
+COPY scripts/runtime/split-places-per-region.mjs ./scripts/runtime/split-places-per-region.mjs
+
+# Posture 4 — baked places dataset. Kept as a separate, near-the-end COPY
+# so changing places.json invalidates only this layer (not the giant
+# node_modules / .next layers). The CI pipeline populates these files
+# from the latest `places-v*` GitHub release before `docker build`.
+COPY data/processed/places/*.json ./data/processed/places/
+
+# Entrypoint orchestrates the fail-soft places-update check, then
+# `pnpm start`. ALWAYS exits 0 on update errors — never blocks startup.
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x ./docker-entrypoint.sh
+
 VOLUME /data
 
 EXPOSE 3000
 
-CMD ["pnpm", "start"]
+ENTRYPOINT ["./docker-entrypoint.sh"]
