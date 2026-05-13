@@ -41,7 +41,7 @@ function viewportCardEmoji(place: ViewportPlaceLite): string {
       return "📍";
   }
 }
-import { paintTileImageData } from "@/components/sunlight-overlay/paint-tile";
+import { paintTileImageData, type RGBA } from "@/components/sunlight-overlay/paint-tile";
 import {
   buildUnifiedViewportContours,
   type VisibleTileInput,
@@ -1914,6 +1914,62 @@ function isPointSunnyIgnoringVegetation(point: AreaInstantPoint): boolean {
   return point.altitudeDeg > 0 && !point.terrainBlocked && !point.buildingsBlocked;
 }
 
+/**
+ * Compute per-cell sun-exposure ratio over all timeline frames for a tile.
+ * Returns Float32Array length grid.width × grid.height, value in [0, 1] for
+ * outdoor cells and NaN for indoor cells (paintTileImageData heatmap mode
+ * paints NaN cells transparent). Result is independent of the slider's
+ * `dailyFrameIndex` so callers should cache it per (tileId, ignoreVegetation).
+ */
+function buildTileExposureGrid(
+  tile: TimelineTile,
+  ignoreVegetation: boolean,
+  decodedMaskCache: Map<string, Uint8Array>,
+): Float32Array | null {
+  if (!tile.grid) return null;
+  const cellCount = tile.grid.width * tile.grid.height;
+  const totalFrames = tile.frames.length;
+  if (totalFrames === 0) return null;
+
+  const outdoorMask = getTileOutdoorMask(tile, decodedMaskCache);
+  const sunnyCount = new Uint16Array(cellCount);
+  for (let f = 0; f < totalFrames; f++) {
+    const sunMask = getTileMask(tile, f, ignoreVegetation, decodedMaskCache);
+    if (!sunMask) continue;
+    for (let i = 0; i < cellCount; i++) {
+      if ((sunMask[i >> 3] >> (i & 7)) & 1) {
+        sunnyCount[i]++;
+      }
+    }
+  }
+
+  const grid = new Float32Array(cellCount);
+  const invFrames = 1 / totalFrames;
+  for (let i = 0; i < cellCount; i++) {
+    if (outdoorMask && !((outdoorMask[i >> 3] >> (i & 7)) & 1)) {
+      grid[i] = NaN;
+    } else {
+      grid[i] = sunnyCount[i] * invFrames;
+    }
+  }
+  return grid;
+}
+
+/** Map exposure ratio [0, 1] to a blue→red RGBA at ~70% opacity (matches the
+ *  legacy vector polygon heatmap palette in exposureRatioToColor). */
+function heatmapRatioToRGBA(ratio: number): RGBA {
+  if (Number.isNaN(ratio)) return { r: 0, g: 0, b: 0, a: 0 };
+  const clamped = Math.max(0, Math.min(1, ratio));
+  const cold = { r: 37, g: 99, b: 235 };
+  const hot = { r: 239, g: 68, b: 68 };
+  return {
+    r: Math.round(cold.r + (hot.r - cold.r) * clamped),
+    g: Math.round(cold.g + (hot.g - cold.g) * clamped),
+    b: Math.round(cold.b + (hot.b - cold.b) * clamped),
+    a: 180,
+  };
+}
+
 function deriveInstantResponseWithoutVegetation(
   response: AreaApiResponse,
 ): AreaApiResponse {
@@ -2297,6 +2353,12 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   // re-rasterize, transform refreshed on map move/zoom, disposed when the
   // tile leaves the timeline or the user re-enters vector mode.
   const bitmapOverlaysRef = useRef<Map<string, BitmapTileOverlay>>(new Map());
+  // Cache the per-tile sun-exposure ratio grids used by the bitmap heatmap.
+  // The grid is independent of `dailyFrameIndex` (it's the aggregate over all
+  // frames) but depends on (tileId, ignoreVegetation). We cache to avoid the
+  // O(cells × frames) recompute on every slider move while heatmap is on.
+  // Cleared from the entries' side when a new timeline replaces the tiles.
+  const exposureGridCacheRef = useRef<Map<string, Float32Array>>(new Map());
   // ── Idle vector upgrade ───────────────────────────────────────────────
   // When bitmap mode is active and the user pauses interaction (~400ms),
   // we compute a single unified-viewport marching-squares pass and layer
@@ -2505,14 +2567,10 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       return null;
     }
 
-    // For large grids, only build the exposure points array if the user has
-    // the heatmap toggle on — otherwise the cost (O(cells × frames)) is wasted
-    // since the small-grid vector heatmap is the only consumer. The
-    // viewport-filter happens downstream in `dailyExposureCells`.
-    if (
-      dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD &&
-      !showHeatmap
-    ) {
+    // For large grids, skip building exposure points array — the bitmap
+    // heatmap useEffect builds its per-tile exposure grid directly via
+    // buildTileExposureGrid + paintTileImageData(kind:"heatmap").
+    if (dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD) {
       return null;
     }
 
@@ -2521,7 +2579,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       decodedTimelineMaskCacheRef.current,
       ignoreVegetationShadow,
     );
-  }, [dailyTimeline, ignoreVegetationShadow, mode, showHeatmap]);
+  }, [dailyTimeline, ignoreVegetationShadow, mode]);
 
   // Full set of heatmap cells over the precomputed region. Memoized
   // independently of the viewport so panning doesn't trigger the costly
@@ -3623,12 +3681,12 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         }
       }
 
-      // Heatmap renders as vector polygons regardless of useCanvasOverlay.
-      // In canvas mode (large grids), the sun/shadow bitmap overlay lives in
-      // overlayPane; this heatmap layerGroup sits on top and is independently
-      // toggled by `visibility.heatmap`. dailyExposureCellsInput is already
-      // viewport-clipped (see `dailyExposureCells` memo) so cost stays bounded.
-      if (visibility.heatmap && dailyExposureCellsInput && dailyExposureCellsInput.length > 0) {
+      // Vector heatmap (polygons) is the small-grid path only. In bitmap mode
+      // (large grids) the heatmap is painted directly into the BitmapTileOverlay
+      // via paintTileImageData(kind:"heatmap") — see the bitmap useEffect below.
+      // dailyExposureCellsInput is already viewport-clipped (see
+      // `dailyExposureCells` memo) so cost stays bounded for vector mode.
+      if (visibility.heatmap && !useCanvasOverlay && dailyExposureCellsInput && dailyExposureCellsInput.length > 0) {
         for (const cell of dailyExposureCellsInput) {
           const latLngRing = cell.ring.map(([lon, lat]) => [lat, lon] as [number, number]);
           const color = exposureRatioToColor(cell.exposureRatio);
@@ -3842,7 +3900,10 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
 
     const useCanvas = dailyTimeline.tiles.length > 0 && dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD;
     const hasGridTiles = dailyTimeline.tiles.some(t => t.grid);
-    const overlayVisible = useCanvas && (showSunny || showShadow);
+    // Bitmap overlay paints either heatmap (exclusive) or sun/shadow (toggleable
+    // individually via bitmapPalette transparency). Keep it visible whenever at
+    // least one of the three is on.
+    const overlayVisible = useCanvas && (showHeatmap || showSunny || showShadow);
 
     if (!overlayVisible || !hasGridTiles) {
       // Clean up per-tile overlays
@@ -3969,22 +4030,53 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         // leaving stale pixels from the previous frame visible after the
         // CSS matrix stretches the canvas onto a larger geographic area
         // (yellow "spill" outside the tile after zoom-out).
-        const sunMask = getTileMask(tile, dailyFrameIndex, ignoreVegetationShadow, decodedTimelineMaskCacheRef.current);
-        if (!sunMask) continue;
-        const outdoorMask = getTileOutdoorMask(tile, decodedTimelineMaskCacheRef.current);
-        const img = paintTileImageData({
-          width: overlay.widthPx,
-          height: overlay.heightPx,
-          gridWidth: tile.grid.width,
-          gridHeight: tile.grid.height,
-          mode: {
-            kind: "sunShadow",
-            sunMask,
-            outdoorMask,
-            palette: bitmapPalette,
-          },
-          downsampleMode: "box",
-        });
+        // Heatmap (exclusive of sun/shadow): aggregate exposure over all
+        // frames in the timeline. The grid is slider-independent so we cache
+        // it per (tileId, ignoreVegetation) — cleared on `event: start` of a
+        // new timeline.
+        let img: ImageData;
+        if (showHeatmap) {
+          const cacheKey = `${tile.tileId}|${ignoreVegetationShadow ? "nv" : "f"}`;
+          let exposureGrid = exposureGridCacheRef.current.get(cacheKey);
+          if (!exposureGrid) {
+            const computed = buildTileExposureGrid(
+              tile,
+              ignoreVegetationShadow,
+              decodedTimelineMaskCacheRef.current,
+            );
+            if (!computed) continue;
+            exposureGrid = computed;
+            exposureGridCacheRef.current.set(cacheKey, computed);
+          }
+          img = paintTileImageData({
+            width: overlay.widthPx,
+            height: overlay.heightPx,
+            gridWidth: tile.grid.width,
+            gridHeight: tile.grid.height,
+            mode: {
+              kind: "heatmap",
+              exposureGrid,
+              mapExposureToRGBA: heatmapRatioToRGBA,
+            },
+          });
+        } else {
+          const sunMask = getTileMask(tile, dailyFrameIndex, ignoreVegetationShadow, decodedTimelineMaskCacheRef.current);
+          if (!sunMask) continue;
+          const outdoorMask = getTileOutdoorMask(tile, decodedTimelineMaskCacheRef.current);
+          img = paintTileImageData({
+            width: overlay.widthPx,
+            height: overlay.heightPx,
+            gridWidth: tile.grid.width,
+            gridHeight: tile.grid.height,
+            mode: {
+              kind: "sunShadow",
+              sunMask,
+              outdoorMask,
+              palette: bitmapPalette,
+            },
+            downsampleMode: "box",
+          });
+        }
         overlay.paint(img);
         overlay.updateTransform(map);
       }
@@ -4189,7 +4281,18 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       }
 
       // Paint the current frame on this tile's canvas
-      paintTileCanvas(tile, ov.ctx, ov.width, ov.height, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow, "sunShadow", showSunny, showShadow);
+      paintTileCanvas(
+        tile,
+        ov.ctx,
+        ov.width,
+        ov.height,
+        dailyFrameIndex,
+        decodedTimelineMaskCacheRef.current,
+        ignoreVegetationShadow,
+        showHeatmap ? "heatmap" : "sunShadow",
+        showSunny,
+        showShadow,
+      );
       const dataUrl = ov.canvas.toDataURL();
       const customImg = (ov.overlay as unknown as { _customImg?: HTMLImageElement })._customImg;
       if (customImg) {
@@ -4210,7 +4313,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         ov.overlay.setUrl(dataUrl);
       }
     }
-  }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showShadow, showSunny, effectiveRenderMode, renderStrategy.bitmapResolution, mapBounds]);
+  }, [dailyFrameIndex, dailyTimeline, ignoreVegetationShadow, isMapReady, mode, showHeatmap, showShadow, showSunny, effectiveRenderMode, renderStrategy.bitmapResolution, mapBounds]);
 
   // ── Idle vector upgrade ────────────────────────────────────────────────
   // When we're in bitmap LOD mode AND the user pauses interaction, run a
@@ -5020,6 +5123,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           model?: NonNullable<AreaApiResponse["model"]>;
         };
         decodedTimelineMaskCacheRef.current.clear();
+        exposureGridCacheRef.current.clear();
         pendingTilesRef.current = [];
         pendingStatsRef.current = { gridPointCount: 0, indoorPointsExcluded: 0 };
         lastTileFlushRef.current = performance.now();
