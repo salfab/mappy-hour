@@ -1697,6 +1697,11 @@ function paintTileCanvas(
   decodedMaskCache: Map<string, Uint8Array>,
   ignoreVegetation: boolean,
   mode: "sunShadow" | "heatmap",
+  // Per-class visibility (sunShadow mode only). Default true preserves the
+  // prior behavior for any other call site. When false, that class is left
+  // transparent on the output ImageData.
+  showSunny: boolean = true,
+  showShadow: boolean = true,
 ): void {
   if (!tile.grid) return;
   const imageData = ctx.createImageData(width, height);
@@ -1712,6 +1717,8 @@ function paintTileCanvas(
     for (let cellIdx = 0; cellIdx < cellCount; cellIdx++) {
       if (outdoorMask && !((outdoorMask[cellIdx >> 3] >> (cellIdx & 7)) & 1)) continue;
       const isSunny = ((mask[cellIdx >> 3] >> (cellIdx & 7)) & 1) === 1;
+      if (isSunny && !showSunny) continue;
+      if (!isSunny && !showShadow) continue;
       const iy = Math.floor(cellIdx / tileW);
       const ix = cellIdx % tileW;
       const x = ix;
@@ -2498,9 +2505,14 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       return null;
     }
 
-    // For large grids, skip building exposure points array — the canvas
-    // heatmap useEffect computes exposure directly on the pixel grid.
-    if (dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD) {
+    // For large grids, only build the exposure points array if the user has
+    // the heatmap toggle on — otherwise the cost (O(cells × frames)) is wasted
+    // since the small-grid vector heatmap is the only consumer. The
+    // viewport-filter happens downstream in `dailyExposureCells`.
+    if (
+      dailyTimeline.pointCount >= CANVAS_OVERLAY_THRESHOLD &&
+      !showHeatmap
+    ) {
       return null;
     }
 
@@ -2509,14 +2521,48 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       decodedTimelineMaskCacheRef.current,
       ignoreVegetationShadow,
     );
-  }, [dailyTimeline, ignoreVegetationShadow, mode]);
+  }, [dailyTimeline, ignoreVegetationShadow, mode, showHeatmap]);
 
-  const dailyExposureCells = useMemo(() => {
+  // Full set of heatmap cells over the precomputed region. Memoized
+  // independently of the viewport so panning doesn't trigger the costly
+  // buildDailyExposureCells (re)build.
+  const dailyExposureCellsFull = useMemo(() => {
     if (!dailyExposurePoints || !dailyTimeline) {
       return null;
     }
     return buildDailyExposureCells(dailyExposurePoints, dailyTimeline.gridStepMeters);
   }, [dailyExposurePoints, dailyTimeline]);
+
+  // Viewport-clipped heatmap cells. On Lausanne (~30km × 20km of precompute)
+  // the full set is many thousands of polygons; the user only ever sees the
+  // ones inside the current viewport. We pad by 25% of the viewport size on
+  // each side so a small pan doesn't reveal a hole until the memo re-runs.
+  const dailyExposureCells = useMemo(() => {
+    if (!dailyExposureCellsFull) return null;
+    if (!mapBounds) return dailyExposureCellsFull;
+    const padLat = (mapBounds.getNorth() - mapBounds.getSouth()) * 0.25;
+    const padLon = (mapBounds.getEast() - mapBounds.getWest()) * 0.25;
+    const south = mapBounds.getSouth() - padLat;
+    const north = mapBounds.getNorth() + padLat;
+    const west = mapBounds.getWest() - padLon;
+    const east = mapBounds.getEast() + padLon;
+    const filtered: DailyExposureCell[] = [];
+    for (const cell of dailyExposureCellsFull) {
+      // Ring is a closed polygon of [lon, lat] in projected order. We use the
+      // first 4 distinct vertices (the rectangle) as a bbox proxy — fast,
+      // and any ring touching the padded viewport bbox is kept.
+      let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+      for (const [lon, lat] of cell.ring) {
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+        if (lon < minLon) minLon = lon;
+        if (lon > maxLon) maxLon = lon;
+      }
+      if (maxLat < south || minLat > north || maxLon < west || minLon > east) continue;
+      filtered.push(cell);
+    }
+    return filtered;
+  }, [dailyExposureCellsFull, mapBounds]);
 
   const activeWarnings = useMemo(() => {
     if (mode === "daily" && dailyTimeline) {
@@ -2549,11 +2595,14 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       mode === "daily" &&
       Boolean(dailyTimeline?.stats) &&
       Boolean(
-        (dailyExposureCells && dailyExposureCells.length > 0) ||
+        // NOTE: use `dailyExposureCellsFull` (not the viewport-filtered set)
+        // so panning outside the precomputed zone doesn't toggle capability
+        // off and trigger the auto-fallback effect below.
+        (dailyExposureCellsFull && dailyExposureCellsFull.length > 0) ||
           ((dailyTimeline?.pointCount ?? 0) >= CANVAS_OVERLAY_THRESHOLD &&
             (dailyTimeline?.tiles.length ?? 0) > 0),
       ),
-    [dailyExposureCells, dailyTimeline?.pointCount, dailyTimeline?.stats, dailyTimeline?.tiles.length, mode],
+    [dailyExposureCellsFull, dailyTimeline?.pointCount, dailyTimeline?.stats, dailyTimeline?.tiles.length, mode],
   );
 
   // Auto-fallback to sunlight overlay when heatmap becomes unavailable
@@ -3574,7 +3623,12 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         }
       }
 
-      if (visibility.heatmap && !useCanvasOverlay && dailyExposureCellsInput && dailyExposureCellsInput.length > 0) {
+      // Heatmap renders as vector polygons regardless of useCanvasOverlay.
+      // In canvas mode (large grids), the sun/shadow bitmap overlay lives in
+      // overlayPane; this heatmap layerGroup sits on top and is independently
+      // toggled by `visibility.heatmap`. dailyExposureCellsInput is already
+      // viewport-clipped (see `dailyExposureCells` memo) so cost stays bounded.
+      if (visibility.heatmap && dailyExposureCellsInput && dailyExposureCellsInput.length > 0) {
         for (const cell of dailyExposureCellsInput) {
           const latLngRing = cell.ring.map(([lon, lat]) => [lat, lon] as [number, number]);
           const color = exposureRatioToColor(cell.exposureRatio);
@@ -3849,6 +3903,19 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       const activeTileIds = new Set<string>();
       const viewportBounds = map.getBounds();
 
+      // Per-render palette respecting individual sunny/shadow toggles.
+      // We override the class the user has turned off with a fully transparent
+      // RGBA so paintTileImageData still emits the same pixel grid (no shape
+      // change to the golden output) but the disabled class paints nothing.
+      // The aggregated `overlayVisible` gate above already handles the
+      // both-off case.
+      const TRANSPARENT_RGBA = { r: 0, g: 0, b: 0, a: 0 };
+      const bitmapPalette = {
+        sunny: showSunny ? PAINT_TILE_PALETTE.sunny : TRANSPARENT_RGBA,
+        shadow: showShadow ? PAINT_TILE_PALETTE.shadow : TRANSPARENT_RGBA,
+        indoor: PAINT_TILE_PALETTE.indoor,
+      };
+
       for (const tile of dailyTimeline.tiles) {
         if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) continue;
         // Viewport filter — tiles outside the visible bounds are not painted
@@ -3914,7 +3981,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
             kind: "sunShadow",
             sunMask,
             outdoorMask,
-            palette: PAINT_TILE_PALETTE,
+            palette: bitmapPalette,
           },
           downsampleMode: "box",
         });
@@ -4122,7 +4189,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       }
 
       // Paint the current frame on this tile's canvas
-      paintTileCanvas(tile, ov.ctx, ov.width, ov.height, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow, "sunShadow");
+      paintTileCanvas(tile, ov.ctx, ov.width, ov.height, dailyFrameIndex, decodedTimelineMaskCacheRef.current, ignoreVegetationShadow, "sunShadow", showSunny, showShadow);
       const dataUrl = ov.canvas.toDataURL();
       const customImg = (ov.overlay as unknown as { _customImg?: HTMLImageElement })._customImg;
       if (customImg) {
