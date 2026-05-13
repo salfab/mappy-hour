@@ -4969,7 +4969,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           window.umami.track("compute-start", {
             centerLat,
             centerLon,
-            tileCount: data.totalTiles,
+            tilesRequested: data.totalTiles,
             basemap: baseMapStyleRef.current,
           });
         }
