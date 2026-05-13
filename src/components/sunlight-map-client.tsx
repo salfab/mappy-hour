@@ -3190,6 +3190,19 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         active: initialBaseMapStyle,
       };
 
+      L.control.layers(
+        Object.fromEntries(BASE_MAP_OPTIONS.map((option) => [option.label, baseLayers[option.id]])),
+        {},
+        { position: "topleft", collapsed: true },
+      ).addTo(map);
+
+      map.on("baselayerchange", (event: L.LayersControlEvent) => {
+        const option = BASE_MAP_OPTIONS.find((candidate) => candidate.label === event.name);
+        if (!option) return;
+        baseMapStyleRef.current = option.id;
+        setBaseMapStyle(option.id);
+      });
+
       sunnyLayerRef.current = L.layerGroup().addTo(map);
       shadowLayerRef.current = L.layerGroup().addTo(map);
       vegetationLayerRef.current = L.layerGroup().addTo(map);
@@ -5241,29 +5254,6 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     </div>
   );
 
-  const baseMapTrialSelector = (
-    <label className="absolute right-4 top-20 z-[500] grid gap-1 rounded-2xl border border-white/70 bg-white/88 px-3 py-2 text-xs font-semibold text-slate-800 shadow-xl backdrop-blur lg:right-[390px] lg:top-5">
-      <span className="text-[0.68rem] uppercase tracking-wide text-slate-500">
-        Fond carte (test)
-      </span>
-      <select
-        className="max-w-[11rem] rounded-xl border border-slate-200 bg-white px-2 py-1.5 text-sm font-semibold text-slate-950 outline-none focus:border-amber-300"
-        value={baseMapStyle}
-        onChange={(event) => {
-          const nextStyle = event.target.value;
-          if (isBaseMapStyle(nextStyle)) {
-            setBaseMapStyle(nextStyle);
-          }
-        }}
-      >
-        {BASE_MAP_OPTIONS.map((option) => (
-          <option key={option.id} value={option.id}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
 
   return (
     <section className="relative h-dvh max-h-dvh overflow-hidden bg-slate-950 text-white">
@@ -5292,8 +5282,6 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           />
         </div>
       ) : null}
-      {baseMapTrialSelector}
-
       <div className="absolute left-5 top-5 z-[450] hidden items-center gap-3 lg:flex">
         <div className="rounded-full border border-white/70 bg-white/88 px-4 py-2 text-sm font-semibold text-slate-900 shadow-xl backdrop-blur">
           Mappy Hour
