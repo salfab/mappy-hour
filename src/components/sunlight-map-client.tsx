@@ -52,16 +52,10 @@ import type { VenueCardPlace } from "@/components/map-ui/venue-card";
 
 type AreaMode = "instant" | "daily";
 type BaseMapStyle =
-  | "osm"
-  | "osm-hot"
+  | "stamen-watercolor"
   | "carto-voyager"
-  | "carto-dark"
-  | "esri-street"
-  | "esri-topo"
-  | "open-topo"
-  | "satellite"
-  | "stamen-toner"
-  | "stamen-watercolor";
+  | "osm"
+  | "satellite";
 type MapPanelTab = "map" | "terraces";
 
 interface BaseMapOption {
@@ -76,18 +70,24 @@ interface BaseMapOption {
   overlays?: Array<{ url: string; maxNativeZoom?: number; opacity?: number }>;
 }
 
+// Order matters — the first entry is the default basemap (Aquarelle).
+// The selector in the UI keeps this order.
 const BASE_MAP_OPTIONS: BaseMapOption[] = [
   {
-    id: "osm-hot",
-    label: "OSM Humanitarian",
-    // OSM HOT (Humanitarian OpenStreetMap) — vivid red/yellow/green palette,
-    // strong road hierarchy, and noticeably fewer POI icons at z≥16 than the
-    // standard OSM tiles. No API key required. Default for MappyHour since
-    // CARTO Voyager felt too washed-out against the sun/shadow overlay.
-    url: "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
+    // Stamen Watercolor — peinture artistique + labels CARTO Voyager.
+    // Les labels viennent de CARTO (`voyager_only_labels`) pour rester
+    // indépendants du quota Stadia : si Stadia tombe, le watercolor
+    // bascule en Voyager via le fallback per-tile (`attachStadiaFallback`)
+    // et les labels continuent à charger normalement.
+    id: "stamen-watercolor",
+    label: "Aquarelle",
+    url: "https://tiles.stadiamaps.com/tiles/stamen_watercolor/{z}/{x}/{y}.jpg",
+    overlays: [
+      { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
+    ],
     attribution:
-      "&copy; OpenStreetMap contributors, Tiles style by Humanitarian OpenStreetMap Team",
-    maxNativeZoom: 19,
+      "&copy; <a href=\"https://stamen.com\">Stamen Design</a>, hosted by <a href=\"https://stadiamaps.com/\">Stadia Maps</a> | Labels &copy; CARTO &mdash; Map data &copy; OpenStreetMap contributors",
+    maxNativeZoom: 18,
   },
   {
     id: "carto-voyager",
@@ -97,74 +97,11 @@ const BASE_MAP_OPTIONS: BaseMapOption[] = [
     maxNativeZoom: 20,
   },
   {
-    id: "esri-street",
-    label: "Esri rues",
-    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
-    attribution: "Tiles &copy; Esri",
-    maxNativeZoom: 19,
-  },
-  {
-    id: "esri-topo",
-    label: "Esri topo",
-    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
-    attribution: "Tiles &copy; Esri",
-    maxNativeZoom: 19,
-  },
-  {
-    id: "open-topo",
-    label: "OpenTopoMap",
-    url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-    attribution: "Map data &copy; OpenStreetMap contributors, SRTM | Map style &copy; OpenTopoMap",
-    maxNativeZoom: 17,
-  },
-  {
-    id: "carto-dark",
-    label: "CARTO Dark Matter",
-    url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-    attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
-    maxNativeZoom: 20,
-  },
-  {
     id: "osm",
     label: "OSM standard",
     url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     attribution: "&copy; OpenStreetMap contributors",
     maxNativeZoom: 19,
-  },
-  {
-    // Stamen Toner (light lines) — building masses noires from
-    // `toner_background` + road network from `toner_lines` à opacity
-    // 0.35. Labels viennent de CARTO Voyager (`voyager_only_labels`)
-    // plutôt que `stamen_toner_labels` pour rester lisibles même si
-    // Stadia est rate-limited (les overlays Stadia n'ont pas de
-    // fallback per-tile — voir `attachStadiaFallback` plus bas).
-    id: "stamen-toner",
-    label: "Stamen Toner",
-    url: "https://tiles.stadiamaps.com/tiles/stamen_toner_background/{z}/{x}/{y}.png",
-    overlays: [
-      { url: "https://tiles.stadiamaps.com/tiles/stamen_toner_lines/{z}/{x}/{y}.png", maxNativeZoom: 20, opacity: 0.35 },
-      { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
-    ],
-    attribution:
-      "&copy; <a href=\"https://stamen.com\">Stamen Design</a>, hosted by <a href=\"https://stadiamaps.com/\">Stadia Maps</a> | Labels &copy; CARTO &mdash; Map data &copy; OpenStreetMap contributors",
-    maxNativeZoom: 20,
-  },
-  {
-    // Stamen Watercolor — peinture artistique + labels CARTO Voyager.
-    // `toner_lines` retirées car elles cassent l'effet aquarelle. Les
-    // labels viennent de CARTO (`voyager_only_labels`) pour être
-    // indépendants du quota Stadia — si Stadia tombe, le watercolor
-    // bascule en Voyager via le fallback per-tile et les labels
-    // continuent à charger normalement.
-    id: "stamen-watercolor",
-    label: "Stamen Aquarelle",
-    url: "https://tiles.stadiamaps.com/tiles/stamen_watercolor/{z}/{x}/{y}.jpg",
-    overlays: [
-      { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
-    ],
-    attribution:
-      "&copy; <a href=\"https://stamen.com\">Stamen Design</a>, hosted by <a href=\"https://stadiamaps.com/\">Stadia Maps</a> | Labels &copy; CARTO &mdash; Map data &copy; OpenStreetMap contributors",
-    maxNativeZoom: 18,
   },
   {
     id: "satellite",
@@ -2302,7 +2239,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     layers: {},
     active: "carto-voyager",
   });
-  const baseMapStyleRef = useRef<BaseMapStyle>("osm-hot");
+  const baseMapStyleRef = useRef<BaseMapStyle>("stamen-watercolor");
   const instantStreamRef = useRef<EventSource | null>(null);
   const instantCancelledRef = useRef(false);
   const timelineAbortRef = useRef<AbortController | null>(null);
@@ -2376,7 +2313,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const [gridStepMeters, setGridStepMeters] = useState(1);
   const [sampleEveryMinutes, setSampleEveryMinutes] = useState(15);
   const [buildingHeightBiasMeters, setBuildingHeightBiasMeters] = useState(0);
-  const [baseMapStyle, setBaseMapStyle] = useState<BaseMapStyle>("osm-hot");
+  const [baseMapStyle, setBaseMapStyle] = useState<BaseMapStyle>("stamen-watercolor");
   const [ignoreVegetationShadow, setIgnoreVegetationShadow] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3178,17 +3115,6 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       const map = L.map(mapContainerRef.current, {
         zoomControl: true,
         maxZoom: MAP_MAX_ZOOM,
-        // Disable per-tile fade-in animation. Leaflet's default fadeAnimation
-        // fades each tile from opacity 0 → 1 as it loads; during that
-        // transition, the partially-transparent tile edges expose the
-        // dark `.leaflet-container { background }` between tiles as
-        // hairlines. Leaflet's own workaround (mix-blend-mode: plus-lighter
-        // on tiles) was designed for this case but turns ADDITIVE blending
-        // into a visible problem against a dark container bg. With fade
-        // disabled we don't need plus-lighter either — tiles snap directly
-        // to fully-opaque on load, no transient sub-pixel transparency
-        // for the bg to leak through.
-        fadeAnimation: false,
       }).setView(
         storedView
           ? [storedView.lat, storedView.lon]
@@ -3263,21 +3189,6 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         layers: baseLayers,
         active: initialBaseMapStyle,
       };
-
-      L.control.layers(
-        Object.fromEntries(BASE_MAP_OPTIONS.map((option) => [option.label, baseLayers[option.id]])),
-        {},
-        { position: "topleft", collapsed: true },
-      ).addTo(map);
-
-      map.on("baselayerchange", (event: L.LayersControlEvent) => {
-        const option = BASE_MAP_OPTIONS.find((candidate) => candidate.label === event.name);
-        if (!option) {
-          return;
-        }
-        baseMapStyleRef.current = option.id;
-        setBaseMapStyle(option.id);
-      });
 
       sunnyLayerRef.current = L.layerGroup().addTo(map);
       shadowLayerRef.current = L.layerGroup().addTo(map);

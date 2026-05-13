@@ -40,26 +40,6 @@ code {
   background: #cbd5e1;
 }
 
-/* Tile-seam fix. Leaflet 1.9 introduced `mix-blend-mode: plus-lighter`
-   on `.leaflet-container img.leaflet-tile` to work around Chromium bug
-   600120 (fade animation jank during tile load). `plus-lighter` is an
-   ADDITIVE blend mode: each tile pixel is added to whatever's behind
-   it. With our dark `.leaflet-container { background: #0f172a }`,
-   every tile gets brightened uniformly inside, but at tile edges the
-   GPU's sub-pixel anti-aliasing makes the border pixels partially
-   transparent — the additive blend with the dark bg then produces
-   pixels MUCH brighter than the tile interior, drawing visible white
-   seams at every tile boundary. Vanilla Leaflet demos with their
-   default light gray background don't show this because the
-   additive offset is small against light gray.
-
-   Restoring `mix-blend-mode: normal` fixes the seams. The downside —
-   Chromium's fade-anim jank — is invisible-to-imperceptible in
-   practice and a worthwhile trade. */
-.leaflet-container img.leaflet-tile {
-  mix-blend-mode: normal;
-}
-
 .leaflet-tooltip.sunlit-place-label {
   background: rgba(15, 23, 42, 0.9);
   border: 1px solid rgba(226, 232, 240, 0.35);
