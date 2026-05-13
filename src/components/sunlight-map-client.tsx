@@ -4906,6 +4906,9 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     // Track pending blob decompressions — resolved in parallel, applied before done
     const pendingBlobDecodes: Array<Promise<void>> = [];
     let doneData: { stats: NonNullable<DailyTimelineState["stats"]>; overlayBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number }; warnings: string[] } | null = null;
+    // Captured at `event: start`, read at `event: done` to detect "the server
+    // accepted the bbox but couldn't serve a single tile" — i.e. uncovered zones.
+    let requestedTileCount = 0;
 
     const handleSseEvent = (eventType: string, jsonData: string) => {
       if (timelineCancelledRef.current) return;
@@ -4959,6 +4962,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         // bucketed to 3 decimals (~110m) to keep dashboard cardinality usable.
         // `basemap` lets us cross-reference compute usage with the active
         // basemap *without* needing every user to interact with the selector.
+        requestedTileCount = data.totalTiles;
         if (typeof window !== "undefined" && window.umami) {
           const centerLat = Math.round(((bbox[1] + bbox[3]) / 2) * 1000) / 1000;
           const centerLon = Math.round(((bbox[0] + bbox[2]) / 2) * 1000) / 1000;
@@ -5066,11 +5070,38 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       } else if (eventType === "done") {
         // Store done data — actual finalization happens in runFetchStream
         // after all blob decompressions complete.
-        doneData = JSON.parse(jsonData) as {
-          stats: NonNullable<DailyTimelineState["stats"]>;
+        const parsed = JSON.parse(jsonData) as {
+          stats: NonNullable<DailyTimelineState["stats"]> & {
+            tilesFromCache?: number;
+            tilesComputed?: number;
+          };
           overlayBounds?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
           warnings: string[];
         };
+        doneData = parsed;
+
+        // Umami analytics — track requests where the server accepted a non-empty
+        // bbox but couldn't serve a single tile. With cacheOnly=true on Mitch
+        // this is the canonical signal that the user asked about a zone we
+        // haven't precomputed yet — the most actionable input for picking
+        // which region to ingest next.
+        const tilesFromCache = parsed.stats.tilesFromCache ?? 0;
+        const tilesComputed = parsed.stats.tilesComputed ?? 0;
+        if (
+          typeof window !== "undefined" &&
+          window.umami &&
+          requestedTileCount > 0 &&
+          tilesFromCache === 0 &&
+          tilesComputed === 0
+        ) {
+          const centerLat = Math.round(((bbox[1] + bbox[3]) / 2) * 1000) / 1000;
+          const centerLon = Math.round(((bbox[0] + bbox[2]) / 2) * 1000) / 1000;
+          window.umami.track("compute-uncovered", {
+            centerLat,
+            centerLon,
+            tilesRequested: requestedTileCount,
+          });
+        }
       } else if (eventType === "error") {
         streamFailed = true;
         const errorPayload = (() => {
