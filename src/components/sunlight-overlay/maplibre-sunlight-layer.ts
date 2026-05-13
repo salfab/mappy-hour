@@ -237,7 +237,7 @@ export class MapLibreSunlightLayer {
 
       // Atlas tiles are 250 m × 250 m with 1 m grid step.
       const TILE_SIZE_METERS = 250;
-      const tileNativeSizePx = tile.grid.width; // cells along x (≈ 250)
+      const tileNativeSizePx = Math.min(tile.grid.width, tile.grid.height);
 
       const strategy = selectRenderStrategy({
         zoom,
