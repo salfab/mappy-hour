@@ -24,22 +24,23 @@ $hostStable = @(
   "MAPPY_BUILDINGS_PATH=/mnt/c/mappy-data/processed/buildings",
   "MAPPY_FORCE_CACHE_ONLY=true"
 )
-if (Test-Path $envCi) {
+if (-not (Test-Path $envCi)) {
+  Write-Host "  WARNING: .env.ci not found — CI may have failed to scp secrets. Reusing existing .env."
+} else {
   $ciContent = Get-Content $envCi -Raw
   $merged = ($hostStable -join "`n") + "`n" + $ciContent
   Set-Content -Path $envOut -Value $merged -Encoding UTF8
   Remove-Item $envCi -ErrorAction SilentlyContinue
-  Write-Host "  .env regenerated ($((Get-Content $envOut).Length) lines)"
-} else {
-  Write-Host "  WARNING: .env.ci not found — CI may have failed to scp secrets. Reusing existing .env."
+  $envLineCount = (Get-Content $envOut).Length
+  Write-Host ("  .env regenerated ({0} lines)" -f $envLineCount)
 }
 
 Write-Host "=== docker compose pull ==="
-wsl -d Ubuntu -u root -e bash -c "cd /mnt/c/srv/mappy-hour && docker compose pull"
+wsl -d Ubuntu -u root -e bash -lc 'cd /mnt/c/srv/mappy-hour && docker compose pull'
 if ($LASTEXITCODE -ne 0) { Write-Host "docker compose pull failed"; exit 1 }
 
 Write-Host "=== docker compose up -d ==="
-wsl -d Ubuntu -u root -e bash -c "cd /mnt/c/srv/mappy-hour && docker compose up -d --remove-orphans"
+wsl -d Ubuntu -u root -e bash -lc 'cd /mnt/c/srv/mappy-hour && docker compose up -d --remove-orphans'
 if ($LASTEXITCODE -ne 0) { Write-Host "docker compose up failed"; exit 1 }
 
 # Reclaim space — Mitch is space-constrained and each `pull` keeps the
@@ -51,9 +52,9 @@ if ($LASTEXITCODE -ne 0) { Write-Host "docker compose up failed"; exit 1 }
 # case we need to revert quickly. `image prune -af` (not `-a`) wipes
 # everything not currently referenced by a running container.
 Write-Host "=== docker prune (reclaim space) ==="
-wsl -d Ubuntu -u root -e bash -c "docker image prune -af --filter 'until=2h' 2>&1 | tail -5"
-wsl -d Ubuntu -u root -e bash -c "docker builder prune -af --filter 'until=24h' 2>&1 | tail -5"
-wsl -d Ubuntu -u root -e bash -c "docker system df 2>&1"
+wsl -d Ubuntu -u root -e bash -lc "docker image prune -af --filter 'until=2h' 2>&1 | tail -5"
+wsl -d Ubuntu -u root -e bash -lc "docker builder prune -af --filter 'until=24h' 2>&1 | tail -5"
+wsl -d Ubuntu -u root -e bash -lc "docker system df 2>&1"
 
 Write-Host "=== Waiting 25s for container to start ==="
 Start-Sleep 25
@@ -64,6 +65,6 @@ try {
     Write-Host "OK: HTTP $($r.StatusCode) - container operational"
 } catch {
     Write-Host "FAIL: $($_.Exception.Message)"
-    wsl -d Ubuntu -u root -e bash -c "docker logs mappy-hour --tail 30"
+    wsl -d Ubuntu -u root -e bash -lc "docker logs mappy-hour --tail 30"
     exit 1
 }
