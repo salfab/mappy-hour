@@ -74,10 +74,6 @@ interface BaseMapOption {
    *  Stamen Watercolor with Toner labels). Rendered in array order — first
    *  overlay sits directly above the base, last overlay on top. */
   overlays?: Array<{ url: string; maxNativeZoom?: number; opacity?: number }>;
-  /** CSS class applied to the layer's tile container — used to scope CSS
-   *  rules like `mix-blend-mode` to a single basemap (e.g. watercolor's
-   *  white painterly edges need `multiply` to blend away). */
-  tileClassName?: string;
 }
 
 const BASE_MAP_OPTIONS: BaseMapOption[] = [
