@@ -31,7 +31,13 @@ code {
 .leaflet-container {
   width: 100%;
   height: 100%;
-  background: #0f172a;
+  /* Light slate gray (Tailwind slate-300). Mirrors Leaflet's default
+     `#ddd` — every Leaflet demo uses a light bg because tile compositor
+     edges (sub-pixel AA, fade animations, etc.) leak invisibly against
+     a light bg but draw conspicuous hairlines against a dark one. The
+     bg only shows for the ~250ms before tiles load; once the basemap
+     paints it's fully covered. */
+  background: #cbd5e1;
 }
 
 /* Tile-seam fix. Leaflet 1.9 introduced `mix-blend-mode: plus-lighter`
