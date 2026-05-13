@@ -69,11 +69,11 @@ REGIONS = {
     # [7.42, 46.93, 7.48, 46.97].
     "bern": {"minE": 2598000, "minN": 1197000, "maxE": 2604000, "maxN": 1203000},
     # Ville de Zurich (centre urbain, rive nord du Zürichsee).
-    # Matches ZURICH_LOCAL_BBOX [8.50, 47.36, 8.58, 47.40].
-    "zurich": {"minE": 2680000, "minN": 1245000, "maxE": 2688000, "maxN": 1251000},
+    # Matches ZURICH_LOCAL_BBOX [8.4974, 47.359, 8.58, 47.403] (étendue 2026-05-13).
+    "zurich": {"minE": 2679000, "minN": 1245000, "maxE": 2688000, "maxN": 1251000},
     # Ville de Thoune (centre urbain, rive nord du Thunersee).
-    # Matches THUN_LOCAL_BBOX [7.60, 46.74, 7.66, 46.78].
-    "thun": {"minE": 2611000, "minN": 1175000, "maxE": 2616000, "maxN": 1180000},
+    # Matches THUN_LOCAL_BBOX [7.5986, 46.7347, 7.66, 46.78] (étendue 2026-05-13).
+    "thun": {"minE": 2611000, "minN": 1175000, "maxE": 2617000, "maxN": 1182000},
 }
 
 
