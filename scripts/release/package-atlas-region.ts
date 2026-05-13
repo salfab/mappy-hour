@@ -131,6 +131,47 @@ async function findBestModelVersionHash(region: string): Promise<{ hash: string;
   return best;
 }
 
+/** Prefer the CURRENT modelVersionHash (computed from live inputs:
+ *  buildings index, terrain manifest, vegetation manifest, horizon
+ *  manifest, calibration). Fall back to the highest-tile-count hash
+ *  on disk with a loud warning if the current hash isn't present —
+ *  that fallback only makes sense if the operator knows the current
+ *  inputs match an older precompute, which is rare. Avoids the
+ *  silent bug where a region whose bbox / data was widened gets
+ *  packaged from the obsolete pre-widening hash because it has
+ *  more tiles. */
+async function resolveAtlasHash(region: string): Promise<{ hash: string; tileCount: number; source: "current" | "fallback-best" } | null> {
+  let currentHash: string | null = null;
+  try {
+    const { getSunlightModelVersion } = await import("../../src/lib/precompute/model-version");
+    const { DEFAULT_SHADOW_CALIBRATION } = await import("../../src/lib/sun/shadow-calibration");
+    const mv = await getSunlightModelVersion(region as never, DEFAULT_SHADOW_CALIBRATION);
+    currentHash = mv.modelVersionHash;
+  } catch (err) {
+    console.error(
+      `[package-atlas] ⚠ unable to compute current modelVersionHash for ${region} (${(err as Error).message}). Falling back to highest-tile-count hash on disk.`,
+    );
+  }
+  if (currentHash) {
+    const atlasDir = path.join(CACHE_SUNLIGHT_DIR, region, currentHash, `g${GRID_STEP}`, "atlas", `r${ATLAS_RESOLUTION_DEG}`);
+    try {
+      const files = await fsp.readdir(atlasDir);
+      const count = countAtlasTiles(files);
+      return { hash: currentHash, tileCount: count, source: "current" };
+    } catch {
+      // Current hash dir doesn't exist on disk yet (precompute not run since the
+      // last manifest change). Fall back to the best on-disk hash so we ship
+      // SOMETHING — but warn loudly because the result may be using obsolete
+      // building/terrain data.
+      console.error(
+        `\x1b[1;33m[package-atlas] ⚠ current modelVersionHash for ${region} is ${currentHash} but no atlas dir exists for it. Falling back to highest-tile-count on-disk hash. The packaged release may reflect an OBSOLETE precompute (older buildings/terrain/horizon manifests). Re-run precompute for ${region} to get a fresh ${currentHash} build.\x1b[0m`,
+      );
+    }
+  }
+  const best = await findBestModelVersionHash(region);
+  return best ? { ...best, source: "fallback-best" } : null;
+}
+
 async function findBestGridMetadataHash(region: string): Promise<{ hash: string; tileCount: number } | null> {
   const regionDir = path.join(TILE_GRID_METADATA_DIR, region);
   let entries: string[];
@@ -471,19 +512,22 @@ async function main() {
   const region = args.region;
   console.error(`\n[package-atlas] Région : ${region}`);
 
-  // Resolve atlas modelVersionHash (newest hash dir with the most tiles)
+  // Resolve atlas modelVersionHash. Prefers the CURRENT hash computed
+  // from live inputs (so a release packaged right after a widening uses
+  // the post-widening atlas, not the obsolete one with more tiles).
   let modelVersionHash = args.modelVersionHash;
   let atlasTileCount = 0;
   if (args.includeAtlas) {
     if (modelVersionHash === "auto") {
-      const best = await findBestModelVersionHash(region);
-      if (!best) {
+      const resolved = await resolveAtlasHash(region);
+      if (!resolved) {
         console.error(`[package-atlas] Aucun atlas trouvé pour ${region} dans ${CACHE_SUNLIGHT_DIR}`);
         process.exit(1);
       }
-      modelVersionHash = best.hash;
-      atlasTileCount = best.tileCount;
-      console.error(`[package-atlas] modelVersionHash auto : ${modelVersionHash} (${atlasTileCount} tuiles)`);
+      modelVersionHash = resolved.hash;
+      atlasTileCount = resolved.tileCount;
+      const sourceLabel = resolved.source === "current" ? "current" : "fallback (highest-count on disk)";
+      console.error(`[package-atlas] modelVersionHash auto (${sourceLabel}) : ${modelVersionHash} (${atlasTileCount} tuiles)`);
     } else {
       const atlasDir = path.join(CACHE_SUNLIGHT_DIR, region, modelVersionHash, `g${GRID_STEP}`, "atlas", `r${ATLAS_RESOLUTION_DEG}`);
       const files = await fsp.readdir(atlasDir).catch(() => [] as string[]);
