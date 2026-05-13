@@ -3409,7 +3409,10 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         }
       });
       map.on("zoomend", () => {
-        setMapZoom(map.getZoom());
+        const z = map.getZoom();
+        // eslint-disable-next-line no-console -- debug aid; remove when no longer needed.
+        console.log(`[zoom] ${z.toFixed(2)}`);
+        setMapZoom(z);
         setMapBounds(map.getBounds());
       });
       // Initialize on first ready
