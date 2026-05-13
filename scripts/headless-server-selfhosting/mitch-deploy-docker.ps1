@@ -8,6 +8,32 @@ Write-Host "=== git pull ==="
 git pull
 if ($LASTEXITCODE -ne 0) { Write-Host "git pull failed"; exit 1 }
 
+# Compose the runtime .env from two sources:
+#   - .env.ci  : secrets pushed by the deploy workflow (UMAMI_APP_SECRET,
+#                UMAMI_DB_PASSWORD, …). Owned by GitHub Actions.
+#   - host-stable variables (atlas + buildings paths) — hardcoded here
+#     because they're a property of this specific Mitch box, not of
+#     the application.
+# Anything previously edited by hand in .env is overwritten on every
+# deploy by design (CI is the single source of truth).
+Write-Host "=== sync .env from CI secrets ==="
+$envCi = Join-Path $repoDir ".env.ci"
+$envOut = Join-Path $repoDir ".env"
+$hostStable = @(
+  "MAPPY_ATLAS_PATH=/mnt/c/mappy-data/cache/sunlight",
+  "MAPPY_BUILDINGS_PATH=/mnt/c/mappy-data/processed/buildings",
+  "MAPPY_FORCE_CACHE_ONLY=true"
+)
+if (Test-Path $envCi) {
+  $ciContent = Get-Content $envCi -Raw
+  $merged = ($hostStable -join "`n") + "`n" + $ciContent
+  Set-Content -Path $envOut -Value $merged -Encoding UTF8
+  Remove-Item $envCi -ErrorAction SilentlyContinue
+  Write-Host "  .env regenerated ($((Get-Content $envOut).Length) lines)"
+} else {
+  Write-Host "  WARNING: .env.ci not found — CI may have failed to scp secrets. Reusing existing .env."
+}
+
 Write-Host "=== docker compose pull ==="
 wsl -d Ubuntu -u root -e bash -c "cd /mnt/c/srv/mappy-hour && docker compose pull"
 if ($LASTEXITCODE -ne 0) { Write-Host "docker compose pull failed"; exit 1 }
