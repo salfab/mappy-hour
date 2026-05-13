@@ -119,6 +119,6 @@ Pas d'urgence à les ajouter, mais le format normalisé `NormalizedPlace` doit p
 
 ## Suivi (issues / tâches)
 
-- [ ] Nettoyer `download-places-osm.ts:130-133` : retirer `terrace=yes` et `garden=yes` du `hasOutdoorSeating`, introduire `hasOutdoorSeatingUnknown`. Bump `places-v0.2.0`.
-- [ ] Capturer `outdoor_seating:covered` et `:heated` dans `NormalizedPlace` (ajouts non-breaking au schema).
+- [x] Nettoyer `download-places-osm.ts:130-133` : retirer `terrace=yes` et `garden=yes` du `hasOutdoorSeating`, introduire `hasOutdoorSeatingUnknown`. Bump `places-v0.2.0`. **Fait 2026-05-13** (commit 2174fd4 + release `places-v0.2.0`).
+- [x] Capturer `outdoor_seating:covered` et `:heated` dans `NormalizedPlace` (ajouts non-breaking au schema). **Fait 2026-05-13** (commit e1a60b2).
 - [ ] (Si overlay carto se concrétise) Script `scripts/diag/bench-osm-coverage.ts` qui mesure le ratio `hasOutdoorSeating / amenity=cafe|bar|...` par région et alerte si < 20%.
