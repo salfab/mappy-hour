@@ -23,6 +23,18 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  // Umami analytics proxied under /_analytics/* so the tracker script and
+  // event collection live on the same origin as the app. Avoids CORS, no
+  // extra DNS needed, one Tailscale Funnel host suffices. Destination is
+  // the umami container inside docker compose's network. In local dev
+  // (no umami container running) the rewrite returns 502 — harmless;
+  // analytics simply doesn't load.
+  async rewrites() {
+    return [
+      { source: "/_analytics/script.js", destination: "http://umami:3000/script.js" },
+      { source: "/_analytics/api/:path*", destination: "http://umami:3000/api/:path*" },
+    ];
+  },
 };
 
 export default nextConfig;

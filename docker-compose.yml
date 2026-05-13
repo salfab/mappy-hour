@@ -60,6 +60,55 @@ services:
       retries: 3
       start_period: 30s
 
+  # ── Umami analytics (self-hosted) ─────────────────────────────────────────
+  # Self-hosted, privacy-friendly visitor analytics. No cookies (= pas de
+  # bannière consentement), no third party.
+  #
+  # The Next.js app proxies tracker requests via rewrites (cf. next.config.ts)
+  # so the public surface stays unchanged: tracking script at /_analytics/script.js
+  # and events POSTed to /_analytics/api/send, both transparently routed to
+  # the `umami` container inside the docker compose network.
+  #
+  # Initial setup (one-shot, after `docker compose up -d`):
+  #   1. Tunnel to the dashboard:
+  #        ssh -L 3001:127.0.0.1:3001 user@mitch
+  #      Then open http://127.0.0.1:3001 in your browser.
+  #   2. Default login: admin / umami → CHANGE THE PASSWORD IMMEDIATELY.
+  #   3. Settings → Websites → Add: name = "MappyHour", domain = the public host.
+  #   4. Copy the generated Website ID (UUID), put it in .env:
+  #        NEXT_PUBLIC_UMAMI_WEBSITE_ID=<uuid>
+  #   5. Rebuild + restart mappy-hour (the env is consumed at `next build`,
+  #      hence the build-arg in .github/workflows/docker-publish.yml).
+  umami:
+    image: ghcr.io/umami-software/umami:postgresql-latest
+    container_name: umami
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://umami:${UMAMI_DB_PASSWORD:-umami}@umami-db:5432/umami
+      DATABASE_TYPE: postgresql
+      APP_SECRET: ${UMAMI_APP_SECRET:?set UMAMI_APP_SECRET in .env to a long random string}
+    depends_on:
+      umami-db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3001:3000"
+
+  umami-db:
+    image: postgres:15-alpine
+    container_name: umami-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: umami
+      POSTGRES_USER: umami
+      POSTGRES_PASSWORD: ${UMAMI_DB_PASSWORD:-umami}
+    volumes:
+      - umami-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   # One-shot container pour télécharger / mettre à jour les atlas.
   # Lancer manuellement : docker compose run --rm atlas-loader
   # Ajouter `--with-buildings` à la fin pour aussi récupérer le global
@@ -83,3 +132,6 @@ services:
       - type: bind
         source: ${MAPPY_BUILDINGS_PATH:-./data/processed/buildings}
         target: /data/processed/buildings
+
+volumes:
+  umami-db-data:

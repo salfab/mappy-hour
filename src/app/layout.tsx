@@ -50,6 +50,12 @@ export const metadata: Metadata = {
   },
 };
 
+// Umami analytics — self-hosted on Mitch, proxied at /_analytics/script.js
+// (see next.config.ts rewrites + docker-compose.yml). The script is only
+// emitted when the website ID is configured at build time; absent in dev
+// or pre-setup builds, so no tracking happens until the operator opts in.
+const umamiWebsiteId = process.env.NEXT_PUBLIC_UMAMI_WEBSITE_ID;
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -61,6 +67,14 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
+        {umamiWebsiteId ? (
+          <script
+            defer
+            data-website-id={umamiWebsiteId}
+            data-host-url="/_analytics"
+            src="/_analytics/script.js"
+          />
+        ) : null}
       </body>
     </html>
   );

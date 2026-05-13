@@ -95,3 +95,4 @@ jobs:
           # for the Dockerfile to forward into the build environment.
           build-args: |
             NEXT_PUBLIC_STADIA_API_KEY=${{ secrets.NEXT_PUBLIC_STADIA_API_KEY }}
+            NEXT_PUBLIC_UMAMI_WEBSITE_ID=${{ secrets.NEXT_PUBLIC_UMAMI_WEBSITE_ID }}
