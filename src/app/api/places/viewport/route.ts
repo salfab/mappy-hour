@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -6,6 +8,10 @@ import {
   filterPlacesInBounds,
   type NormalizedPlaceLite,
 } from "@/components/places-overlay/viewport-places";
+import {
+  mapWithConcurrency,
+  snapPlaceToOutdoor,
+} from "@/lib/places/snap-to-outdoor";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,6 +40,12 @@ const bodySchema = z.object({
 // densely-mapped region could otherwise be megabytes). The client-side
 // clusterer is fine with ~5k input candidates.
 const MAX_RESPONSE_PLACES = 5000;
+
+// Outdoor-snap concurrency. Reads gunzipped tile-grid-metadata blobs (~1 MB
+// each, cached after the first hit). 16 keeps disk I/O bursts bounded while
+// still letting cold tiles overlap. ~500 places typically map onto 4–10
+// distinct tiles in a city viewport, so the cap rarely matters in practice.
+const SNAP_CONCURRENCY = 16;
 
 export async function POST(request: Request) {
   try {
@@ -72,7 +84,23 @@ export async function POST(request: Request) {
       MAX_RESPONSE_PLACES,
     );
 
-    const lite: ViewportPlaceLite[] = filtered.map((place) => {
+    // Snap each place out of any building it lands inside. Independent
+    // per-place; bounded fan-out so we don't issue 500 disk reads at once.
+    const snapStarted = performance.now();
+    const snaps = await mapWithConcurrency(filtered, SNAP_CONCURRENCY, (place) =>
+      snapPlaceToOutdoor({ lat: place.lat, lon: place.lon }),
+    );
+    const snapElapsedMs = performance.now() - snapStarted;
+    if (filtered.length > 0) {
+      // Single line per request — keeps the log tractable while still
+      // giving us a signal in case the snap loop ever explodes (cold
+      // cache, big viewport, etc).
+      process.stderr.write(
+        `[places/viewport] snap places=${filtered.length} elapsed=${snapElapsedMs.toFixed(0)}ms avg=${(snapElapsedMs / filtered.length).toFixed(2)}ms\n`,
+      );
+    }
+
+    const lite: ViewportPlaceLite[] = filtered.map((place, i) => {
       // Surface the raw OSM `opening_hours` tag as a top-level `openingHours`
       // string. The rest of `tags` is intentionally NOT serialised — it would
       // bloat the payload by 5-10× on dense viewports. Additive field: every
@@ -82,13 +110,25 @@ export async function POST(request: Request) {
         typeof openingHoursRaw === "string" && openingHoursRaw.trim().length > 0
           ? openingHoursRaw
           : undefined;
+      const snap = snaps[i];
+      const snappedLat = Math.round(snap.lat * 1_000_000) / 1_000_000;
+      const snappedLon = Math.round(snap.lon * 1_000_000) / 1_000_000;
+      const moved = snap.selectionStrategy === "terrace_offset";
       return {
         id: place.id,
         name: place.name,
         category: place.category,
         subcategory: place.subcategory,
-        lat: place.lat,
-        lon: place.lon,
+        // Primary `lat`/`lon` are the snapped coordinates — the overlay
+        // renders these. When the snap didn't move the point (or we had
+        // no indoor signal), these equal the OSM values.
+        lat: snappedLat,
+        lon: snappedLon,
+        // Raw OSM coords preserved only when we actually nudged the point,
+        // to keep the payload small for the common case.
+        osmLat: moved ? place.lat : undefined,
+        osmLon: moved ? place.lon : undefined,
+        selectionStrategy: snap.selectionStrategy,
         hasOutdoorSeating: place.hasOutdoorSeating,
         hasOutdoorSeatingUnknown: place.hasOutdoorSeatingUnknown,
         outdoorSeatingCovered: place.outdoorSeatingCovered,
@@ -99,11 +139,20 @@ export async function POST(request: Request) {
       };
     });
 
-    return NextResponse.json({
-      generatedAt: new Date().toISOString(),
-      sourceGeneratedAt: placesFile.generatedAt,
-      places: lite,
-    });
+    return NextResponse.json(
+      {
+        generatedAt: new Date().toISOString(),
+        sourceGeneratedAt: placesFile.generatedAt,
+        places: lite,
+      },
+      {
+        headers: {
+          // Lets the browser devtools surface the snap cost without
+          // sprinkling client-side timers everywhere.
+          "Server-Timing": `snap;dur=${snapElapsedMs.toFixed(1)}`,
+        },
+      },
+    );
   } catch (error) {
     return NextResponse.json(
       {

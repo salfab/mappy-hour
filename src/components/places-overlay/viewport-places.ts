@@ -29,6 +29,16 @@ export interface NormalizedPlaceLite {
    *  Free-form: the OSM `opening_hours` spec is rich (PH/SH, off, easter,
    *  sunrise/sunset, …) so we render it verbatim, splitting on `;`. */
   openingHours?: string;
+  /** Outcome of the server-side outdoor snap (see `snapPlaceToOutdoor`).
+   *  When `terrace_offset`, `lat`/`lon` above have been nudged a few meters
+   *  away from the original OSM position so the marker doesn't sit on a
+   *  roof; the raw values are preserved in `osmLat`/`osmLon`. Optional for
+   *  backward compatibility — older API responses won't include it. */
+  selectionStrategy?: "original" | "terrace_offset" | "indoor_fallback";
+  /** Original OSM latitude before any outdoor-snap nudge. */
+  osmLat?: number;
+  /** Original OSM longitude before any outdoor-snap nudge. */
+  osmLon?: number;
 }
 
 export interface BoundsLatLon {
