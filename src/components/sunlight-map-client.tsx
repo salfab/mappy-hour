@@ -41,7 +41,11 @@ function viewportCardEmoji(place: ViewportPlaceLite): string {
       return "📍";
   }
 }
-import { paintTileImageData, type RGBA } from "@/components/sunlight-overlay/paint-tile";
+import {
+  paintTileImageData,
+  type PaintTilePalette,
+  type RGBA,
+} from "@/components/sunlight-overlay/paint-tile";
 import {
   buildUnifiedViewportContours,
   type VisibleTileInput,
@@ -3964,18 +3968,22 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       const activeTileIds = new Set<string>();
       const viewportBounds = map.getBounds();
 
-      // Per-render palette respecting individual sunny/shadow toggles.
-      // We override the class the user has turned off with a fully transparent
+      // Per-render palette respecting individual sunny/shadow toggles. We
+      // override the class the user has turned off with a fully transparent
       // RGBA so paintTileImageData still emits the same pixel grid (no shape
       // change to the golden output) but the disabled class paints nothing.
       // The aggregated `overlayVisible` gate above already handles the
-      // both-off case.
-      const TRANSPARENT_RGBA = { r: 0, g: 0, b: 0, a: 0 };
-      const bitmapPalette = {
-        sunny: showSunny ? PAINT_TILE_PALETTE.sunny : TRANSPARENT_RGBA,
-        shadow: showShadow ? PAINT_TILE_PALETTE.shadow : TRANSPARENT_RGBA,
-        indoor: PAINT_TILE_PALETTE.indoor,
-      };
+      // both-off case. Skipped entirely when showHeatmap is on — the heatmap
+      // branch uses `mapExposureToRGBA` instead and never reads this palette.
+      let bitmapPalette: PaintTilePalette | null = null;
+      if (!showHeatmap) {
+        const TRANSPARENT_RGBA = { r: 0, g: 0, b: 0, a: 0 };
+        bitmapPalette = {
+          sunny: showSunny ? PAINT_TILE_PALETTE.sunny : TRANSPARENT_RGBA,
+          shadow: showShadow ? PAINT_TILE_PALETTE.shadow : TRANSPARENT_RGBA,
+          indoor: PAINT_TILE_PALETTE.indoor,
+        };
+      }
 
       for (const tile of dailyTimeline.tiles) {
         if (!tile.grid || !tile.tileCorners || tile.frames.length === 0) continue;
@@ -4072,7 +4080,9 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
               kind: "sunShadow",
               sunMask,
               outdoorMask,
-              palette: bitmapPalette,
+              // Non-null by construction: bitmapPalette is built whenever
+              // showHeatmap is false, which is exactly this branch.
+              palette: bitmapPalette!,
             },
             downsampleMode: "box",
           });
