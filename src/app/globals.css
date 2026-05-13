@@ -34,26 +34,24 @@ code {
   background: #0f172a;
 }
 
-/* Tile-seam workaround. Tailwind v4 preflight applies several rules
-   globally that subtly conflict with Leaflet's inline tile sizing:
-   - `img, video { max-width: 100%; height: auto }` competes with
-     Leaflet's inline `width: 256px`.
-   - `* { box-sizing: border-box }` doesn't change content size for
-     border-less tiles but rules out potential confusion.
-   We hard-pin tile dimensions to 256 to bypass any preflight or
-   future Tailwind base style. `.leaflet-tile` (which Leaflet sets
-   on every tile <img>) is the safe scope — won't affect marker
-   icons or other Leaflet imagery. */
-.leaflet-container img {
-  max-width: none !important;
-}
-img.leaflet-tile {
-  width: 256px !important;
-  height: 256px !important;
-  max-width: none !important;
-  border: 0 !important;
-  padding: 0 !important;
-  margin: 0 !important;
+/* Tile-seam fix. Leaflet 1.9 introduced `mix-blend-mode: plus-lighter`
+   on `.leaflet-container img.leaflet-tile` to work around Chromium bug
+   600120 (fade animation jank during tile load). `plus-lighter` is an
+   ADDITIVE blend mode: each tile pixel is added to whatever's behind
+   it. With our dark `.leaflet-container { background: #0f172a }`,
+   every tile gets brightened uniformly inside, but at tile edges the
+   GPU's sub-pixel anti-aliasing makes the border pixels partially
+   transparent — the additive blend with the dark bg then produces
+   pixels MUCH brighter than the tile interior, drawing visible white
+   seams at every tile boundary. Vanilla Leaflet demos with their
+   default light gray background don't show this because the
+   additive offset is small against light gray.
+
+   Restoring `mix-blend-mode: normal` fixes the seams. The downside —
+   Chromium's fade-anim jank — is invisible-to-imperceptible in
+   practice and a worthwhile trade. */
+.leaflet-container img.leaflet-tile {
+  mix-blend-mode: normal;
 }
 
 .leaflet-tooltip.sunlit-place-label {

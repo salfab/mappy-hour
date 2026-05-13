@@ -3178,6 +3178,17 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       const map = L.map(mapContainerRef.current, {
         zoomControl: true,
         maxZoom: MAP_MAX_ZOOM,
+        // Disable per-tile fade-in animation. Leaflet's default fadeAnimation
+        // fades each tile from opacity 0 → 1 as it loads; during that
+        // transition, the partially-transparent tile edges expose the
+        // dark `.leaflet-container { background }` between tiles as
+        // hairlines. Leaflet's own workaround (mix-blend-mode: plus-lighter
+        // on tiles) was designed for this case but turns ADDITIVE blending
+        // into a visible problem against a dark container bg. With fade
+        // disabled we don't need plus-lighter either — tiles snap directly
+        // to fully-opaque on load, no transient sub-pixel transparency
+        // for the bg to leak through.
+        fadeAnimation: false,
       }).setView(
         storedView
           ? [storedView.lat, storedView.lon]
