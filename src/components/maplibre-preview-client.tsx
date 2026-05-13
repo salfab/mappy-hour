@@ -29,6 +29,7 @@ import {
   MapLibreSunlightLayer,
   type TimelineTile,
 } from "@/components/sunlight-overlay/maplibre-sunlight-layer";
+import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
 
 type BaseMapId = "aquarelle" | "carto-voyager" | "osm" | "satellite";
 
@@ -408,7 +409,7 @@ export function MapLibrePreviewClient() {
     });
 
     try {
-      const response = await fetch(`/api/sunlight/timeline/sse?${params.toString()}`);
+      const response = await fetch(`/api/sunlight/timeline/stream?${params.toString()}`);
       if (!response.ok || !response.body) {
         console.error("[maplibre-preview] SSE fetch failed:", response.status);
         setSunlightLoading(false);
@@ -419,6 +420,9 @@ export function MapLibrePreviewClient() {
       const decoder = new TextDecoder();
       let buffer = "";
       const collectedTiles: TimelineTile[] = [];
+      // Pending gzip decodes — started per-tile, awaited before setTimeline.
+      // Same pattern as sunlight-map-client.tsx to avoid blocking the read loop.
+      const pendingDecodes: Promise<void>[] = [];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -449,9 +453,28 @@ export function MapLibrePreviewClient() {
 
             if (eventType === "start") {
               collectedTiles.length = 0;
+              pendingDecodes.length = 0;
             } else if (eventType === "tile") {
-              collectedTiles.push(payload as unknown as TimelineTile);
+              const tile = payload as unknown as TimelineTile & {
+                masksEncoding?: string;
+                masksBase64?: string;
+                grid?: { width: number; height: number };
+              };
+              // Fire gzip decode in the background — do NOT await here so the
+              // read loop keeps consuming chunks without stalling on each tile.
+              if (tile.masksEncoding === "gzip-concat-v1" && tile.masksBase64 && tile.grid) {
+                const maskBytes = Math.ceil(tile.grid.width * tile.grid.height / 8);
+                const frameCount = tile.frames.length;
+                pendingDecodes.push(
+                  decodeTileMasksBlob(tile.masksBase64, maskBytes, frameCount).then((decoded) => {
+                    tile.decodedMasks = decoded;
+                  }),
+                );
+              }
+              collectedTiles.push(tile);
             } else if (eventType === "done") {
+              // Wait for all background gzip decodes to finish before painting.
+              await Promise.all(pendingDecodes);
               const layer = sunlightLayerRef.current;
               if (layer) {
                 layer.setTimeline(collectedTiles, 0, showSunny, showShadow);
