@@ -26,9 +26,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import maplibregl, { type Map as MapLibreMap, type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
-  MapLibreSunlightLayer,
+  MapLibreSunlightCustomLayer,
   type TimelineTile,
-} from "@/components/sunlight-overlay/maplibre-sunlight-layer";
+} from "@/components/sunlight-overlay/maplibre-sunlight-custom-layer";
 import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
 
 type BaseMapId = "aquarelle" | "carto-voyager" | "osm" | "satellite";
@@ -379,7 +379,7 @@ export function MapLibrePreviewClient() {
   const [frameIndex, setFrameIndex] = useState(0);
   const [timelineFrames, setTimelineFrames] = useState<Array<{ localTime: string }>>([]);
   const [sunlightLoading, setSunlightLoading] = useState(false);
-  const sunlightLayerRef = useRef<MapLibreSunlightLayer | null>(null);
+  const sunlightLayerRef = useRef<MapLibreSunlightCustomLayer | null>(null);
 
   // Build basemap defs once. Stadia key is a public env, baked at build.
   const baseMapsRef = useRef<BaseMapDef[] | null>(null);
@@ -524,18 +524,28 @@ export function MapLibrePreviewClient() {
       attachInteractions(map);
       setReady(true);
 
-      // Instantiate the sunlight layer and kick off the timeline fetch.
-      const sunlightLayer = new MapLibreSunlightLayer({ map });
+      // Instantiate the sunlight custom layer (WebGL) and insert it BEFORE
+      // cluster-circles so clusters always render on top of the sunlight overlay.
+      const sunlightLayer = new MapLibreSunlightCustomLayer(map);
+      map.addLayer(sunlightLayer, "cluster-circles");
       sunlightLayerRef.current = sunlightLayer;
       void fetchTimeline(map);
     });
 
-    // On every style swap (basemap switcher), re-add the places overlay
-    // because setStyle wipes user-added sources/layers by default.
+    // On every style swap (basemap switcher), re-add user layers because
+    // setStyle wipes all user-added sources/layers by default.
     map.on("styledata", () => {
       if (!map.getSource("places")) {
         addPlacesLayers(map);
         attachInteractions(map);
+      }
+      // Re-add the sunlight custom layer before cluster-circles if setStyle
+      // removed it. The layer object keeps its CPU tile data across swaps
+      // (disposeGPU in onRemove preserves luminance buffers); onAdd will
+      // recreate GL textures and triggerRepaint automatically.
+      const sl = sunlightLayerRef.current;
+      if (sl && !map.getLayer(sl.id)) {
+        map.addLayer(sl, "cluster-circles");
       }
     });
 
