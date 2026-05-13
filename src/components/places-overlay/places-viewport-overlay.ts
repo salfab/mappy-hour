@@ -32,6 +32,10 @@ export interface PlacesViewportOverlayFilters {
   showParks: boolean;
   showTerraces: boolean;
   confirmedOnly: boolean;
+  /** Subcategory names (matching `NormalizedPlace.subcategory`, ie OSM
+   *  amenity tag values) that must be excluded even when their parent
+   *  category is enabled. Default: `["food_court"]`. */
+  excludedSubcategories: Set<string>;
 }
 
 export interface PlacesViewportOverlayOptions {
@@ -105,10 +109,19 @@ export class PlacesViewportOverlay {
   private readonly maxZoom: number;
 
   private places: NormalizedPlaceLite[] = [];
+  // Defaults aligned with the app's purpose: it's "Mappy HOUR for sunny
+  // terrasses", not a general POI browser. So:
+  //  - parks are off (they're a distinct outdoor concept, not "terrace");
+  //  - confirmedOnly=true → only HORECA places with explicit
+  //    `outdoor_seating=yes` (this also caps density: drops 60-80% of
+  //    candidates whose tag is `unknown` and would otherwise clutter L1/L2);
+  //  - food_court excluded by default (typically indoor shopping-mall
+  //    galleries, semantically not "terrasse").
   private filters: PlacesViewportOverlayFilters = {
-    showParks: true,
+    showParks: false,
     showTerraces: true,
-    confirmedOnly: false,
+    confirmedOnly: true,
+    excludedSubcategories: new Set(["food_court"]),
   };
   private disposed = false;
   private readonly handleMoveEnd: () => void;
@@ -154,14 +167,18 @@ export class PlacesViewportOverlay {
     // 1) bbox filter.
     let visible = filterPlacesInBounds(this.places, bbox);
 
-    // 2) category + confirmed-only user filters.
+    // 2) category + confirmed-only + subcategory user filters.
+    //    `confirmedOnly` is scoped to terrace_candidates so a future re-enable
+    //    of `showParks` doesn't get silently neutralised by the outdoor_seating
+    //    check (parks never carry that tag).
     visible = visible.filter((p) => {
-      if (p.category === "park" && !this.filters.showParks) return false;
-      if (p.category === "terrace_candidate" && !this.filters.showTerraces) {
-        return false;
-      }
-      if (this.filters.confirmedOnly && p.hasOutdoorSeating !== true) {
-        return false;
+      if (p.category === "park") return this.filters.showParks;
+      if (p.category === "terrace_candidate") {
+        if (!this.filters.showTerraces) return false;
+        if (this.filters.excludedSubcategories.has(p.subcategory)) return false;
+        if (this.filters.confirmedOnly && p.hasOutdoorSeating !== true) {
+          return false;
+        }
       }
       return true;
     });
