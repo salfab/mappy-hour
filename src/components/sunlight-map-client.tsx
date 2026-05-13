@@ -132,13 +132,19 @@ const BASE_MAP_OPTIONS: BaseMapOption[] = [
     maxNativeZoom: 19,
   },
   {
-    // Stamen Toner — high-contrast B&W: roads, building outlines, labels,
-    // all in monochrome. Maximum graphic clarity, the sunlight overlay
-    // colours pop on top. Hosted by Stadia Maps since 2023; no API key
-    // required for localhost dev (Stadia rate-limits anonymous prod use).
+    // Stamen Toner (no roads) — `toner_background` provides the dark
+    // building masses + water + parks but skips the road network entirely
+    // (Stamen splits the full Toner into background + lines + labels;
+    // `toner_lines` is what carries the roads). With `toner_labels`
+    // overlaid we keep street/place names visible. Result: massif des
+    // bâtiments en noir + noms, sans les traits foncés de chaussée qui
+    // saturaient le rendu et masquaient l'overlay soleil.
     id: "stamen-toner",
-    label: "Stamen Toner (B&W)",
-    url: "https://tiles.stadiamaps.com/tiles/stamen_toner/{z}/{x}/{y}.png",
+    label: "Stamen Toner (sans routes)",
+    url: "https://tiles.stadiamaps.com/tiles/stamen_toner_background/{z}/{x}/{y}.png",
+    overlays: [
+      { url: "https://tiles.stadiamaps.com/tiles/stamen_toner_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
+    ],
     attribution:
       "&copy; <a href=\"https://stamen.com\">Stamen Design</a>, hosted by <a href=\"https://stadiamaps.com/\">Stadia Maps</a> &mdash; Map data &copy; OpenStreetMap contributors",
     maxNativeZoom: 20,
