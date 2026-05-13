@@ -73,7 +73,7 @@ interface BaseMapOption {
   /** Additional raster tile URLs stacked on top of the base layer (e.g.
    *  Stamen Watercolor with Toner labels). Rendered in array order — first
    *  overlay sits directly above the base, last overlay on top. */
-  overlays?: Array<{ url: string; maxNativeZoom?: number }>;
+  overlays?: Array<{ url: string; maxNativeZoom?: number; opacity?: number }>;
 }
 
 const BASE_MAP_OPTIONS: BaseMapOption[] = [
@@ -132,17 +132,16 @@ const BASE_MAP_OPTIONS: BaseMapOption[] = [
     maxNativeZoom: 19,
   },
   {
-    // Stamen Toner (no roads) — `toner_background` provides the dark
-    // building masses + water + parks but skips the road network entirely
-    // (Stamen splits the full Toner into background + lines + labels;
-    // `toner_lines` is what carries the roads). With `toner_labels`
-    // overlaid we keep street/place names visible. Result: massif des
-    // bâtiments en noir + noms, sans les traits foncés de chaussée qui
-    // saturaient le rendu et masquaient l'overlay soleil.
+    // Stamen Toner (light lines) — building masses noires from
+    // `toner_background` + road network from `toner_lines` mais à
+    // opacity 0.35 pour qu'elles n'écrasent plus l'overlay soleil +
+    // labels rues opaques. Compromis entre la version originale "tout
+    // noir" et la variante sans routes.
     id: "stamen-toner",
-    label: "Stamen Toner (sans routes)",
+    label: "Stamen Toner",
     url: "https://tiles.stadiamaps.com/tiles/stamen_toner_background/{z}/{x}/{y}.png",
     overlays: [
+      { url: "https://tiles.stadiamaps.com/tiles/stamen_toner_lines/{z}/{x}/{y}.png", maxNativeZoom: 20, opacity: 0.35 },
       { url: "https://tiles.stadiamaps.com/tiles/stamen_toner_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
     ],
     attribution:
@@ -150,15 +149,13 @@ const BASE_MAP_OPTIONS: BaseMapOption[] = [
     maxNativeZoom: 20,
   },
   {
-    // Stamen Watercolor — artistic painted background. Stacked with Toner
-    // Lines (roads + building outlines, no labels) and Toner Labels
-    // (street/place names) to remain navigable. Same Stadia Maps notes
-    // as above re: API key.
+    // Stamen Watercolor — peinture artistique + labels uniquement.
+    // Les `toner_lines` étaient retirées car elles introduisent des
+    // traits noirs nets qui cassent l'effet aquarelle.
     id: "stamen-watercolor",
     label: "Stamen Aquarelle",
     url: "https://tiles.stadiamaps.com/tiles/stamen_watercolor/{z}/{x}/{y}.jpg",
     overlays: [
-      { url: "https://tiles.stadiamaps.com/tiles/stamen_toner_lines/{z}/{x}/{y}.png", maxNativeZoom: 20 },
       { url: "https://tiles.stadiamaps.com/tiles/stamen_toner_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
     ],
     attribution:
@@ -3202,6 +3199,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
             L.tileLayer(ov.url, {
               maxNativeZoom: Math.min(ov.maxNativeZoom ?? option.maxNativeZoom, MAP_MAX_NATIVE_ZOOM),
               maxZoom: MAP_MAX_ZOOM,
+              opacity: ov.opacity ?? 1,
             }),
           );
           return [option.id, L.layerGroup([baseTile, ...overlayLayers])];
