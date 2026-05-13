@@ -27,36 +27,8 @@ $hostStable = @(
 if (-not (Test-Path $envCi)) {
   Write-Host "  WARNING: .env.ci not found. CI may have failed to scp secrets. Reusing existing .env."
 } else {
-  $existingUmamiSecret = ""
-  if (Test-Path $envOut) {
-    $existingEnv = Get-Content $envOut -Raw
-    if ($existingEnv -match "(?m)^UMAMI_APP_SECRET=(.+)$") {
-      $existingUmamiSecret = $Matches[1].Trim()
-    }
-  }
-
-  $ciLines = Get-Content $envCi | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
-  $mergedLines = @($hostStable) + @($ciLines)
-  $hasUmamiSecret = $false
-  for ($i = 0; $i -lt $mergedLines.Count; $i++) {
-    if ($mergedLines[$i] -match "^UMAMI_APP_SECRET=(.*)$") {
-      $hasUmamiSecret = $true
-      if ([string]::IsNullOrWhiteSpace($Matches[1])) {
-        if ([string]::IsNullOrWhiteSpace($existingUmamiSecret)) {
-          $existingUmamiSecret = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
-        }
-        $mergedLines[$i] = "UMAMI_APP_SECRET=$existingUmamiSecret"
-      }
-    }
-  }
-  if (-not $hasUmamiSecret) {
-    if ([string]::IsNullOrWhiteSpace($existingUmamiSecret)) {
-      $existingUmamiSecret = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
-    }
-    $mergedLines += "UMAMI_APP_SECRET=$existingUmamiSecret"
-  }
-
-  $merged = ($mergedLines -join "`n") + "`n"
+  $ciContent = Get-Content $envCi -Raw
+  $merged = ($hostStable -join "`n") + "`n" + $ciContent
   Set-Content -Path $envOut -Value $merged -Encoding UTF8
   Remove-Item $envCi -ErrorAction SilentlyContinue
   Write-Host "  .env regenerated"

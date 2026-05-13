@@ -79,10 +79,10 @@ jobs:
           # Existing variables not in this list (MAPPY_ATLAS_PATH, etc.) are
           # stable per-host and live in a separate `.env.host` file that
           # docker-compose loads alongside (cf. mitch-deploy-docker.ps1).
-          {
-            printf 'UMAMI_APP_SECRET=%s\n' "$UMAMI_APP_SECRET"
-            printf 'UMAMI_DB_PASSWORD=%s\n' "$UMAMI_DB_PASSWORD"
-          } > .env.ci
+          cat > .env.ci << EOF
+          UMAMI_APP_SECRET=$UMAMI_APP_SECRET
+          UMAMI_DB_PASSWORD=$UMAMI_DB_PASSWORD
+          EOF
           scp -o ConnectTimeout=30 .env.ci "$USER@$HOST:C:/srv/mappy-hour/.env.ci"
 
       - name: Deploy
