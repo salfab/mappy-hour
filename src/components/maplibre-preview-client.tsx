@@ -217,7 +217,11 @@ function addPlacesLayers(map: MapLibreMap) {
     filter: ["has", "point_count"],
     layout: {
       "text-field": ["get", "point_count_abbreviated"],
-      "text-font": ["Open Sans Semibold", "Arial Unicode MS Bold"],
+      // demotiles.maplibre.org only ships "Open Sans Semibold" and
+      // "Noto Sans Regular" today — confirmed via curl 2026-05-13. Any
+      // other name (incl. "Open Sans Regular" / "Open Sans Bold") returns
+      // 404 and MapLibre warns 50× per render.
+      "text-font": ["Open Sans Semibold"],
       "text-size": 13,
       "text-allow-overlap": true,
     },
@@ -264,7 +268,11 @@ function addPlacesLayers(map: MapLibreMap) {
     minzoom: 13,
     layout: {
       "text-field": ["get", "name"],
-      "text-font": ["Open Sans Semibold", "Arial Unicode MS Bold"],
+      // demotiles.maplibre.org only ships "Open Sans Semibold" and
+      // "Noto Sans Regular" today — confirmed via curl 2026-05-13. Any
+      // other name (incl. "Open Sans Regular" / "Open Sans Bold") returns
+      // 404 and MapLibre warns 50× per render.
+      "text-font": ["Open Sans Semibold"],
       "text-size": [
         "interpolate",
         ["linear"],
@@ -411,8 +419,8 @@ export function MapLibrePreviewClient() {
   }, [basemapId, ready]);
 
   return (
-    <div className="relative h-full w-full">
-      <div ref={containerRef} className="absolute inset-0" />
+    <div className="absolute inset-0">
+      <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
       {/* Basemap switcher */}
       <div
         className="absolute top-3 right-3 z-10 rounded-md bg-white/95 px-2 py-2 shadow-md backdrop-blur"
