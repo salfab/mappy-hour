@@ -34,19 +34,21 @@ code {
   background: #0f172a;
 }
 
-/* Browsers position Leaflet tile <img>s with subpixel CSS transforms.
-   On fractional DPR (1.25/1.5/2.25, common Windows scaling) the rounded
-   edges of adjacent tiles fall on different pixels, leaving a 1px gap
-   through which the dark container background shows as a hairline.
-   The classic Leaflet workaround: a 1px transparent outline that
-   slightly overlaps neighbours and hides the rounding seam. Cheap, no
-   visual side-effects.
+/* Tailwind v4 preflight applies `img { max-width: 100%; height: auto }`
+   globally. Leaflet positions every tile as an `<img>` sized 256×256 via
+   inline style, but Tailwind's `max-width` + `height: auto` override
+   that inline style and the tiles end up at sub-pixel sizes based on
+   their container width. Adjacent tiles round to slightly different
+   dimensions → visible white seams between tiles at every zoom.
+   Other Leaflet sites don't have this problem because they don't ship
+   Tailwind preflight on top of Leaflet.
 
-   Skip the trick on canvas-backed tile layers (our bitmap overlays use
-   <canvas> inside .leaflet-overlay-pane, not .leaflet-tile, so they're
-   already unaffected). */
-.leaflet-tile {
-  outline: 1px solid transparent;
+   Restoring the natural image sizing inside the Leaflet container
+   suffices — Leaflet's own inline `style="width: 256px; height: 256px"`
+   then wins and tiles align pixel-perfectly. */
+.leaflet-container img {
+  max-width: none !important;
+  height: auto;
 }
 
 .leaflet-tooltip.sunlit-place-label {
