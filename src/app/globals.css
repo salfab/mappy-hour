@@ -34,21 +34,26 @@ code {
   background: #0f172a;
 }
 
-/* Tailwind v4 preflight applies `img { max-width: 100%; height: auto }`
-   globally. Leaflet positions every tile as an `<img>` sized 256×256 via
-   inline style, but Tailwind's `max-width` + `height: auto` override
-   that inline style and the tiles end up at sub-pixel sizes based on
-   their container width. Adjacent tiles round to slightly different
-   dimensions → visible white seams between tiles at every zoom.
-   Other Leaflet sites don't have this problem because they don't ship
-   Tailwind preflight on top of Leaflet.
-
-   Restoring the natural image sizing inside the Leaflet container
-   suffices — Leaflet's own inline `style="width: 256px; height: 256px"`
-   then wins and tiles align pixel-perfectly. */
+/* Tile-seam workaround. Tailwind v4 preflight applies several rules
+   globally that subtly conflict with Leaflet's inline tile sizing:
+   - `img, video { max-width: 100%; height: auto }` competes with
+     Leaflet's inline `width: 256px`.
+   - `* { box-sizing: border-box }` doesn't change content size for
+     border-less tiles but rules out potential confusion.
+   We hard-pin tile dimensions to 256 to bypass any preflight or
+   future Tailwind base style. `.leaflet-tile` (which Leaflet sets
+   on every tile <img>) is the safe scope — won't affect marker
+   icons or other Leaflet imagery. */
 .leaflet-container img {
   max-width: none !important;
-  height: auto;
+}
+img.leaflet-tile {
+  width: 256px !important;
+  height: 256px !important;
+  max-width: none !important;
+  border: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
 }
 
 .leaflet-tooltip.sunlit-place-label {
