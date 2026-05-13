@@ -3113,7 +3113,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       leafletModuleRef.current = L;
       const storedView = loadStoredMapView();
       const map = L.map(mapContainerRef.current, {
-        zoomControl: true,
+        zoomControl: false,
         maxZoom: MAP_MAX_ZOOM,
       }).setView(
         storedView
@@ -3190,10 +3190,11 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         active: initialBaseMapStyle,
       };
 
+      L.control.zoom({ position: "bottomright" }).addTo(map);
       L.control.layers(
         Object.fromEntries(BASE_MAP_OPTIONS.map((option) => [option.label, baseLayers[option.id]])),
         {},
-        { position: "topleft", collapsed: true },
+        { position: "bottomright", collapsed: true },
       ).addTo(map);
 
       map.on("baselayerchange", (event: L.LayersControlEvent) => {
@@ -5224,7 +5225,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   );
 
   const desktopSearch = (
-    <div className="relative hidden lg:inline-block">
+    <div className="relative z-[720] hidden lg:inline-block">
       <form
         className="flex items-center gap-2 rounded-full border border-white/70 bg-white/88 p-2 text-slate-900 shadow-xl backdrop-blur"
         onSubmit={(event) => {
@@ -5282,14 +5283,20 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           />
         </div>
       ) : null}
-      <div className="absolute left-5 top-5 z-[450] hidden items-center gap-3 lg:flex">
+      <div className="absolute left-5 top-5 z-[700] hidden items-center gap-3 lg:flex">
         <div className="rounded-full border border-white/70 bg-white/88 px-4 py-2 text-sm font-semibold text-slate-900 shadow-xl backdrop-blur">
           Mappy Hour
         </div>
         {desktopSearch}
       </div>
 
-      <div className="absolute left-5 top-20 z-[450] hidden max-h-[calc(100dvh-104px)] w-[360px] gap-4 overflow-y-auto rounded-3xl border border-white/70 bg-white/90 p-4 text-slate-900 shadow-2xl backdrop-blur lg:grid">
+      <div
+        className={`absolute left-5 top-20 z-[460] hidden w-[360px] grid-rows-[auto_1fr] gap-4 overflow-hidden rounded-3xl border border-white/70 bg-white/90 p-4 text-slate-900 shadow-2xl backdrop-blur transition-[height,width] duration-300 ease-out lg:grid ${
+          activeDesktopTab === "terraces"
+            ? "h-[calc(100dvh-104px)]"
+            : "h-[min(560px,calc(100dvh-104px))]"
+        }`}
+      >
         <ViewTabs
           activeTab={activeDesktopTab}
           venueCount={sunlitPlaces.length}
@@ -5300,35 +5307,45 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
             }
           }}
         />
-        {calculationControls}
-        {layerFilters}
-        {timelineControl}
-        {progressStatus}
-        {coveragePanel}
+        <div className="relative min-h-0 overflow-hidden">
+          {activeDesktopTab === "map" ? (
+            <div
+              key="desktop-map-tab"
+              className="desktop-tab-panel grid gap-4 overflow-y-auto pr-1"
+            >
+              {calculationControls}
+              {layerFilters}
+              {timelineControl}
+              {progressStatus}
+              {coveragePanel}
+            </div>
+          ) : (
+            <div
+              key="desktop-terraces-tab"
+              className="desktop-tab-panel grid h-full min-h-0 grid-rows-[auto_1fr] gap-3"
+            >
+              <div className="rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3">
+                <p className="text-sm font-semibold">Terrasses au soleil</p>
+                <p className="text-xs text-slate-500">
+                  {isPlacesLoading
+                    ? "Calcul des terrasses en cours..."
+                    : `${sunlitPlaces.length} établissements visibles`}
+                </p>
+              </div>
+              <div className="min-h-0 overflow-y-auto pr-1">
+                <BarsList
+                  places={sunlitPlaces}
+                  isLoading={isPlacesLoading}
+                  mode={mode}
+                  localTime={localTime}
+                  selectedVenueId={selectedVenueId}
+                  onSelectVenue={handleSelectVenue}
+                />
+              </div>
+            </div>
+          )}
+        </div>
       </div>
-
-      {activeDesktopTab === "terraces" ? (
-        <aside className="absolute right-5 top-5 z-[450] hidden h-[calc(100dvh-40px)] w-[360px] overflow-hidden rounded-3xl border border-white/70 bg-white/92 text-slate-900 shadow-2xl backdrop-blur lg:block">
-        <div className="border-b border-slate-200 px-4 py-3">
-          <p className="text-sm font-semibold">Terrasses au soleil</p>
-          <p className="text-xs text-slate-500">
-            {isPlacesLoading
-              ? "Calcul des terrasses en cours..."
-              : `${sunlitPlaces.length} établissements visibles`}
-          </p>
-        </div>
-        <div className="h-[calc(100dvh-106px)] overflow-y-auto px-3 py-3">
-          <BarsList
-            places={sunlitPlaces}
-            isLoading={isPlacesLoading}
-            mode={mode}
-            localTime={localTime}
-            selectedVenueId={selectedVenueId}
-            onSelectVenue={handleSelectVenue}
-          />
-        </div>
-      </aside>
-      ) : null}
 
       <div className="lg:hidden">
         <MobileBottomSheet

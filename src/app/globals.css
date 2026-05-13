@@ -181,6 +181,10 @@ code {
   transform-origin: top right;
 }
 
+.desktop-tab-panel {
+  animation: desktop-tab-panel-in 220ms ease-out;
+}
+
 @keyframes mobile-search-panel-in {
   from {
     opacity: 0;
@@ -193,19 +197,31 @@ code {
   }
 }
 
-.leaflet-top.leaflet-left {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
+@keyframes desktop-tab-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
-.leaflet-top.leaflet-left .leaflet-control {
-  clear: none;
-  margin-right: 0;
+.leaflet-bottom.leaflet-left,
+.leaflet-bottom.leaflet-right {
+  bottom: 18px;
+}
+
+.leaflet-bottom.leaflet-left .leaflet-control,
+.leaflet-bottom.leaflet-right .leaflet-control {
+  margin-bottom: 8px;
 }
 
 @media (max-width: 1023px) {
-  .leaflet-bottom.leaflet-left {
+  .leaflet-bottom.leaflet-left,
+  .leaflet-bottom.leaflet-right {
     bottom: 188px;
   }
 }
