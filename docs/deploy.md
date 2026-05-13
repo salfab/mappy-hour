@@ -958,24 +958,36 @@ inactif (script chargé mais pas d'événements envoyés). Pas de crash, juste p
 ### 10bis.4 Accès tailnet direct au dashboard (optionnel)
 
 Le binding compose `0.0.0.0:3001:3000` ne propage pas vers l'interface tailnet par défaut
-(cf. §10bis.1). Pour exposer `https://mitch:3001` aux autres nodes tailnet, deux commandes
-à passer **une seule fois en PowerShell admin sur Mitch** :
+(cf. §10bis.1). Pour exposer `https://mitch:3001` aux autres nodes tailnet, **deux commandes
+à passer une seule fois en PowerShell admin sur Mitch** (RDP ou session physique — SSH
+non-interactif ne permet pas l'élévation UAC) :
 
 ```powershell
-# Portproxy : forward 0.0.0.0:3001 → 127.0.0.1:3001 (où wslrelay listen vraiment)
-netsh interface portproxy add v4tov4 `
-  listenaddress=0.0.0.0 listenport=3001 `
-  connectaddress=127.0.0.1 connectport=3001
-
-# Règle firewall correspondante (sans ça la règle portproxy n'a aucun effet pratique)
-New-NetFirewallRule -DisplayName "Umami Tailnet 3001" `
-  -Direction Inbound -Protocol TCP -LocalPort 3001 -Action Allow
+netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=3001 connectaddress=127.0.0.1 connectport=3001
+New-NetFirewallRule -DisplayName "Umami Tailnet 3001" -Direction Inbound -Protocol TCP -LocalPort 3001 -Action Allow
 ```
 
-Les deux commandes sont persistantes (survivent aux reboots). À auditer périodiquement
-avec `netsh interface portproxy show all` et `Get-NetFirewallRule -DisplayName "Umami*"`.
+Les deux sont persistantes (survivent aux reboots). À auditer périodiquement avec :
+
+```powershell
+netsh interface portproxy show all
+Get-NetFirewallRule -DisplayName "Umami*"
+```
+
+Pour défaire (rollback) :
+
+```powershell
+netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=3001
+Remove-NetFirewallRule -DisplayName "Umami Tailnet 3001"
+```
 
 Sans ces commandes, le dashboard reste accessible uniquement via tunnel SSH (§10bis.3).
+
+> **Pourquoi un step admin manuel ?** Sur Windows, SSH non-interactif renvoie un token
+> "filtered" (UAC token splitting) même pour les comptes admin locaux : `IsInRole(Administrator) → False`,
+> et `netsh`/`New-NetFirewallRule` échouent en silence ou retournent "Access is denied". Le bypass
+> permanent (regkey `LocalAccountTokenFilterPolicy=1`) demande lui-même un step admin élevé
+> pour être set, donc on tombe sur le même œuf-poule. Le plus simple : 1 RDP, 2 commandes.
 
 ### 10bis.5 Health check `/api/heartbeat`
 
