@@ -26,6 +26,8 @@ const placeSchema = z.object({
    */
   hasOutdoorSeating: z.boolean(),
   hasOutdoorSeatingUnknown: z.boolean().optional(),
+  outdoorSeatingCovered: z.enum(["yes", "no", "partial"]).optional(),
+  outdoorSeatingHeated: z.boolean().optional(),
   lat: z.number(),
   lon: z.number(),
   tags: z.record(z.string(), z.string()),

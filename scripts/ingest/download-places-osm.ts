@@ -51,6 +51,10 @@ interface NormalizedPlace {
    */
   hasOutdoorSeating: boolean;
   hasOutdoorSeatingUnknown?: boolean;
+  /** `outdoor_seating:covered=yes|no|partial` — terrasse couverte vs ouverte. */
+  outdoorSeatingCovered?: "yes" | "no" | "partial";
+  /** `outdoor_seating:heated=yes` — chauffage extérieur (pertinent hors saison). */
+  outdoorSeatingHeated?: boolean;
   lat: number;
   lon: number;
   region: string;
@@ -147,6 +151,15 @@ function normalizePlace(element: OverpassElement, region: string): NormalizedPla
   const hasOutdoorSeatingUnknown =
     category === "terrace_candidate" && rawSeating === undefined;
 
+  const rawCovered = tags["outdoor_seating:covered"];
+  const outdoorSeatingCovered =
+    rawCovered === "yes" || rawCovered === "no" || rawCovered === "partial"
+      ? (rawCovered as "yes" | "no" | "partial")
+      : undefined;
+
+  const outdoorSeatingHeated =
+    tags["outdoor_seating:heated"] === "yes" ? true : undefined;
+
   const normalized: NormalizedPlace = {
     id: `osm:${element.type}:${element.id}`,
     source: "osm",
@@ -162,6 +175,8 @@ function normalizePlace(element: OverpassElement, region: string): NormalizedPla
     tags,
   };
   if (hasOutdoorSeatingUnknown) normalized.hasOutdoorSeatingUnknown = true;
+  if (outdoorSeatingCovered) normalized.outdoorSeatingCovered = outdoorSeatingCovered;
+  if (outdoorSeatingHeated) normalized.outdoorSeatingHeated = true;
   return normalized;
 }
 
