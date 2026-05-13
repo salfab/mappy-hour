@@ -209,19 +209,22 @@ code {
   }
 }
 
-.leaflet-bottom.leaflet-left,
-.leaflet-bottom.leaflet-right {
-  bottom: 18px;
+.leaflet-control-attribution {
+  display: none;
 }
 
-.leaflet-bottom.leaflet-left .leaflet-control,
-.leaflet-bottom.leaflet-right .leaflet-control {
-  margin-bottom: 8px;
+.leaflet-top.leaflet-left {
+  top: 12px;
+  left: 12px;
+  display: grid;
+  gap: 8px;
 }
 
-@media (max-width: 1023px) {
-  .leaflet-bottom.leaflet-left,
-  .leaflet-bottom.leaflet-right {
-    bottom: 188px;
+@media (min-width: 1024px) {
+  .leaflet-top.leaflet-left {
+    top: auto;
+    right: 12px;
+    bottom: 18px;
+    left: auto;
   }
 }

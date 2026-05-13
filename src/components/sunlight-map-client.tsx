@@ -3114,6 +3114,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       const storedView = loadStoredMapView();
       const map = L.map(mapContainerRef.current, {
         zoomControl: false,
+        attributionControl: false,
         maxZoom: MAP_MAX_ZOOM,
       }).setView(
         storedView
@@ -3190,11 +3191,11 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         active: initialBaseMapStyle,
       };
 
-      L.control.zoom({ position: "bottomright" }).addTo(map);
+      L.control.zoom({ position: "topleft" }).addTo(map);
       L.control.layers(
         Object.fromEntries(BASE_MAP_OPTIONS.map((option) => [option.label, baseLayers[option.id]])),
         {},
-        { position: "bottomright", collapsed: true },
+        { position: "topleft", collapsed: true },
       ).addTo(map);
 
       map.on("baselayerchange", (event: L.LayersControlEvent) => {
@@ -3218,7 +3219,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
 
       map.on("click", (event: LeafletMouseEvent) => {
         const message = `Lat ${event.latlng.lat.toFixed(5)}, Lon ${event.latlng.lng.toFixed(5)}`;
-        map.attributionControl.setPrefix(`Mappy Hour - ${message}`);
+        console.info(`[Mappy Hour][click] ${message}`);
         if (forceCacheOnly) return;
         void runPointClickDiagnostics(event.latlng.lat, event.latlng.lng).catch(
           (error) => {
@@ -5287,6 +5288,8 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         <div className="rounded-full border border-white/70 bg-white/88 px-4 py-2 text-sm font-semibold text-slate-900 shadow-xl backdrop-blur">
           Mappy Hour
         </div>
+      </div>
+      <div className="absolute left-1/2 top-5 z-[700] hidden -translate-x-1/2 lg:block">
         {desktopSearch}
       </div>
 
