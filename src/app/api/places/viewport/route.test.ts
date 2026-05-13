@@ -87,6 +87,194 @@ describeIfPlaces("POST /api/places/viewport (real dataset)", () => {
   });
 });
 
+// ── Mode filter (mocked dataset) ────────────────────────────────────────
+// Verifies the server-side prefilter that runs BEFORE the snap loop:
+//   - `mode=confirmed` (default) drops parks + food_court + unconfirmed.
+//   - `mode=all` returns everything.
+// Also asserts the snap loop only runs for the kept places (the snap mock
+// counts invocations and we compare the two modes 1:4).
+
+describe("POST /api/places/viewport (mode filter)", () => {
+  const SAMPLE_PLACES = [
+    // Kept under `confirmed`.
+    {
+      id: "p:confirmed-1",
+      source: "osm",
+      osmType: "node" as const,
+      osmId: 1,
+      name: "Café Confirmé",
+      category: "terrace_candidate" as const,
+      subcategory: "cafe",
+      hasOutdoorSeating: true,
+      lat: 46.52,
+      lon: 6.63,
+      tags: {},
+    },
+    // Dropped: unconfirmed terrace candidate.
+    {
+      id: "p:unknown-1",
+      source: "osm",
+      osmType: "node" as const,
+      osmId: 2,
+      name: "Resto Inconnu",
+      category: "terrace_candidate" as const,
+      subcategory: "restaurant",
+      hasOutdoorSeating: false,
+      hasOutdoorSeatingUnknown: true,
+      lat: 46.521,
+      lon: 6.631,
+      tags: {},
+    },
+    // Dropped: food_court (mall gallery).
+    {
+      id: "p:foodcourt-1",
+      source: "osm",
+      osmType: "node" as const,
+      osmId: 3,
+      name: "Food Court Inside Mall",
+      category: "terrace_candidate" as const,
+      subcategory: "food_court",
+      hasOutdoorSeating: true,
+      lat: 46.522,
+      lon: 6.632,
+      tags: {},
+    },
+    // Dropped: park.
+    {
+      id: "p:park-1",
+      source: "osm",
+      osmType: "way" as const,
+      osmId: 4,
+      name: "Parc",
+      category: "park" as const,
+      subcategory: "park",
+      hasOutdoorSeating: false,
+      lat: 46.523,
+      lon: 6.633,
+      tags: {},
+    },
+  ];
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("@/lib/places/snap-to-outdoor");
+    vi.doUnmock("@/lib/places/lausanne-places");
+  });
+
+  function mockDataset() {
+    vi.doMock("@/lib/places/lausanne-places", () => ({
+      loadAllPlaces: vi.fn(async () => ({
+        generatedAt: "2026-05-13T00:00:00.000Z",
+        source: "test",
+        bbox: [6.6, 46.5, 6.7, 46.6],
+        totalPlaces: SAMPLE_PLACES.length,
+        categories: {
+          parks: 1,
+          terraceCandidates: 3,
+          outdoorSeatingYes: 2,
+          outdoorSeatingUnknown: 1,
+        },
+        places: SAMPLE_PLACES,
+      })),
+    }));
+  }
+
+  function mockSnapWithCounter() {
+    const snapCalls = { count: 0 };
+    vi.doMock("@/lib/places/snap-to-outdoor", async (importOriginal) => {
+      const actual =
+        await importOriginal<typeof import("@/lib/places/snap-to-outdoor")>();
+      return {
+        ...actual,
+        snapPlaceToOutdoor: vi.fn(async (coords: { lat: number; lon: number }) => {
+          snapCalls.count += 1;
+          return {
+            lat: coords.lat,
+            lon: coords.lon,
+            offsetMeters: 0,
+            selectionStrategy: "original" as const,
+          };
+        }),
+      };
+    });
+    return snapCalls;
+  }
+
+  it("mode=confirmed (default) excludes parks, food_court, and unconfirmed", async () => {
+    mockDataset();
+    const snapCalls = mockSnapWithCounter();
+    const { POST } = await import("./route");
+    const request = new Request("http://localhost/api/places/viewport", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ south: 46.5, west: 6.6, north: 46.6, east: 6.7 }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Server-Timing")).toMatch(/^snap;dur=/);
+    const json = (await response.json()) as {
+      mode: string;
+      places: Array<{ id: string }>;
+    };
+    expect(json.mode).toBe("confirmed");
+    expect(json.places).toHaveLength(1);
+    expect(json.places[0].id).toBe("p:confirmed-1");
+    // Snap only ran on the single kept place.
+    expect(snapCalls.count).toBe(1);
+  });
+
+  it("mode=all returns everything and snaps ~4× as many places", async () => {
+    mockDataset();
+    const snapCalls = mockSnapWithCounter();
+    const { POST } = await import("./route");
+    const request = new Request("http://localhost/api/places/viewport", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        south: 46.5,
+        west: 6.6,
+        north: 46.6,
+        east: 6.7,
+        mode: "all",
+      }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Server-Timing")).toMatch(/^snap;dur=/);
+    const json = (await response.json()) as {
+      mode: string;
+      places: Array<{ id: string }>;
+    };
+    expect(json.mode).toBe("all");
+    expect(json.places).toHaveLength(SAMPLE_PLACES.length);
+    expect(snapCalls.count).toBe(SAMPLE_PLACES.length);
+    // 4 in the fixture, 1 kept under confirmed → ratio holds.
+    expect(snapCalls.count).toBe(4 * 1);
+  });
+
+  it("mode=all also accepted via ?mode=all query string", async () => {
+    mockDataset();
+    mockSnapWithCounter();
+    const { POST } = await import("./route");
+    const request = new Request(
+      "http://localhost/api/places/viewport?mode=all",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ south: 46.5, west: 6.6, north: 46.6, east: 6.7 }),
+      },
+    );
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+    const json = (await response.json()) as {
+      mode: string;
+      places: Array<{ id: string }>;
+    };
+    expect(json.mode).toBe("all");
+    expect(json.places).toHaveLength(SAMPLE_PLACES.length);
+  });
+});
+
 // ── Mocked-snap path ────────────────────────────────────────────────────
 // Drives the snap helper with a hand-rolled fake so we can prove that an
 // indoor OSM point comes back with `selectionStrategy=terrace_offset` and
