@@ -21,6 +21,12 @@ FROM deps AS builder
 # Le cache-only est piloté au runtime via MAPPY_FORCE_CACHE_ONLY (server-side env).
 ENV NEXT_TELEMETRY_DISABLED=1
 
+# NEXT_PUBLIC_* doit être présent au moment de `next build` pour être
+# inlined dans le bundle client. Reçu en build-arg via docker-publish.yml
+# (qui lit le GitHub Secret NEXT_PUBLIC_STADIA_API_KEY).
+ARG NEXT_PUBLIC_STADIA_API_KEY=""
+ENV NEXT_PUBLIC_STADIA_API_KEY=$NEXT_PUBLIC_STADIA_API_KEY
+
 COPY . .
 RUN pnpm build
 

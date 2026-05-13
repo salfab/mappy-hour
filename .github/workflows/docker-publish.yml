@@ -90,3 +90,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # NEXT_PUBLIC_* env vars must be present at `next build` time so
+          # they get baked into the client bundle. Passed as build args
+          # for the Dockerfile to forward into the build environment.
+          build-args: |
+            NEXT_PUBLIC_STADIA_API_KEY=${{ secrets.NEXT_PUBLIC_STADIA_API_KEY }}
