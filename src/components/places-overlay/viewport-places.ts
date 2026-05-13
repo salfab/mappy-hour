@@ -24,6 +24,11 @@ export interface NormalizedPlaceLite {
   lon: number;
   hasOutdoorSeating: boolean;
   hasOutdoorSeatingUnknown?: boolean;
+  /** Raw OSM `opening_hours` tag (e.g. `Mo-Fr 09:00-18:00; Sa 10:00-16:00`).
+   *  Surfaced by /api/places/viewport so the floating card can display it.
+   *  Free-form: the OSM `opening_hours` spec is rich (PH/SH, off, easter,
+   *  sunrise/sunset, …) so we render it verbatim, splitting on `;`. */
+  openingHours?: string;
 }
 
 export interface BoundsLatLon {

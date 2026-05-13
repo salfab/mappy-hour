@@ -72,20 +72,32 @@ export async function POST(request: Request) {
       MAX_RESPONSE_PLACES,
     );
 
-    const lite: ViewportPlaceLite[] = filtered.map((place) => ({
-      id: place.id,
-      name: place.name,
-      category: place.category,
-      subcategory: place.subcategory,
-      lat: place.lat,
-      lon: place.lon,
-      hasOutdoorSeating: place.hasOutdoorSeating,
-      hasOutdoorSeatingUnknown: place.hasOutdoorSeatingUnknown,
-      outdoorSeatingCovered: place.outdoorSeatingCovered,
-      outdoorSeatingHeated: place.outdoorSeatingHeated,
-      osmType: place.osmType,
-      osmId: place.osmId,
-    }));
+    const lite: ViewportPlaceLite[] = filtered.map((place) => {
+      // Surface the raw OSM `opening_hours` tag as a top-level `openingHours`
+      // string. The rest of `tags` is intentionally NOT serialised — it would
+      // bloat the payload by 5-10× on dense viewports. Additive field: every
+      // existing consumer keeps working since they never read it.
+      const openingHoursRaw = place.tags?.opening_hours;
+      const openingHours =
+        typeof openingHoursRaw === "string" && openingHoursRaw.trim().length > 0
+          ? openingHoursRaw
+          : undefined;
+      return {
+        id: place.id,
+        name: place.name,
+        category: place.category,
+        subcategory: place.subcategory,
+        lat: place.lat,
+        lon: place.lon,
+        hasOutdoorSeating: place.hasOutdoorSeating,
+        hasOutdoorSeatingUnknown: place.hasOutdoorSeatingUnknown,
+        outdoorSeatingCovered: place.outdoorSeatingCovered,
+        outdoorSeatingHeated: place.outdoorSeatingHeated,
+        osmType: place.osmType,
+        osmId: place.osmId,
+        openingHours,
+      };
+    });
 
     return NextResponse.json({
       generatedAt: new Date().toISOString(),
