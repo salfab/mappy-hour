@@ -67,7 +67,7 @@ describe("clusterPoints", () => {
     expect(out.every((p) => p.kind === "single")).toBe(true);
   });
 
-  it("collapses places sharing a cell into one cluster with the centroid", () => {
+  it("anchors a cluster on the lowest-id place's position (stable across zooms)", () => {
     const places = [
       makePlace("a", 0, 0),
       makePlace("b", 0.02, 0.02), // same 100px cell
@@ -78,8 +78,9 @@ describe("clusterPoints", () => {
     const singles = out.filter((p) => p.kind === "single");
     expect(clusters).toHaveLength(1);
     expect(clusters[0].count).toBe(2);
-    expect(clusters[0].lat).toBeCloseTo(0.01, 4);
-    expect(clusters[0].lon).toBeCloseTo(0.01, 4);
+    // Anchor is place "a" (lowest id), not the centroid.
+    expect(clusters[0].lat).toBe(0);
+    expect(clusters[0].lon).toBe(0);
     expect(singles).toHaveLength(1);
     expect(singles[0].place?.id).toBe("c");
   });

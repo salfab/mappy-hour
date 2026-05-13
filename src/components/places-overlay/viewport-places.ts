@@ -124,17 +124,22 @@ export function clusterPoints(
       const place = bucket[0];
       out.push({ kind: "single", lat: place.lat, lon: place.lon, place, key: place.id });
     } else {
-      // Centroid is the mean lat/lon — close enough for a cluster glyph.
-      let sumLat = 0;
-      let sumLon = 0;
-      for (const p of bucket) {
-        sumLat += p.lat;
-        sumLon += p.lon;
-      }
+      // Anchor the cluster on a REAL place's position rather than a synthetic
+      // centroid (mean lat/lon). The pixel-grid clustering re-partitions
+      // every time the map zooms — using the centroid made the badge drift
+      // around as composition changed, giving the impression that POIs
+      // weren't pinned to the map. Sort by id and pick the lowest so the
+      // anchor is stable across zoom levels: if the same place remains in
+      // the cluster, the badge stays exactly on top of it; when the cluster
+      // breaks apart, that place is one of the visible singles at its
+      // unchanged position. Other places in the bucket are still listed in
+      // `places` so the click-to-zoom logic remains correct.
+      bucket.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const anchor = bucket[0];
       out.push({
         kind: "cluster",
-        lat: sumLat / bucket.length,
-        lon: sumLon / bucket.length,
+        lat: anchor.lat,
+        lon: anchor.lon,
         count: bucket.length,
         places: bucket,
         key: `cluster_${key}`,
