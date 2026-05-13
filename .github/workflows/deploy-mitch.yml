@@ -79,10 +79,10 @@ jobs:
           # Existing variables not in this list (MAPPY_ATLAS_PATH, etc.) are
           # stable per-host and live in a separate `.env.host` file that
           # docker-compose loads alongside (cf. mitch-deploy-docker.ps1).
-          cat > .env.ci << EOF
-          UMAMI_APP_SECRET=$UMAMI_APP_SECRET
-          UMAMI_DB_PASSWORD=$UMAMI_DB_PASSWORD
-          EOF
+          {
+            printf 'UMAMI_APP_SECRET=%s\n' "$UMAMI_APP_SECRET"
+            printf 'UMAMI_DB_PASSWORD=%s\n' "$UMAMI_DB_PASSWORD"
+          } > .env.ci
           scp -o ConnectTimeout=30 .env.ci "$USER@$HOST:C:/srv/mappy-hour/.env.ci"
 
       - name: Deploy
@@ -100,7 +100,7 @@ jobs:
           ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 "$USER@$HOST" \
             "powershell -NoProfile -ExecutionPolicy Bypass -File C:\srv\mappy-hour\scripts\headless-server-selfhosting\mitch-deploy-docker.ps1"
 
-      - name: Health check
+      - name: Health check (mappy-hour)
         env:
           HOST: ${{ secrets.MITCH_SSH_HOST }}
           USER: ${{ secrets.MITCH_SSH_USER }}
@@ -112,6 +112,26 @@ jobs:
           echo "Health check status: $STATUS"
           if [ "$STATUS" != "200" ]; then
             echo "Health check failed (got '$STATUS')"
+            exit 1
+          fi
+          echo "mappy-hour healthy"
+
+      - name: Health check (umami)
+        env:
+          HOST: ${{ secrets.MITCH_SSH_HOST }}
+          USER: ${{ secrets.MITCH_SSH_USER }}
+        run: |
+          # /api/heartbeat returns 200 when Umami is up AND its postgres is
+          # reachable, so this catches both: missing UMAMI_APP_SECRET (compose
+          # refuses to start the service) and a misconfigured DATABASE_URL /
+          # umami-db unhealthy. Without this gate, the previous mappy-hour-only
+          # check happily reported success while Umami was silently down.
+          STATUS=$(ssh "$USER@$HOST" \
+            "powershell -NoProfile -Command \"(Invoke-WebRequest 'http://127.0.0.1:3001/api/heartbeat' -UseBasicParsing -TimeoutSec 10).StatusCode\"" \
+            2>&1 | tr -d '[:space:]')
+          echo "Umami heartbeat status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "Umami health check failed (got '$STATUS')"
             exit 1
           fi
           echo "Deployment successful"
