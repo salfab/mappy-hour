@@ -26,6 +26,13 @@ interface PlaceSuggestionsDropdownProps {
   variant: "floating" | "inline";
   /** Optional CSS class for the wrapping container (positioning, z-index). */
   className?: string;
+  /**
+   * Increment to force the dropdown to hide (e.g. after the parent's submit/select handler).
+   * The current `query` at the moment of the bump is memoized so a subsequent query change
+   * required to re-open the dropdown — without this, `setSearchQuery(suggestion.name)`
+   * after a select would re-fetch and re-show the same dropdown on the same value.
+   */
+  closeSignal?: number;
 }
 
 /** Tiny in-process debounce hook: returns `value` only after `delayMs` of stillness. */
@@ -68,6 +75,21 @@ export function PlaceSuggestionsDropdown(props: PlaceSuggestionsDropdownProps) {
   const debouncedQuery = useDebouncedValue(props.query.trim(), 200);
   const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([]);
   const [isVisible, setIsVisible] = useState(false);
+  const [lastClosedQuery, setLastClosedQuery] = useState<string | null>(null);
+
+  // External close (parent bumps `closeSignal` after submit/select).
+  // We memoize the query value at the moment of the close so the fetch effect
+  // below doesn't re-open the dropdown on the exact same value: when the parent
+  // does `setSearchQuery(suggestion.name)` then bumps closeSignal, the next
+  // debounced fetch would otherwise re-show the dropdown with the same item.
+  useEffect(() => {
+    if (props.closeSignal === undefined) return;
+    setIsVisible(false);
+    setLastClosedQuery(props.query.trim());
+    // Intentionally only depend on closeSignal; props.query is read at the time
+    // of the close, not tracked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.closeSignal]);
 
   useEffect(() => {
     let cancelled = false;
@@ -94,7 +116,11 @@ export function PlaceSuggestionsDropdown(props: PlaceSuggestionsDropdownProps) {
         const data = (await response.json()) as { suggestions?: PlaceSuggestion[] };
         if (!cancelled) {
           setSuggestions(data.suggestions ?? []);
-          setIsVisible((data.suggestions ?? []).length > 0);
+          // Stay hidden if the current query is exactly the one we were just
+          // explicitly closed on (typical post-select case).
+          const shouldShow =
+            (data.suggestions ?? []).length > 0 && debouncedQuery !== lastClosedQuery;
+          setIsVisible(shouldShow);
         }
       } catch {
         // Aborted or network error — leave previous state (will be cleared on next stroke)
@@ -105,7 +131,7 @@ export function PlaceSuggestionsDropdown(props: PlaceSuggestionsDropdownProps) {
       cancelled = true;
       controller.abort();
     };
-  }, [debouncedQuery]);
+  }, [debouncedQuery, lastClosedQuery]);
 
   if (!isVisible || suggestions.length === 0) {
     return null;

@@ -2379,6 +2379,10 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const [selectedVenueId, setSelectedVenueId] = useState<string | null>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  // Increment to force PlaceSuggestionsDropdown to hide after submit/select.
+  // The dropdown manages its own visibility from the query value; this is the
+  // signal channel for "the user is done picking, drop the open list".
+  const [suggestionsCloseSignal, setSuggestionsCloseSignal] = useState(0);
   const [lastSearchQuery, setLastSearchQuery] = useState("");
   const [isSearchLoading, setIsSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -4491,6 +4495,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       }
       setLastSearchQuery(query);
       setIsSearchOpen(false);
+      setSuggestionsCloseSignal((c) => c + 1);
     } catch (searchSubmitError) {
       setSearchError(
         searchSubmitError instanceof Error
@@ -4533,6 +4538,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       setLastSearchQuery(suggestion.name);
       setSearchError(null);
       setIsSearchOpen(false);
+      setSuggestionsCloseSignal((c) => c + 1);
     },
     [],
   );
@@ -5446,6 +5452,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         query={searchQuery}
         onSelect={handleSelectSuggestion}
         variant="inline"
+        closeSignal={suggestionsCloseSignal}
       />
     </div>
   );
@@ -5475,6 +5482,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
             query={searchQuery}
             onSelect={handleSelectSuggestion}
             variant="floating"
+            closeSignal={suggestionsCloseSignal}
           />
         </div>
       ) : null}
