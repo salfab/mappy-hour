@@ -59,7 +59,9 @@ type BaseMapStyle =
   | "esri-street"
   | "esri-topo"
   | "open-topo"
-  | "satellite";
+  | "satellite"
+  | "stamen-toner"
+  | "stamen-watercolor";
 type MapPanelTab = "map" | "terraces";
 
 interface BaseMapOption {
@@ -68,6 +70,10 @@ interface BaseMapOption {
   url: string;
   attribution: string;
   maxNativeZoom: number;
+  /** Additional raster tile URLs stacked on top of the base layer (e.g.
+   *  Stamen Watercolor with Toner labels). Rendered in array order — first
+   *  overlay sits directly above the base, last overlay on top. */
+  overlays?: Array<{ url: string; maxNativeZoom?: number }>;
 }
 
 const BASE_MAP_OPTIONS: BaseMapOption[] = [
@@ -124,6 +130,34 @@ const BASE_MAP_OPTIONS: BaseMapOption[] = [
     url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     attribution: "&copy; OpenStreetMap contributors",
     maxNativeZoom: 19,
+  },
+  {
+    // Stamen Toner — high-contrast B&W: roads, building outlines, labels,
+    // all in monochrome. Maximum graphic clarity, the sunlight overlay
+    // colours pop on top. Hosted by Stadia Maps since 2023; no API key
+    // required for localhost dev (Stadia rate-limits anonymous prod use).
+    id: "stamen-toner",
+    label: "Stamen Toner (B&W)",
+    url: "https://tiles.stadiamaps.com/tiles/stamen_toner/{z}/{x}/{y}.png",
+    attribution:
+      "&copy; <a href=\"https://stamen.com\">Stamen Design</a>, hosted by <a href=\"https://stadiamaps.com/\">Stadia Maps</a> &mdash; Map data &copy; OpenStreetMap contributors",
+    maxNativeZoom: 20,
+  },
+  {
+    // Stamen Watercolor — artistic painted background. Stacked with Toner
+    // Lines (roads + building outlines, no labels) and Toner Labels
+    // (street/place names) to remain navigable. Same Stadia Maps notes
+    // as above re: API key.
+    id: "stamen-watercolor",
+    label: "Stamen Aquarelle",
+    url: "https://tiles.stadiamaps.com/tiles/stamen_watercolor/{z}/{x}/{y}.jpg",
+    overlays: [
+      { url: "https://tiles.stadiamaps.com/tiles/stamen_toner_lines/{z}/{x}/{y}.png", maxNativeZoom: 20 },
+      { url: "https://tiles.stadiamaps.com/tiles/stamen_toner_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
+    ],
+    attribution:
+      "&copy; <a href=\"https://stamen.com\">Stamen Design</a>, hosted by <a href=\"https://stadiamaps.com/\">Stadia Maps</a> &mdash; Map data &copy; OpenStreetMap contributors",
+    maxNativeZoom: 18,
   },
   {
     id: "satellite",
@@ -2255,7 +2289,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
   const baseTileLayersRef = useRef<{
-    layers: Partial<Record<BaseMapStyle, TileLayer>>;
+    layers: Partial<Record<BaseMapStyle, TileLayer | LayerGroup>>;
     active: BaseMapStyle;
   }>({
     layers: {},
@@ -3144,16 +3178,29 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         storedView?.zoom ?? DEFAULT_MAP_ZOOM,
       );
 
+      // For composite basemaps (Stamen Watercolor + Toner overlays), pack
+      // the base tile layer and its overlays into an `L.layerGroup` so the
+      // layer-control treats them as one selectable unit. Toggling switches
+      // the whole stack on/off.
       const baseLayers = Object.fromEntries(
-        BASE_MAP_OPTIONS.map((option) => [
-          option.id,
-          L.tileLayer(option.url, {
+        BASE_MAP_OPTIONS.map((option) => {
+          const baseTile = L.tileLayer(option.url, {
             maxNativeZoom: Math.min(option.maxNativeZoom, MAP_MAX_NATIVE_ZOOM),
             maxZoom: MAP_MAX_ZOOM,
             attribution: option.attribution,
-          }),
-        ]),
-      ) as Record<BaseMapStyle, TileLayer>;
+          });
+          if (!option.overlays || option.overlays.length === 0) {
+            return [option.id, baseTile];
+          }
+          const overlayLayers = option.overlays.map((ov) =>
+            L.tileLayer(ov.url, {
+              maxNativeZoom: Math.min(ov.maxNativeZoom ?? option.maxNativeZoom, MAP_MAX_NATIVE_ZOOM),
+              maxZoom: MAP_MAX_ZOOM,
+            }),
+          );
+          return [option.id, L.layerGroup([baseTile, ...overlayLayers])];
+        }),
+      ) as Record<BaseMapStyle, TileLayer | LayerGroup>;
       const initialBaseMapStyle = baseMapStyleRef.current;
       const selectedBaseLayer = baseLayers[initialBaseMapStyle] ?? baseLayers["carto-voyager"];
       selectedBaseLayer.addTo(map);
