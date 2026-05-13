@@ -5096,7 +5096,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         ) {
           const centerLat = Math.round(((bbox[1] + bbox[3]) / 2) * 1000) / 1000;
           const centerLon = Math.round(((bbox[0] + bbox[2]) / 2) * 1000) / 1000;
-          window.umami.track("compute-uncovered", {
+          window.umami.track("unchartered-territory", {
             centerLat,
             centerLon,
             tilesRequested: requestedTileCount,
