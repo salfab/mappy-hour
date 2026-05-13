@@ -4785,7 +4785,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
               [result.bbox[1], result.bbox[0]],
               [result.bbox[3], result.bbox[2]],
             ],
-            { padding: [40, 40], animate: true },
+            { padding: [40, 40], animate: true, maxZoom: 19 },
           );
         } else {
           map.setView([result.lat, result.lon], Math.max(map.getZoom(), 15), {
@@ -4807,13 +4807,12 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     }
   }, [searchQuery]);
 
-  // Suggestion target zoom: 17 for a single venue (one 250 m × 250 m tile fits
-  // ~300 px on screen at lat 46.5). For city/region suggestions, use the
-  // Nominatim bbox to fitBounds instead — way more natural than a fixed zoom.
-  // No fancy heuristic on what counts as "a city": if Nominatim returns a bbox,
-  // we trust it; otherwise default to zoom 17 (small enough for venues, large
-  // enough to avoid the "you see 5 tiles" zoom 19 trap).
-  const SUGGESTION_TARGET_ZOOM = 17;
+  // Single-venue auto-zoom: z=19 — user-validated as the right zoom to land
+  // on an établissement (you see the building's tile and its immediate
+  // neighbours). For city/region suggestions, use the Nominatim bbox to
+  // fitBounds but capped at the same z=19 so a tiny bbox doesn't push us
+  // to z=20+ where the basemap is up-scaled and rendering looks chunky.
+  const SUGGESTION_TARGET_ZOOM = 19;
 
   const handleSelectSuggestion = useCallback(
     (suggestion: PlaceSuggestion) => {

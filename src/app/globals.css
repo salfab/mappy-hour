@@ -40,18 +40,6 @@ code {
   background: #cbd5e1;
 }
 
-/* Defensive override of Leaflet 1.9's
-   `.leaflet-container img.leaflet-tile { mix-blend-mode: plus-lighter }`
-   rule (added upstream to mitigate a Chromium fade-anim quirk, ref
-   chromium bug 600120). On Chrome the additive offset against our
-   light slate-300 bg is imperceptible; on Edge — same Chromium core
-   but a different compositor pipeline — the additive blend still
-   produces visible hairlines at tile boundaries. Forcing `normal`
-   neutralises that without any visual regression on Chrome. */
-.leaflet-container img.leaflet-tile {
-  mix-blend-mode: normal;
-}
-
 .leaflet-tooltip.sunlit-place-label {
   background: rgba(15, 23, 42, 0.9);
   border: 1px solid rgba(226, 232, 240, 0.35);
