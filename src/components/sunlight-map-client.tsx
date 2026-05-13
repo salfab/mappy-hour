@@ -25,6 +25,15 @@ interface ViewportPlaceLite extends NormalizedPlaceLite {
   outdoorSeatingHeated?: boolean;
 }
 
+/** Normalise a sunlight-window timestamp to `HH:mm`. The /api/places/windows
+ *  route returns mixed shapes depending on which fast path served the
+ *  response: tile-cache → `HH:mm`, GPU fallback → `YYYY-MM-DD HH:mm:ss`. We
+ *  extract the first `HH:mm` we can find. */
+function formatCardClock(value: string): string {
+  const match = /\b(\d{2}:\d{2})(?::\d{2})?\b/.exec(value);
+  return match ? match[1] : value;
+}
+
 function viewportCardEmoji(place: ViewportPlaceLite): string {
   if (place.category === "park") return "🌳";
   switch (place.subcategory) {
@@ -2445,6 +2454,20 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const [viewportPlaces, setViewportPlaces] = useState<ViewportPlaceLite[]>([]);
   const [selectedViewportPlace, setSelectedViewportPlace] =
     useState<ViewportPlaceLite | null>(null);
+  // Per-card sunlight windows for the clicked place. We re-fetch on every
+  // click (and on date change while a card is open) by POSTing a tiny bbox
+  // around the place's lat/lon to /api/places/windows — reuses the existing
+  // batched tile-lookup logic instead of duplicating it in a new route.
+  const [cardSunlightWindows, setCardSunlightWindows] = useState<
+    Array<{ startLocalTime: string; endLocalTime: string }> | null
+  >(null);
+  const [isCardSunlightLoading, setIsCardSunlightLoading] = useState(false);
+  const [cardSunlightError, setCardSunlightError] = useState<string | null>(
+    null,
+  );
+  // Token to discard stale responses if the user clicks a different place
+  // before the previous request resolves.
+  const cardSunlightRequestRef = useRef(0);
   const [activeDesktopTab, setActiveDesktopTab] = useState<MapPanelTab>("map");
   const [bottomSheetState, setBottomSheetState] =
     useState<BottomSheetState>("middle");
@@ -3500,6 +3523,100 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     overlay.setPlaces(viewportPlaces);
     overlay.refresh();
   }, [viewportPlaces]);
+
+  // When a place is selected (card open) or the date changes while a card is
+  // open, fetch the per-place sunlight windows for the currently-selected day.
+  // We POST a tiny ±5 m bbox around the place's lat/lon to /api/places/windows
+  // and rely on the existing batched tile-lookup fast path. `includeNonSunny`
+  // is true so a place with zero sun on the day still comes back (instead of
+  // being filtered out by the API).
+  useEffect(() => {
+    if (!selectedViewportPlace) {
+      setCardSunlightWindows(null);
+      setCardSunlightError(null);
+      setIsCardSunlightLoading(false);
+      return;
+    }
+    const token = ++cardSunlightRequestRef.current;
+    const place = selectedViewportPlace;
+    // ~5 m offset in degrees: 1° lat ≈ 111 320 m. Clamp lon by cos(lat).
+    const dLat = 5 / 111_320;
+    const dLon = dLat / Math.max(Math.cos((place.lat * Math.PI) / 180), 0.01);
+    const bbox: [number, number, number, number] = [
+      place.lon - dLon,
+      place.lat - dLat,
+      place.lon + dLon,
+      place.lat + dLat,
+    ];
+    const controller = new AbortController();
+    setIsCardSunlightLoading(true);
+    setCardSunlightError(null);
+    setCardSunlightWindows(null);
+    fetch("/api/places/windows", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        date,
+        timezone: "Europe/Zurich",
+        mode: "daily",
+        startLocalTime: "00:00",
+        endLocalTime: "23:59",
+        sampleEveryMinutes: 15,
+        includeNonSunny: true,
+        bbox,
+        limit: 10,
+      }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (controller.signal.aborted) return;
+        if (token !== cardSunlightRequestRef.current) return;
+        if (!response.ok) {
+          // 400 from the API is most commonly "no precomputed coverage for
+          // this date" → surface a friendly hint instead of a raw error.
+          if (response.status === 400 || response.status === 404) {
+            setCardSunlightError(
+              "Lancer un calcul du jour pour voir l'ensoleillement.",
+            );
+            setIsCardSunlightLoading(false);
+            return;
+          }
+          setCardSunlightError("Erreur de chargement de l'ensoleillement.");
+          setIsCardSunlightLoading(false);
+          return;
+        }
+        const json = (await response.json()) as {
+          places?: Array<{
+            id: string;
+            sunnyWindows?: Array<{
+              startLocalTime: string;
+              endLocalTime: string;
+            }>;
+          }>;
+        };
+        if (token !== cardSunlightRequestRef.current) return;
+        const match = json.places?.find((p) => p.id === place.id);
+        const windows = match?.sunnyWindows ?? [];
+        setCardSunlightWindows(
+          windows.map((w) => ({
+            startLocalTime: w.startLocalTime,
+            endLocalTime: w.endLocalTime,
+          })),
+        );
+        setIsCardSunlightLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        if (token !== cardSunlightRequestRef.current) return;
+        setCardSunlightError(
+          err instanceof Error ? err.message : "Erreur inconnue.",
+        );
+        setIsCardSunlightLoading(false);
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [selectedViewportPlace, date]);
 
   // Debounced fetch of /api/places/viewport on map move/zoom. We piggy-back
   // on the existing `mapBounds` state (already updated in the map init
@@ -5812,6 +5929,45 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
                   : "Pas de terrasse"}
             </span>
           </div>
+
+          <div className="vpo-card-divider" />
+          <div className="vpo-card-section">
+            <p className="vpo-card-section-title">Heures d&apos;ouverture</p>
+            {selectedViewportPlace.openingHours ? (
+              <ul className="vpo-card-hours-list">
+                {selectedViewportPlace.openingHours
+                  .split(";")
+                  .map((segment) => segment.trim())
+                  .filter((segment) => segment.length > 0)
+                  .map((segment, idx) => (
+                    <li key={idx}>{segment}</li>
+                  ))}
+              </ul>
+            ) : (
+              <p className="vpo-card-muted">Horaires non renseignés</p>
+            )}
+          </div>
+
+          <div className="vpo-card-divider" />
+          <div className="vpo-card-section">
+            <p className="vpo-card-section-title">Ensoleillement aujourd&apos;hui</p>
+            {isCardSunlightLoading ? (
+              <p className="vpo-card-muted">Calcul en cours…</p>
+            ) : cardSunlightError ? (
+              <p className="vpo-card-muted">{cardSunlightError}</p>
+            ) : cardSunlightWindows && cardSunlightWindows.length > 0 ? (
+              <div className="vpo-card-sun-pills">
+                {cardSunlightWindows.map((window, idx) => (
+                  <span key={idx} className="vpo-card-sun-pill">
+                    {formatCardClock(window.startLocalTime)} – {formatCardClock(window.endLocalTime)}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="vpo-card-muted">Aucune fenêtre ensoleillée ce jour</p>
+            )}
+          </div>
+
           <a
             className="mt-3 inline-block text-xs font-semibold text-amber-700 hover:text-amber-900"
             href={`https://www.openstreetmap.org/${selectedViewportPlace.osmType}/${selectedViewportPlace.osmId}`}
