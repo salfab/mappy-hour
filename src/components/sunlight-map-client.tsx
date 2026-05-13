@@ -12,6 +12,35 @@ import type {
 import type { CacheRunDetailResponse } from "@/lib/admin/cache-run-detail";
 import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
 import { BitmapTileOverlay } from "@/components/sunlight-overlay/bitmap-tile-overlay";
+import {
+  PlacesViewportOverlay,
+  type PlacesViewportOverlayFilters,
+} from "@/components/places-overlay/places-viewport-overlay";
+import type { NormalizedPlaceLite } from "@/components/places-overlay/viewport-places";
+
+interface ViewportPlaceLite extends NormalizedPlaceLite {
+  osmType: "node" | "way" | "relation";
+  osmId: number;
+  outdoorSeatingCovered?: "yes" | "no" | "partial";
+  outdoorSeatingHeated?: boolean;
+}
+
+function viewportCardEmoji(place: ViewportPlaceLite): string {
+  if (place.category === "park") return "🌳";
+  switch (place.subcategory) {
+    case "cafe":
+      return "☕";
+    case "bar":
+    case "pub":
+      return "🍺";
+    case "restaurant":
+      return "🍴";
+    case "fast_food":
+      return "🥡";
+    default:
+      return "📍";
+  }
+}
 import { paintTileImageData } from "@/components/sunlight-overlay/paint-tile";
 import {
   buildUnifiedViewportContours,
@@ -2283,6 +2312,9 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const cacheFocusLayerRef = useRef<LayerGroup | null>(null);
   const heatmapLayerRef = useRef<LayerGroup | null>(null);
   const placesLayerRef = useRef<LayerGroup | null>(null);
+  const viewportPlacesOverlayRef = useRef<PlacesViewportOverlay | null>(null);
+  const viewportPlacesFetchAbortRef = useRef<AbortController | null>(null);
+  const viewportPlacesDebounceRef = useRef<number | null>(null);
   const clickHighlightLayerRef = useRef<LayerGroup | null>(null);
   const leafletModuleRef = useRef<typeof import("leaflet") | null>(null);
   const placesRequestIdRef = useRef(0);
@@ -2337,6 +2369,9 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const [showTerrain, setShowTerrain] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showPlaces, setShowPlaces] = useState(true);
+  const [viewportPlaces, setViewportPlaces] = useState<ViewportPlaceLite[]>([]);
+  const [selectedViewportPlace, setSelectedViewportPlace] =
+    useState<ViewportPlaceLite | null>(null);
   const [activeDesktopTab, setActiveDesktopTab] = useState<MapPanelTab>("map");
   const [bottomSheetState, setBottomSheetState] =
     useState<BottomSheetState>("middle");
@@ -3290,6 +3325,105 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       setIsMapReady(false);
     };
   }, [runPointClickDiagnostics]);
+
+  // ===== Viewport places overlay (ADR-0025 follow-up) =====
+  // Instantiate once map is ready + showPlaces is true. Owns its own
+  // moveend/zoomend listeners (set inside PlacesViewportOverlay). Disposed
+  // when showPlaces flips off or on unmount.
+  useEffect(() => {
+    const map = mapRef.current;
+    const L = leafletModuleRef.current;
+    if (!isMapReady || !map || !L) return;
+    if (!showPlaces) {
+      if (viewportPlacesOverlayRef.current) {
+        viewportPlacesOverlayRef.current.dispose();
+        viewportPlacesOverlayRef.current = null;
+      }
+      return;
+    }
+    if (viewportPlacesOverlayRef.current) return;
+    const overlay = new PlacesViewportOverlay({
+      map,
+      leaflet: L,
+      onPlaceClick: (place) => {
+        // The pure module exports `NormalizedPlaceLite`. The overlay only
+        // sees the lite fields it cares about; the cast back to
+        // ViewportPlaceLite is safe because that's exactly what we passed
+        // into `setPlaces`.
+        setSelectedViewportPlace(place as ViewportPlaceLite);
+      },
+      maxZoom: MAP_MAX_ZOOM,
+    });
+    viewportPlacesOverlayRef.current = overlay;
+    return () => {
+      if (viewportPlacesOverlayRef.current) {
+        viewportPlacesOverlayRef.current.dispose();
+        viewportPlacesOverlayRef.current = null;
+      }
+    };
+  }, [isMapReady, showPlaces]);
+
+  // Push new dataset + redraw whenever it arrives.
+  useEffect(() => {
+    const overlay = viewportPlacesOverlayRef.current;
+    if (!overlay) return;
+    overlay.setPlaces(viewportPlaces);
+    overlay.refresh();
+  }, [viewportPlaces]);
+
+  // Debounced fetch of /api/places/viewport on map move/zoom. We piggy-back
+  // on the existing `mapBounds` state (already updated in the map init
+  // effect's moveend handler). 400ms matches the rest of the app's
+  // movement-driven fetches.
+  useEffect(() => {
+    if (!isMapReady || !showPlaces) return;
+    const bounds = mapBounds;
+    if (!bounds) return;
+    if (viewportPlacesDebounceRef.current !== null) {
+      window.clearTimeout(viewportPlacesDebounceRef.current);
+    }
+    viewportPlacesDebounceRef.current = window.setTimeout(() => {
+      const previous = viewportPlacesFetchAbortRef.current;
+      if (previous) previous.abort();
+      const abort = new AbortController();
+      viewportPlacesFetchAbortRef.current = abort;
+      const body = {
+        south: bounds.getSouth(),
+        west: bounds.getWest(),
+        north: bounds.getNorth(),
+        east: bounds.getEast(),
+      };
+      fetch("/api/places/viewport", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: abort.signal,
+      })
+        .then(async (response) => {
+          if (!response.ok) return;
+          const json = (await response.json()) as {
+            places?: ViewportPlaceLite[];
+          };
+          if (abort.signal.aborted) return;
+          if (Array.isArray(json.places)) setViewportPlaces(json.places);
+        })
+        .catch((error: unknown) => {
+          if (
+            error instanceof DOMException &&
+            error.name === "AbortError"
+          )
+            return;
+          // Network glitch / 5xx → keep the previous dataset, no toast spam.
+          console.warn("[viewport-places] fetch failed:", error);
+        });
+    }, 400);
+    return () => {
+      if (viewportPlacesDebounceRef.current !== null) {
+        window.clearTimeout(viewportPlacesDebounceRef.current);
+        viewportPlacesDebounceRef.current = null;
+      }
+    };
+  }, [isMapReady, showPlaces, mapBounds]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -5367,6 +5501,54 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           onOpenBars={() => setIsMobileBarsOpen(true)}
         />
       </div>
+
+      {selectedViewportPlace ? (
+        <div className="vpo-card" role="dialog" aria-label="Détails du lieu">
+          <div className="flex items-start justify-between gap-3">
+            <div className="grid min-w-0 gap-1">
+              <p className="truncate text-sm font-semibold text-slate-900">
+                {viewportCardEmoji(selectedViewportPlace)} {selectedViewportPlace.name}
+              </p>
+              <p className="text-xs text-slate-500">
+                {selectedViewportPlace.subcategory || selectedViewportPlace.category}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              onClick={() => setSelectedViewportPlace(null)}
+              aria-label="Fermer"
+            >
+              ×
+            </button>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${
+                selectedViewportPlace.hasOutdoorSeating
+                  ? "bg-amber-100 text-amber-900 ring-amber-200"
+                  : selectedViewportPlace.hasOutdoorSeatingUnknown
+                    ? "bg-slate-100 text-slate-600 ring-slate-200"
+                    : "bg-rose-100 text-rose-700 ring-rose-200"
+              }`}
+            >
+              {selectedViewportPlace.hasOutdoorSeating
+                ? "Terrasse ✓"
+                : selectedViewportPlace.hasOutdoorSeatingUnknown
+                  ? "Terrasse ?"
+                  : "Pas de terrasse"}
+            </span>
+          </div>
+          <a
+            className="mt-3 inline-block text-xs font-semibold text-amber-700 hover:text-amber-900"
+            href={`https://www.openstreetmap.org/${selectedViewportPlace.osmType}/${selectedViewportPlace.osmId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Voir sur OpenStreetMap →
+          </a>
+        </div>
+      ) : null}
 
       <MobileBarsView
         open={isMobileBarsOpen}
