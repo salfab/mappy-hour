@@ -75,7 +75,10 @@ function parseArgs(argv: string[]): ParsedArgs {
         region === "vevey" ||
         region === "vevey_city" ||
         region === "neuchatel" ||
-        region === "la_chaux_de_fonds"
+        region === "la_chaux_de_fonds" ||
+        region === "bern" ||
+        region === "zurich" ||
+        region === "thun"
       ) {
         result.region = region;
       } else {
@@ -83,7 +86,7 @@ function parseArgs(argv: string[]): ParsedArgs {
         // the default "lausanne" and the misrouted run looked successful but
         // produced no atlas under the intended region cache dir.
         throw new Error(
-          `Unknown --region=${region}. Expected lausanne|nyon|morges|geneve|vevey|vevey_city|neuchatel|la_chaux_de_fonds.`,
+          `Unknown --region=${region}. Expected lausanne|nyon|morges|geneve|vevey|vevey_city|neuchatel|la_chaux_de_fonds|bern|zurich|thun.`,
         );
       }
       continue;

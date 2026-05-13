@@ -20,6 +20,9 @@ Each tile gets a `group` field so the HTML can color-group them:
   - "vevey-city"      : Vevey commune (region=vevey_city, lake tiles filtered out)
   - "neuchatel-city"  : Neuchâtel commune (region=neuchatel, lake tiles filtered out)
   - "la-chaux-de-fonds-city" : La Chaux-de-Fonds commune (region=la_chaux_de_fonds, urban centre only)
+  - "bern-city"       : Bern commune (region=bern, urban centre only)
+  - "zurich-city"     : Zurich commune (region=zurich, urban centre, Zürichsee filtered out)
+  - "thun-city"       : Thun commune (region=thun, urban centre, Thunersee filtered out)
   - "geneva"          : Genève + Carouge + Pregny-Chambésy + Le Grand-Saconnex
 
 Run: python scripts/tools/_merge-high-value-commune-based.py
@@ -112,6 +115,39 @@ def main():
         additions.append({"region": "la_chaux_de_fonds", "tileId": tid, "group": "la-chaux-de-fonds-city"})
         cdf_added += 1
     print(f"La Chaux-de-Fonds commune (urban centre): {len(cdf_ids)} commune tiles → {cdf_added} new")
+
+    # 3e) Bern commune (urban centre only) — region=bern, group=bern-city
+    bern_ids = load_tile_ids(ROOT / "commune-bern-land-tiles.json")
+    bern_added = 0
+    for tid in bern_ids:
+        k = ("bern", tid)
+        if k in existing: continue
+        existing.add(k)
+        additions.append({"region": "bern", "tileId": tid, "group": "bern-city"})
+        bern_added += 1
+    print(f"Bern commune (urban centre): {len(bern_ids)} commune tiles → {bern_added} new")
+
+    # 3f) Zurich commune (urban centre, Zürichsee filtered out) — region=zurich, group=zurich-city
+    zurich_ids = load_tile_ids(ROOT / "commune-zurich-land-tiles.json")
+    zurich_added = 0
+    for tid in zurich_ids:
+        k = ("zurich", tid)
+        if k in existing: continue
+        existing.add(k)
+        additions.append({"region": "zurich", "tileId": tid, "group": "zurich-city"})
+        zurich_added += 1
+    print(f"Zurich commune (urban centre, lake filtered): {len(zurich_ids)} commune tiles → {zurich_added} new")
+
+    # 3g) Thun commune (urban centre, Thunersee filtered out) — region=thun, group=thun-city
+    thun_ids = load_tile_ids(ROOT / "commune-thun-land-tiles.json")
+    thun_added = 0
+    for tid in thun_ids:
+        k = ("thun", tid)
+        if k in existing: continue
+        existing.add(k)
+        additions.append({"region": "thun", "tileId": tid, "group": "thun-city"})
+        thun_added += 1
+    print(f"Thun commune (urban centre, lake filtered): {len(thun_ids)} commune tiles → {thun_added} new")
 
     # 4) Geneva — region=geneve
     geneve_ids = load_tile_ids(ROOT / "commune-geneve-all-tiles.json")

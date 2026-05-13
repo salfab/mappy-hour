@@ -30,6 +30,9 @@ REGION_MODEL_HASH = {
     "vevey_city": None,
     "neuchatel":  None,
     "la_chaux_de_fonds": None,
+    "bern":       None,
+    "zurich":     None,
+    "thun":       None,
 }
 
 

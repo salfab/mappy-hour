@@ -10,6 +10,9 @@ import { VEVEY_LOCAL_BBOX } from "../../src/lib/config/vevey";
 import { VEVEY_CITY_LOCAL_BBOX } from "../../src/lib/config/vevey_city";
 import { NEUCHATEL_LOCAL_BBOX } from "../../src/lib/config/neuchatel";
 import { LA_CHAUX_DE_FONDS_LOCAL_BBOX } from "../../src/lib/config/la_chaux_de_fonds";
+import { BERN_LOCAL_BBOX } from "../../src/lib/config/bern";
+import { ZURICH_LOCAL_BBOX } from "../../src/lib/config/zurich";
+import { THUN_LOCAL_BBOX } from "../../src/lib/config/thun";
 import { PROCESSED_PLACES_DIR, RAW_OSM_ROOT } from "../../src/lib/storage/data-paths";
 
 interface OverpassElement {
@@ -52,6 +55,9 @@ const REGION_BBOXES: Record<string, BBox> = {
   vevey_city: VEVEY_CITY_LOCAL_BBOX,
   neuchatel: NEUCHATEL_LOCAL_BBOX,
   la_chaux_de_fonds: LA_CHAUX_DE_FONDS_LOCAL_BBOX,
+  bern: BERN_LOCAL_BBOX,
+  zurich: ZURICH_LOCAL_BBOX,
+  thun: THUN_LOCAL_BBOX,
 };
 
 const ALL_REGIONS = Object.keys(REGION_BBOXES);

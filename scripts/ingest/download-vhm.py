@@ -65,6 +65,15 @@ REGIONS = {
     # Ville de La Chaux-de-Fonds (centre urbain uniquement, hors forêts du Jura).
     # Matches LA_CHAUX_DE_FONDS_LOCAL_BBOX [6.79, 47.085, 6.86, 47.12].
     "la_chaux_de_fonds": {"minE": 2550000, "minN": 1215000, "maxE": 2557000, "maxN": 1219000},
+    # Ville de Berne (centre urbain). Matches BERN_LOCAL_BBOX
+    # [7.42, 46.93, 7.48, 46.97].
+    "bern": {"minE": 2598000, "minN": 1197000, "maxE": 2604000, "maxN": 1203000},
+    # Ville de Zurich (centre urbain, rive nord du Zürichsee).
+    # Matches ZURICH_LOCAL_BBOX [8.50, 47.36, 8.58, 47.40].
+    "zurich": {"minE": 2680000, "minN": 1245000, "maxE": 2688000, "maxN": 1251000},
+    # Ville de Thoune (centre urbain, rive nord du Thunersee).
+    # Matches THUN_LOCAL_BBOX [7.60, 46.74, 7.66, 46.78].
+    "thun": {"minE": 2611000, "minN": 1175000, "maxE": 2616000, "maxN": 1180000},
 }
 
 

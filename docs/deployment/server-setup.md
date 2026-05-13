@@ -83,7 +83,7 @@ Télécharge les atlas depuis la dernière GitHub Release et les extrait dans `M
 ```bash
 pnpm atlas:download -- \
   --repo=salfab/mappy-hour \
-  --regions=lausanne,nyon,morges,vevey,vevey_city,neuchatel,la_chaux_de_fonds,geneve
+  --regions=lausanne,nyon,morges,vevey,vevey_city,neuchatel,la_chaux_de_fonds,bern,zurich,thun,geneve
 ```
 
 Options utiles :
@@ -177,7 +177,7 @@ server {
 ```bash
 pnpm atlas:download -- \
   --repo=salfab/mappy-hour \
-  --regions=lausanne,nyon,morges,vevey,vevey_city,neuchatel,la_chaux_de_fonds,geneve
+  --regions=lausanne,nyon,morges,vevey,vevey_city,neuchatel,la_chaux_de_fonds,bern,zurich,thun,geneve
 # → skip si hash déjà installé, télécharge sinon
 sudo systemctl restart mappy-hour
 ```
@@ -222,7 +222,7 @@ Peupler le bind-mount avant le premier démarrage :
 # Option B : via le service one-shot atlas-loader (profil "loader")
 docker compose --profile loader run --rm atlas-loader \
   --repo=salfab/mappy-hour \
-  --regions=lausanne,nyon,morges,vevey,vevey_city,neuchatel,la_chaux_de_fonds,geneve
+  --regions=lausanne,nyon,morges,vevey,vevey_city,neuchatel,la_chaux_de_fonds,bern,zurich,thun,geneve
 
 docker compose up -d
 ```

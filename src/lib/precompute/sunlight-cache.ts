@@ -11,6 +11,9 @@ import { VEVEY_CONFIG } from "@/lib/config/vevey";
 import { VEVEY_CITY_CONFIG } from "@/lib/config/vevey_city";
 import { NEUCHATEL_CONFIG } from "@/lib/config/neuchatel";
 import { LA_CHAUX_DE_FONDS_CONFIG } from "@/lib/config/la_chaux_de_fonds";
+import { BERN_CONFIG } from "@/lib/config/bern";
+import { ZURICH_CONFIG } from "@/lib/config/zurich";
+import { THUN_CONFIG } from "@/lib/config/thun";
 import { lv95ToWgs84Precise, wgs84ToLv95Precise } from "@/lib/geo/projection";
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 import { getSunlightCacheStorage } from "./sunlight-cache-storage";
@@ -19,7 +22,7 @@ import { SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "./model-version";
 const gzip = promisify(gzipCallback);
 const gunzip = promisify(gunzipCallback);
 
-export type PrecomputedRegionName = "lausanne" | "nyon" | "morges" | "geneve" | "vevey" | "vevey_city" | "neuchatel" | "la_chaux_de_fonds";
+export type PrecomputedRegionName = "lausanne" | "nyon" | "morges" | "geneve" | "vevey" | "vevey_city" | "neuchatel" | "la_chaux_de_fonds" | "bern" | "zurich" | "thun";
 
 export interface RegionBbox {
   minLon: number;
@@ -173,6 +176,24 @@ const REGION_BBOXES: Record<PrecomputedRegionName, RegionBbox> = {
     minLat: LA_CHAUX_DE_FONDS_CONFIG.localBbox[1],
     maxLon: LA_CHAUX_DE_FONDS_CONFIG.localBbox[2],
     maxLat: LA_CHAUX_DE_FONDS_CONFIG.localBbox[3],
+  },
+  bern: {
+    minLon: BERN_CONFIG.localBbox[0],
+    minLat: BERN_CONFIG.localBbox[1],
+    maxLon: BERN_CONFIG.localBbox[2],
+    maxLat: BERN_CONFIG.localBbox[3],
+  },
+  zurich: {
+    minLon: ZURICH_CONFIG.localBbox[0],
+    minLat: ZURICH_CONFIG.localBbox[1],
+    maxLon: ZURICH_CONFIG.localBbox[2],
+    maxLat: ZURICH_CONFIG.localBbox[3],
+  },
+  thun: {
+    minLon: THUN_CONFIG.localBbox[0],
+    minLat: THUN_CONFIG.localBbox[1],
+    maxLon: THUN_CONFIG.localBbox[2],
+    maxLat: THUN_CONFIG.localBbox[3],
   },
 };
 

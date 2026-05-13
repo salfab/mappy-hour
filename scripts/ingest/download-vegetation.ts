@@ -12,18 +12,21 @@ import { VEVEY_CONFIG } from "../../src/lib/config/vevey";
 import { VEVEY_CITY_CONFIG } from "../../src/lib/config/vevey_city";
 import { NEUCHATEL_CONFIG } from "../../src/lib/config/neuchatel";
 import { LA_CHAUX_DE_FONDS_CONFIG } from "../../src/lib/config/la_chaux_de_fonds";
+import { BERN_CONFIG } from "../../src/lib/config/bern";
+import { ZURICH_CONFIG } from "../../src/lib/config/zurich";
+import { THUN_CONFIG } from "../../src/lib/config/thun";
 import { parseIngestCliArgs } from "./cli";
 import { ensureDirectory } from "./http";
 import { downloadStacAssets, fetchStacItems } from "./stac-client";
 
 const COLLECTION = "ch.swisstopo.swisssurface3d-raster";
 const REGIONS: Record<string, { localBbox: readonly [number, number, number, number] }> = {
-  lausanne: LAUSANNE_CONFIG, nyon: NYON_CONFIG, morges: MORGES_CONFIG, geneve: GENEVE_CONFIG, vevey: VEVEY_CONFIG, vevey_city: VEVEY_CITY_CONFIG, neuchatel: NEUCHATEL_CONFIG, la_chaux_de_fonds: LA_CHAUX_DE_FONDS_CONFIG,
+  lausanne: LAUSANNE_CONFIG, nyon: NYON_CONFIG, morges: MORGES_CONFIG, geneve: GENEVE_CONFIG, vevey: VEVEY_CONFIG, vevey_city: VEVEY_CITY_CONFIG, neuchatel: NEUCHATEL_CONFIG, la_chaux_de_fonds: LA_CHAUX_DE_FONDS_CONFIG, bern: BERN_CONFIG, zurich: ZURICH_CONFIG, thun: THUN_CONFIG,
 };
 
 function parseRegion(argv: string[]): string {
   for (const arg of argv) { if (arg.startsWith("--region=")) return arg.slice(9); }
-  console.error("Usage: --region=lausanne|nyon|morges|geneve|vevey|vevey_city|neuchatel|la_chaux_de_fonds"); process.exit(1);
+  console.error("Usage: --region=lausanne|nyon|morges|geneve|vevey|vevey_city|neuchatel|la_chaux_de_fonds|bern|zurich|thun"); process.exit(1);
 }
 
 async function main() {
