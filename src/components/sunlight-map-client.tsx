@@ -133,33 +133,37 @@ const BASE_MAP_OPTIONS: BaseMapOption[] = [
   },
   {
     // Stamen Toner (light lines) — building masses noires from
-    // `toner_background` + road network from `toner_lines` mais à
-    // opacity 0.35 pour qu'elles n'écrasent plus l'overlay soleil +
-    // labels rues opaques. Compromis entre la version originale "tout
-    // noir" et la variante sans routes.
+    // `toner_background` + road network from `toner_lines` à opacity
+    // 0.35. Labels viennent de CARTO Voyager (`voyager_only_labels`)
+    // plutôt que `stamen_toner_labels` pour rester lisibles même si
+    // Stadia est rate-limited (les overlays Stadia n'ont pas de
+    // fallback per-tile — voir `attachStadiaFallback` plus bas).
     id: "stamen-toner",
     label: "Stamen Toner",
     url: "https://tiles.stadiamaps.com/tiles/stamen_toner_background/{z}/{x}/{y}.png",
     overlays: [
       { url: "https://tiles.stadiamaps.com/tiles/stamen_toner_lines/{z}/{x}/{y}.png", maxNativeZoom: 20, opacity: 0.35 },
-      { url: "https://tiles.stadiamaps.com/tiles/stamen_toner_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
+      { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
     ],
     attribution:
-      "&copy; <a href=\"https://stamen.com\">Stamen Design</a>, hosted by <a href=\"https://stadiamaps.com/\">Stadia Maps</a> &mdash; Map data &copy; OpenStreetMap contributors",
+      "&copy; <a href=\"https://stamen.com\">Stamen Design</a>, hosted by <a href=\"https://stadiamaps.com/\">Stadia Maps</a> | Labels &copy; CARTO &mdash; Map data &copy; OpenStreetMap contributors",
     maxNativeZoom: 20,
   },
   {
-    // Stamen Watercolor — peinture artistique + labels uniquement.
-    // Les `toner_lines` étaient retirées car elles introduisent des
-    // traits noirs nets qui cassent l'effet aquarelle.
+    // Stamen Watercolor — peinture artistique + labels CARTO Voyager.
+    // `toner_lines` retirées car elles cassent l'effet aquarelle. Les
+    // labels viennent de CARTO (`voyager_only_labels`) pour être
+    // indépendants du quota Stadia — si Stadia tombe, le watercolor
+    // bascule en Voyager via le fallback per-tile et les labels
+    // continuent à charger normalement.
     id: "stamen-watercolor",
     label: "Stamen Aquarelle",
     url: "https://tiles.stadiamaps.com/tiles/stamen_watercolor/{z}/{x}/{y}.jpg",
     overlays: [
-      { url: "https://tiles.stadiamaps.com/tiles/stamen_toner_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
+      { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
     ],
     attribution:
-      "&copy; <a href=\"https://stamen.com\">Stamen Design</a>, hosted by <a href=\"https://stadiamaps.com/\">Stadia Maps</a> &mdash; Map data &copy; OpenStreetMap contributors",
+      "&copy; <a href=\"https://stamen.com\">Stamen Design</a>, hosted by <a href=\"https://stadiamaps.com/\">Stadia Maps</a> | Labels &copy; CARTO &mdash; Map data &copy; OpenStreetMap contributors",
     maxNativeZoom: 18,
   },
   {
