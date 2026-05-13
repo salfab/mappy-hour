@@ -809,6 +809,221 @@ Découplé du build image. Voir §7quater. Inputs : `release`, `regions`,
 
 ---
 
+## 10bis. Umami analytics self-hosted
+
+Umami (https://umami.is) est déployé en self-hosted via le même `docker-compose.yml`,
+pour avoir des analytics sans cookies (pas de bannière consentement) et sans tiers
+externe. Le tracker public est proxifié par Next.js (`next.config.ts` rewrites)
+pour que la surface publique reste `/_analytics/script.js` et `/_analytics/api/send` —
+les visiteurs ne voient jamais `umami.is`.
+
+### 10bis.1 Architecture
+
+```
+                        Next.js rewrites
+visitor ──/_analytics/* ──────────────────▶ container "umami" :3000 (interne)
+                                                  │
+                                                  ▼
+                                          container "umami-db" :5432
+                                                  │
+                                                  ▼
+                                          volume umami-db-data (Postgres data)
+```
+
+- **`umami`** : `ghcr.io/umami-software/umami:postgresql-latest`. Lit `APP_SECRET` (JWT
+  signing) et `DATABASE_URL` (Postgres) au démarrage. **Crashloop** silencieux si les
+  variables sont invalides — l'image utilise `restart: unless-stopped`.
+- **`umami-db`** : `postgres:15-alpine`. Healthcheck `pg_isready` (cf. compose).
+- **Volume nommé** : `mappy-hour_umami-db-data` (préfixé par le nom du projet compose).
+  Contient les events analytics + comptes admin Umami. Wiper ce volume = repartir à zéro.
+
+Le binding compose est `"0.0.0.0:3001:3000"` pour signaler l'intention "accessible
+tailnet". **Important** : sur Docker Desktop + WSL2 sur Windows, ce binding ne propage
+pas automatiquement sur les interfaces non-loopback. En pratique seul `127.0.0.1:3001`
+LISTEN côté Windows host (`netstat -ano` montre `wslrelay.exe` PID). L'accès tailnet
+nécessite un portproxy explicite — cf. §10bis.4.
+
+### 10bis.2 Secrets GitHub Actions — conventions strictes
+
+Trois secrets sont requis dans `Repo → Settings → Secrets`. **Les conventions de format
+ne sont pas négociables**, cf. les incidents historiques ci-dessous.
+
+| Secret | Format | Générer avec |
+|---|---|---|
+| `UMAMI_APP_SECRET` | Random ≥ 32 bytes, n'importe quel encodage | `openssl rand -base64 48 \| gh secret set UMAMI_APP_SECRET` |
+| `UMAMI_DB_PASSWORD` | **Hex uniquement** (URL-safe) | `openssl rand -hex 24 \| gh secret set UMAMI_DB_PASSWORD` |
+| `NEXT_PUBLIC_UMAMI_WEBSITE_ID` | UUID retourné par le dashboard Umami (cf. §10bis.3) | manuel après setup initial |
+| `UMAMI_ADMIN_PASSWORD` | Random ≥ 24 bytes (sauvegarde du nouveau mot de passe admin) | `openssl rand -base64 24 \| gh secret set UMAMI_ADMIN_PASSWORD` — set en même temps qu'on change le pwd admin via API (§10bis.3) |
+
+> **⚠️ Piège base64 sur `UMAMI_DB_PASSWORD`** : `openssl rand -base64 N` produit du base64
+> standard qui peut inclure `/`, `+`, `=`. Ces caractères cassent le parsing de la
+> connection string Postgres côté Umami :
+>
+> ```
+> input: 'postgresql://umami:YM+AOb0Qzit/BJngMIVNinw9Ecm/RXVC@umami-db:5432/umami'
+> TypeError: Invalid URL  (Node.js URL parser, file:///app/scripts/check-db.js:16)
+> ```
+>
+> Le container `umami` part alors en **crashloop** silencieux (`Restarting (1) X seconds ago`),
+> `wslrelay.exe` continue à listen sur 3001 mais répond `Connection refused` parce que la
+> cible WSL est morte. Toujours utiliser `openssl rand -hex` pour ce secret.
+
+> **⚠️ Ne JAMAIS générer `UMAMI_APP_SECRET` côté serveur**. Le commit `4e088b5`
+> (reverté en `10db3ad`) avait tenté un fallback `[guid]::NewGuid()` dans
+> `mitch-deploy-docker.ps1` quand le secret CI était vide. Conséquences indésirables :
+> (a) casse l'invariant "CI = source of truth" sur `.env`, (b) masque l'absence d'un
+> secret au lieu de planter, (c) régénère à chaque cold-start, invalidant toutes les
+> sessions JWT existantes. Si `UMAMI_APP_SECRET` arrive vide en CI, le deploy DOIT
+> échouer (la health check `/api/heartbeat` §10bis.5 fait justement ce gating).
+
+Le workflow `deploy-mitch.yml` lit les 2 premiers secrets et les écrit dans `.env.ci`
+sur Mitch (cf. step `Sync runtime secrets to Mitch .env`). Le 3e (`NEXT_PUBLIC_UMAMI_WEBSITE_ID`)
+est consommé au **build time** dans `docker-publish.yml` (build-arg vers `next build`) car
+le tracker côté client a besoin de l'UUID au bundling — un changement d'UUID impose donc
+un rebuild d'image, pas juste un redeploy.
+
+### 10bis.3 Setup initial (one-time) — récupérer l'UUID
+
+À faire **une seule fois** après que les 2 premiers secrets soient set et le premier
+deploy réussi. Deux méthodes — la voie API est préférée parce qu'elle est entièrement
+scriptable et ne demande pas de browser.
+
+#### Voie A — via API (recommandée)
+
+```bash
+# 1) Tunnel SSH local (laisse ouvert dans un terminal, ou en background)
+ssh -N -L 13001:127.0.0.1:3001 kiosque@mitch &
+TUNNEL_PID=$!
+until curl -sS -o /dev/null --max-time 2 http://127.0.0.1:13001/api/heartbeat; do sleep 1; done
+
+# 2) Login API avec les credentials par défaut → récupérer le JWT
+TOKEN=$(curl -sS -X POST http://127.0.0.1:13001/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"umami"}' | jq -r '.token')
+USER_ID=$(curl -sS http://127.0.0.1:13001/api/me -H "Authorization: Bearer $TOKEN" | jq -r '.id')
+
+# 3) Créer le site MappyHour (domain = le hostname Funnel public)
+DOMAIN=$(tailscale status --json | jq -r '.Peer[] | select(.HostName=="mitch") | .DNSName' | sed 's/\.$//')
+UUID=$(curl -sS -X POST http://127.0.0.1:13001/api/websites \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"name\":\"MappyHour\",\"domain\":\"$DOMAIN\"}" | jq -r '.id')
+echo "$UUID" | gh secret set NEXT_PUBLIC_UMAMI_WEBSITE_ID
+
+# 4) Changer le mot de passe admin par défaut, et le stocker en backup côté GH
+NEW_PWD=$(openssl rand -base64 24)
+curl -sS -X POST http://127.0.0.1:13001/api/me/password \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"currentPassword\":\"umami\",\"newPassword\":\"$NEW_PWD\"}"
+echo "$NEW_PWD" | gh secret set UMAMI_ADMIN_PASSWORD
+
+# 5) Fermer le tunnel
+kill $TUNNEL_PID
+
+# 6) Rebuild l'image pour bake l'UUID dans le bundle JS client
+gh workflow run "Build & publish Docker image"
+# → workflow_run trigger Deploy to Mitch automatiquement après build success
+```
+
+> **Endpoint API password** : `POST /api/me/password` (et non `/api/users/{id}/password`
+> qui retourne 404 en Umami v3). Body : `{currentPassword, newPassword}`.
+
+#### Voie B — via dashboard browser
+
+```powershell
+# 1) Tunnel SSH vers le dashboard Umami depuis ta dev box
+ssh -L 3001:127.0.0.1:3001 kiosque@mitch
+# (laisser cette session ouverte ; alternative : §10bis.4 si portproxy + firewall en place)
+
+# 2) Dans un browser local
+#    → http://127.0.0.1:3001
+#    → login : admin / umami
+#    → Settings → Profile : changer le mot de passe IMMÉDIATEMENT (l'admin Umami n'est
+#      pas reset à chaque deploy ; il vit dans le volume umami-db-data)
+#    → Settings → Websites → Add :
+#          Name   : MappyHour
+#          Domain : <host>.<tailnet>.ts.net (le domaine public Funnel)
+#    → Copier le Website ID (UUID) affiché
+
+# 3) Stocker l'UUID + le pwd admin choisi côté GitHub
+echo "<UUID-copié>" | gh secret set NEXT_PUBLIC_UMAMI_WEBSITE_ID
+echo "<pwd-admin-choisi>" | gh secret set UMAMI_ADMIN_PASSWORD
+
+# 4) Rebuild l'image pour bake l'UUID dans le bundle JS client
+gh workflow run "Build & publish Docker image"
+```
+
+Tant que `NEXT_PUBLIC_UMAMI_WEBSITE_ID` n'est pas set, le tracker côté client est
+inactif (script chargé mais pas d'événements envoyés). Pas de crash, juste pas de stats.
+
+### 10bis.4 Accès tailnet direct au dashboard (optionnel)
+
+Le binding compose `0.0.0.0:3001:3000` ne propage pas vers l'interface tailnet par défaut
+(cf. §10bis.1). Pour exposer `https://mitch:3001` aux autres nodes tailnet, deux commandes
+à passer **une seule fois en PowerShell admin sur Mitch** :
+
+```powershell
+# Portproxy : forward 0.0.0.0:3001 → 127.0.0.1:3001 (où wslrelay listen vraiment)
+netsh interface portproxy add v4tov4 `
+  listenaddress=0.0.0.0 listenport=3001 `
+  connectaddress=127.0.0.1 connectport=3001
+
+# Règle firewall correspondante (sans ça la règle portproxy n'a aucun effet pratique)
+New-NetFirewallRule -DisplayName "Umami Tailnet 3001" `
+  -Direction Inbound -Protocol TCP -LocalPort 3001 -Action Allow
+```
+
+Les deux commandes sont persistantes (survivent aux reboots). À auditer périodiquement
+avec `netsh interface portproxy show all` et `Get-NetFirewallRule -DisplayName "Umami*"`.
+
+Sans ces commandes, le dashboard reste accessible uniquement via tunnel SSH (§10bis.3).
+
+### 10bis.5 Health check `/api/heartbeat`
+
+Le workflow `deploy-mitch.yml` lance deux health checks séquentielles après `docker compose up` :
+
+```yaml
+- name: Health check (mappy-hour)
+  # GET http://127.0.0.1:3000/api/datasets → 200
+- name: Health check (umami)
+  # GET http://127.0.0.1:3001/api/heartbeat → 200
+```
+
+`/api/heartbeat` retourne 200 **uniquement** quand `umami` ET `umami-db` sont up. Ça
+capture :
+
+- `UMAMI_APP_SECRET` absent → `${UMAMI_APP_SECRET:?...}` dans compose fait échouer le
+  service `umami` au démarrage.
+- `UMAMI_DB_PASSWORD` non URL-safe → `check-db.js` crash → crashloop (§10bis.2).
+- Postgres healthy mais Umami app KO → réponse non-200.
+
+Si la check Umami échoue, le deploy global échoue (`exit 1`) ; le step est **après** la
+health check mappy-hour pour que les deux problèmes soient diagnosticables séparément
+dans les logs CI.
+
+### 10bis.6 Diagnostic — symptômes courants
+
+| Symptôme | Cause probable | Fix |
+|---|---|---|
+| `docker compose up` ok mais `umami` "Restarting (1)" en boucle | `UMAMI_DB_PASSWORD` non URL-safe (base64 avec `/+=`) | Régénérer en hex (§10bis.2) + wiper le volume (`docker volume rm mappy-hour_umami-db-data` après `docker compose stop umami umami-db`) + redeploy |
+| `Invoke-WebRequest http://127.0.0.1:3001/api/heartbeat` → `Unable to connect` mais `netstat` montre `wslrelay PID listening` | Container `umami` down (crashloop) ; le relay listen mais la cible WSL est morte | `docker logs umami --tail 40` pour la cause racine |
+| `curl http://mitch:3001` timeout depuis tailnet, mais `127.0.0.1:3001` OK depuis Mitch | Portproxy + firewall absent | §10bis.4 |
+| Tracker chargé côté client mais aucun event dans le dashboard | `NEXT_PUBLIC_UMAMI_WEBSITE_ID` non set au moment du dernier build d'image, ou UUID divergent du site Umami courant | Re-set le secret, `gh workflow run "Build & publish Docker image"` |
+| Mot de passe admin oublié | L'admin vit dans le volume `umami-db-data` ; aucun reset CLI sur Umami | `docker volume rm mappy-hour_umami-db-data` → redeploy → repartir de zéro à `admin/umami` |
+| Postgres DB corrompue après crash hôte | Volume Postgres pas corrompu mais journal non flushé | `docker compose restart umami-db` puis `docker logs umami-db` ; en dernier recours, wipe le volume |
+
+### 10bis.7 Reset complet Umami (one-liner)
+
+Repartir de zéro (perd les events analytics + le compte admin) :
+
+```powershell
+ssh kiosque@mitch 'wsl -d Ubuntu -u root -e bash -c "cd /mnt/c/srv/mappy-hour && docker compose rm -f -s -v umami umami-db && docker volume rm mappy-hour_umami-db-data"'
+gh workflow run "Deploy to Mitch"
+```
+
+`mappy-hour` n'est pas touché par cette opération.
+
+---
+
 ## 11. Hardening — état actuel et trade-offs
 
 ### 11.1 Actif
