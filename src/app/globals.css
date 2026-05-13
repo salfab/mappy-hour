@@ -278,21 +278,39 @@ code {
 }
 
 .vpo-label {
-  margin-top: 2px;
+  margin-top: 3px;
   text-align: center;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
+  /* Slate-900 over a 4-direction white text-shadow halo. Stays readable on
+     any tile content (light cream OSM / dense watercolor / dark satellite)
+     without needing a background pill. Pill removed — looked heavy when
+     stacked next to the emoji glyph and clashed with the watercolor. */
   color: #0f172a;
-  background: rgba(255, 255, 255, 0.9);
-  padding: 1px 6px;
-  border-radius: 6px;
+  text-shadow:
+    -1px -1px 0 rgba(255, 255, 255, 0.95),
+    1px -1px 0 rgba(255, 255, 255, 0.95),
+    -1px 1px 0 rgba(255, 255, 255, 0.95),
+    1px 1px 0 rgba(255, 255, 255, 0.95),
+    0 0 3px rgba(255, 255, 255, 0.85);
   display: inline-block;
   max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  opacity: 0.9;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.15);
+  pointer-events: none;
+}
+
+/* While Leaflet is animating a zoom, the tile pane is CSS-scaled but
+   marker icons keep their pixel size — they appear to "slide" over the
+   map until the animation completes and they snap to the new latlng
+   pixels. Fading the overlay out during the anim hides that effect; it
+   reappears smoothly at zoomend. The class is toggled by
+   `PlacesViewportOverlay` via the map's `zoomanim` / `zoomend` events. */
+.leaflet-container.vpo-zooming .vpo-glyph-wrap,
+.leaflet-container.vpo-zooming .vpo-cluster-wrap {
+  opacity: 0;
+  transition: opacity 80ms linear;
 }
 
 /* Floating card shown when the user taps a single place. Mirrors the
