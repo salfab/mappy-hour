@@ -4543,6 +4543,27 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     [],
   );
 
+  // Click-out: close the suggestions dropdown whenever the user pointerdowns
+  // outside both search roots. Both data attributes are checked so the same
+  // listener works for mobile (FloatingSearch container) and desktop without
+  // false-positive closes when clicking inside either dropdown.
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (
+        target.closest("[data-desktop-search-root]") ||
+        target.closest("[data-mobile-search-root]")
+      ) {
+        return;
+      }
+      setSuggestionsCloseSignal((c) => c + 1);
+    };
+    window.addEventListener("pointerdown", handlePointerDown, { capture: true });
+    return () =>
+      window.removeEventListener("pointerdown", handlePointerDown, { capture: true });
+  }, []);
+
   const loadSunlitPlaces = useCallback(
     async (bbox: [number, number, number, number]) => {
       const placesPayload = {
@@ -5426,7 +5447,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   );
 
   const desktopSearch = (
-    <div className="relative z-[720] hidden lg:inline-block">
+    <div className="relative z-[720] hidden lg:inline-block" data-desktop-search-root>
       <form
         className="flex items-center gap-2 rounded-full border border-white/70 bg-white/88 p-2 text-slate-900 shadow-xl backdrop-blur"
         onSubmit={(event) => {
