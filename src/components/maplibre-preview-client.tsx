@@ -169,7 +169,13 @@ function addPlacesLayers(map: MapLibreMap) {
     type: "geojson",
     // Fetched via the GET /api/places?format=geojson endpoint. Inline data
     // (no bbox filter server-side) — MapLibre handles viewport culling.
-    data: "/api/places?format=geojson&outdoorOnly=false",
+    // `outdoorOnly=true` pulls the same "confirmed terrasses" subset that
+    // `/api/places/viewport?mode=confirmed` serves to Leaflet, so the
+    // cluster point_count is consistent across the two maps. food_court is
+    // still excluded client-side via the unclustered-layer filter below
+    // (the `/api/places` endpoint doesn't do subcategory filtering — fine,
+    // food_court is a tiny minority).
+    data: "/api/places?format=geojson&outdoorOnly=true",
     cluster: true,
     clusterMaxZoom: 14,
     clusterRadius: 50,
@@ -221,12 +227,11 @@ function addPlacesLayers(map: MapLibreMap) {
   });
 
   // Unclustered points — circle for the dot, separate symbol layer for the
-  // label. We filter to confirmed terrasses (hasOutdoorSeating=true) and
-  // exclude food_court as per the Phase 1 spec.
+  // label. The source is already pre-filtered to confirmed terrasses (see
+  // `outdoorOnly=true` above), so we only need to drop food_court here.
   const unclusteredFilter: maplibregl.FilterSpecification = [
     "all",
     ["!", ["has", "point_count"]],
-    ["==", ["get", "hasOutdoorSeating"], true],
     ["!=", ["get", "subcategory"], "food_court"],
   ];
 
