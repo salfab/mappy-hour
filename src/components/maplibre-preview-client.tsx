@@ -1,27 +1,34 @@
 "use client";
 
 /**
- * MapLibre GL JS preview — Phase 1 of the Leaflet -> MapLibre migration.
+ * MapLibre GL JS preview — Phase 1 + 2 of the Leaflet -> MapLibre migration.
  *
- * Goals (intentionally narrow):
+ * Phase 1 goals (done):
  *  - Demonstrate the 4 raster basemaps (Aquarelle = Stamen Watercolor +
  *    CARTO Voyager labels, CARTO Voyager, OSM standard, Esri Satellite)
  *    with a switcher UI.
  *  - Render the OSM places overlay through a NATIVE MapLibre GeoJSON source
- *    with built-in clustering + symbol layers. Validates whether MapLibre's
- *    label engine fixes the "labels slide during zoom anim" issue the
- *    home-grown Leaflet overlay has.
- *  - No sunlight / shadow overlay. That's Phase 2.
+ *    with built-in clustering + symbol layers.
+ *
+ * Phase 2 goals (done):
+ *  - Port the sunlight / shadow overlay via `BitmapTileOverlay` + a thin
+ *    `MapLike` adapter that bridges `map.project()` to the Leaflet-style
+ *    `latLngToLayerPoint` API.
+ *  - SSE timeline fetch for the current viewport bbox.
+ *  - Slider UI for frame selection + sunny/shadow toggles.
  *
  * This component is NOT integrated in the main `/` route — the existing
  * Leaflet `SunlightMapClient` is untouched. The preview lives at
- * `/maplibre-preview` so the user can A/B both implementations side-by-side
- * before we tackle the sunlight overlay port.
+ * `/maplibre-preview` so the user can A/B both implementations side-by-side.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import maplibregl, { type Map as MapLibreMap, type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import {
+  MapLibreSunlightLayer,
+  type TimelineTile,
+} from "@/components/sunlight-overlay/maplibre-sunlight-layer";
 
 type BaseMapId = "aquarelle" | "carto-voyager" | "osm" | "satellite";
 
@@ -364,11 +371,113 @@ export function MapLibrePreviewClient() {
   const [basemapId, setBasemapId] = useState<BaseMapId>("aquarelle");
   const [ready, setReady] = useState(false);
 
+  // ── Sunlight state ──────────────────────────────────────────────────────────
+  const [sunlightVisible, setSunlightVisible] = useState(true);
+  const [showSunny, setShowSunny] = useState(true);
+  const [showShadow, setShowShadow] = useState(true);
+  const [frameIndex, setFrameIndex] = useState(0);
+  const [timelineFrames, setTimelineFrames] = useState<Array<{ localTime: string }>>([]);
+  const [sunlightLoading, setSunlightLoading] = useState(false);
+  const sunlightLayerRef = useRef<MapLibreSunlightLayer | null>(null);
+
   // Build basemap defs once. Stadia key is a public env, baked at build.
   const baseMapsRef = useRef<BaseMapDef[] | null>(null);
   if (baseMapsRef.current === null) {
     baseMapsRef.current = buildBaseMaps(process.env.NEXT_PUBLIC_STADIA_API_KEY);
   }
+
+  // ── SSE timeline fetch ──────────────────────────────────────────────────────
+  const fetchTimeline = useCallback(async (map: MapLibreMap) => {
+    setSunlightLoading(true);
+    const bounds = map.getBounds();
+    const date = new Date().toLocaleDateString("sv", { timeZone: "Europe/Zurich" });
+    const params = new URLSearchParams({
+      minLon: String(bounds.getWest()),
+      minLat: String(bounds.getSouth()),
+      maxLon: String(bounds.getEast()),
+      maxLat: String(bounds.getNorth()),
+      date,
+      timezone: "Europe/Zurich",
+      startLocalTime: "06:00",
+      endLocalTime: "21:00",
+      sampleEveryMinutes: "30",
+      gridStepMeters: "1",
+      maxPoints: "2000000",
+      buildingHeightBiasMeters: "0",
+      cacheOnly: "true",
+    });
+
+    try {
+      const response = await fetch(`/api/sunlight/timeline/sse?${params.toString()}`);
+      if (!response.ok || !response.body) {
+        console.error("[maplibre-preview] SSE fetch failed:", response.status);
+        setSunlightLoading(false);
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const collectedTiles: TimelineTile[] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse SSE blocks separated by double newlines.
+        const blocks = buffer.split(/\n\n/);
+        buffer = blocks.pop() ?? "";
+
+        for (const block of blocks) {
+          if (!block.trim()) continue;
+          const lines = block.split("\n");
+          let eventType = "";
+          let dataStr = "";
+          for (const line of lines) {
+            if (line.startsWith("event:")) {
+              eventType = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              dataStr = line.slice(5).trim();
+            }
+          }
+
+          if (!eventType || !dataStr) continue;
+
+          try {
+            const payload = JSON.parse(dataStr) as Record<string, unknown>;
+
+            if (eventType === "start") {
+              collectedTiles.length = 0;
+            } else if (eventType === "tile") {
+              collectedTiles.push(payload as unknown as TimelineTile);
+            } else if (eventType === "done") {
+              const layer = sunlightLayerRef.current;
+              if (layer) {
+                layer.setTimeline(collectedTiles, 0, showSunny, showShadow);
+              }
+              // Extract frame list from the first tile for the slider.
+              const firstTile = collectedTiles[0];
+              if (firstTile?.frames) {
+                setTimelineFrames(firstTile.frames.map((f) => ({ localTime: f.localTime })));
+              }
+              setFrameIndex(0);
+              setSunlightLoading(false);
+            } else if (eventType === "error") {
+              console.error("[maplibre-preview] SSE error event:", payload);
+              setSunlightLoading(false);
+            }
+          } catch (parseErr) {
+            console.warn("[maplibre-preview] SSE parse error:", parseErr);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[maplibre-preview] SSE stream error:", err);
+      setSunlightLoading(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Mount the map once.
   useEffect(() => {
@@ -391,6 +500,11 @@ export function MapLibrePreviewClient() {
       addPlacesLayers(map);
       attachInteractions(map);
       setReady(true);
+
+      // Instantiate the sunlight layer and kick off the timeline fetch.
+      const sunlightLayer = new MapLibreSunlightLayer({ map });
+      sunlightLayerRef.current = sunlightLayer;
+      void fetchTimeline(map);
     });
 
     // On every style swap (basemap switcher), re-add the places overlay
@@ -404,9 +518,11 @@ export function MapLibrePreviewClient() {
 
     return () => {
       map.remove();
+      sunlightLayerRef.current?.dispose();
+      sunlightLayerRef.current = null;
       mapRef.current = null;
     };
-  }, []);
+  }, [fetchTimeline]);
 
   // Apply basemap switches.
   useEffect(() => {
@@ -417,6 +533,16 @@ export function MapLibrePreviewClient() {
     if (!target) return;
     map.setStyle(buildStyle(target));
   }, [basemapId, ready]);
+
+  // Repaint the sunlight overlay when the slider or toggles change.
+  useEffect(() => {
+    const layer = sunlightLayerRef.current;
+    if (!layer) return;
+    layer.setVisible(sunlightVisible);
+    if (sunlightVisible) {
+      layer.setFrameIndex(frameIndex, showSunny, showShadow);
+    }
+  }, [sunlightVisible, frameIndex, showSunny, showShadow]);
 
   return (
     <div className="absolute inset-0">
@@ -445,14 +571,70 @@ export function MapLibrePreviewClient() {
           ))}
         </div>
       </div>
+      {/* Sunlight overlay controls */}
+      <div
+        className="absolute bottom-10 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2
+          rounded-md bg-white/95 px-3 py-2 shadow-md backdrop-blur"
+        style={{ font: "13px system-ui, sans-serif" }}
+      >
+        <button
+          type="button"
+          onClick={() => setSunlightVisible((v) => !v)}
+          title="Afficher/masquer l'overlay"
+          style={{ fontSize: "16px", lineHeight: 1 }}
+        >
+          {sunlightVisible ? "☀️" : "🌙"}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowSunny((v) => !v)}
+          className={showSunny ? "opacity-100" : "opacity-40"}
+          title="Ensoleillé"
+          style={{ fontSize: "16px", lineHeight: 1 }}
+        >
+          ☀
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowShadow((v) => !v)}
+          className={showShadow ? "opacity-100" : "opacity-40"}
+          title="Ombragé"
+          style={{ fontSize: "16px", lineHeight: 1 }}
+        >
+          🌑
+        </button>
+
+        {timelineFrames.length > 1 && (
+          <>
+            <input
+              type="range"
+              min={0}
+              max={timelineFrames.length - 1}
+              value={frameIndex}
+              onChange={(e) => setFrameIndex(Number(e.target.value))}
+              style={{ width: "140px" }}
+            />
+            <span className="w-12 text-center">
+              {timelineFrames[frameIndex]?.localTime ?? "--:--"}
+            </span>
+          </>
+        )}
+
+        {sunlightLoading && (
+          <span className="text-gray-500">chargement…</span>
+        )}
+      </div>
+
       {/* Phase tag */}
       <div
         className="absolute bottom-3 right-3 z-10 rounded-md bg-white/95 px-3 py-2 shadow-md backdrop-blur"
         style={{ font: "12px system-ui, sans-serif" }}
       >
-        <div className="font-semibold text-gray-800">MapLibre preview — Phase 1</div>
+        <div className="font-semibold text-gray-800">MapLibre preview — Phase 2</div>
         <div className="text-gray-600">
-          Basemap natif + clustering GeoJSON. Pas d&apos;overlay soleil (Phase 2).
+          Basemap natif + clustering GeoJSON. Overlay soleil natif (Phase 2 ✓).
         </div>
         <a href="/" className="mt-1 inline-block text-blue-600 hover:underline">
           ← Retour à la carte Leaflet
