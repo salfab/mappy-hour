@@ -17,7 +17,15 @@ const placeSchema = z.object({
   name: z.string(),
   category: z.enum(["park", "terrace_candidate"]),
   subcategory: z.string(),
+  /**
+   * Tri-state semantics (ADR-0025, v0.2.0+):
+   *   `hasOutdoorSeating=true`  → `outdoor_seating=yes` explicitly.
+   *   `hasOutdoorSeating=false` + `hasOutdoorSeatingUnknown=true`  → tag absent.
+   *   `hasOutdoorSeating=false` + `hasOutdoorSeatingUnknown=false|undef` → tag was `no`.
+   * Pre-v0.2.0 files just have `hasOutdoorSeating`; the new fields are optional.
+   */
   hasOutdoorSeating: z.boolean(),
+  hasOutdoorSeatingUnknown: z.boolean().optional(),
   lat: z.number(),
   lon: z.number(),
   tags: z.record(z.string(), z.string()),
@@ -32,6 +40,7 @@ const placesFileSchema = z.object({
     parks: z.number(),
     terraceCandidates: z.number(),
     outdoorSeatingYes: z.number(),
+    outdoorSeatingUnknown: z.number().optional(),
   }),
   places: z.array(placeSchema),
 });
@@ -141,6 +150,9 @@ export async function loadAllPlaces(): Promise<PlacesFile | null> {
         (place) => place.category === "terrace_candidate",
       ).length,
       outdoorSeatingYes: places.filter((place) => place.hasOutdoorSeating).length,
+      outdoorSeatingUnknown: places.filter(
+        (place) => place.hasOutdoorSeatingUnknown === true,
+      ).length,
     },
     places,
   };

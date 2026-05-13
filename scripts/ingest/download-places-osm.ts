@@ -39,7 +39,18 @@ interface NormalizedPlace {
   name: string;
   category: "park" | "terrace_candidate";
   subcategory: string;
+  /**
+   * Tri-state semantics for terrace presence (cf. ADR-0025):
+   *  - `hasOutdoorSeating=true`  → `outdoor_seating=yes` explicitly set on OSM.
+   *  - `hasOutdoorSeating=false` AND `hasOutdoorSeatingUnknown=false` → `outdoor_seating=no` explicitly set.
+   *  - `hasOutdoorSeating=false` AND `hasOutdoorSeatingUnknown=true`  → tag absent (coverage gap, NOT a negative).
+   *
+   * Historical note: prior schemas (<= v0.1.x) also treated `terrace=yes` and
+   * `garden=yes` as truthy. Those tags don't carry HORECA semantics in OSM,
+   * so they're dropped. Empirically affected <0.1% of places.
+   */
   hasOutdoorSeating: boolean;
+  hasOutdoorSeatingUnknown?: boolean;
   lat: number;
   lon: number;
   region: string;
@@ -127,12 +138,16 @@ function normalizePlace(element: OverpassElement, region: string): NormalizedPla
   }
   if (!category) return null;
 
-  const hasOutdoorSeating =
-    tags.outdoor_seating === "yes" ||
-    tags["terrace"] === "yes" ||
-    tags["garden"] === "yes";
+  // Tri-state semantics (ADR-0025): distinguish "no tag" (coverage gap) from
+  // an explicit `outdoor_seating=no`. Parks never carry HORECA seating tags
+  // — they should report unknown=false (the concept doesn't apply), but we
+  // keep them consistent by only flagging `Unknown` on `terrace_candidate`.
+  const rawSeating = tags.outdoor_seating;
+  const hasOutdoorSeating = rawSeating === "yes";
+  const hasOutdoorSeatingUnknown =
+    category === "terrace_candidate" && rawSeating === undefined;
 
-  return {
+  const normalized: NormalizedPlace = {
     id: `osm:${element.type}:${element.id}`,
     source: "osm",
     osmType: element.type,
@@ -146,6 +161,8 @@ function normalizePlace(element: OverpassElement, region: string): NormalizedPla
     region,
     tags,
   };
+  if (hasOutdoorSeatingUnknown) normalized.hasOutdoorSeatingUnknown = true;
+  return normalized;
 }
 
 async function fetchOverpassData(query: string): Promise<OverpassResponse> {
@@ -207,7 +224,12 @@ interface PerRegionFile {
   source: string;
   bbox: BBox;
   totalPlaces: number;
-  categories: { parks: number; terraceCandidates: number; outdoorSeatingYes: number };
+  categories: {
+    parks: number;
+    terraceCandidates: number;
+    outdoorSeatingYes: number;
+    outdoorSeatingUnknown: number;
+  };
   places: NormalizedPlace[];
 }
 
@@ -221,6 +243,7 @@ function buildPerRegionPayload(region: string, places: NormalizedPlace[]): PerRe
       parks: places.filter((p) => p.category === "park").length,
       terraceCandidates: places.filter((p) => p.category === "terrace_candidate").length,
       outdoorSeatingYes: places.filter((p) => p.hasOutdoorSeating).length,
+      outdoorSeatingUnknown: places.filter((p) => p.hasOutdoorSeatingUnknown === true).length,
     },
     places,
   };
@@ -289,6 +312,7 @@ async function main() {
       parks: allPlaces.filter((p) => p.category === "park").length,
       terraceCandidates: allPlaces.filter((p) => p.category === "terrace_candidate").length,
       outdoorSeatingYes: allPlaces.filter((p) => p.hasOutdoorSeating).length,
+      outdoorSeatingUnknown: allPlaces.filter((p) => p.hasOutdoorSeatingUnknown === true).length,
     },
     places: allPlaces,
   };

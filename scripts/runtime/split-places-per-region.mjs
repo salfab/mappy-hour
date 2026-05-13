@@ -40,6 +40,7 @@ function main() {
         parks: regionPlaces.filter((p) => p.category === "park").length,
         terraceCandidates: regionPlaces.filter((p) => p.category === "terrace_candidate").length,
         outdoorSeatingYes: regionPlaces.filter((p) => p.hasOutdoorSeating).length,
+        outdoorSeatingUnknown: regionPlaces.filter((p) => p.hasOutdoorSeatingUnknown === true).length,
       },
       places: regionPlaces,
     };
