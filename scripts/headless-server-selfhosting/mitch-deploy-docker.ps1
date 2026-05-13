@@ -11,7 +11,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "git pull failed"; exit 1 }
 # Compose the runtime .env from two sources:
 #   - .env.ci  : secrets pushed by the deploy workflow (UMAMI_APP_SECRET,
 #                UMAMI_DB_PASSWORD, …). Owned by GitHub Actions.
-#   - host-stable variables (atlas + buildings paths) — hardcoded here
+#   - host-stable variables (atlas + buildings paths) - hardcoded here
 #     because they're a property of this specific Mitch box, not of
 #     the application.
 # Anything previously edited by hand in .env is overwritten on every
@@ -25,14 +25,13 @@ $hostStable = @(
   "MAPPY_FORCE_CACHE_ONLY=true"
 )
 if (-not (Test-Path $envCi)) {
-  Write-Host "  WARNING: .env.ci not found — CI may have failed to scp secrets. Reusing existing .env."
+  Write-Host "  WARNING: .env.ci not found. CI may have failed to scp secrets. Reusing existing .env."
 } else {
   $ciContent = Get-Content $envCi -Raw
   $merged = ($hostStable -join "`n") + "`n" + $ciContent
   Set-Content -Path $envOut -Value $merged -Encoding UTF8
   Remove-Item $envCi -ErrorAction SilentlyContinue
-  $envLineCount = (Get-Content $envOut).Length
-  Write-Host ("  .env regenerated ({0} lines)" -f $envLineCount)
+  Write-Host "  .env regenerated"
 }
 
 Write-Host "=== docker compose pull ==="
@@ -43,7 +42,7 @@ Write-Host "=== docker compose up -d ==="
 wsl -d Ubuntu -u root -e bash -lc 'cd /mnt/c/srv/mappy-hour && docker compose up -d --remove-orphans'
 if ($LASTEXITCODE -ne 0) { Write-Host "docker compose up failed"; exit 1 }
 
-# Reclaim space — Mitch is space-constrained and each `pull` keeps the
+# Reclaim space - Mitch is space-constrained and each `pull` keeps the
 # previous image as dangling layers, plus the build cache that the compose
 # build profile accumulates. Without prune, the WSL2 vhdx grows monotonically
 # until creation of new containers fails with E_FAIL (cf. incident 2026-05-12).
