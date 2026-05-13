@@ -75,7 +75,7 @@ MAPPY_ATLAS_PATH=/mnt/c/mappy-data/cache/sunlight
 ```
 
 Le serveur sert uniquement le cache précompute. Les tuiles manquantes retournent
-503 (cf. `environment-config.md` pour les effets exacts de `MAPPY_FORCE_CACHE_ONLY`).
+503 (cf. `docs/runtime-config.md` pour les effets exacts de `MAPPY_FORCE_CACHE_ONLY`).
 
 ### Station avec GPU (Vulkan) — non implémenté côté Docker
 
@@ -86,7 +86,8 @@ MAPPY_BUILDINGS_SHADOW_MODE=rust-wgpu-vulkan
 
 Le serveur peut régénérer à la demande. Requiert le binaire Rust compilé dans
 l'image — l'image GHCR actuelle ne le contient pas (build serving-only). Pour
-ce mode, déploiement bare-metal recommandé (cf. `docs/deployment/server-setup.md`).
+ce mode, exécuter `pnpm start` directement depuis le repo sur une machine GPU
+plutôt que via l'image Docker.
 
 ---
 

@@ -1,9 +1,9 @@
 # Déploiement Mappy-Hour from scratch (Windows + WSL2 + Docker Engine + Tailscale Funnel)
 
 Procédure reproductible pour déployer mappy-hour sur **n'importe quelle machine Windows 10/11**
-(référence : `mitch`). Source de vérité unique pour le déploiement — les autres documents
-(`docs/deployment/*`, `docs/deploy-handoff.md`, `scripts/headless-server-selfhosting/*`)
-sont historiques ou des compléments topiques.
+(référence : `mitch`). Source de vérité unique pour le déploiement — voir aussi
+`docs/runtime-config.md` (variables `MAPPY_*`) et `scripts/headless-server-selfhosting/*`
+pour les scripts opérationnels.
 
 > Toutes les commandes sont **PowerShell admin** sauf indication contraire (`# bash WSL` = à
 > lancer dans Ubuntu WSL2 en root).
@@ -506,46 +506,6 @@ re-scan les hashes disponibles (`findCachedModelVersionHash`).
 
 ---
 
-## 7ter. Migration d'une install existante — ajout du bind-mount buildings
-
-À faire **une seule fois** sur les hôtes déployés **avant le 2026-05-12** (avant
-l'introduction du bind-mount `MAPPY_BUILDINGS_PATH`). Sans ça, toute
-tentative de re-précompute manque l'index buildings global.
-
-> **Note Posture 4** : si tu migres depuis une install qui utilisait
-> `MAPPY_PLACES_PATH`, supprime-la du `.env` — les places sont
-> maintenant bakées dans l'image (§7quinquies). Tu peux aussi
-> supprimer `C:\mappy-data\processed\places` côté host, il n'est plus lu.
-
-```powershell
-# Sur Mitch, en session kiosque (ou SSH vers kiosque)
-
-# 1) Créer le répertoire host
-New-Item -ItemType Directory -Force C:\mappy-data\processed\buildings | Out-Null
-
-# 2) Étendre le .env existant (et retirer MAPPY_PLACES_PATH si présent)
-$envPath = "C:\srv\mappy-hour\.env"
-Add-Content -Path $envPath -Value "MAPPY_BUILDINGS_PATH=/mnt/c/mappy-data/processed/buildings"
-# Optionnel : nettoyer l'ancienne var places
-(Get-Content $envPath) | Where-Object { $_ -notmatch '^MAPPY_PLACES_PATH=' } | Set-Content $envPath
-
-# 3) Pull du compose à jour
-Set-Location C:\srv\mappy-hour
-git pull --ff-only
-
-# 4) Recréer le container avec la nouvelle config (pas juste restart — le bind-mount change)
-wsl -d Ubuntu -u root -e bash -c 'cd /mnt/c/srv/mappy-hour && docker compose up -d --force-recreate mappy-hour'
-
-# 5) Peupler le bind-mount buildings via le profil loader si re-précompute prévu
-wsl -d Ubuntu -u root -e bash -c 'cd /mnt/c/srv/mappy-hour && docker compose --profile loader run --rm atlas-loader --repo=salfab/mappy-hour --release=latest --with-buildings'
-```
-
-> **Note** : `docker compose up -d --force-recreate` (étape 4) est obligatoire
-> à cause du changement de spec volumes. Un simple `restart` ne réapplique pas
-> les bind-mounts.
-
----
-
 ## 7quinquies. Lifecycle places (Posture 4)
 
 Depuis Posture 4, les fichiers OSM places (~100 KB) suivent un modèle
@@ -620,7 +580,7 @@ docker run --rm \
 
 ## 7quater. Déployer une nouvelle release atlas
 
-Workflow normal une fois la migration §7ter faite. Source de vérité côté CI :
+Workflow normal. Source de vérité côté CI :
 `.github/workflows/refresh-mitch-atlas.yml` (déclenchable manuellement).
 
 ### Côté repo / dev box
@@ -671,7 +631,7 @@ curl -sS 'https://mitch.tail63c42d.ts.net/api/sunlight/timeline/stream?minLon=6.
 ```
 
 Critères :
-- ≥ 1 `event: places` (sinon : places non peuplé sur host → revoir §7ter étape 5)
+- ≥ 1 `event: places` (sinon : places non peuplé dans l'image → revoir §7quinquies)
 - `tilesFromCache:N tilesComputed:0` (sinon : modelVersionHash mismatch)
 - `warnings: []` ou warnings connus uniquement (corrupt adaptive horizon — bénin)
 
@@ -1042,6 +1002,8 @@ gh workflow run "Deploy to Mitch"
 
 - [x] Bind `127.0.0.1:3000` sur l'hôte (jamais `0.0.0.0`) — défini dans `docker-compose.yml`.
 - [x] Volume atlas monté en **read-only** côté container.
+- [x] Container hardening dans `docker-compose.yml` : `cap_drop: [ALL]`,
+      `security_opt: [no-new-privileges:true]`, `read_only: true`, `tmpfs: [/tmp]`.
 - [x] Headers Next.js : `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`,
       `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`,
       `poweredByHeader: false` — voir `next.config.ts`.
@@ -1049,25 +1011,7 @@ gh workflow run "Deploy to Mitch"
 - [x] `tag:ci` : nœuds éphémères, expirent à la fin du job GHA.
 - [x] Isolation WSL2 (VM séparée) + Tailscale Funnel (pas d'expo directe LAN/WAN).
 
-### 11.2 Restauré
-
-Le `docker-compose.yml` applique maintenant le hardening du plan initial :
-
-```yaml
-cap_drop: [ALL]
-security_opt: [no-new-privileges:true]
-read_only: true
-tmpfs: [/tmp]
-```
-
-Confirmé sur 120s+ avec l'image courante : Next.js 16 démarre et reste healthy,
-le healthcheck `node -e ... GET /api/datasets` passe. Le crashloop `ELIFECYCLE
-Command failed` observé pendant la mise en place initiale n'a pas été reproduit
-après rebuild — il semble lié à une instabilité transitoire (probablement
-pression disque pendant l'install kiosque ou cycles de la VM WSL2 d'avant
-l'activation systemd) plutôt qu'à un manque de capability.
-
-### 11.3 Reste à durcir
+### 11.2 Reste à durcir
 
 - [ ] **`user: node` (UID non-root)** — seul gap restant côté container. Avec
       `read_only` + `tmpfs /home/node`, le tmpfs est monté `root:root` par
@@ -1410,11 +1354,8 @@ récurrents vivent directement dans le repo sous `scripts/headless-server-selfho
 
 ## 16. Voir aussi
 
-- `docs/deployment/environment-config.md` — variables d'env (`MAPPY_*`) en détail
-- `docs/deployment/server-setup.md` — déploiement Node.js natif via systemd (**legacy**,
-  non utilisé sur mitch ; conservé pour Linux nu sans Docker)
-- `docs/deploy-handoff.md` — historique du déploiement initial Node.js natif (mai 2026,
-  pré-bascule Docker)
+- `docs/runtime-config.md` — variables d'environnement runtime (`MAPPY_*`), flow
+  `MAPPY_FORCE_CACHE_ONLY`, profils par environnement et `.env` Docker
 - `scripts/headless-server-selfhosting/README.md` — bootstrap initial SSH + Tailscale du
   serveur headless
 - `scripts/headless-server-selfhosting/deploy-notes.md` — notes d'archi (bind-mount,

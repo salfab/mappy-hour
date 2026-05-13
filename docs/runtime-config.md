@@ -1,10 +1,13 @@
-# Configuration par environnement
+# Configuration runtime (`MAPPY_*`)
 
 > **Principe d'architecture immuable** : un seul build artifact (image Docker ou
 > `pnpm build`) tourne dans tous les environnements. La configuration spécifique
 > à chaque cible est injectée **au démarrage** via des variables d'environnement.
 > Aucune variable n'est inlinée à la compilation — changer un flag = redémarrer,
 > jamais rebuild.
+
+Cible de déploiement effective : mitch (Windows + WSL2 + Docker + Tailscale Funnel).
+Cf. `docs/deploy.md` pour la procédure complète d'install.
 
 ---
 
@@ -51,7 +54,7 @@ les scripts `pnpm precompute:*` et `pnpm benchmark:*`.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ MAPPY_FORCE_CACHE_ONLY=true (set in .env, systemd, container)   │
+│ MAPPY_FORCE_CACHE_ONLY=true (set in .env / container)           │
 └────────────────────┬────────────────────────────────────────────┘
                      │
        ┌─────────────┼─────────────┐
@@ -75,11 +78,9 @@ les scripts `pnpm precompute:*` et `pnpm benchmark:*`.
 
 ---
 
-## Comment passer les variables au déploiement
+## Comment passer les variables au déploiement (Docker)
 
-### 1. Docker (méthode recommandée)
-
-#### Option A — env vars en ligne
+### Option A — env vars en ligne
 
 ```bash
 docker run -d \
@@ -92,7 +93,7 @@ docker run -d \
   ghcr.io/salfab/mappy-hour:latest
 ```
 
-#### Option B — fichier `.env`
+### Option B — fichier `.env`
 
 Créer un `.env.production` à côté du compose :
 
@@ -108,7 +109,7 @@ MAPPY_TIMELINE_CACHE_PREFETCH=1
 docker run -d --env-file .env.production -v /data/mappy-hour:/data -p 3000:3000 ghcr.io/salfab/mappy-hour:latest
 ```
 
-#### Option C — `docker-compose.yml`
+### Option C — `docker-compose.yml`
 
 Le fichier `docker-compose.yml` du repo est un point de départ. Override par environnement avec un fichier de surcharge :
 
@@ -122,116 +123,6 @@ services:
 ```
 
 `docker compose up -d` charge automatiquement `docker-compose.yml` + `docker-compose.override.yml`.
-
----
-
-### 2. Bare metal Linux (systemd)
-
-Utiliser `EnvironmentFile=` dans l'unit pour pointer vers un fichier `.env` :
-
-```ini
-# /etc/systemd/system/mappy-hour.service
-[Unit]
-Description=Mappy Hour
-After=network.target
-
-[Service]
-Type=simple
-User=mappy
-WorkingDirectory=/opt/mappy-hour
-EnvironmentFile=/etc/mappy-hour/env
-ExecStart=/usr/bin/pnpm start
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-# /etc/mappy-hour/env (chmod 640, owner mappy:mappy)
-NODE_ENV=production
-PORT=3000
-MAPPY_DATA_ROOT=/data/mappy-hour
-MAPPY_FORCE_CACHE_ONLY=true
-MAPPY_TIMELINE_CACHE_PREFETCH=4
-```
-
-Modifier la config :
-
-```bash
-sudo $EDITOR /etc/mappy-hour/env
-sudo systemctl restart mappy-hour
-```
-
----
-
-### 3. Bare metal Windows (NSSM) — legacy
-
-> Approche **plus utilisée sur mitch** depuis la bascule Docker dans WSL2.
-> Conservée pour mémoire et pour les machines sans Docker.
-
-
-```powershell
-nssm install MappyHour "C:\tools\node-v20.18.0\node.exe" `
-  "C:\srv\mappy-hour\.next\standalone\server.js"
-
-nssm set MappyHour AppEnvironmentExtra `
-  "NODE_ENV=production" `
-  "PORT=3000" `
-  "MAPPY_DATA_ROOT=C:\mappy-data" `
-  "MAPPY_FORCE_CACHE_ONLY=true" `
-  "MAPPY_TIMELINE_CACHE_PREFETCH=1" `
-  "MAPPY_ATLAS_MEMORY_CACHE_ENTRIES=0"
-
-nssm start MappyHour
-```
-
-Modifier la config :
-
-```powershell
-nssm set MappyHour AppEnvironmentExtra "NODE_ENV=production" "MAPPY_FORCE_CACHE_ONLY=false" ...
-nssm restart MappyHour
-```
-
-Alternative scriptée (cf. `scripts/headless-server-selfhosting/mitch-deploy-no-pull.ps1`) : un `C:\temp\mitch-start.ps1` qui pose les `$env:*` avant `pnpm start`.
-
----
-
-### 4. Kubernetes
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mappy-hour-config
-data:
-  NODE_ENV: production
-  PORT: "3000"
-  MAPPY_DATA_ROOT: /data
-  MAPPY_TIMELINE_CACHE_PREFETCH: "4"
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: mappy-hour-secrets
-type: Opaque
-stringData:
-  MAPPY_FORCE_CACHE_ONLY: "true"  # ou false sur un node avec GPU
----
-apiVersion: apps/v1
-kind: Deployment
-spec:
-  template:
-    spec:
-      containers:
-        - name: mappy-hour
-          image: ghcr.io/salfab/mappy-hour:latest
-          envFrom:
-            - configMapRef:
-                name: mappy-hour-config
-            - secretRef:
-                name: mappy-hour-secrets
-```
 
 ---
 
@@ -284,29 +175,9 @@ MAPPY_DATA_ROOT=D:\mappy-hour-data
 
 ## Vérifier la config active sur un serveur
 
-### Linux
-
-```bash
-sudo systemctl show mappy-hour --property=Environment
-sudo cat /proc/$(pidof node)/environ | tr '\0' '\n' | grep ^MAPPY_
-```
-
-### Windows (NSSM)
-
-```powershell
-nssm get MappyHour AppEnvironmentExtra
-```
-
-### Docker
-
 ```bash
 docker exec mappy-hour env | grep -E '^(MAPPY_|NODE_ENV|PORT)'
 ```
-
-### Endpoint santé (recommandation future)
-
-Aujourd'hui aucun endpoint n'expose la config active. À ajouter en cas de besoin :
-`GET /api/health` retournant `{ cacheOnly: bool, dataRoot: string, node: string }`.
 
 ---
 
