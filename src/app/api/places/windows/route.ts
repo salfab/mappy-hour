@@ -30,6 +30,7 @@ import {
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { evaluateInstantSunlight } from "@/lib/sun/solar";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
+import { buildTerraceCandidates } from "@/lib/places/snap-to-outdoor";
 
 export const runtime = "nodejs";
 
@@ -270,50 +271,6 @@ function isInsideBbox(
     lon <= bbox[2] &&
     lat <= bbox[3]
   );
-}
-
-function offsetPointByMeters(
-  lat: number,
-  lon: number,
-  distanceMeters: number,
-  bearingDeg: number,
-): { lat: number; lon: number } {
-  const bearingRad = (bearingDeg * Math.PI) / 180;
-  const metersPerDegreeLat = 111_320;
-  const metersPerDegreeLon =
-    metersPerDegreeLat * Math.max(Math.cos((lat * Math.PI) / 180), 0.01);
-  const deltaLat = (Math.cos(bearingRad) * distanceMeters) / metersPerDegreeLat;
-  const deltaLon = (Math.sin(bearingRad) * distanceMeters) / metersPerDegreeLon;
-
-  return {
-    lat: lat + deltaLat,
-    lon: lon + deltaLon,
-  };
-}
-
-function buildTerraceCandidates(lat: number, lon: number): Array<{
-  lat: number;
-  lon: number;
-  offsetMeters: number;
-}> {
-  const candidates: Array<{ lat: number; lon: number; offsetMeters: number }> = [
-    { lat, lon, offsetMeters: 0 },
-  ];
-  const distances = [4, 8];
-  const bearings = [0, 45, 90, 135, 180, 225, 270, 315];
-
-  for (const distance of distances) {
-    for (const bearing of bearings) {
-      const shifted = offsetPointByMeters(lat, lon, distance, bearing);
-      candidates.push({
-        lat: shifted.lat,
-        lon: shifted.lon,
-        offsetMeters: distance,
-      });
-    }
-  }
-
-  return candidates;
 }
 
 async function pickOutdoorEvaluationPoint(
