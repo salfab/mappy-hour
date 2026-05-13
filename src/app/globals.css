@@ -34,6 +34,21 @@ code {
   background: #0f172a;
 }
 
+/* Browsers position Leaflet tile <img>s with subpixel CSS transforms.
+   On fractional DPR (1.25/1.5/2.25, common Windows scaling) the rounded
+   edges of adjacent tiles fall on different pixels, leaving a 1px gap
+   through which the dark container background shows as a hairline.
+   The classic Leaflet workaround: a 1px transparent outline that
+   slightly overlaps neighbours and hides the rounding seam. Cheap, no
+   visual side-effects.
+
+   Skip the trick on canvas-backed tile layers (our bitmap overlays use
+   <canvas> inside .leaflet-overlay-pane, not .leaflet-tile, so they're
+   already unaffected). */
+.leaflet-tile {
+  outline: 1px solid transparent;
+}
+
 .leaflet-tooltip.sunlit-place-label {
   background: rgba(15, 23, 42, 0.9);
   border: 1px solid rgba(226, 232, 240, 0.35);
