@@ -3452,7 +3452,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
             [place.evaluationLat ?? place.lat, place.evaluationLon ?? place.lon],
             {
               icon: L.divIcon({
-                html: buildVenueMarkerHtml(markerClassName),
+                html: buildVenueMarkerHtml(markerClassName, place.venueType),
                 className: "sunlit-venue-marker-shell",
                 iconSize: isSelected ? [42, 48] : [34, 42],
                 iconAnchor: isSelected ? [21, 44] : [17, 38],

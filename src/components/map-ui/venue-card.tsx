@@ -1,6 +1,6 @@
 "use client";
 
-import { getVenueSunStatus, VenueSunStatusIcon, VenueTerraceIcon } from "./venue-assets";
+import { getVenueSunStatus, VenueSunStatusIcon, VenueTypeIcon } from "./venue-assets";
 
 export type VenueType = "restaurant" | "bar" | "snack" | "foodtruck" | "other";
 
@@ -73,7 +73,7 @@ export function VenueCard(props: VenueCardProps) {
               : "bg-amber-100 text-amber-600"
           }`}
         >
-          <VenueTerraceIcon className="h-6 w-6" />
+          <VenueTypeIcon venueType={props.place.venueType} className="h-6 w-6" />
         </span>
         <span className="grid min-w-0 gap-1">
           <span className="truncate font-semibold text-slate-950">{props.place.name}</span>
