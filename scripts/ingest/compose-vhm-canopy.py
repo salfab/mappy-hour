@@ -49,11 +49,10 @@ REGIONS = {
     # sans Lavaux. Matches VEVEY_CITY_LOCAL_BBOX [6.82, 46.44, 6.89, 46.49].
     "vevey_city": {"minE": 2551000, "minN": 1143000, "maxE": 2557000, "maxN": 1149000},
     # Ville de Neuchâtel (commune OSM minus Lac de Neuchâtel) + Auvernier
-    # (rattaché à Milvignes, ~3 km SW). Matches NEUCHATEL_LOCAL_BBOX
-    # [6.84, 46.95, 7.00, 47.07]. Auvernier LV95 ≈ E[2555750..2557250]
-    # N[1200500..1201750] : on étend vers le SW (minE 2560k→2554k, minN
-    # 1202k→1198k) en alignement 1000m.
-    "neuchatel": {"minE": 2554000, "minN": 1198000, "maxE": 2566000, "maxN": 1207000},
+    # (rattaché à Milvignes, ~3 km SW) + Hauterive (NE) + Saint-Blaise
+    # (historic 2026-05-13, post-2021 merger Laténa). Matches NEUCHATEL_LOCAL_BBOX
+    # [6.84, 46.95, 7.02, 47.07]. Saint-Blaise LV95 max ≈ E~2567750 N~1208250.
+    "neuchatel": {"minE": 2554000, "minN": 1198000, "maxE": 2568000, "maxN": 1209000},
     # Ville de La Chaux-de-Fonds (centre urbain uniquement, hors forêts du Jura).
     # Matches LA_CHAUX_DE_FONDS_LOCAL_BBOX [6.79, 47.085, 6.86, 47.12].
     "la_chaux_de_fonds": {"minE": 2550000, "minN": 1215000, "maxE": 2557000, "maxN": 1219000},
