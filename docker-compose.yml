@@ -91,7 +91,11 @@ services:
       umami-db:
         condition: service_healthy
     ports:
-      - "127.0.0.1:3001:3000"
+      # 0.0.0.0 → reachable via Mitch's Tailscale IP/hostname for the
+      # admin dashboard (no SSH tunnel needed). Mitch has no public route
+      # on port 3001 — only port 443 is exposed via Tailscale Funnel —
+      # so this is safe: tailnet members only.
+      - "0.0.0.0:3001:3000"
 
   umami-db:
     image: postgres:15-alpine
