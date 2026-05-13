@@ -59,7 +59,7 @@ export interface ViewportClusterPoint {
  */
 export function pickLod(zoom: number): ViewportPlaceLod {
   if (zoom <= 12) return "L0";
-  if (zoom <= 15) return "L1";
+  if (zoom <= 17) return "L1";
   return "L2";
 }
 
