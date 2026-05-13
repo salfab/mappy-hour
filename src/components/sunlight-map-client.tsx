@@ -3193,6 +3193,29 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         return `${url}${sep}api_key=${stadiaApiKey}`;
       };
 
+      // Per-tile fallback to CARTO Voyager when a Stadia tile errors (HTTP
+      // 4xx including 429 quota-exceeded, network error, …). Voyager uses
+      // the same {z}/{x}/{y} scheme so the rebuild is straightforward.
+      // Applied only to BASE tiles — falling back overlay layers (labels,
+      // lines) to Voyager would stack full Voyager tiles on top of the
+      // watercolor base = visual mess. If the overlay quota is hit, we
+      // just leave the labels blank.
+      const CARTO_SUBDOMAINS = ["a", "b", "c", "d"];
+      const voyagerUrl = (coords: { x: number; y: number; z: number }) => {
+        const sub = CARTO_SUBDOMAINS[(coords.x + coords.y) % CARTO_SUBDOMAINS.length];
+        return `https://${sub}.basemaps.cartocdn.com/rastertiles/voyager/${coords.z}/${coords.x}/${coords.y}.png`;
+      };
+      const attachStadiaFallback = (layer: TileLayer, url: string) => {
+        if (!url.includes("tiles.stadiamaps.com")) return;
+        layer.on("tileerror", (event: L.TileErrorEvent) => {
+          const tile = event.tile as HTMLImageElement;
+          // Guard against infinite-loop when Voyager itself errors out.
+          if (tile.dataset.fallbackApplied === "true") return;
+          tile.dataset.fallbackApplied = "true";
+          tile.src = voyagerUrl(event.coords);
+        });
+      };
+
       // For composite basemaps (Stamen Watercolor + Toner overlays), pack
       // the base tile layer and its overlays into an `L.layerGroup` so the
       // layer-control treats them as one selectable unit. Toggling switches
@@ -3204,6 +3227,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
             maxZoom: MAP_MAX_ZOOM,
             attribution: option.attribution,
           });
+          attachStadiaFallback(baseTile, option.url);
           if (!option.overlays || option.overlays.length === 0) {
             return [option.id, baseTile];
           }
