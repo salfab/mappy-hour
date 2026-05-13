@@ -4940,6 +4940,20 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
           };
         });
         setDailyFrameIndex((prev) => prev || 0);
+
+        // Umami analytics — emit one event per compute job *the server actually
+        // accepted* (not per fetch attempt: pan/zoom cancels prior fetches via
+        // AbortController, so tracking earlier would overcount). Coordinates
+        // bucketed to 3 decimals (~110m) to keep dashboard cardinality usable.
+        if (typeof window !== "undefined" && window.umami) {
+          const centerLat = Math.round(((bbox[1] + bbox[3]) / 2) * 1000) / 1000;
+          const centerLon = Math.round(((bbox[0] + bbox[2]) / 2) * 1000) / 1000;
+          window.umami.track("compute-start", {
+            centerLat,
+            centerLon,
+            tileCount: data.totalTiles,
+          });
+        }
       } else if (eventType === "tile") {
         const data = JSON.parse(jsonData) as {
           tileId: string;
