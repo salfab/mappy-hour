@@ -3236,8 +3236,20 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       map.on("baselayerchange", (event: L.LayersControlEvent) => {
         const option = BASE_MAP_OPTIONS.find((candidate) => candidate.label === event.name);
         if (!option) return;
+        const fromBasemap = baseMapStyleRef.current;
         baseMapStyleRef.current = option.id;
         setBaseMapStyle(option.id);
+
+        // Umami analytics — explicit user interaction with the basemap
+        // selector. State restoration paths (storage, deep-link) call
+        // setBaseMapStyle directly without firing this Leaflet event, so we
+        // only track real switches initiated from the layers control.
+        if (typeof window !== "undefined" && window.umami) {
+          window.umami.track("basemap-change", {
+            fromBasemap,
+            toBasemap: option.id,
+          });
+        }
       });
 
       sunnyLayerRef.current = L.layerGroup().addTo(map);
@@ -4945,6 +4957,8 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         // accepted* (not per fetch attempt: pan/zoom cancels prior fetches via
         // AbortController, so tracking earlier would overcount). Coordinates
         // bucketed to 3 decimals (~110m) to keep dashboard cardinality usable.
+        // `basemap` lets us cross-reference compute usage with the active
+        // basemap *without* needing every user to interact with the selector.
         if (typeof window !== "undefined" && window.umami) {
           const centerLat = Math.round(((bbox[1] + bbox[3]) / 2) * 1000) / 1000;
           const centerLon = Math.round(((bbox[0] + bbox[2]) / 2) * 1000) / 1000;
@@ -4952,6 +4966,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
             centerLat,
             centerLon,
             tileCount: data.totalTiles,
+            basemap: baseMapStyleRef.current,
           });
         }
       } else if (eventType === "tile") {
