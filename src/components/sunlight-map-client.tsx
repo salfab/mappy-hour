@@ -3181,13 +3181,25 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         storedView?.zoom ?? DEFAULT_MAP_ZOOM,
       );
 
+      // Stadia Maps hosts the Stamen tiles and needs an API key in prod.
+      // We append `?api_key=<key>` to Stadia URLs when NEXT_PUBLIC_STADIA_API_KEY
+      // is set; otherwise (dev / localhost) Stadia serves anonymously up to
+      // their low rate limit. Domain authorization is configured on the
+      // Stadia dashboard, not here.
+      const stadiaApiKey = process.env.NEXT_PUBLIC_STADIA_API_KEY;
+      const withStadiaKey = (url: string): string => {
+        if (!stadiaApiKey || !url.includes("tiles.stadiamaps.com")) return url;
+        const sep = url.includes("?") ? "&" : "?";
+        return `${url}${sep}api_key=${stadiaApiKey}`;
+      };
+
       // For composite basemaps (Stamen Watercolor + Toner overlays), pack
       // the base tile layer and its overlays into an `L.layerGroup` so the
       // layer-control treats them as one selectable unit. Toggling switches
       // the whole stack on/off.
       const baseLayers = Object.fromEntries(
         BASE_MAP_OPTIONS.map((option) => {
-          const baseTile = L.tileLayer(option.url, {
+          const baseTile = L.tileLayer(withStadiaKey(option.url), {
             maxNativeZoom: Math.min(option.maxNativeZoom, MAP_MAX_NATIVE_ZOOM),
             maxZoom: MAP_MAX_ZOOM,
             attribution: option.attribution,
@@ -3196,7 +3208,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
             return [option.id, baseTile];
           }
           const overlayLayers = option.overlays.map((ov) =>
-            L.tileLayer(ov.url, {
+            L.tileLayer(withStadiaKey(ov.url), {
               maxNativeZoom: Math.min(ov.maxNativeZoom ?? option.maxNativeZoom, MAP_MAX_NATIVE_ZOOM),
               maxZoom: MAP_MAX_ZOOM,
               opacity: ov.opacity ?? 1,
