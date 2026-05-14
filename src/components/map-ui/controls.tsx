@@ -189,8 +189,25 @@ export function DaySelector(props: {
   date: string;
   onDateChange: (date: string) => void;
 }) {
+  // Without an explicit showPicker(), clicking an opacity-0 date input on Chrome
+  // doesn't reliably open the native calendar popup — it focuses the day/month
+  // spinbuttons but the dropdown stays hidden. Calling showPicker() during the
+  // user-gesture handler forces the popup to appear.
+  const openPicker = (e: React.MouseEvent<HTMLElement>) => {
+    const target = e.currentTarget;
+    const input = target.querySelector<HTMLInputElement>('input[type="date"]');
+    if (!input) return;
+    try {
+      input.showPicker();
+    } catch {
+      input.focus();
+    }
+  };
   return (
-    <label className="relative flex min-w-[190px] flex-1 cursor-pointer items-center gap-3 rounded-[1.75rem] border border-amber-100 bg-white/80 px-3 py-3 shadow-sm transition focus-within:ring-2 focus-within:ring-amber-300 hover:bg-amber-50/80">
+    <label
+      className="relative flex min-w-[190px] flex-1 cursor-pointer items-center gap-3 rounded-[1.75rem] border border-amber-100 bg-white/80 px-3 py-3 shadow-sm transition focus-within:ring-2 focus-within:ring-amber-300 hover:bg-amber-50/80"
+      onClick={openPicker}
+    >
       <span className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-amber-100 text-amber-500">
         <SunIcon className="h-8 w-8" />
       </span>

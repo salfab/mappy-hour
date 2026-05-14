@@ -4,7 +4,6 @@ export interface CategoryFilters {
   cafe: boolean;
   bar: boolean;
   restaurant: boolean;
-  park: boolean;
   other: boolean;
 }
 
@@ -12,7 +11,6 @@ export const DEFAULT_FILTERS: CategoryFilters = {
   cafe: true,
   bar: true,
   restaurant: true,
-  park: true,
   other: true,
 };
 
@@ -31,7 +29,6 @@ const CHIPS: Chip[] = [
   { key: "cafe",       label: "Cafés",       emoji: "☕" },
   { key: "bar",        label: "Bars",        emoji: "🍺" },
   { key: "restaurant", label: "Restos",      emoji: "🍴" },
-  { key: "park",       label: "Parcs",       emoji: "🌳" },
   { key: "other",      label: "Autres",      emoji: "📍" },
 ];
 
@@ -65,10 +62,9 @@ export function FilterPanel({ filters, onChange }: FilterPanelProps) {
 /** Map a place subcategory + category onto a chip key, so filters work
  *  even when subcategory is missing or unexpected. */
 export function placeChipKey(
-  category: string,
+  _category: string,
   subcategory: string,
 ): keyof CategoryFilters {
-  if (category === "park") return "park";
   switch (subcategory) {
     case "cafe":        return "cafe";
     case "bar":

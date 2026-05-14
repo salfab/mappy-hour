@@ -52,6 +52,10 @@ export function MapLibrePreviewClient() {
   const [frameIndex, setFrameIndex] = useState(0);
   const [timelineFrames, setTimelineFrames] = useState<Array<{ localTime: string }>>([]);
   const [sunlightLoading, setSunlightLoading] = useState(false);
+  // Bumped whenever a fresh sunlight calculation is requested (moveend or
+  // explicit ↻ button). The date-watching effect re-runs on every bump.
+  const [recalcSignal, setRecalcSignal] = useState(0);
+  const sunlightDebounceRef = useRef<number | null>(null);
   const [date, setDate] = useState<string>(() =>
     new Date().toLocaleDateString("sv", { timeZone: "Europe/Zurich" }),
   );
@@ -69,6 +73,10 @@ export function MapLibrePreviewClient() {
   // Raw places kept in a ref so filter changes can re-apply without refetching.
   const rawPlacesRef = useRef<ViewportPlaceLite[]>([]);
   const [filters, setFilters] = useState<CategoryFilters>(DEFAULT_FILTERS);
+  // Ref mirror so closures captured in setStyle / moveend handlers always see
+  // the latest filter state without re-creating the listeners.
+  const filtersRef = useRef(filters);
+  useEffect(() => { filtersRef.current = filters; }, [filters]);
 
   const baseMapsRef = useRef<BaseMapDef[] | null>(null);
   if (baseMapsRef.current === null) {
@@ -108,15 +116,12 @@ export function MapLibrePreviewClient() {
       const json = (await response.json()) as { places?: ViewportPlaceLite[] };
       if (abort.signal.aborted) return;
       rawPlacesRef.current = Array.isArray(json.places) ? json.places : [];
-      applyPlacesToSource(map, filters);
+      applyPlacesToSource(map, filtersRef.current);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       console.warn("[maplibre-preview] viewport places fetch failed:", err);
     }
-    // filters intentionally read fresh inside via the closure — re-runs of
-    // fetchViewportPlaces always pick the latest because applyPlacesToSource
-    // takes `current` explicitly. eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyPlacesToSource, filters]);
+  }, [applyPlacesToSource]);
 
   // Re-apply filters on toggle without refetching from the server.
   useEffect(() => {
@@ -151,12 +156,12 @@ export function MapLibrePreviewClient() {
     [],
   );
 
-  // Trigger initial fetch + on every date change once the map is ready.
+  // Trigger initial fetch + on every date change OR recalc bump.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
     refreshTimeline(map, date);
-  }, [date, ready, refreshTimeline]);
+  }, [date, ready, recalcSignal, refreshTimeline]);
 
   // ── Place card sunlight windows fetch ─────────────────────────────────────
   useEffect(() => {
@@ -257,16 +262,39 @@ export function MapLibrePreviewClient() {
       viewportPlacesDebounceRef.current = window.setTimeout(() => {
         void fetchViewportPlaces(map);
       }, 400);
+      // Auto-refresh the sunlight timeline ~1s after the user stops moving.
+      // Longer debounce than places because the SSE is heavier (worth waiting
+      // until the user has clearly settled on a viewport).
+      if (sunlightDebounceRef.current !== null) {
+        window.clearTimeout(sunlightDebounceRef.current);
+      }
+      sunlightDebounceRef.current = window.setTimeout(() => {
+        setRecalcSignal((c) => c + 1);
+      }, 1000);
     });
 
+    // Track whether we already wired place click/hover listeners — those
+    // attach to the map itself and survive setStyle, so re-attaching on
+    // every styledata would leak duplicate listeners. We only attach once.
+    let placeInteractionsAttached = false;
     map.on("styledata", () => {
       if (!map.getSource("places")) {
         addPlacesLayers(map);
-        attachPlacesInteractions(map, setSelectedPlace);
-        void fetchViewportPlaces(map);
+        if (!placeInteractionsAttached) {
+          attachPlacesInteractions(map, setSelectedPlace);
+          placeInteractionsAttached = true;
+        }
+        // Re-apply current filters from the cached raw places so the cluster
+        // counts repaint immediately without waiting for a refetch.
+        applyPlacesToSource(map, filtersRef.current);
       }
       const sl = sunlightLayerRef.current;
-      if (sl && !map.getLayer(sl.id)) {
+      if (sl) {
+        // MapLibre keeps the custom layer reference across setStyle but does
+        // NOT call onAdd/onRemove on the swap. We force the lifecycle ourselves
+        // so the layer reinitialises its GL program and re-uploads tile
+        // textures into the (potentially) reset GL state machine.
+        if (map.getLayer(sl.id)) map.removeLayer(sl.id);
         map.addLayer(sl, "cluster-circles");
       }
     });
@@ -277,6 +305,10 @@ export function MapLibrePreviewClient() {
       if (viewportPlacesDebounceRef.current !== null) {
         window.clearTimeout(viewportPlacesDebounceRef.current);
         viewportPlacesDebounceRef.current = null;
+      }
+      if (sunlightDebounceRef.current !== null) {
+        window.clearTimeout(sunlightDebounceRef.current);
+        sunlightDebounceRef.current = null;
       }
       viewportPlacesAbortRef.current?.abort();
       viewportPlacesAbortRef.current = null;
@@ -307,11 +339,19 @@ export function MapLibrePreviewClient() {
     <div className="absolute inset-0">
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 
-      {/* Left control panel — date picker + address search.
+      {/* Desktop horizontal search banner at the top of the screen. Hidden on
+          mobile (the mobile search lives inside the left panel below). */}
+      <div className="pointer-events-auto absolute left-1/2 top-3 z-10 hidden w-[420px] -translate-x-1/2 rounded-2xl bg-white/80 p-2 shadow-md backdrop-blur lg:block">
+        <SearchPanel mapRef={mapRef} />
+      </div>
+
+      {/* Left control panel — date + filters (+ search on mobile).
           Mobile: full-width minus margins at top. Desktop: 280px sidebar. */}
       <div className="pointer-events-auto absolute left-3 right-3 top-3 z-10 flex flex-col gap-3 rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur lg:right-auto lg:w-[280px]">
         <DaySelector date={date} onDateChange={setDate} />
-        <SearchPanel mapRef={mapRef} />
+        <div className="lg:hidden">
+          <SearchPanel mapRef={mapRef} />
+        </div>
         <FilterPanel filters={filters} onChange={setFilters} />
       </div>
 
@@ -371,6 +411,16 @@ export function MapLibrePreviewClient() {
           style={{ fontSize: "16px", lineHeight: 1 }}
         >
           🌑
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setRecalcSignal((c) => c + 1)}
+          title="Recalculer l'ensoleillement pour la zone visible"
+          className="rounded-full bg-amber-200 px-2 py-0.5 text-sm font-semibold text-amber-900 hover:bg-amber-300 disabled:bg-slate-200 disabled:text-slate-400"
+          disabled={sunlightLoading}
+        >
+          ↻
         </button>
 
         {timelineFrames.length > 1 && (
