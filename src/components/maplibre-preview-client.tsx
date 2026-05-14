@@ -782,33 +782,11 @@ export function MapLibrePreviewClient() {
           onRunCalculation={() => void handleRunCalculation()}
           onCancelDailyCalculation={handleCancelDailyCalculation}
         />
-        {/* DECISION: instant/daily toggle UI not provided by CalculationControls
-            itself — adding a small segmented control here so the user can flip
-            mode. Defaults to "daily" like the Leaflet client. */}
-        <div className="flex gap-2 text-sm">
-          <button
-            type="button"
-            className={`flex-1 rounded-lg px-3 py-2 font-semibold transition ${
-              mode === "instant"
-                ? "bg-amber-200 text-slate-950"
-                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-            }`}
-            onClick={() => setMode("instant")}
-          >
-            Instant
-          </button>
-          <button
-            type="button"
-            className={`flex-1 rounded-lg px-3 py-2 font-semibold transition ${
-              mode === "daily"
-                ? "bg-amber-200 text-slate-950"
-                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-            }`}
-            onClick={() => setMode("daily")}
-          >
-            Daily
-          </button>
-        </div>
+        {/* No visible Instant/Daily toggle: the Leaflet homepage does not
+            expose one either (mode is driven by localStorage, deep-link query
+            params, and cache-focus selection). Keeping `mode` state for the
+            handleRunCalculation branching but the user changes it via those
+            channels, not via a button. */}
         <ProgressStatus
           mode={mode}
           dailyProgress={dailyProgress}
