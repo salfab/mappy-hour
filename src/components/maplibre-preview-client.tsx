@@ -5,7 +5,12 @@ import maplibregl, { type Map as MapLibreMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
 import { MapLibreSunlightCustomLayer } from "@/components/sunlight-overlay/maplibre-sunlight-custom-layer";
-import { DaySelector } from "@/components/map-ui/controls";
+import {
+  CalculationControls,
+  ProgressStatus,
+  type AreaMode,
+  type TimelineProgressView,
+} from "@/components/map-ui/controls";
 
 import {
   buildBaseMaps,
@@ -42,6 +47,15 @@ import {
 
 const DEFAULT_CENTER: [number, number] = [6.6323, 46.5197];
 const DEFAULT_ZOOM = 17;
+
+function formatDuration(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, "0")}m${String(s).padStart(2, "0")}s`;
+  if (m > 0) return `${m}m${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
+}
 
 export function MapLibrePreviewClient() {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -89,6 +103,247 @@ export function MapLibrePreviewClient() {
   // the latest filter state without re-creating the listeners.
   const filtersRef = useRef(filters);
   useEffect(() => { filtersRef.current = filters; }, [filters]);
+
+  // ── Calculation state (ported from Leaflet client) ────────────────────────
+  // DECISION: instant mode rendering of points is intentionally NOT ported
+  // (scope). We only consume SSE progress events; the timeline overlay refreshes
+  // via `recalcSignal` once the precompute completes, which makes the new tiles
+  // visible without us reimplementing the lastResult pipeline.
+  const [mode, setMode] = useState<AreaMode>("daily");
+  const [isCalculating, setIsCalculating] = useState(false);
+  const [dailyProgress, setDailyProgress] = useState<TimelineProgressView | null>(null);
+  const [instantProgress, setInstantProgress] = useState<TimelineProgressView | null>(null);
+  // DECISION: hardcode the Leaflet client's defaults — preview has no UI to
+  // tweak these and the goal is faithful copy of the SSE call.
+  const localTime = "12:00";
+  const dailyStartLocalTime = "06:00";
+  const dailyEndLocalTime = "21:00";
+  const sampleEveryMinutes = 15;
+  const gridStepMeters = 1;
+  const buildingHeightBiasMeters = 0;
+  const ignoreVegetationShadow = false;
+  const cacheOnly = false;
+  const isDailyRangeInvalid = false; // defaults are valid; no UI to break them
+
+  const timelineCalcAbortRef = useRef<AbortController | null>(null);
+  const timelineCancelledRef = useRef(false);
+  const instantStreamRef = useRef<EventSource | null>(null);
+  const instantCancelledRef = useRef(false);
+
+  const handleCancelDailyCalculation = useCallback(() => {
+    if (mode !== "daily") return;
+    timelineCancelledRef.current = true;
+    if (timelineCalcAbortRef.current) {
+      timelineCalcAbortRef.current.abort();
+      timelineCalcAbortRef.current = null;
+    }
+    timelineCancelledRef.current = false;
+    setIsCalculating(false);
+    setDailyProgress((previous) => ({
+      phase: "cancelled",
+      percent: previous?.percent ?? 0,
+      etaSeconds: null,
+    }));
+  }, [mode]);
+
+  const handleRunCalculation = useCallback(async () => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const bounds = map.getBounds();
+    const bbox: [number, number, number, number] = [
+      Number(bounds.getWest().toFixed(6)),
+      Number(bounds.getSouth().toFixed(6)),
+      Number(bounds.getEast().toFixed(6)),
+      Number(bounds.getNorth().toFixed(6)),
+    ];
+
+    if (timelineCalcAbortRef.current) {
+      timelineCancelledRef.current = true;
+      timelineCalcAbortRef.current.abort();
+      timelineCalcAbortRef.current = null;
+    }
+    if (instantStreamRef.current) {
+      instantCancelledRef.current = true;
+      instantStreamRef.current.close();
+      instantStreamRef.current = null;
+    }
+
+    setIsCalculating(true);
+
+    if (mode === "instant") {
+      setInstantProgress({
+        phase: "starting",
+        percent: 0,
+        etaSeconds: null,
+      });
+      setDailyProgress(null);
+
+      const query = new URLSearchParams({
+        minLon: String(bbox[0]),
+        minLat: String(bbox[1]),
+        maxLon: String(bbox[2]),
+        maxLat: String(bbox[3]),
+        date,
+        timezone: "Europe/Zurich",
+        localTime,
+        gridStepMeters: String(gridStepMeters),
+        maxPoints: "2000000",
+        buildingHeightBiasMeters: String(buildingHeightBiasMeters),
+      });
+
+      instantCancelledRef.current = false;
+      const stream = new EventSource(
+        `/api/sunlight/instant/stream?${query.toString()}`,
+      );
+      instantStreamRef.current = stream;
+
+      stream.addEventListener("progress", (event) => {
+        if (instantCancelledRef.current) return;
+        const data = JSON.parse((event as MessageEvent).data) as TimelineProgressView;
+        setInstantProgress(data);
+      });
+      stream.addEventListener("done", () => {
+        if (instantCancelledRef.current) {
+          stream.close();
+          if (instantStreamRef.current === stream) instantStreamRef.current = null;
+          setIsCalculating(false);
+          return;
+        }
+        setInstantProgress((previous) => ({
+          phase: "done",
+          percent: 100,
+          etaSeconds: 0,
+          elapsedMs: previous?.elapsedMs,
+        }));
+        stream.close();
+        if (instantStreamRef.current === stream) instantStreamRef.current = null;
+        setIsCalculating(false);
+        // Refresh the overlay timeline so the new precompute is visible.
+        setRecalcSignal((c) => c + 1);
+      });
+      stream.addEventListener("error", () => {
+        if (instantCancelledRef.current) {
+          stream.close();
+          if (instantStreamRef.current === stream) instantStreamRef.current = null;
+          setIsCalculating(false);
+          return;
+        }
+        stream.close();
+        if (instantStreamRef.current === stream) instantStreamRef.current = null;
+        setIsCalculating(false);
+      });
+      return;
+    }
+
+    // Daily mode — fetch + ReadableStream SSE parser (faithful copy of Leaflet).
+    setInstantProgress(null);
+    setDailyProgress({
+      phase: "starting",
+      percent: 0,
+      etaSeconds: null,
+    });
+
+    const query = new URLSearchParams({
+      minLon: String(bbox[0]),
+      minLat: String(bbox[1]),
+      maxLon: String(bbox[2]),
+      maxLat: String(bbox[3]),
+      date,
+      timezone: "Europe/Zurich",
+      startLocalTime: dailyStartLocalTime,
+      endLocalTime: dailyEndLocalTime,
+      sampleEveryMinutes: String(sampleEveryMinutes),
+      gridStepMeters: String(gridStepMeters),
+      maxPoints: "2000000",
+      buildingHeightBiasMeters: String(buildingHeightBiasMeters),
+      ignoreVegetation: String(ignoreVegetationShadow),
+      ...(cacheOnly ? { cacheOnly: "true" } : {}),
+    });
+
+    timelineCancelledRef.current = false;
+    const abortController = new AbortController();
+    timelineCalcAbortRef.current = abortController;
+
+    const handleSseEvent = (eventType: string, jsonData: string) => {
+      if (timelineCancelledRef.current) return;
+      if (eventType === "tile") {
+        // DECISION: we don't accumulate tiles client-side (no overlay rendering
+        // here). Just surface progress.
+        const data = JSON.parse(jsonData) as {
+          tileIndex: number;
+          totalTiles: number;
+        };
+        if (typeof data.totalTiles === "number" && data.totalTiles > 0) {
+          const doneCount = data.tileIndex + 1;
+          const tileFraction = Math.min(1, doneCount / data.totalTiles);
+          setDailyProgress((previous) => ({
+            phase: "computing",
+            percent: tileFraction * 100,
+            tileIndex: doneCount,
+            totalTiles: data.totalTiles,
+            etaSeconds: previous?.etaSeconds ?? null,
+            elapsedMs: previous?.elapsedMs,
+          }));
+        }
+      } else if (eventType === "progress") {
+        const data = JSON.parse(jsonData) as TimelineProgressView;
+        setDailyProgress(data);
+      } else if (eventType === "done") {
+        const parsed = JSON.parse(jsonData) as {
+          stats?: { elapsedMs?: number; totalEvaluations?: number };
+        };
+        setDailyProgress({
+          phase: "done",
+          percent: 100,
+          etaSeconds: 0,
+          elapsedMs: parsed.stats?.elapsedMs,
+        });
+      }
+    };
+
+    try {
+      const response = await fetch(
+        `/api/sunlight/timeline/stream?${query.toString()}`,
+        { signal: abortController.signal },
+      );
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary !== -1) {
+          const block = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          let eventType = "message";
+          let dataLine = "";
+          for (const line of block.split("\n")) {
+            if (line.startsWith("event: ")) eventType = line.slice(7);
+            else if (line.startsWith("data: ")) dataLine = line.slice(6);
+          }
+          if (dataLine) handleSseEvent(eventType, dataLine);
+          boundary = buffer.indexOf("\n\n");
+        }
+      }
+    } catch (err) {
+      if (!abortController.signal.aborted) {
+        console.warn("[maplibre-preview] timeline calc failed:", err);
+      }
+    } finally {
+      if (timelineCalcAbortRef.current === abortController) {
+        timelineCalcAbortRef.current = null;
+      }
+      setIsCalculating(false);
+      // Refresh the overlay timeline so the new precompute is visible.
+      setRecalcSignal((c) => c + 1);
+    }
+  }, [date, mode]);
 
   const baseMapsRef = useRef<BaseMapDef[] | null>(null);
   if (baseMapsRef.current === null) {
@@ -395,7 +650,48 @@ export function MapLibrePreviewClient() {
       {/* Left control panel — date + filters (+ search on mobile).
           Mobile: full-width minus margins at top. Desktop: 280px sidebar. */}
       <div className="pointer-events-auto absolute left-3 right-3 top-3 z-10 flex flex-col gap-3 rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur lg:right-auto lg:w-[280px]">
-        <DaySelector date={date} onDateChange={setDate} />
+        <CalculationControls
+          mode={mode}
+          date={date}
+          isLoading={isCalculating}
+          isDailyRangeInvalid={isDailyRangeInvalid}
+          onDateChange={setDate}
+          onRunCalculation={() => void handleRunCalculation()}
+          onCancelDailyCalculation={handleCancelDailyCalculation}
+        />
+        {/* DECISION: instant/daily toggle UI not provided by CalculationControls
+            itself — adding a small segmented control here so the user can flip
+            mode. Defaults to "daily" like the Leaflet client. */}
+        <div className="flex gap-2 text-sm">
+          <button
+            type="button"
+            className={`flex-1 rounded-lg px-3 py-2 font-semibold transition ${
+              mode === "instant"
+                ? "bg-amber-200 text-slate-950"
+                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+            }`}
+            onClick={() => setMode("instant")}
+          >
+            Instant
+          </button>
+          <button
+            type="button"
+            className={`flex-1 rounded-lg px-3 py-2 font-semibold transition ${
+              mode === "daily"
+                ? "bg-amber-200 text-slate-950"
+                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+            }`}
+            onClick={() => setMode("daily")}
+          >
+            Daily
+          </button>
+        </div>
+        <ProgressStatus
+          mode={mode}
+          dailyProgress={dailyProgress}
+          instantProgress={instantProgress}
+          formatDuration={formatDuration}
+        />
         <div className="lg:hidden">
           <SearchPanel mapRef={mapRef} />
         </div>
