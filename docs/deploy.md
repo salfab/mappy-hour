@@ -345,6 +345,111 @@ Tailscale démarre.
 
 ---
 
+## 5ter. Cloudflare Tunnel — custom domain `mappyhour.ch` (optionnel)
+
+Tailscale Funnel expose l'app sur `<node>.<tailnet>.ts.net`. Pour une URL propre comme
+`mappyhour.ch`, Cloudflare Tunnel crée une connexion **sortante** depuis Mitch vers les
+edge servers Cloudflare — aucun port-forwarding, aucune IP publique requise, TLS géré
+par Cloudflare pour le domaine custom. Les deux coexistent : Tailscale Funnel reste en
+place (accès tailnet + fallback).
+
+### 5ter.1 Prérequis one-time (depuis un browser)
+
+1. Créer un compte Cloudflare gratuit sur cloudflare.com.
+2. **Ajouter le domaine** `mappyhour.ch` → plan Free → Cloudflare fournit 2 nameservers
+   (ex. `ada.ns.cloudflare.com`).
+3. **Chez Infomaniak** (registrar) → changer les nameservers de `mappyhour.ch` pour ceux
+   de Cloudflare. Propagation : ~24h.
+
+### 5ter.2 Créer le tunnel (session kiosque)
+
+```powershell
+winget install -e --id Cloudflare.cloudflared
+
+# Login (ouvre un navigateur → autoriser via compte Cloudflare)
+cloudflared tunnel login
+# → crée C:\Users\kiosque\.cloudflared\cert.pem
+
+# Créer le tunnel
+cloudflared tunnel create mappyhour
+# → affiche un UUID et crée C:\Users\kiosque\.cloudflared\<UUID>.json
+# Copier l'UUID pour la suite
+```
+
+### 5ter.3 Config du tunnel
+
+Copier les fichiers vers un emplacement système (le service Windows tourne en SYSTEM,
+pas en kiosque) :
+
+```powershell
+New-Item -ItemType Directory -Force C:\ProgramData\cloudflared
+# Remplacer <UUID> par la valeur retournée ci-dessus
+Copy-Item C:\Users\kiosque\.cloudflared\<UUID>.json C:\ProgramData\cloudflared\
+Copy-Item C:\Users\kiosque\.cloudflared\cert.pem    C:\ProgramData\cloudflared\
+```
+
+Créer `C:\ProgramData\cloudflared\config.yml` (template dans
+`scripts/deploy/cloudflared-config.yml.template`) :
+
+```yaml
+tunnel: <UUID>
+credentials-file: C:\ProgramData\cloudflared\<UUID>.json
+
+ingress:
+  - hostname: mappyhour.ch
+    service: http://127.0.0.1:3000
+  - hostname: www.mappyhour.ch
+    service: http://127.0.0.1:3000
+  - service: http_status:404
+```
+
+### 5ter.4 Ajouter les CNAME DNS dans Cloudflare
+
+```powershell
+cloudflared --config C:\ProgramData\cloudflared\config.yml tunnel route dns mappyhour mappyhour.ch
+cloudflared --config C:\ProgramData\cloudflared\config.yml tunnel route dns mappyhour www.mappyhour.ch
+```
+
+Crée automatiquement les enregistrements CNAME
+`mappyhour.ch → <UUID>.cfargotunnel.com` (proxied) dans Cloudflare DNS.
+
+### 5ter.5 Installer cloudflared comme service Windows
+
+```powershell
+# Depuis une session PowerShell admin (élévation requise pour sc.exe)
+cloudflared --config C:\ProgramData\cloudflared\config.yml service install
+
+Get-Service cloudflared
+# Attendu : Running
+
+# Smoke test local
+Invoke-WebRequest https://mappyhour.ch/api/datasets -UseBasicParsing | Select-Object StatusCode
+# Attendu : 200
+```
+
+### 5ter.6 Maintenance
+
+```powershell
+cloudflared tunnel info mappyhour          # état du tunnel
+cloudflared tunnel list                    # tous les tunnels du compte
+Get-EventLog -LogName Application -Source cloudflared -Newest 20   # logs service
+
+Stop-Service cloudflared
+Start-Service cloudflared
+```
+
+### 5ter.7 Rollback
+
+```powershell
+cloudflared service uninstall
+cloudflared --config C:\ProgramData\cloudflared\config.yml tunnel delete mappyhour
+```
+
+Pour revenir au domaine Infomaniak : remettre les nameservers d'origine dans le panel
+Infomaniak (Settings → Nameservers).
+
+---
+
 ## 6. WSL2 + Ubuntu + Docker Engine (côté kiosque)
 
 > Toutes les commandes ci-dessous sont à exécuter **dans la session kiosque** (RDP,
