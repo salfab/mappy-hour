@@ -7,8 +7,12 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { MapLibreSunlightCustomLayer } from "@/components/sunlight-overlay/maplibre-sunlight-custom-layer";
 import {
   CalculationControls,
+  LayerFilters,
   ProgressStatus,
+  ViewTabs,
   type AreaMode,
+  type MapPanelTab,
+  type OverlayMode,
   type TimelineProgressView,
 } from "@/components/map-ui/controls";
 
@@ -121,8 +125,43 @@ export function MapLibrePreviewClient() {
   const sampleEveryMinutes = 15;
   const gridStepMeters = 1;
   const buildingHeightBiasMeters = 0;
-  const ignoreVegetationShadow = false;
+  // DECISION: ported from Leaflet client as state so LayerFilters toggles
+  // reflect locally. Wiring to the calc pipeline (re-running with the flag) is
+  // already done — the existing `handleRunCalculation` reads this value.
+  const [ignoreVegetationShadow, setIgnoreVegetationShadow] = useState(false);
+  // DECISION: cacheOnly stays a const (no LayerFilters toggle for it — the
+  // checkbox lives behind a different mechanism on Leaflet too). LayerFilters
+  // only reads it for the sr-only announcement, so we pass a no-op setter.
   const cacheOnly = false;
+  const forceCacheOnly = false;
+  // DECISION: instant-mode rendering of points is not ported, so heatmap
+  // cannot be derived from a daily run here yet. We still expose the toggle
+  // so the UI looks like the homepage; canShowHeatmap stays false for now so
+  // the heatmap pill is disabled (Leaflet behaviour when no daily timeline).
+  const canShowHeatmap = false;
+
+  // ── View tabs + LayerFilters state (ported from Leaflet homepage) ─────────
+  // DECISION: venue count is not wired to a sunlitPlaces list in the preview
+  // yet (no BarsList in this chunk). We surface rawPlacesRef length for now;
+  // the next chunk that wires BarsList will replace this with a memo on a
+  // properly filtered list.
+  const [panelTab, setPanelTab] = useState<MapPanelTab>("map");
+  // DECISION: showSunny/showShadow already live in `styleSettings` so the
+  // OverlayMode derivation reuses them (no duplicate state). showHeatmap is
+  // new state because no equivalent exists yet in the preview.
+  const [showHeatmap, setShowHeatmap] = useState(false);
+  const [showTerrain, setShowTerrain] = useState(true);
+  // showBuildings / showVegetation are kept for symmetry with the homepage
+  // even though LayerFilters itself does not surface them — they will be
+  // wired to MapLibre layers in a later chunk. Marked with eslint-disable so
+  // the unused setter does not break the build right now.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [showBuildings, setShowBuildings] = useState(true);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [showVegetation, setShowVegetation] = useState(true);
+  const [showPlaces, setShowPlaces] = useState(true);
+  const overlayMode: OverlayMode =
+    showHeatmap && !showSunny && !showShadow ? "heatmap" : "sunlight";
   const isDailyRangeInvalid = false; // defaults are valid; no UI to break them
 
   const timelineCalcAbortRef = useRef<AbortController | null>(null);
@@ -650,6 +689,16 @@ export function MapLibrePreviewClient() {
       {/* Left control panel — date + filters (+ search on mobile).
           Mobile: full-width minus margins at top. Desktop: 280px sidebar. */}
       <div className="pointer-events-auto absolute left-3 right-3 top-3 z-10 flex flex-col gap-3 rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur lg:right-auto lg:w-[280px]">
+        <ViewTabs
+          activeTab={panelTab}
+          venueCount={rawPlacesRef.current.length}
+          onTabChange={(tab) => {
+            setPanelTab(tab);
+            if (tab === "terraces") {
+              setShowPlaces(true);
+            }
+          }}
+        />
         <CalculationControls
           mode={mode}
           date={date}
@@ -691,6 +740,31 @@ export function MapLibrePreviewClient() {
           dailyProgress={dailyProgress}
           instantProgress={instantProgress}
           formatDuration={formatDuration}
+        />
+        <LayerFilters
+          overlayMode={overlayMode}
+          showTerrain={showTerrain}
+          showPlaces={showPlaces}
+          ignoreVegetationShadow={ignoreVegetationShadow}
+          canShowHeatmap={canShowHeatmap}
+          cacheOnly={cacheOnly}
+          forceCacheOnly={forceCacheOnly}
+          onOverlayModeChange={(value) => {
+            if (value === "heatmap") {
+              setStyleSettings((s) => ({ ...s, showSunny: false, showShadow: false }));
+              setShowHeatmap(true);
+            } else {
+              setStyleSettings((s) => ({ ...s, showSunny: true, showShadow: true }));
+              setShowHeatmap(false);
+            }
+          }}
+          onShowTerrainChange={setShowTerrain}
+          onShowPlacesChange={setShowPlaces}
+          onIgnoreVegetationShadowChange={setIgnoreVegetationShadow}
+          // DECISION: no cache-only UI in the preview yet; provide a no-op so
+          // LayerFilters' contract is satisfied. Wiring will land with the
+          // admin/cache-only chunk later.
+          onCacheOnlyChange={() => {}}
         />
         <div className="lg:hidden">
           <SearchPanel mapRef={mapRef} />
