@@ -579,7 +579,11 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     this.tiles = tiles;
     this.updateColorUniforms(showSunny, showShadow);
 
-    // Remove GPU state for tiles that disappeared.
+    // Cull GPU state for tiles that are no longer in the current fetch's
+    // result set. Their CPU masks survive in the LRU cache, so a future
+    // fetch whose bbox brings them back will pre-seed `collected` from the
+    // cache and we'll just re-upload the texture (no gzip decode, no
+    // network roundtrip).
     const newIds = new Set(tiles.map((t) => t.tileId));
     for (const [id, state] of this.tileStates) {
       if (!newIds.has(id)) {
@@ -588,7 +592,6 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       }
     }
 
-    // Create/update GPU state for each tile.
     for (const tile of tiles) {
       this.syncTileState(tile, frameIndex);
     }

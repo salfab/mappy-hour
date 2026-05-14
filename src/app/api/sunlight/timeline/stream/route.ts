@@ -14,7 +14,6 @@ import {
 } from "@/lib/precompute/sunlight-tile-service";
 import {
   isMaskBitSet,
-  pointInBbox,
   setMaskBit,
 } from "@/lib/precompute/sunlight-cache";
 import {
@@ -482,10 +481,14 @@ export async function GET(request: Request) {
             let tileMinIy = Infinity, tileMaxIy = -Infinity;
             // Atlas and binary both use the same typed-array point layout.
             const binaryLikePoints = atlas ?? binary;
+            // No per-point bbox clipping inside the tile loop: once tileStream
+            // has selected a tile we send its full 250×250 m extent so the
+            // client renders it edge-to-edge even when half of it is off the
+            // current viewport. The cache key (date, tileId) then holds a
+            // canonical tile that doesn't depend on the bbox at fetch time.
             if (binaryLikePoints) {
-              const { pointLon, pointLat, pointIx, pointIy, pointOutdoorIndex, pointFlags } = binaryLikePoints;
+              const { pointIx, pointIy, pointOutdoorIndex, pointFlags } = binaryLikePoints;
               for (let i = 0; i < viewPointCount; i++) {
-                if (!pointInBbox(pointLon[i], pointLat[i], bbox)) continue;
                 tileGridCount += 1;
                 if ((pointFlags[i] & 1) !== 0 || pointOutdoorIndex[i] < 0) {
                   tileIndoorExcluded += 1;
@@ -500,7 +503,6 @@ export async function GET(request: Request) {
               }
             } else {
               for (const p of artifact!.points) {
-                if (!pointInBbox(p.lon, p.lat, bbox)) continue;
                 tileGridCount += 1;
                 if (p.insideBuilding || p.outdoorIndex === null) {
                   tileIndoorExcluded += 1;
@@ -571,11 +573,9 @@ export async function GET(request: Request) {
             ) : null;
 
             if (atlas ?? binary) {
-              const { pointLon, pointLat, pointIx, pointIy, pointOutdoorIndex, pointFlags } = (atlas ?? binary)!;
+              const { pointIx, pointIy, pointOutdoorIndex, pointFlags } = (atlas ?? binary)!;
               const gmW = Math.ceil(tileSizeMeters);
               for (let i = 0; i < viewPointCount; i++) {
-                const lon = pointLon[i], lat = pointLat[i];
-                if (!pointInBbox(lon, lat, bbox)) continue;
                 const ix = pointIx[i], iy = pointIy[i];
                 let isIndoor: boolean;
                 if (gridMetadata) {
@@ -596,7 +596,6 @@ export async function GET(request: Request) {
               }
             } else {
               for (const p of artifact!.points) {
-                if (!pointInBbox(p.lon, p.lat, bbox)) continue;
                 let isIndoor: boolean;
                 if (gridMetadata) {
                   const gmIx = p.ix - tileMinE;
