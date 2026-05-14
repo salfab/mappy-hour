@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { type Map as MapLibreMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
@@ -35,6 +35,8 @@ import {
   type ViewportPlaceLite,
 } from "@/components/maplibre-preview/places-source";
 import { PlaceDetailCard } from "@/components/maplibre-preview/place-card";
+import { BarsList } from "@/components/map-ui/bars-list";
+import type { VenueCardPlace, VenueType } from "@/components/map-ui/venue-card";
 import { SearchPanel } from "@/components/maplibre-preview/search-panel";
 import {
   FilterPanel,
@@ -51,6 +53,27 @@ import {
 
 const DEFAULT_CENTER: [number, number] = [6.6323, 46.5197];
 const DEFAULT_ZOOM = 17;
+
+// Maps an OSM subcategory (cuisine/amenity) to the coarse VenueType bucket
+// used by VenueCard for its label + icon. Anything we don't recognise falls
+// back to "other" — matches the Leaflet client's tolerant behaviour.
+function subcategoryToVenueType(subcategory: string): VenueType {
+  switch (subcategory) {
+    case "restaurant":
+      return "restaurant";
+    case "bar":
+    case "pub":
+      return "bar";
+    case "cafe":
+    case "fast_food":
+      return "snack";
+    case "food_court":
+    case "ice_cream":
+      return "foodtruck";
+    default:
+      return "other";
+  }
+}
 
 function formatDuration(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
@@ -102,7 +125,11 @@ export function MapLibrePreviewClient() {
 
   // Raw places kept in a ref so filter changes can re-apply without refetching.
   const rawPlacesRef = useRef<ViewportPlaceLite[]>([]);
+  // Tick bumped whenever rawPlacesRef is refreshed so memoised derivations
+  // (sunlitPlaces) recompute even though the underlying storage is a ref.
+  const [rawPlacesTick, setRawPlacesTick] = useState(0);
   const [filters, setFilters] = useState<CategoryFilters>(DEFAULT_FILTERS);
+  const [selectedVenueId, setSelectedVenueId] = useState<string | null>(null);
   // Ref mirror so closures captured in setStyle / moveend handlers always see
   // the latest filter state without re-creating the listeners.
   const filtersRef = useRef(filters);
@@ -140,11 +167,7 @@ export function MapLibrePreviewClient() {
   // the heatmap pill is disabled (Leaflet behaviour when no daily timeline).
   const canShowHeatmap = false;
 
-  // ── View tabs + LayerFilters state (ported from Leaflet homepage) ─────────
-  // DECISION: venue count is not wired to a sunlitPlaces list in the preview
-  // yet (no BarsList in this chunk). We surface rawPlacesRef length for now;
-  // the next chunk that wires BarsList will replace this with a memo on a
-  // properly filtered list.
+  // ── View tabs + LayerFilters state (ported from Leaflet homepage) ────────
   const [panelTab, setPanelTab] = useState<MapPanelTab>("map");
   // DECISION: showSunny/showShadow already live in `styleSettings` so the
   // OverlayMode derivation reuses them (no duplicate state). showHeatmap is
@@ -422,6 +445,7 @@ export function MapLibrePreviewClient() {
       const json = (await response.json()) as { places?: ViewportPlaceLite[] };
       if (abort.signal.aborted) return;
       rawPlacesRef.current = Array.isArray(json.places) ? json.places : [];
+      setRawPlacesTick((t) => t + 1);
       applyPlacesToSource(map, filtersRef.current);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
@@ -435,6 +459,56 @@ export function MapLibrePreviewClient() {
     if (!map || !ready) return;
     applyPlacesToSource(map, filters);
   }, [filters, ready, applyPlacesToSource]);
+
+  // ── Sunlit places derivation (powers BarsList + ViewTabs venueCount) ──────
+  // DECISION: pragmatic v1. We do NOT consult the sunlight mask atlas to know
+  // if each place's cell is currently sunny at frameIndex/localTime — wiring
+  // that requires exposing per-tile masks from MapLibreSunlightCustomLayer +
+  // a lat/lon → tile bit lookup, out of scope for this chunk. Instead we list
+  // every visible place that has `hasOutdoorSeating === true` (i.e. a terrace
+  // exists). The venueCount therefore reflects "terrasses visibles", not
+  // "terrasses au soleil maintenant". A later chunk will tighten this.
+  const sunlitPlaces = useMemo<VenueCardPlace[]>(() => {
+    // Read both refs at call time; the tick dep below is what re-triggers us
+    // when rawPlacesRef.current was just refreshed.
+    void rawPlacesTick;
+    const raw = rawPlacesRef.current;
+    return raw
+      .filter((p) => p.hasOutdoorSeating && filters[placeChipKey(p.category, p.subcategory)])
+      .map<VenueCardPlace>((p) => ({
+        id: p.id,
+        name: p.name,
+        // Map OSM subcategory → coarse VenueType bucket used by VenueCard.
+        venueType: subcategoryToVenueType(p.subcategory),
+        lat: p.lat,
+        lon: p.lon,
+        evaluationLat: p.lat,
+        evaluationLon: p.lon,
+        selectionStrategy: p.selectionStrategy ?? "original",
+        selectionOffsetMeters: 0,
+        // DECISION: no sun status wired yet — see comment above. We surface
+        // null so getVenueSunStatus falls back to the "Ombre/Créneau" branch
+        // (visually neutral) instead of falsely showing "Soleil".
+        isSunnyNow: null,
+        sunnyMinutes: 0,
+        sunlightStartLocalTime: null,
+        sunlightEndLocalTime: null,
+      }));
+  }, [rawPlacesTick, filters]);
+
+  const handleSelectVenue = useCallback((place: VenueCardPlace) => {
+    setSelectedVenueId(place.id);
+    const map = mapRef.current;
+    if (map) {
+      const targetZoom = Math.max(map.getZoom(), 18);
+      map.flyTo({ center: [place.lon, place.lat], zoom: targetZoom });
+    }
+    // Open the place-detail card for this venue so the user sees the same
+    // floating panel they'd get by clicking the marker. We rebuild a minimal
+    // ViewportPlaceLite from the cached raw list.
+    const raw = rawPlacesRef.current.find((p) => p.id === place.id);
+    if (raw) setSelectedPlace(raw);
+  }, []);
 
   // ── Sunlight timeline fetch (re-runs whenever date / ready changes) ───────
   const refreshTimeline = useCallback(
@@ -691,7 +765,7 @@ export function MapLibrePreviewClient() {
       <div className="pointer-events-auto absolute left-3 right-3 top-3 z-10 flex flex-col gap-3 rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur lg:right-auto lg:w-[280px]">
         <ViewTabs
           activeTab={panelTab}
-          venueCount={rawPlacesRef.current.length}
+          venueCount={sunlitPlaces.length}
           onTabChange={(tab) => {
             setPanelTab(tab);
             if (tab === "terraces") {
@@ -772,6 +846,32 @@ export function MapLibrePreviewClient() {
         <FilterPanel filters={filters} onChange={setFilters} />
         <StylePanel settings={styleSettings} onChange={setStyleSettings} />
       </div>
+
+      {/* Desktop BarsList — right-hand sliding panel shown when the user
+          flips ViewTabs to "Terrasses". Hidden on mobile (a MobileBarsView
+          will land in a later chunk). */}
+      {panelTab === "terraces" ? (
+        <div className="pointer-events-auto absolute bottom-20 right-3 top-20 z-10 hidden w-[320px] flex-col gap-3 overflow-hidden rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur lg:flex">
+          <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2">
+            <p className="text-sm font-semibold text-slate-900">
+              Terrasses au soleil
+            </p>
+            <p className="text-xs text-slate-500">
+              {`${sunlitPlaces.length} établissements visibles`}
+            </p>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            <BarsList
+              places={sunlitPlaces}
+              isLoading={false}
+              mode={mode}
+              localTime={localTime}
+              selectedVenueId={selectedVenueId}
+              onSelectVenue={handleSelectVenue}
+            />
+          </div>
+        </div>
+      ) : null}
 
       {/* Basemap switcher — top-right on desktop, hidden on mobile (rarely
           used; could be moved to a popover later). */}
