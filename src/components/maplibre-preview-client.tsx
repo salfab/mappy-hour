@@ -30,8 +30,61 @@ import {
   type TimelineTile,
 } from "@/components/sunlight-overlay/maplibre-sunlight-custom-layer";
 import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
+import type { NormalizedPlaceLite } from "@/components/places-overlay/viewport-places";
 
 type BaseMapId = "aquarelle" | "carto-voyager" | "osm" | "satellite";
+
+interface ViewportPlaceLite extends NormalizedPlaceLite {
+  osmType: "node" | "way" | "relation";
+  osmId: number;
+}
+
+interface SunlightWindow {
+  startLocalTime: string;
+  endLocalTime: string;
+}
+
+/** Same logic as sunlight-map-client. The /api/places/windows route returns mixed
+ *  shapes; this extracts the `HH:mm` from either `HH:mm` or `YYYY-MM-DD HH:mm:ss`. */
+function formatCardClock(value: string): string {
+  const match = /\b(\d{2}:\d{2})(?::\d{2})?\b/.exec(value);
+  return match ? match[1] : value;
+}
+
+function viewportCardEmoji(place: ViewportPlaceLite): string {
+  if (place.category === "park") return "🌳";
+  switch (place.subcategory) {
+    case "cafe": return "☕";
+    case "bar":
+    case "pub": return "🍺";
+    case "restaurant": return "🍴";
+    case "fast_food": return "🥡";
+    default: return "📍";
+  }
+}
+
+function placesToFeatureCollection(places: ViewportPlaceLite[]): GeoJSON.FeatureCollection {
+  return {
+    type: "FeatureCollection",
+    features: places.map((p) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [p.lon, p.lat] },
+      properties: {
+        id: p.id,
+        name: p.name,
+        category: p.category,
+        subcategory: p.subcategory,
+        hasOutdoorSeating: p.hasOutdoorSeating,
+        hasOutdoorSeatingUnknown: p.hasOutdoorSeatingUnknown ?? false,
+        openingHours: p.openingHours ?? "",
+        osmType: p.osmType,
+        osmId: p.osmId,
+        lat: p.lat,
+        lon: p.lon,
+      },
+    })),
+  };
+}
 
 interface BaseMapDef {
   id: BaseMapId;
@@ -173,17 +226,13 @@ const SUBCATEGORY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
 function addPlacesLayers(map: MapLibreMap) {
   if (map.getSource("places")) return; // already added
 
+  // Empty source initially — populated via /api/places/viewport on moveend.
+  // We use the viewport endpoint (POST with bounds) instead of /api/places
+  // because it surfaces `openingHours` and other rich fields needed by the
+  // place detail card.
   map.addSource("places", {
     type: "geojson",
-    // Fetched via the GET /api/places?format=geojson endpoint. Inline data
-    // (no bbox filter server-side) — MapLibre handles viewport culling.
-    // `outdoorOnly=true` pulls the same "confirmed terrasses" subset that
-    // `/api/places/viewport?mode=confirmed` serves to Leaflet, so the
-    // cluster point_count is consistent across the two maps. food_court is
-    // still excluded client-side via the unclustered-layer filter below
-    // (the `/api/places` endpoint doesn't do subcategory filtering — fine,
-    // food_court is a tiny minority).
-    data: "/api/places?format=geojson&outdoorOnly=true",
+    data: { type: "FeatureCollection", features: [] },
     cluster: true,
     clusterMaxZoom: 14,
     clusterRadius: 50,
@@ -303,7 +352,10 @@ function addPlacesLayers(map: MapLibreMap) {
   });
 }
 
-function attachInteractions(map: MapLibreMap) {
+function attachInteractions(
+  map: MapLibreMap,
+  onSelectPlace: (place: ViewportPlaceLite) => void,
+) {
   // Cluster click -> zoom in.
   map.on("click", "cluster-circles", (e) => {
     const features = map.queryRenderedFeatures(e.point, { layers: ["cluster-circles"] });
@@ -319,32 +371,29 @@ function attachInteractions(map: MapLibreMap) {
     }).catch(() => {});
   });
 
-  // Single point click -> popup.
+  // Single point click -> open the detail card. Properties were JSON-encoded
+  // into the feature by placesToFeatureCollection, so we just rehydrate them.
   map.on("click", "places-dots", (e) => {
     const f = e.features?.[0];
     if (!f) return;
-    const props = (f.properties ?? {}) as Record<string, unknown>;
-    const coords = (f.geometry as GeoJSON.Point).coordinates.slice() as [number, number];
-    const name = String(props.name ?? "(sans nom)");
-    const subcat = String(props.subcategory ?? "");
-    const hasOutdoor = props.hasOutdoorSeating === true || props.hasOutdoorSeating === "true";
-    const osmType = String(props.osmType ?? "");
-    const osmId = String(props.osmId ?? "");
-    const osmUrl = osmType && osmId ? `https://www.openstreetmap.org/${osmType}/${osmId}` : null;
-    const html = `
-      <div style="font: 13px/1.4 system-ui, sans-serif; min-width: 180px;">
-        <div style="font-weight: 600; margin-bottom: 4px;">${escapeHtml(name)}</div>
-        <div style="color: #6b7280; font-size: 12px; margin-bottom: 6px;">${escapeHtml(subcat)}</div>
-        <div style="margin-bottom: 6px;">
-          ${hasOutdoor ? "🌞 Terrasse confirmée" : "❔ Terrasse non confirmée"}
-        </div>
-        ${osmUrl ? `<a href="${osmUrl}" target="_blank" rel="noreferrer" style="color: #2563eb; font-size: 12px;">Voir sur OSM ↗</a>` : ""}
-      </div>
-    `;
-    new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
-      .setLngLat(coords)
-      .setHTML(html)
-      .addTo(map);
+    const p = (f.properties ?? {}) as Record<string, unknown>;
+    const place: ViewportPlaceLite = {
+      id: String(p.id ?? ""),
+      name: String(p.name ?? "(sans nom)"),
+      category: (p.category as ViewportPlaceLite["category"]) ?? "terrace_candidate",
+      subcategory: String(p.subcategory ?? ""),
+      lat: Number(p.lat),
+      lon: Number(p.lon),
+      hasOutdoorSeating: p.hasOutdoorSeating === true || p.hasOutdoorSeating === "true",
+      hasOutdoorSeatingUnknown:
+        p.hasOutdoorSeatingUnknown === true || p.hasOutdoorSeatingUnknown === "true",
+      openingHours: typeof p.openingHours === "string" && p.openingHours.length > 0
+        ? p.openingHours
+        : undefined,
+      osmType: (p.osmType as ViewportPlaceLite["osmType"]) ?? "node",
+      osmId: Number(p.osmId),
+    };
+    onSelectPlace(place);
   });
 
   for (const layerId of ["cluster-circles", "places-dots"]) {
@@ -355,15 +404,6 @@ function attachInteractions(map: MapLibreMap) {
       map.getCanvas().style.cursor = "";
     });
   }
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }
 
 export function MapLibrePreviewClient() {
@@ -380,6 +420,15 @@ export function MapLibrePreviewClient() {
   const [timelineFrames, setTimelineFrames] = useState<Array<{ localTime: string }>>([]);
   const [sunlightLoading, setSunlightLoading] = useState(false);
   const sunlightLayerRef = useRef<MapLibreSunlightCustomLayer | null>(null);
+
+  // ── Place card state ────────────────────────────────────────────────────────
+  const [selectedPlace, setSelectedPlace] = useState<ViewportPlaceLite | null>(null);
+  const [cardSunlightWindows, setCardSunlightWindows] = useState<SunlightWindow[] | null>(null);
+  const [isCardSunlightLoading, setIsCardSunlightLoading] = useState(false);
+  const [cardSunlightError, setCardSunlightError] = useState<string | null>(null);
+  const cardSunlightRequestRef = useRef(0);
+  const viewportPlacesDebounceRef = useRef<number | null>(null);
+  const viewportPlacesAbortRef = useRef<AbortController | null>(null);
 
   // Build basemap defs once. Stadia key is a public env, baked at build.
   const baseMapsRef = useRef<BaseMapDef[] | null>(null);
@@ -502,6 +551,99 @@ export function MapLibrePreviewClient() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Viewport places fetch (POST /api/places/viewport) ─────────────────────
+  const fetchViewportPlaces = useCallback(async (map: MapLibreMap) => {
+    const previous = viewportPlacesAbortRef.current;
+    if (previous) previous.abort();
+    const abort = new AbortController();
+    viewportPlacesAbortRef.current = abort;
+    const bounds = map.getBounds();
+    try {
+      const response = await fetch("/api/places/viewport", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          south: bounds.getSouth(),
+          west: bounds.getWest(),
+          north: bounds.getNorth(),
+          east: bounds.getEast(),
+        }),
+        signal: abort.signal,
+      });
+      if (!response.ok) return;
+      const json = (await response.json()) as { places?: ViewportPlaceLite[] };
+      if (abort.signal.aborted) return;
+      const places = Array.isArray(json.places) ? json.places : [];
+      const source = map.getSource("places") as maplibregl.GeoJSONSource | undefined;
+      if (source) source.setData(placesToFeatureCollection(places));
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      console.warn("[maplibre-preview] viewport places fetch failed:", err);
+    }
+  }, []);
+
+  // ── Sunlight windows fetch on place selection (POST /api/places/windows) ───
+  useEffect(() => {
+    if (!selectedPlace) {
+      setCardSunlightWindows(null);
+      setCardSunlightError(null);
+      setIsCardSunlightLoading(false);
+      return;
+    }
+    const token = ++cardSunlightRequestRef.current;
+    const place = selectedPlace;
+    // ~5 m offset around the place: 1° lat ≈ 111 320 m. Clamp lon by cos(lat).
+    const dLat = 5 / 111_320;
+    const dLon = dLat / Math.max(Math.cos((place.lat * Math.PI) / 180), 0.01);
+    const bbox: [number, number, number, number] = [
+      place.lon - dLon, place.lat - dLat,
+      place.lon + dLon, place.lat + dLat,
+    ];
+    const controller = new AbortController();
+    setIsCardSunlightLoading(true);
+    setCardSunlightError(null);
+    setCardSunlightWindows(null);
+    const date = new Date().toLocaleDateString("sv", { timeZone: "Europe/Zurich" });
+    fetch("/api/places/windows", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        date, timezone: "Europe/Zurich", mode: "daily",
+        startLocalTime: "00:00", endLocalTime: "23:59",
+        sampleEveryMinutes: 15, includeNonSunny: true, bbox, limit: 10,
+      }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (controller.signal.aborted || token !== cardSunlightRequestRef.current) return;
+        if (!response.ok) {
+          if (response.status === 400 || response.status === 404) {
+            setCardSunlightError("Lancer un calcul du jour pour voir l'ensoleillement.");
+          } else {
+            setCardSunlightError("Erreur de chargement de l'ensoleillement.");
+          }
+          setIsCardSunlightLoading(false);
+          return;
+        }
+        const json = (await response.json()) as {
+          places?: Array<{ id: string; sunnyWindows?: SunlightWindow[] }>;
+        };
+        if (token !== cardSunlightRequestRef.current) return;
+        const match = json.places?.find((p) => p.id === place.id);
+        setCardSunlightWindows(match?.sunnyWindows ?? []);
+        setIsCardSunlightLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        if (token !== cardSunlightRequestRef.current) return;
+        setCardSunlightError(
+          err instanceof Error ? err.message : "Erreur de chargement.",
+        );
+        setIsCardSunlightLoading(false);
+      });
+    return () => controller.abort();
+  }, [selectedPlace]);
+
   // Mount the map once.
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -521,7 +663,7 @@ export function MapLibrePreviewClient() {
 
     map.on("load", () => {
       addPlacesLayers(map);
-      attachInteractions(map);
+      attachInteractions(map, setSelectedPlace);
       setReady(true);
 
       // Instantiate the sunlight custom layer (WebGL) and insert it BEFORE
@@ -530,6 +672,18 @@ export function MapLibrePreviewClient() {
       map.addLayer(sunlightLayer, "cluster-circles");
       sunlightLayerRef.current = sunlightLayer;
       void fetchTimeline(map);
+      void fetchViewportPlaces(map);
+    });
+
+    // Debounced viewport places fetch on map move/zoom. Mirrors the Leaflet
+    // implementation: 400ms debounce, abort in-flight requests on re-trigger.
+    map.on("moveend", () => {
+      if (viewportPlacesDebounceRef.current !== null) {
+        window.clearTimeout(viewportPlacesDebounceRef.current);
+      }
+      viewportPlacesDebounceRef.current = window.setTimeout(() => {
+        void fetchViewportPlaces(map);
+      }, 400);
     });
 
     // On every style swap (basemap switcher), re-add user layers because
@@ -537,7 +691,9 @@ export function MapLibrePreviewClient() {
     map.on("styledata", () => {
       if (!map.getSource("places")) {
         addPlacesLayers(map);
-        attachInteractions(map);
+        attachInteractions(map, setSelectedPlace);
+        // After a style swap, the source is freshly empty — repopulate it.
+        void fetchViewportPlaces(map);
       }
       // Re-add the sunlight custom layer before cluster-circles if setStyle
       // removed it. The layer object keeps its CPU tile data across swaps
@@ -550,12 +706,18 @@ export function MapLibrePreviewClient() {
     });
 
     return () => {
+      if (viewportPlacesDebounceRef.current !== null) {
+        window.clearTimeout(viewportPlacesDebounceRef.current);
+        viewportPlacesDebounceRef.current = null;
+      }
+      viewportPlacesAbortRef.current?.abort();
+      viewportPlacesAbortRef.current = null;
       map.remove();
       sunlightLayerRef.current?.dispose();
       sunlightLayerRef.current = null;
       mapRef.current = null;
     };
-  }, [fetchTimeline]);
+  }, [fetchTimeline, fetchViewportPlaces]);
 
   // Apply basemap switches.
   useEffect(() => {
@@ -673,6 +835,95 @@ export function MapLibrePreviewClient() {
           ← Retour à la carte Leaflet
         </a>
       </div>
+
+      {/* Place detail card — same look as the Leaflet implementation, reuses
+          the `vpo-card-*` classes defined in globals.css. */}
+      {selectedPlace ? (
+        <div className="vpo-card" role="dialog" aria-label="Détails du lieu">
+          <div className="flex items-start justify-between gap-3">
+            <div className="grid min-w-0 gap-1">
+              <p className="truncate text-sm font-semibold text-slate-900">
+                {viewportCardEmoji(selectedPlace)} {selectedPlace.name}
+              </p>
+              <p className="text-xs text-slate-500">
+                {selectedPlace.subcategory || selectedPlace.category}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              onClick={() => setSelectedPlace(null)}
+              aria-label="Fermer"
+            >
+              ×
+            </button>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${
+                selectedPlace.hasOutdoorSeating
+                  ? "bg-amber-100 text-amber-900 ring-amber-200"
+                  : selectedPlace.hasOutdoorSeatingUnknown
+                    ? "bg-slate-100 text-slate-600 ring-slate-200"
+                    : "bg-rose-100 text-rose-700 ring-rose-200"
+              }`}
+            >
+              {selectedPlace.hasOutdoorSeating
+                ? "Terrasse ✓"
+                : selectedPlace.hasOutdoorSeatingUnknown
+                  ? "Terrasse ?"
+                  : "Pas de terrasse"}
+            </span>
+          </div>
+
+          <div className="vpo-card-divider" />
+          <div className="vpo-card-section">
+            <p className="vpo-card-section-title">Heures d&apos;ouverture</p>
+            {selectedPlace.openingHours ? (
+              <ul className="vpo-card-hours-list">
+                {selectedPlace.openingHours
+                  .split(";")
+                  .map((segment) => segment.trim())
+                  .filter((segment) => segment.length > 0)
+                  .map((segment, idx) => (
+                    <li key={idx}>{segment}</li>
+                  ))}
+              </ul>
+            ) : (
+              <p className="vpo-card-muted">Horaires non renseignés</p>
+            )}
+          </div>
+
+          <div className="vpo-card-divider" />
+          <div className="vpo-card-section">
+            <p className="vpo-card-section-title">Ensoleillement aujourd&apos;hui</p>
+            {isCardSunlightLoading ? (
+              <p className="vpo-card-muted">Calcul en cours…</p>
+            ) : cardSunlightError ? (
+              <p className="vpo-card-muted">{cardSunlightError}</p>
+            ) : cardSunlightWindows && cardSunlightWindows.length > 0 ? (
+              <div className="vpo-card-sun-pills">
+                {cardSunlightWindows.map((w, idx) => (
+                  <span key={idx} className="vpo-card-sun-pill">
+                    {formatCardClock(w.startLocalTime)} – {formatCardClock(w.endLocalTime)}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="vpo-card-muted">Aucune fenêtre ensoleillée ce jour</p>
+            )}
+          </div>
+
+          <a
+            className="mt-3 inline-block text-xs font-semibold text-amber-700 hover:text-amber-900"
+            href={`https://www.openstreetmap.org/${selectedPlace.osmType}/${selectedPlace.osmId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Voir sur OpenStreetMap →
+          </a>
+        </div>
+      ) : null}
     </div>
   );
 }
