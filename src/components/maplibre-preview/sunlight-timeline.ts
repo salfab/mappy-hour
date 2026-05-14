@@ -1,6 +1,17 @@
 import type { Map as MapLibreMap } from "maplibre-gl";
 import type { TimelineTile } from "@/components/sunlight-overlay/maplibre-sunlight-custom-layer";
 import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
+import {
+  getCachedTile,
+  getCachedTileIdsInBbox,
+  putCachedTile,
+} from "./timeline-tile-cache";
+import { encodeCompactTileIds } from "@/lib/encoding/tile-id-compact";
+
+// Compact-encoded tile IDs are ~10 chars each (vs ~23 for the full form), so
+// 1000 entries land at ~11 KB — still safely under typical proxy URL limits
+// (~16 KB) while letting us skip a city-scale viewport's worth of work.
+const MAX_EXCLUDE_TILE_IDS = 1000;
 
 export interface TimelineResult {
   tiles: TimelineTile[];
@@ -26,11 +37,21 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
   const { map, date, signal, onResult, onError, onLoadingChange } = opts;
   onLoadingChange?.(true);
   const bounds = map.getBounds();
+  const bbox = {
+    minLon: bounds.getWest(),
+    minLat: bounds.getSouth(),
+    maxLon: bounds.getEast(),
+    maxLat: bounds.getNorth(),
+  };
+  // Tile IDs we already hold in the LRU for this date AND that intersect
+  // the requested bbox. The server skips them; we'll inject the cached
+  // versions ourselves into the result.
+  const cachedIdsInBbox = getCachedTileIdsInBbox(date, bbox, MAX_EXCLUDE_TILE_IDS);
   const params = new URLSearchParams({
-    minLon: String(bounds.getWest()),
-    minLat: String(bounds.getSouth()),
-    maxLon: String(bounds.getEast()),
-    maxLat: String(bounds.getNorth()),
+    minLon: String(bbox.minLon),
+    minLat: String(bbox.minLat),
+    maxLon: String(bbox.maxLon),
+    maxLat: String(bbox.maxLat),
     date,
     timezone: "Europe/Zurich",
     startLocalTime: "06:00",
@@ -41,6 +62,9 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
     buildingHeightBiasMeters: "0",
     cacheOnly: "true",
   });
+  if (cachedIdsInBbox.length > 0) {
+    params.set("excludeTileIds", encodeCompactTileIds(cachedIdsInBbox));
+  }
 
   try {
     const response = await fetch(`/api/sunlight/timeline/stream?${params}`, { signal });
@@ -55,6 +79,13 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
     let buffer = "";
     const collected: TimelineTile[] = [];
     const pendingDecodes: Promise<void>[] = [];
+
+    const seedFromCache = () => {
+      for (const id of cachedIdsInBbox) {
+        const cached = getCachedTile(date, id);
+        if (cached) collected.push(cached);
+      }
+    };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -80,22 +111,33 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
           if (eventType === "start") {
             collected.length = 0;
             pendingDecodes.length = 0;
+            seedFromCache();
           } else if (eventType === "tile") {
             const tile = payload as unknown as TimelineTile & {
               masksEncoding?: string;
               masksBase64?: string;
               grid?: { width: number; height: number };
             };
-            if (tile.masksEncoding === "gzip-concat-v1" && tile.masksBase64 && tile.grid) {
-              const maskBytes = Math.ceil(tile.grid.width * tile.grid.height / 8);
-              const frameCount = tile.frames.length;
-              pendingDecodes.push(
-                decodeTileMasksBlob(tile.masksBase64, maskBytes, frameCount).then((decoded) => {
-                  tile.decodedMasks = decoded;
-                }),
-              );
+            // LRU cache hit: skip the gzip decode entirely and reuse the
+            // previously-decoded masks. The server still streamed the bytes,
+            // but the heavy per-tile work (decompression + mask split) is
+            // bypassed.
+            const cached = getCachedTile(date, tile.tileId);
+            if (cached) {
+              collected.push(cached);
+            } else {
+              if (tile.masksEncoding === "gzip-concat-v1" && tile.masksBase64 && tile.grid) {
+                const maskBytes = Math.ceil(tile.grid.width * tile.grid.height / 8);
+                const frameCount = tile.frames.length;
+                pendingDecodes.push(
+                  decodeTileMasksBlob(tile.masksBase64, maskBytes, frameCount).then((decoded) => {
+                    tile.decodedMasks = decoded;
+                    putCachedTile(date, tile);
+                  }),
+                );
+              }
+              collected.push(tile);
             }
-            collected.push(tile);
           } else if (eventType === "done") {
             await Promise.all(pendingDecodes);
             if (signal?.aborted) return;

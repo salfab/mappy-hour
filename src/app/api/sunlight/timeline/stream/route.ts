@@ -28,6 +28,7 @@ import { getAtlasBucketMasks } from "@/lib/precompute/sunlight-cache-atlas";
 import type { PrecomputedSunlightTileArtifact } from "@/lib/precompute/sunlight-cache";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { encodeTileMasksBlob } from "@/lib/encoding/mask-codec-server";
+import { compactTileId } from "@/lib/encoding/tile-id-compact";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
 export const runtime = "nodejs";
@@ -49,6 +50,14 @@ const querySchema = z
     cacheOnly: z.string().default("false").transform(v => v === "true" || v === "1"),
     ignoreVegetation: z.string().default("false").transform(v => v === "true" || v === "1"),
     maxComputeTiles: z.coerce.number().int().min(0).max(500).default(50),
+    // Compact-encoded tile IDs the client already holds in its LRU cache
+    // for this date (see `lib/encoding/tile-id-compact.ts`). The server
+    // skips streaming them; the client merges its cached copies into the
+    // final tile set. Capped server-side at 2000 entries.
+    excludeTileIds: z.string().optional().transform((s) => {
+      if (!s) return new Set<string>();
+      return new Set(s.split(",").filter(Boolean).slice(0, 2000));
+    }),
   })
   .refine(
     (value) =>
@@ -418,6 +427,16 @@ export async function GET(request: Request) {
             if (streamAborted) return;
             const tileT0 = performance.now();
             const { tileId, tileIndex, totalTiles, artifact, binary, atlases, layer } = result.value;
+            // Client already holds this tile decoded in its LRU; skip the
+            // encode + send work entirely. The exclude list is in compact
+            // form so we compute the same key here before lookup.
+            const compactId = compactTileId(tileId);
+            if (compactId && query.excludeTileIds.has(compactId)) {
+              const tStreamNextSkip = performance.now();
+              result = await tileStream.next();
+              perTileTiming.streamNext += performance.now() - tStreamNextSkip;
+              continue;
+            }
             // Meta (points, model, warnings) is identical across all resolutions
             // of a tile's atlas, so the first one is a valid spokesperson.
             const atlas = atlases?.[0];
