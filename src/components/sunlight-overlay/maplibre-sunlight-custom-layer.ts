@@ -508,7 +508,14 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       };
       this.tileStates.set(tile.tileId, state);
     } else {
-      // Update luminance buffer and mark texture dirty.
+      // Refresh ALL geometry/dimension fields, not just luminance: a refetch
+      // may return slightly different tileCorners (precision rounding) or a
+      // different grid size for tiles at the viewport edge. Leaving the old
+      // vertices or gridWidth/gridHeight in place causes visible misalignment
+      // and texImage2D reading past the new luminance buffer.
+      existing.vertices = buildQuadVertices(tile.tileCorners);
+      existing.gridWidth = tile.grid.width;
+      existing.gridHeight = tile.grid.height;
       existing.luminance = luminance;
       existing.textureDirty = true;
     }
