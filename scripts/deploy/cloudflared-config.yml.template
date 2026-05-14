@@ -1,0 +1,14 @@
+# Cloudflare Tunnel — config template pour mappyhour.ch
+# Copier vers C:\ProgramData\cloudflared\config.yml sur Mitch
+# Remplacer <TUNNEL_UUID> par la valeur retournée par `cloudflared tunnel create mappyhour`
+# Voir docs/deploy.md §5ter pour la procédure complète
+
+tunnel: <TUNNEL_UUID>
+credentials-file: C:\ProgramData\cloudflared\<TUNNEL_UUID>.json
+
+ingress:
+  - hostname: mappyhour.ch
+    service: http://127.0.0.1:3000
+  - hostname: www.mappyhour.ch
+    service: http://127.0.0.1:3000
+  - service: http_status:404
