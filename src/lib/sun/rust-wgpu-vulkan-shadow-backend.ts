@@ -255,6 +255,27 @@ export class RustWgpuVulkanShadowBackend implements BatchBuildingShadowBackend {
     }
   }
 
+  /**
+   * Create a backend with no building obstacles (0 triangles). Used when the
+   * tile area has no nearby buildings but we still want GPU vegetation/terrain
+   * ray-march. The degenerate mesh never blocks any sun ray, so building
+   * shadow = all unblocked — correct for obstacle-free areas.
+   */
+  static async createEmpty(originX: number, originY: number, resolution = DEFAULT_RESOLUTION): Promise<RustWgpuVulkanShadowBackend> {
+    const outputDir = runtimeOutputDir();
+    await fs.mkdir(outputDir, { recursive: true });
+    const runId = `${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
+    const meshBinPath = path.join(outputDir, `${runId}.mesh.bin`);
+    // Degenerate triangle (zero area, underground): never blocks sun rays.
+    // Gives Rust a valid (non-empty) mesh file to parse without producing shadows.
+    await writeFloat32Bin(meshBinPath, new Float32Array([0, -9999, 0, 0, -9999, 0, 0, -9999, 0]));
+    const sceneBounds: Bounds3d = { minX: originX - 1, minY: originY - 1, minZ: 0, maxX: originX + 1, maxY: originY + 1, maxZ: 1 };
+    return new RustWgpuVulkanShadowBackend({
+      originX, originY, resolution, meshBinPath, outputDir, sceneBounds,
+      triangleCount: 0, maxBuildingHeight: 0,
+    });
+  }
+
   static async createWithDxfMeshes(
     obstacles: ObstacleArray,
     resolution = DEFAULT_RESOLUTION,

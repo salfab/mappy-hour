@@ -497,13 +497,21 @@ async function getOrCreateRustWgpuVulkanBackend(
         filtered = filterObstaclesForZone(obstacles, focusBounds, margin);
         console.log(`[evaluation-context] Rust/wgpu Vulkan spatial filter: ${filtered.length}/${obstacles.length} obstacles within ${margin}m of 1km focus bucket`);
       }
-      if (filtered.length === 0) {
-        return null;
-      }
-
       const { RustWgpuVulkanShadowBackend } = await import(
         "@/lib/sun/rust-wgpu-vulkan-shadow-backend"
       );
+      if (filtered.length === 0) {
+        // No buildings in this zone — create empty backend so GPU vegetation
+        // and terrain ray-march still run. Building shadow = all unblocked,
+        // which is correct for obstacle-free areas. Without this, the frame
+        // loop falls back to CPU vegetation (O(frames × points) — months in atlas mode).
+        const cx = focusBounds ? (focusBounds.minX + focusBounds.maxX) / 2 : 2565000;
+        const cy = focusBounds ? (focusBounds.minY + focusBounds.maxY) / 2 : 1185000;
+        const backend = await RustWgpuVulkanShadowBackend.createEmpty(cx, cy);
+        console.log(`[evaluation-context] Rust/wgpu Vulkan backend ready (no buildings): empty mesh at (${cx.toFixed(0)}, ${cy.toFixed(0)})`);
+        rustWgpuVulkanBackendCache = backend;
+        return backend;
+      }
       const backend = await RustWgpuVulkanShadowBackend.createWithDxfMeshes(
         filtered as Parameters<typeof RustWgpuVulkanShadowBackend.createWithDxfMeshes>[0],
         4096,
