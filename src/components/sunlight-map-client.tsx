@@ -91,74 +91,25 @@ import {
   venueMarkerClassName,
 } from "@/components/map-ui/venue-assets";
 import type { VenueCardPlace } from "@/components/map-ui/venue-card";
+import {
+  BASE_MAP_OPTIONS,
+  BASE_MAP_OPTION_BY_ID,
+  isBaseMapStyle,
+  type AreaMode,
+  type BaseMapOption,
+  type BaseMapStyle,
+} from "@/components/sunlight-map/types";
+import {
+  loadStoredMapView,
+  loadStoredUiParams,
+  persistMapView,
+  persistUiParams,
+  MAP_MAX_ZOOM,
+  type StoredMapView,
+  type StoredUiParams,
+} from "@/components/sunlight-map/stored-map-view";
 
-type AreaMode = "instant" | "daily";
-type BaseMapStyle =
-  | "stamen-watercolor"
-  | "carto-voyager"
-  | "osm"
-  | "satellite";
 type MapPanelTab = "map" | "terraces";
-
-interface BaseMapOption {
-  id: BaseMapStyle;
-  label: string;
-  url: string;
-  attribution: string;
-  maxNativeZoom: number;
-  /** Additional raster tile URLs stacked on top of the base layer (e.g.
-   *  Stamen Watercolor with Toner labels). Rendered in array order — first
-   *  overlay sits directly above the base, last overlay on top. */
-  overlays?: Array<{ url: string; maxNativeZoom?: number; opacity?: number }>;
-}
-
-// Order matters — the first entry is the default basemap (Aquarelle).
-// The selector in the UI keeps this order.
-const BASE_MAP_OPTIONS: BaseMapOption[] = [
-  {
-    // Stamen Watercolor — peinture artistique + labels CARTO Voyager.
-    // Les labels viennent de CARTO (`voyager_only_labels`) pour rester
-    // indépendants du quota Stadia : si Stadia tombe, le watercolor
-    // bascule en Voyager via le fallback per-tile (`attachStadiaFallback`)
-    // et les labels continuent à charger normalement.
-    id: "stamen-watercolor",
-    label: "Aquarelle",
-    url: "https://tiles.stadiamaps.com/tiles/stamen_watercolor/{z}/{x}/{y}.jpg",
-    overlays: [
-      { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
-    ],
-    attribution:
-      "&copy; <a href=\"https://stamen.com\">Stamen Design</a>, hosted by <a href=\"https://stadiamaps.com/\">Stadia Maps</a> | Labels &copy; CARTO &mdash; Map data &copy; OpenStreetMap contributors",
-    maxNativeZoom: 18,
-  },
-  {
-    id: "carto-voyager",
-    label: "CARTO Voyager",
-    url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-    attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
-    maxNativeZoom: 20,
-  },
-  {
-    id: "osm",
-    label: "OSM standard",
-    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-    attribution: "&copy; OpenStreetMap contributors",
-    maxNativeZoom: 19,
-  },
-  {
-    id: "satellite",
-    label: "Satellite",
-    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    attribution: "Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics",
-    maxNativeZoom: 19,
-  },
-];
-
-const BASE_MAP_OPTION_BY_ID = new Map(BASE_MAP_OPTIONS.map((option) => [option.id, option]));
-
-function isBaseMapStyle(value: unknown): value is BaseMapStyle {
-  return typeof value === "string" && BASE_MAP_OPTION_BY_ID.has(value as BaseMapStyle);
-}
 
 interface AreaInstantPoint {
   id: string;
@@ -457,9 +408,6 @@ const METERS_PER_DEGREE_LAT = 111_320;
 const DEFAULT_MAP_CENTER: [number, number] = [46.5197, 6.6323];
 const DEFAULT_MAP_ZOOM = 17;
 const MAP_MAX_NATIVE_ZOOM = 19;
-const MAP_MAX_ZOOM = 23;
-const MAP_VIEW_STORAGE_KEY = "mappy-hour:map:view";
-const UI_PARAMS_STORAGE_KEY = "mappy-hour:ui:params";
 const FOCUS_RUN_QUERY_KEYS = {
   region: "focusRunRegion",
   modelVersionHash: "focusRunModel",
@@ -562,179 +510,8 @@ interface ParsedPoint {
   isSunny: boolean;
 }
 
-interface StoredMapView {
-  lat: number;
-  lon: number;
-  zoom: number;
-}
-
-interface StoredUiParams {
-  mode: AreaMode;
-  date: string;
-  localTime: string;
-  dailyStartLocalTime: string;
-  dailyEndLocalTime: string;
-  gridStepMeters: number;
-  sampleEveryMinutes: number;
-  buildingHeightBiasMeters: number;
-  baseMapStyle: BaseMapStyle;
-  ignoreVegetationShadow: boolean;
-  showSunny: boolean;
-  showShadow: boolean;
-  showBuildings: boolean;
-  showTerrain: boolean;
-  showVegetation: boolean;
-  showHeatmap: boolean;
-  showPlaces: boolean;
-}
-
-function loadStoredMapView(): StoredMapView | null {
-  try {
-    const raw = globalThis.localStorage.getItem(MAP_VIEW_STORAGE_KEY);
-    if (!raw) {
-      return null;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<StoredMapView>;
-    const lat = parsed.lat;
-    const lon = parsed.lon;
-    const zoom = parsed.zoom;
-    if (
-      typeof lat !== "number" ||
-      !Number.isFinite(lat) ||
-      lat < -90 ||
-      lat > 90 ||
-      typeof lon !== "number" ||
-      !Number.isFinite(lon) ||
-      lon < -180 ||
-      lon > 180 ||
-      typeof zoom !== "number" ||
-      !Number.isFinite(zoom) ||
-      zoom < 0 ||
-      zoom > MAP_MAX_ZOOM
-    ) {
-      return null;
-    }
-
-    return {
-      lat,
-      lon,
-      zoom,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function persistMapView(view: StoredMapView): void {
-  try {
-    globalThis.localStorage.setItem(MAP_VIEW_STORAGE_KEY, JSON.stringify(view));
-  } catch {
-    // Ignore storage errors to avoid blocking map interactions.
-  }
-}
-
-function loadStoredUiParams(): StoredUiParams | null {
-  try {
-    const raw = globalThis.localStorage.getItem(UI_PARAMS_STORAGE_KEY);
-    if (!raw) {
-      return null;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<StoredUiParams>;
-    const mode = parsed.mode;
-    const date = parsed.date;
-    const localTime = parsed.localTime;
-    const dailyStartLocalTime = parsed.dailyStartLocalTime;
-    const dailyEndLocalTime = parsed.dailyEndLocalTime;
-    const gridStepMeters = parsed.gridStepMeters;
-    const sampleEveryMinutes = parsed.sampleEveryMinutes;
-    const buildingHeightBiasMeters = parsed.buildingHeightBiasMeters;
-    const baseMapStyle = parsed.baseMapStyle as BaseMapStyle | "map" | undefined;
-    const ignoreVegetationShadow = parsed.ignoreVegetationShadow;
-    const showSunny = parsed.showSunny;
-    const showShadow = parsed.showShadow;
-    const showBuildings = parsed.showBuildings;
-    const showTerrain = parsed.showTerrain;
-    const showVegetation = parsed.showVegetation;
-    const showHeatmap = parsed.showHeatmap;
-    const showPlaces = parsed.showPlaces;
-
-    const valid =
-      (mode === "instant" || mode === "daily") &&
-      typeof date === "string" &&
-      /^\d{4}-\d{2}-\d{2}$/.test(date) &&
-      typeof localTime === "string" &&
-      /^\d{2}:\d{2}$/.test(localTime) &&
-      (typeof dailyStartLocalTime === "string"
-        ? /^\d{2}:\d{2}$/.test(dailyStartLocalTime)
-        : dailyStartLocalTime === undefined) &&
-      (typeof dailyEndLocalTime === "string"
-        ? /^\d{2}:\d{2}$/.test(dailyEndLocalTime)
-        : dailyEndLocalTime === undefined) &&
-      typeof gridStepMeters === "number" &&
-      Number.isFinite(gridStepMeters) &&
-      gridStepMeters >= 1 &&
-      gridStepMeters <= 2000 &&
-      typeof sampleEveryMinutes === "number" &&
-      Number.isFinite(sampleEveryMinutes) &&
-      sampleEveryMinutes >= 1 &&
-      sampleEveryMinutes <= 60 &&
-      (typeof buildingHeightBiasMeters === "number"
-        ? Number.isFinite(buildingHeightBiasMeters) &&
-          buildingHeightBiasMeters >= -20 &&
-          buildingHeightBiasMeters <= 20
-        : buildingHeightBiasMeters === undefined) &&
-      (isBaseMapStyle(baseMapStyle) || baseMapStyle === "map" || baseMapStyle === undefined) &&
-      (typeof ignoreVegetationShadow === "boolean" ||
-        ignoreVegetationShadow === undefined) &&
-      typeof showSunny === "boolean" &&
-      typeof showShadow === "boolean" &&
-      typeof showBuildings === "boolean" &&
-      (typeof showTerrain === "boolean" || showTerrain === undefined) &&
-      (typeof showVegetation === "boolean" || showVegetation === undefined) &&
-      (typeof showHeatmap === "boolean" || showHeatmap === undefined) &&
-      (typeof showPlaces === "boolean" || showPlaces === undefined);
-    if (!valid) {
-      return null;
-    }
-
-    return {
-      mode,
-      date,
-      localTime,
-      dailyStartLocalTime: dailyStartLocalTime ?? "06:00",
-      dailyEndLocalTime: dailyEndLocalTime ?? "21:00",
-      gridStepMeters,
-      sampleEveryMinutes,
-      buildingHeightBiasMeters: buildingHeightBiasMeters ?? 0,
-      baseMapStyle:
-        baseMapStyle === "map"
-          ? "osm"
-          : isBaseMapStyle(baseMapStyle)
-            ? baseMapStyle
-            : "carto-voyager",
-      ignoreVegetationShadow: ignoreVegetationShadow ?? false,
-      showSunny,
-      showShadow,
-      showBuildings,
-      showTerrain: showTerrain ?? true,
-      showVegetation: showVegetation ?? true,
-      showHeatmap: showHeatmap ?? true,
-      showPlaces: showPlaces ?? true,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function persistUiParams(params: StoredUiParams): void {
-  try {
-    globalThis.localStorage.setItem(UI_PARAMS_STORAGE_KEY, JSON.stringify(params));
-  } catch {
-    // Ignore storage errors to avoid blocking interactions.
-  }
-}
+// Storage helpers + StoredMapView / StoredUiParams interfaces live in
+// `components/sunlight-map/stored-map-view.ts`, imported at the top.
 
 function parseBoundedInteger(
   value: string | null,
