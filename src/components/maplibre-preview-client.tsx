@@ -34,6 +34,11 @@ import {
   type CategoryFilters,
 } from "@/components/maplibre-preview/filter-panel";
 import { fetchTimeline } from "@/components/maplibre-preview/sunlight-timeline";
+import {
+  StylePanel,
+  DEFAULT_STYLE_SETTINGS,
+  type SunlightStyleSettings,
+} from "@/components/maplibre-preview/style-panel";
 
 const DEFAULT_CENTER: [number, number] = [6.6323, 46.5197];
 const DEFAULT_ZOOM = 17;
@@ -47,11 +52,13 @@ export function MapLibrePreviewClient() {
 
   // ── Sunlight state ────────────────────────────────────────────────────────
   const [sunlightVisible, setSunlightVisible] = useState(true);
-  const [showSunny, setShowSunny] = useState(true);
-  const [showShadow, setShowShadow] = useState(true);
   const [frameIndex, setFrameIndex] = useState(0);
   const [timelineFrames, setTimelineFrames] = useState<Array<{ localTime: string }>>([]);
   const [sunlightLoading, setSunlightLoading] = useState(false);
+  const [styleSettings, setStyleSettings] =
+    useState<SunlightStyleSettings>(DEFAULT_STYLE_SETTINGS);
+  const showSunny = styleSettings.showSunny;
+  const showShadow = styleSettings.showShadow;
   // Bumped whenever a fresh sunlight calculation is requested (moveend or
   // explicit ↻ button). The date-watching effect re-runs on every bump.
   const [recalcSignal, setRecalcSignal] = useState(0);
@@ -246,6 +253,8 @@ export function MapLibrePreviewClient() {
       const sunlightLayer = new MapLibreSunlightCustomLayer(map);
       map.addLayer(sunlightLayer, "cluster-circles");
       sunlightLayerRef.current = sunlightLayer;
+      // TEMP: expose for visual A/B style testing
+      (window as unknown as Record<string, unknown>).__sl = sunlightLayer;
       void fetchViewportPlaces(map);
     });
 
@@ -335,6 +344,32 @@ export function MapLibrePreviewClient() {
     if (sunlightVisible) layer.setFrameIndex(frameIndex, showSunny, showShadow);
   }, [sunlightVisible, frameIndex, showSunny, showShadow]);
 
+  // One-shot basemap swap: stay on Aquarelle while the first sunlight
+  // timeline is loading, then flip to Satellite once the tiles are ready.
+  // Subsequent date changes / recalculations don't re-trigger the swap, and
+  // the user can still manually pick another basemap.
+  const autoBasemapDone = useRef(false);
+  useEffect(() => {
+    if (autoBasemapDone.current) return;
+    if (sunlightLoading || timelineFrames.length === 0) return;
+    autoBasemapDone.current = true;
+    setBasemapId("satellite");
+  }, [sunlightLoading, timelineFrames]);
+
+  // Push style-panel settings to the layer (texture filter + outline + hatch).
+  useEffect(() => {
+    const layer = sunlightLayerRef.current;
+    if (!layer) return;
+    layer.setTextureFilter(styleSettings.textureFilter);
+    layer.setStyle({
+      outlineWidthPx: styleSettings.outlineEnabled ? styleSettings.outlineWidthPx : -1,
+      hatchAlpha: styleSettings.hatchEnabled ? 0.95 : 0,
+      hatchSpacingPx: styleSettings.hatchSpacingPx,
+      hatchJitter: styleSettings.hatchWobble,
+      hatchSpaceJitter: styleSettings.hatchSpaceJitter,
+    });
+  }, [styleSettings, ready]);
+
   return (
     <div className="absolute inset-0">
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
@@ -353,6 +388,7 @@ export function MapLibrePreviewClient() {
           <SearchPanel mapRef={mapRef} />
         </div>
         <FilterPanel filters={filters} onChange={setFilters} />
+        <StylePanel settings={styleSettings} onChange={setStyleSettings} />
       </div>
 
       {/* Basemap switcher — top-right on desktop, hidden on mobile (rarely
@@ -367,7 +403,12 @@ export function MapLibrePreviewClient() {
             <button
               key={b.id}
               type="button"
-              onClick={() => setBasemapId(b.id)}
+              onClick={() => {
+                // Manual selection locks the one-shot auto-swap so a late
+                // sunlight-loaded event can't override the user's choice.
+                autoBasemapDone.current = true;
+                setBasemapId(b.id);
+              }}
               className={
                 "rounded px-2 py-1 text-left text-sm transition-colors " +
                 (b.id === basemapId
@@ -396,7 +437,7 @@ export function MapLibrePreviewClient() {
         </button>
         <button
           type="button"
-          onClick={() => setShowSunny((v) => !v)}
+          onClick={() => setStyleSettings((s) => ({ ...s, showSunny: !s.showSunny }))}
           className={showSunny ? "opacity-100" : "opacity-40"}
           title="Ensoleillé"
           style={{ fontSize: "16px", lineHeight: 1 }}
@@ -405,7 +446,7 @@ export function MapLibrePreviewClient() {
         </button>
         <button
           type="button"
-          onClick={() => setShowShadow((v) => !v)}
+          onClick={() => setStyleSettings((s) => ({ ...s, showShadow: !s.showShadow }))}
           className={showShadow ? "opacity-100" : "opacity-40"}
           title="Ombragé"
           style={{ fontSize: "16px", lineHeight: 1 }}

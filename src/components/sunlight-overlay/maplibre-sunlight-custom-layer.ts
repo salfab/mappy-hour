@@ -90,6 +90,40 @@ interface RGBA255 {
 const DEFAULT_SUNNY: RGBA255  = { r: 255, g: 220, b: 60,  a: 110 };
 const DEFAULT_SHADOW: RGBA255 = { r: 40,  g: 60,  b: 140, a: 100 };
 
+export interface SunlightStyle {
+  alphaSoft: number;
+  sunSoft: number;
+  outlineWidthPx: number;
+  outlineDarkness: number;
+  outlineColor: [number, number, number];
+  outlineMask: [number, number];
+  outlineOpaque: number;
+  hatchSpacingPx: number;
+  hatchWidthPx: number;
+  hatchJitter: number;
+  hatchSpaceJitter: number;
+  hatchAngle: number;
+  hatchColor: [number, number, number];
+  hatchAlpha: number;
+}
+
+export const DEFAULT_SUNLIGHT_STYLE: SunlightStyle = {
+  alphaSoft: 0.125,
+  sunSoft: 0.125,
+  outlineWidthPx: 2.0,
+  outlineDarkness: 1,
+  outlineColor: [0, 0, 0],
+  outlineMask: [1, 0],         // sun/shadow boundary only
+  outlineOpaque: 1,            // keep contour visible on watercolor
+  hatchSpacingPx: 35,
+  hatchWidthPx: 2.5,
+  hatchJitter: 0.12,
+  hatchSpaceJitter: 0.30,
+  hatchAngle: Math.PI / 4,
+  hatchColor: [0.07, 0.13, 0.4],
+  hatchAlpha: 0,               // disabled by default; toggle via Style panel
+};
+
 /** Normalise an RGBA255 to [0, 1] for GLSL uniforms. */
 function toGLColor(c: RGBA255): [number, number, number, number] {
   return [c.r / 255, c.g / 255, c.b / 255, c.a / 255];
@@ -157,35 +191,118 @@ function buildLuminanceBuffer(
 
 const VERT_SRC = /* glsl */ `#version 300 es
 uniform mat4 u_matrix;
-uniform float u_worldSize;
+uniform highp float u_worldSize;
+uniform highp vec2  u_tileOriginMerc; // NW corner of this tile in Mercator
 in vec2 a_pos;
 in vec2 a_texcoord;
 out vec2 v_texcoord;
+// Local world-pixel offset from the tile origin. Bounded by tile size
+// (~few thousand px at typical zooms) so fract() in fragment is precise.
+out highp vec2 v_localPx;
 void main() {
-  // a_pos is in Mercator [0,1] coords; u_matrix expects world-pixel coords.
   gl_Position = u_matrix * vec4(a_pos * u_worldSize, 0.0, 1.0);
   v_texcoord = a_texcoord;
+  v_localPx = (a_pos - u_tileOriginMerc) * u_worldSize;
 }
 `;
 
 const FRAG_SRC = /* glsl */ `#version 300 es
-precision mediump float;
+precision highp float;
 uniform sampler2D u_texture;
 uniform vec4 u_sunny;
 uniform vec4 u_shadow;
+uniform float u_alphaSoft;
+uniform float u_sunSoft;
+uniform float u_outlineWidthPx;
+uniform float u_outlineDarkness;
+uniform vec3  u_outlineColor;
+uniform vec2  u_outlineMask;
+uniform float u_outlineOpaque;
+// Hatching (hand-drawn look) — set u_hatchAlpha = 0 to disable.
+uniform float u_hatchSpacingPx;     // mean screen pixels between hatch lines
+uniform float u_hatchWidthPx;       // line thickness in screen pixels
+uniform float u_hatchJitter;        // along-line wobble amplitude (cycle units)
+uniform float u_hatchSpaceJitter;   // per-line spacing variation (cycle units)
+uniform float u_hatchAngle;     // radians
+uniform vec3  u_hatchColor;
+uniform float u_hatchAlpha;     // 0=off, 1=full opaque
+uniform highp float u_worldSize;     // shared with vertex stage
+uniform highp float u_tileDirFrac;   // per-tile cycle offset along hatch direction
 in vec2 v_texcoord;
+in highp vec2 v_localPx;
 out vec4 fragColor;
-// Texture values (after the LINEAR filter): ~0=indoor, ~0.5=outdoor+shadow,
-// ~1.0=outdoor+sunny. Two soft transitions:
-//   - 0 → 0.5  : indoor → shadow (modulates the overall alpha)
-//   - 0.5 → 1.0: shadow → sunny  (mixes the two color uniforms)
+
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) - 0.5;
+}
+
 void main() {
   float v = texture(u_texture, v_texcoord).r;
-  float outdoor = smoothstep(0.20, 0.45, v);
-  if (outdoor < 0.01) discard;
-  float sun = smoothstep(0.55, 0.80, v);
+  float outdoor = smoothstep(0.325 - u_alphaSoft, 0.325 + u_alphaSoft, v);
+  float sun = smoothstep(0.675 - u_sunSoft, 0.675 + u_sunSoft, v);
   vec4 color = mix(u_shadow, u_sunny, sun);
-  fragColor = vec4(color.rgb, color.a * outdoor);
+
+  float halfW = max(u_outlineWidthPx, 0.0001) * fwidth(v);
+  float outlineSun = (1.0 - smoothstep(0.0, halfW, abs(v - 0.675))) * u_outlineMask.x;
+  float outlineIn  = (1.0 - smoothstep(0.0, halfW, abs(v - 0.325))) * u_outlineMask.y;
+  float outline = clamp(outlineSun + outlineIn, 0.0, 1.0) * step(0.0, u_outlineWidthPx) * u_outlineDarkness;
+
+  // Hand-drawn hatching, gated by shadow density. Lines have a constant
+  // on-screen spacing/thickness regardless of zoom: v_merc * u_worldSize is
+  // the world-pixel position which matches the screen at native resolution.
+  // dir = (worldPx . direction) / spacing
+  // Decomposed as: per-tile cycle offset (computed precisely in JS) + the
+  // small per-fragment local offset within the tile. fract() is precise
+  // because both parts are well-bounded.
+  float localDir = (v_localPx.x * cos(u_hatchAngle) + v_localPx.y * sin(u_hatchAngle)) / u_hatchSpacingPx;
+  float dirBase = u_tileDirFrac + localDir;
+  // Subtle along-line wobble (continuous noise → each line breathes slightly).
+  vec2 noiseUv = v_localPx / max(u_hatchSpacingPx * 2.5, 1.0);
+  float wobble = vnoise(noiseUv) * u_hatchJitter;
+  // Per-line spacing variation: hash on the line index gives each stripe its
+  // own constant offset, so the apparent distance between consecutive lines
+  // changes slightly without breaking line straightness.
+  float lineIdx = floor(dirBase);
+  float perLine = (hash(vec2(lineIdx, 0.5)) - 0.5) * u_hatchSpaceJitter;
+  float dir = dirBase + wobble + perLine;
+  // Straight diagonal lines (no jitter yet — keep math obvious until visual works).
+  float lineDist = abs(fract(dir) - 0.5);
+  float halfWidthCycle = (u_hatchWidthPx * 0.5) / u_hatchSpacingPx;
+  float feather = fwidth(dir) * 0.7;
+  float hatchLine = 1.0 - smoothstep(halfWidthCycle, halfWidthCycle + feather, lineDist);
+  // For the hatch mask, average v across a small neighbourhood of texels so
+  // diagonal lines aren't chopped up by single-cell oscillations of the
+  // LINEAR-filtered texture at low-DPR cells.
+  vec2 texel = 1.0 / vec2(textureSize(u_texture, 0));
+  float vAvg = (
+    texture(u_texture, v_texcoord).r * 2.0 +
+    texture(u_texture, v_texcoord + vec2( texel.x, 0.0)).r +
+    texture(u_texture, v_texcoord - vec2( texel.x, 0.0)).r +
+    texture(u_texture, v_texcoord + vec2( 0.0, texel.y)).r +
+    texture(u_texture, v_texcoord - vec2( 0.0, texel.y)).r
+  ) / 6.0;
+  float outdoorAvg = smoothstep(0.325 - u_alphaSoft, 0.325 + u_alphaSoft, vAvg);
+  float sunAvg = smoothstep(0.675 - u_sunSoft, 0.675 + u_sunSoft, vAvg);
+  float shadowMask = (1.0 - sunAvg) * outdoorAvg;
+  float hatch = hatchLine * shadowMask * u_hatchAlpha;
+
+  if (outdoor < 0.01 && outline < 0.01 && hatch < 0.01) discard;
+
+  vec3 baseRgb = mix(color.rgb, u_hatchColor, hatch);
+  baseRgb = mix(baseRgb, u_outlineColor, outline);
+  float baseAlpha = color.a * outdoor;
+  float alpha = mix(baseAlpha, max(max(baseAlpha, outline), hatch), u_outlineOpaque);
+  fragColor = vec4(baseRgb, alpha);
 }
 `;
 
@@ -236,6 +353,32 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
   private sunnyColor: [number, number, number, number] = toGLColor(DEFAULT_SUNNY);
   private shadowColor: [number, number, number, number] = toGLColor(DEFAULT_SHADOW);
 
+  // Parametric style — overridable for A/B testing.
+  private style: SunlightStyle = { ...DEFAULT_SUNLIGHT_STYLE };
+  private textureFilter: "smooth" | "pixel" = "smooth";
+
+  /** Update visual style uniforms (outline, soft edges, etc.). */
+  setStyle(next: Partial<SunlightStyle>): void {
+    this.style = { ...this.style, ...next };
+    this.map.triggerRepaint();
+  }
+
+  /** Switch the texture sampling mode between LINEAR (smooth) and NEAREST
+   *  (pixel-perfect). Re-applies the filter to every existing tile texture. */
+  setTextureFilter(mode: "smooth" | "pixel"): void {
+    this.textureFilter = mode;
+    const gl = this.gl;
+    if (!gl) return;
+    const f = mode === "pixel" ? gl.NEAREST : gl.LINEAR;
+    for (const state of this.tileStates.values()) {
+      gl.bindTexture(gl.TEXTURE_2D, state.texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    this.map.triggerRepaint();
+  }
+
   constructor(private readonly map: MapLibreMap) {}
 
   // ── CustomLayerInterface ────────────────────────────────────────────────────
@@ -273,8 +416,9 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      const filter = this.textureFilter === "pixel" ? gl.NEAREST : gl.LINEAR;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
       gl.bindTexture(gl.TEXTURE_2D, null);
       state.texture = tex;
       state.textureDirty = true;
@@ -350,6 +494,23 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     gl.uniform4fv(gl.getUniformLocation(this.program, "u_sunny"),  this.sunnyColor);
     gl.uniform4fv(gl.getUniformLocation(this.program, "u_shadow"), this.shadowColor);
 
+    // Style uniforms (outline, smooth edges).
+    const s = this.style;
+    gl.uniform1f(gl.getUniformLocation(this.program, "u_alphaSoft"),       s.alphaSoft);
+    gl.uniform1f(gl.getUniformLocation(this.program, "u_sunSoft"),         s.sunSoft);
+    gl.uniform1f(gl.getUniformLocation(this.program, "u_outlineWidthPx"),  s.outlineWidthPx);
+    gl.uniform1f(gl.getUniformLocation(this.program, "u_outlineDarkness"), s.outlineDarkness);
+    gl.uniform3fv(gl.getUniformLocation(this.program, "u_outlineColor"),   s.outlineColor);
+    gl.uniform2fv(gl.getUniformLocation(this.program, "u_outlineMask"),    s.outlineMask);
+    gl.uniform1f(gl.getUniformLocation(this.program, "u_outlineOpaque"),    s.outlineOpaque);
+    gl.uniform1f(gl.getUniformLocation(this.program, "u_hatchSpacingPx"),   s.hatchSpacingPx);
+    gl.uniform1f(gl.getUniformLocation(this.program, "u_hatchWidthPx"),     s.hatchWidthPx);
+    gl.uniform1f(gl.getUniformLocation(this.program, "u_hatchJitter"),      s.hatchJitter);
+    gl.uniform1f(gl.getUniformLocation(this.program, "u_hatchSpaceJitter"), s.hatchSpaceJitter);
+    gl.uniform1f(gl.getUniformLocation(this.program, "u_hatchAngle"),       s.hatchAngle);
+    gl.uniform3fv(gl.getUniformLocation(this.program, "u_hatchColor"),      s.hatchColor);
+    gl.uniform1f(gl.getUniformLocation(this.program, "u_hatchAlpha"),       s.hatchAlpha);
+
     // Blending.
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -357,6 +518,13 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     // Draw each tile with its own texture.
     gl.uniform1i(gl.getUniformLocation(this.program, "u_texture"), 0);
     gl.activeTexture(gl.TEXTURE0);
+
+    // Cache per-tile uniform locations + hatch constants used inside the loop.
+    const uTileOriginMerc = gl.getUniformLocation(this.program, "u_tileOriginMerc");
+    const uTileDirFrac    = gl.getUniformLocation(this.program, "u_tileDirFrac");
+    const cosA = Math.cos(s.hatchAngle);
+    const sinA = Math.sin(s.hatchAngle);
+    const invSpacing = 1 / Math.max(s.hatchSpacingPx, 1e-6);
 
     for (let i = 0; i < activeTiles.length; i++) {
       const tile = activeTiles[i];
@@ -369,6 +537,16 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
         this.uploadTexture(gl, state);
         state.textureDirty = false;
       }
+
+      // Per-tile hatching anchor: NW corner Mercator (vertex 0) → cycle frac
+      // along the hatch direction. JS doubles preserve precision here even at
+      // high zooms, so the fragment shader can add a small local offset and
+      // fract() without losing decimals.
+      const nwX = state.vertices[0];
+      const nwY = state.vertices[1];
+      gl.uniform2f(uTileOriginMerc, nwX, nwY);
+      const originDir = (nwX * worldSize * cosA + nwY * worldSize * sinA) * invSpacing;
+      gl.uniform1f(uTileDirFrac, originDir - Math.floor(originDir));
 
       const vertStart = i * VERTS_PER_TILE;
       gl.drawArrays(gl.TRIANGLES, vertStart, VERTS_PER_TILE);
@@ -500,8 +678,9 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      const filter = this.textureFilter === "pixel" ? gl.NEAREST : gl.LINEAR;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
       gl.bindTexture(gl.TEXTURE_2D, null);
 
       const state: TileGPUState = {
