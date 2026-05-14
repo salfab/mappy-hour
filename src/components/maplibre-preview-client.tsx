@@ -210,6 +210,44 @@ function buildStyle(basemap: BaseMapDef): StyleSpecification {
 const DEFAULT_CENTER: [number, number] = [6.6323, 46.5197]; // [lng, lat] for MapLibre
 const DEFAULT_ZOOM = 17;
 
+// localStorage key shared with the Leaflet client (sunlight-map-client.tsx)
+// so the map view persists across the two pages.
+const MAP_VIEW_STORAGE_KEY = "mappy-hour:map:view";
+const MAP_MAX_ZOOM = 20;
+
+interface StoredMapView {
+  lat: number;
+  lon: number;
+  zoom: number;
+}
+
+function loadStoredMapView(): StoredMapView | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(MAP_VIEW_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredMapView>;
+    const { lat, lon, zoom } = parsed;
+    if (
+      typeof lat !== "number" || !Number.isFinite(lat) || lat < -90 || lat > 90 ||
+      typeof lon !== "number" || !Number.isFinite(lon) || lon < -180 || lon > 180 ||
+      typeof zoom !== "number" || !Number.isFinite(zoom) || zoom < 0 || zoom > MAP_MAX_ZOOM
+    ) {
+      return null;
+    }
+    return { lat, lon, zoom };
+  } catch {
+    return null;
+  }
+}
+
+function persistMapView(view: StoredMapView): void {
+  try {
+    globalThis.localStorage?.setItem(MAP_VIEW_STORAGE_KEY, JSON.stringify(view));
+  } catch {
+    // Ignore storage errors (private browsing, quota, etc.).
+  }
+}
+
 // Subcategory -> color. Same palette intent as Leaflet overlay (amber/red/violet/gray/green).
 const SUBCATEGORY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
   "match",
@@ -660,12 +698,13 @@ export function MapLibrePreviewClient() {
     if (!containerRef.current || mapRef.current) return;
     const baseMaps = baseMapsRef.current!;
     const initial = baseMaps.find((b) => b.id === "aquarelle") ?? baseMaps[0];
+    const storedView = loadStoredMapView();
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: buildStyle(initial),
-      center: DEFAULT_CENTER,
-      zoom: DEFAULT_ZOOM,
-      maxZoom: 20,
+      center: storedView ? [storedView.lon, storedView.lat] : DEFAULT_CENTER,
+      zoom: storedView?.zoom ?? DEFAULT_ZOOM,
+      maxZoom: MAP_MAX_ZOOM,
     });
     mapRef.current = map;
 
@@ -689,7 +728,15 @@ export function MapLibrePreviewClient() {
 
     // Debounced viewport places fetch on map move/zoom. Mirrors the Leaflet
     // implementation: 400ms debounce, abort in-flight requests on re-trigger.
+    // Also persists the current view to localStorage so reloads keep the
+    // user's pan/zoom (shared key with the Leaflet page).
     map.on("moveend", () => {
+      const center = map.getCenter();
+      persistMapView({
+        lat: Number(center.lat.toFixed(6)),
+        lon: Number(center.lng.toFixed(6)),
+        zoom: map.getZoom(),
+      });
       if (viewportPlacesDebounceRef.current !== null) {
         window.clearTimeout(viewportPlacesDebounceRef.current);
       }
