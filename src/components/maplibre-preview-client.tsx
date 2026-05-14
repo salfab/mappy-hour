@@ -76,6 +76,11 @@ export function MapLibrePreviewClient() {
   const viewportPlacesDebounceRef = useRef<number | null>(null);
   const viewportPlacesAbortRef = useRef<AbortController | null>(null);
   const timelineAbortRef = useRef<AbortController | null>(null);
+  // Mirror the slider position so the SSE callback can read the latest value
+  // without making refreshTimeline depend on frameIndex (which would force the
+  // map mount effect to re-run).
+  const frameIndexRef = useRef(0);
+  useEffect(() => { frameIndexRef.current = frameIndex; }, [frameIndex]);
 
   // Raw places kept in a ref so filter changes can re-apply without refetching.
   const rawPlacesRef = useRef<ViewportPlaceLite[]>([]);
@@ -150,10 +155,17 @@ export function MapLibrePreviewClient() {
         onLoadingChange: setSunlightLoading,
         onError: (err) => console.warn("[maplibre-preview] timeline:", err),
         onResult: ({ tiles, frames }) => {
+          // Preserve the user's current slider position when a new fetch
+          // lands. If the new timeline is shorter, clamp; on first load
+          // frameIndexRef is still 0 so it naturally lands at frame 0.
+          const clamped = Math.min(
+            frameIndexRef.current,
+            Math.max(0, frames.length - 1),
+          );
           const layer = sunlightLayerRef.current;
-          if (layer) layer.setTimeline(tiles, 0, showSunny, showShadow);
+          if (layer) layer.setTimeline(tiles, clamped, showSunny, showShadow);
           setTimelineFrames(frames);
-          setFrameIndex(0);
+          setFrameIndex(clamped);
         },
       });
     },
