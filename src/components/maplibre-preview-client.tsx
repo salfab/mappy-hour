@@ -665,9 +665,9 @@ export function MapLibrePreviewClient() {
         className="absolute bottom-3 right-3 z-10 rounded-md bg-white/95 px-3 py-2 shadow-md backdrop-blur"
         style={{ font: "12px system-ui, sans-serif" }}
       >
-        <div className="font-semibold text-gray-800">MapLibre preview — Phase 2</div>
+        <div className="font-semibold text-gray-800">MapLibre preview — Phase 3</div>
         <div className="text-gray-600">
-          Basemap natif + clustering GeoJSON. Overlay soleil natif (Phase 2 ✓).
+          Overlay soleil WebGL custom layer (Phase 3 ✓). Clusters au-dessus.
         </div>
         <a href="/" className="mt-1 inline-block text-blue-600 hover:underline">
           ← Retour à la carte Leaflet

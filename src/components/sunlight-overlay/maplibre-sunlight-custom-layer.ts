@@ -157,11 +157,13 @@ function buildLuminanceBuffer(
 
 const VERT_SRC = /* glsl */ `#version 300 es
 uniform mat4 u_matrix;
+uniform float u_worldSize;
 in vec2 a_pos;
 in vec2 a_texcoord;
 out vec2 v_texcoord;
 void main() {
-  gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0);
+  // a_pos is in Mercator [0,1] coords; u_matrix expects world-pixel coords.
+  gl_Position = u_matrix * vec4(a_pos * u_worldSize, 0.0, 1.0);
   v_texcoord = a_texcoord;
 }
 `;
@@ -303,6 +305,17 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
 
     gl.useProgram(this.program);
 
+    // MapLibre GL JS uses VAOs internally. If one is still bound when render()
+    // is called, our vertexAttribPointer calls would modify MapLibre's VAO
+    // state instead of setting up our own draw. Unbind before touching attrs.
+    (gl as WebGL2RenderingContext).bindVertexArray?.(null);
+
+    // MapLibre may have CULL_FACE enabled. The Mercator→clip-space Y-flip
+    // reverses our triangle winding (CW after projection), which would cull
+    // them as back-faces. Disable face culling for our draw call.
+    const cullFaceWasEnabled = gl.isEnabled(gl.CULL_FACE);
+    gl.disable(gl.CULL_FACE);
+
     // Upload combined vertex data.
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
     gl.bufferData(gl.ARRAY_BUFFER, buf, gl.DYNAMIC_DRAW);
@@ -320,6 +333,12 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       false,
       matrix,
     );
+
+    // WorldSize: the matrix expects coordinates in world-pixel space (Mercator × worldSize),
+    // but our vertices are stored in Mercator [0,1]. MapLibre uses 512px tiles, so
+    // worldSize = 512 * 2^zoom (fractional zoom OK).
+    const worldSize = 512 * Math.pow(2, this.map.getZoom());
+    gl.uniform1f(gl.getUniformLocation(this.program, "u_worldSize"), worldSize);
 
     // Color uniforms.
     gl.uniform4fv(gl.getUniformLocation(this.program, "u_sunny"),  this.sunnyColor);
@@ -350,7 +369,11 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     }
 
     gl.disable(gl.BLEND);
+    if (cullFaceWasEnabled) gl.enable(gl.CULL_FACE);
+    gl.disableVertexAttribArray(this.aPos);
+    gl.disableVertexAttribArray(this.aTexcoord);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
   }
 
   onRemove(_map: MapLibreMap, _gl: WebGL2RenderingContext | WebGLRenderingContext): void {
