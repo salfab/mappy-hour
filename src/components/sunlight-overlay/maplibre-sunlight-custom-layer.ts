@@ -175,11 +175,17 @@ uniform vec4 u_sunny;
 uniform vec4 u_shadow;
 in vec2 v_texcoord;
 out vec4 fragColor;
+// Texture values (after the LINEAR filter): ~0=indoor, ~0.5=outdoor+shadow,
+// ~1.0=outdoor+sunny. Two soft transitions:
+//   - 0 → 0.5  : indoor → shadow (modulates the overall alpha)
+//   - 0.5 → 1.0: shadow → sunny  (mixes the two color uniforms)
 void main() {
   float v = texture(u_texture, v_texcoord).r;
-  if (v < 0.3) discard;
-  if (v < 0.7) fragColor = u_shadow;
-  else         fragColor = u_sunny;
+  float outdoor = smoothstep(0.20, 0.45, v);
+  if (outdoor < 0.01) discard;
+  float sun = smoothstep(0.55, 0.80, v);
+  vec4 color = mix(u_shadow, u_sunny, sun);
+  fragColor = vec4(color.rgb, color.a * outdoor);
 }
 `;
 
@@ -267,8 +273,8 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.bindTexture(gl.TEXTURE_2D, null);
       state.texture = tex;
       state.textureDirty = true;
@@ -494,8 +500,8 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.bindTexture(gl.TEXTURE_2D, null);
 
       const state: TileGPUState = {
