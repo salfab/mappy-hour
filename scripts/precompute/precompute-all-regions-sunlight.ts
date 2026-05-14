@@ -15,6 +15,48 @@ import { spawnSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+// Load .env.local into process.env (only vars not already set).
+// tsx does not auto-load .env files, so this lets MAPPY_DATA_ROOT etc.
+// be picked up without requiring the caller to export them manually.
+try {
+  const envLocal = fs.readFileSync(path.resolve(process.cwd(), ".env.local"), "utf8");
+  for (const line of envLocal.split(/\r?\n/)) {
+    const m = line.match(/^([A-Za-z_]\w*)\s*=\s*(.*)$/);
+    if (m && process.env[m[1]] === undefined) {
+      process.env[m[1]] = m[2].replace(/^["'](.*)["']$/, "$1");
+    }
+  }
+} catch {}
+
+// Honour MAPPY_DATA_ROOT so that "data/..." paths resolve to the right place
+// even when data/ is not a subdirectory of the project root.
+const _envDataRoot = process.env.MAPPY_DATA_ROOT?.trim();
+const DATA_ROOT =
+  _envDataRoot && _envDataRoot.length > 0
+    ? path.isAbsolute(_envDataRoot)
+      ? _envDataRoot
+      : path.resolve(process.cwd(), _envDataRoot)
+    : path.join(process.cwd(), "data");
+
+const CACHE_ROOT = path.join(DATA_ROOT, "cache");
+const GRID_METADATA_DIR = path.join(CACHE_ROOT, "tile-grid-metadata");
+const _envCacheSunlightDir = process.env.MAPPY_CACHE_SUNLIGHT_DIR?.trim();
+const ATLAS_DIR =
+  _envCacheSunlightDir && _envCacheSunlightDir.length > 0
+    ? path.isAbsolute(_envCacheSunlightDir)
+      ? _envCacheSunlightDir
+      : path.resolve(process.cwd(), _envCacheSunlightDir)
+    : path.join(CACHE_ROOT, "sunlight");
+
+
+function resolveSelectionPath(filePath: string): string {
+  if (path.isAbsolute(filePath)) return filePath;
+  if (filePath.startsWith("data/") || filePath.startsWith("data\\")) {
+    return path.join(DATA_ROOT, filePath.slice("data/".length));
+  }
+  return path.resolve(process.cwd(), filePath);
+}
+
 const REGION_SCRIPT = path.resolve(
   process.cwd(),
   "scripts/precompute/precompute-region-sunlight.ts",
@@ -29,7 +71,7 @@ const REGION_PRIORITY: string[] = ["lausanne", "morges", "nyon", "vevey", "vevey
 type ExperimentalBuildingsShadowMode = "gpu-raster" | "rust-wgpu-vulkan";
 
 function readRegionsFromSelectionFile(filePath: string): string[] {
-  const raw = fs.readFileSync(path.resolve(process.cwd(), filePath), "utf8");
+  const raw = fs.readFileSync(resolveSelectionPath(filePath), "utf8");
   const data = JSON.parse(raw) as { tiles: Array<{ region: string }> };
   const found = Array.from(new Set(data.tiles.map((t) => t.region)));
   return [
@@ -39,7 +81,7 @@ function readRegionsFromSelectionFile(filePath: string): string[] {
 }
 
 function countTilesPerRegion(filePath: string): Record<string, number> {
-  const raw = fs.readFileSync(path.resolve(process.cwd(), filePath), "utf8");
+  const raw = fs.readFileSync(resolveSelectionPath(filePath), "utf8");
   const data = JSON.parse(raw) as { tiles: Array<{ region: string }> };
   const counts: Record<string, number> = {};
   for (const t of data.tiles) counts[t.region] = (counts[t.region] ?? 0) + 1;
@@ -50,7 +92,7 @@ function countTilesPerPassPerRegion(filePath: string): {
   topPriority: Record<string, number>;
   other: Record<string, number>;
 } {
-  const raw = fs.readFileSync(path.resolve(process.cwd(), filePath), "utf8");
+  const raw = fs.readFileSync(resolveSelectionPath(filePath), "utf8");
   const data = JSON.parse(raw) as { tiles: Array<{ region: string; group?: string }> };
   const topPriority: Record<string, number> = {};
   const other: Record<string, number> = {};
@@ -68,6 +110,13 @@ function parseArgValue(argv: string[], prefix: string): string | null {
   return null;
 }
 
+interface RegionHashes {
+  atlasHash: string;
+  gridHash: string;
+  atlasExists: boolean;
+  gridExists: boolean;
+}
+
 function printRunRecap(params: {
   selectionFile: string;
   regions: string[];
@@ -76,6 +125,7 @@ function printRunRecap(params: {
   buildingsShadowMode: string;
   gridStepMeters: number;
   passthrough: string[];
+  regionHashes: Record<string, RegionHashes | null>;
 }): void {
   const startDate = parseArgValue(params.passthrough, "--start-date=") ?? "(today)";
   const days = parseArgValue(params.passthrough, "--days=") ?? "1";
@@ -103,7 +153,17 @@ function printRunRecap(params: {
   console.log(`  Commit           : ${gitHash}`);
   console.log(`  NODE_OPTIONS     : ${nodeOpts}`);
   console.log(`  Tile selection   : ${params.selectionFile}`);
+  console.log(`  Grid metadata    : ${GRID_METADATA_DIR}`);
+  console.log(`  Atlas cache      : ${ATLAS_DIR}`);
   console.log(`  Total tiles      : ${totalTiles}`);
+  console.log("");
+  console.log("  Hashes par région :");
+  for (const region of params.regions) {
+    const h = params.regionHashes[region];
+    const atlasStr = h ? `${h.atlasExists ? "✅" : "🆕"} ${h.atlasHash}` : "(non calculable)";
+    const gridStr  = h ? `${h.gridExists  ? "✅" : "🆕"} ${h.gridHash}`  : "(non calculable)";
+    console.log(`    • ${region.padEnd(18)} atlas=${atlasStr}  grid=${gridStr}`);
+  }
   console.log(`  Regions (${params.regions.length})      : ${params.regions.join(" → ")}`);
   console.log("");
   console.log(`  Passe 1/2 — Top priority (${topTotal} tuiles) :`);
@@ -214,9 +274,15 @@ function ensureGridMetadataForAllRegions(
       shell: process.platform === "win32",
       env: { ...process.env, MAPPY_BUILDINGS_SHADOW_MODE: "gpu-raster" },
     });
-    if (result.status !== 0) {
+    if (result.error) {
       throw new Error(
-        `grid-metadata preflight failed for région=${region} (exit ${result.status ?? "signal"}). Aucune région n'a été précalculée.`,
+        `grid-metadata preflight spawn error for région=${region}: ${result.error.message}`,
+      );
+    }
+    if (result.status !== 0 || result.signal) {
+      const detail = result.signal ? `signal=${result.signal}` : `exit=${result.status}`;
+      throw new Error(
+        `grid-metadata preflight failed for région=${region} (${detail}). Aucune région n'a été précalculée.`,
       );
     }
   }
@@ -225,7 +291,7 @@ function ensureGridMetadataForAllRegions(
   console.log(`[precompute-all] ✓ preflight grid-metadata terminé en ${elapsed}s\n`);
 }
 
-function main() {
+async function main() {
   // pnpm passes a literal "--" separator when using `pnpm script -- args`, strip it.
   // Also strip --region= (we iterate regions ourselves) and --skip-preflight
   // (this orchestrator consumes it; child precompute scripts don't know it).
@@ -256,6 +322,27 @@ function main() {
 
   const gridStepMeters = parseGridStepMetersArg(passthrough);
 
+  // Import dynamique : data-paths.ts doit être chargé APRÈS le bloc .env.local
+  // ci-dessus (les imports statiques s'exécutent avant ce bloc et manqueraient MAPPY_DATA_ROOT).
+  const { getSunlightModelVersion } = await import("../../src/lib/precompute/model-version");
+
+  const regionHashes: Record<string, RegionHashes | null> = {};
+  await Promise.all(
+    regions.map(async (region) => {
+      try {
+        const v = await getSunlightModelVersion(region as Parameters<typeof getSunlightModelVersion>[0], { buildingHeightBiasMeters: 0 });
+        regionHashes[region] = {
+          atlasHash: v.modelVersionHash,
+          gridHash: v.gridMetadataHash,
+          atlasExists: fs.existsSync(path.join(ATLAS_DIR, region, v.modelVersionHash)),
+          gridExists: fs.existsSync(path.join(GRID_METADATA_DIR, region, v.gridMetadataHash)),
+        };
+      } catch {
+        regionHashes[region] = null;
+      }
+    }),
+  );
+
   printRunRecap({
     selectionFile,
     regions,
@@ -264,6 +351,7 @@ function main() {
     buildingsShadowMode,
     gridStepMeters,
     passthrough,
+    regionHashes,
   });
 
   if (buildingsShadowMode === "rust-wgpu-vulkan") {
@@ -321,12 +409,15 @@ function main() {
         env: { ...process.env, MAPPY_BUILDINGS_SHADOW_MODE: buildingsShadowMode },
       });
 
-      if (result.status !== 0) {
-        const exit = result.status != null ? String(result.status) : "signal";
+      if (result.error || result.status !== 0 || result.signal) {
+        let detail: string;
+        if (result.error) detail = `spawn-error: ${result.error.message}`;
+        else if (result.signal) detail = `killed by signal=${result.signal}`;
+        else detail = `exit=${result.status}`;
         console.error(
-          `[precompute-all] ✗ pass=${pass.filter} région=${region} a échoué (exit ${exit})`,
+          `[precompute-all] ✗ pass=${pass.filter} région=${region} a échoué (${detail})`,
         );
-        failures.push({ pass: pass.filter, region, exit });
+        failures.push({ pass: pass.filter, region, exit: detail });
       } else {
         console.log(`[precompute-all] ✓ pass=${pass.filter} région=${region} terminée`);
       }
@@ -353,4 +444,4 @@ function main() {
   }
 }
 
-main();
+void main().catch((e) => { console.error(e); process.exitCode = 1; });

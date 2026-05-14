@@ -358,6 +358,9 @@ export interface AtlasComputeParams {
   region: PrecomputedRegionName;
   modelVersionHash: string;
   algorithmVersion: string;
+  /** Full model version (inputs + hash). When provided, hashInputs are embedded
+   *  in the atlas metadata for future auditability. */
+  modelVersion?: import("./model-version").SunlightModelVersion;
   date: string;
   timezone: string;
   sampleEveryMinutes: number;
@@ -598,6 +601,7 @@ export async function computeAndMergeAtlasForTile(
     resolutionDegAlt: resolutionDeg,
     tile: params.tile,
     model: artifact.model as unknown as Record<string, unknown>,
+    hashInputs: params.modelVersion ? (params.modelVersion.inputs as unknown as Record<string, unknown>) : undefined,
     warnings: artifact.warnings,
     stats: {
       bucketCount: 0,
@@ -870,6 +874,7 @@ export async function computeAndMergeAtlasForTileMultiDate(
     resolutionDegAlt: resolutionDeg,
     tile: params.tile,
     model: artifact.model as unknown as Record<string, unknown>,
+    hashInputs: params.modelVersion ? (params.modelVersion.inputs as unknown as Record<string, unknown>) : undefined,
     warnings: artifact.warnings,
     stats: {
       bucketCount: 0,
