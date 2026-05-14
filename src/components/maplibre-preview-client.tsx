@@ -27,6 +27,12 @@ import {
 } from "@/components/maplibre-preview/places-source";
 import { PlaceDetailCard } from "@/components/maplibre-preview/place-card";
 import { SearchPanel } from "@/components/maplibre-preview/search-panel";
+import {
+  FilterPanel,
+  DEFAULT_FILTERS,
+  placeChipKey,
+  type CategoryFilters,
+} from "@/components/maplibre-preview/filter-panel";
 import { fetchTimeline } from "@/components/maplibre-preview/sunlight-timeline";
 
 const DEFAULT_CENTER: [number, number] = [6.6323, 46.5197];
@@ -60,10 +66,25 @@ export function MapLibrePreviewClient() {
   const viewportPlacesAbortRef = useRef<AbortController | null>(null);
   const timelineAbortRef = useRef<AbortController | null>(null);
 
+  // Raw places kept in a ref so filter changes can re-apply without refetching.
+  const rawPlacesRef = useRef<ViewportPlaceLite[]>([]);
+  const [filters, setFilters] = useState<CategoryFilters>(DEFAULT_FILTERS);
+
   const baseMapsRef = useRef<BaseMapDef[] | null>(null);
   if (baseMapsRef.current === null) {
     baseMapsRef.current = buildBaseMaps(process.env.NEXT_PUBLIC_STADIA_API_KEY);
   }
+
+  // Apply current filters to the cached raw places and push to the source.
+  // Lives in a ref so callers can grab the latest filters at call time
+  // without participating in React state dependency graphs.
+  const applyPlacesToSource = useCallback((map: MapLibreMap, current: CategoryFilters) => {
+    const filtered = rawPlacesRef.current.filter((p) =>
+      current[placeChipKey(p.category, p.subcategory)],
+    );
+    const source = map.getSource("places") as maplibregl.GeoJSONSource | undefined;
+    if (source) source.setData(placesToFeatureCollection(filtered));
+  }, []);
 
   // ── Viewport places fetch (POST /api/places/viewport) ─────────────────────
   const fetchViewportPlaces = useCallback(async (map: MapLibreMap) => {
@@ -86,14 +107,23 @@ export function MapLibrePreviewClient() {
       if (!response.ok) return;
       const json = (await response.json()) as { places?: ViewportPlaceLite[] };
       if (abort.signal.aborted) return;
-      const places = Array.isArray(json.places) ? json.places : [];
-      const source = map.getSource("places") as maplibregl.GeoJSONSource | undefined;
-      if (source) source.setData(placesToFeatureCollection(places));
+      rawPlacesRef.current = Array.isArray(json.places) ? json.places : [];
+      applyPlacesToSource(map, filters);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       console.warn("[maplibre-preview] viewport places fetch failed:", err);
     }
-  }, []);
+    // filters intentionally read fresh inside via the closure — re-runs of
+    // fetchViewportPlaces always pick the latest because applyPlacesToSource
+    // takes `current` explicitly. eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyPlacesToSource, filters]);
+
+  // Re-apply filters on toggle without refetching from the server.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    applyPlacesToSource(map, filters);
+  }, [filters, ready, applyPlacesToSource]);
 
   // ── Sunlight timeline fetch (re-runs whenever date / ready changes) ───────
   const refreshTimeline = useCallback(
@@ -282,6 +312,7 @@ export function MapLibrePreviewClient() {
       <div className="pointer-events-auto absolute left-3 right-3 top-3 z-10 flex flex-col gap-3 rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur lg:right-auto lg:w-[280px]">
         <DaySelector date={date} onDateChange={setDate} />
         <SearchPanel mapRef={mapRef} />
+        <FilterPanel filters={filters} onChange={setFilters} />
       </div>
 
       {/* Basemap switcher — top-right on desktop, hidden on mobile (rarely
