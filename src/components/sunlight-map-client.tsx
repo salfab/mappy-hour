@@ -455,7 +455,7 @@ interface InstantStreamDonePayload {
 
 const METERS_PER_DEGREE_LAT = 111_320;
 const DEFAULT_MAP_CENTER: [number, number] = [46.5197, 6.6323];
-const DEFAULT_MAP_ZOOM = 13;
+const DEFAULT_MAP_ZOOM = 17;
 const MAP_MAX_NATIVE_ZOOM = 19;
 const MAP_MAX_ZOOM = 23;
 const MAP_VIEW_STORAGE_KEY = "mappy-hour:map:view";

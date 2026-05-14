@@ -154,7 +154,7 @@ function buildStyle(basemap: BaseMapDef): StyleSpecification {
 
 // Lausanne center, same as the Leaflet default.
 const DEFAULT_CENTER: [number, number] = [6.6323, 46.5197]; // [lng, lat] for MapLibre
-const DEFAULT_ZOOM = 13;
+const DEFAULT_ZOOM = 17;
 
 // Subcategory -> color. Same palette intent as Leaflet overlay (amber/red/violet/gray/green).
 const SUBCATEGORY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
