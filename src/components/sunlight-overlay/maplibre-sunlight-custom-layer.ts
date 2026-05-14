@@ -495,9 +495,10 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     gl: WebGL2RenderingContext | WebGLRenderingContext,
     state: TileGPUState,
   ): void {
-    // Prefer WebGL2's LUMINANCE alias (same as WebGL1 LUMINANCE). Works in
-    // both contexts. R8 with RED internalformat is WebGL2-only and would
-    // require shader changes (texture().r vs texture().g); stick with LUMINANCE.
+    // Disable row-alignment padding: UNPACK_ALIGNMENT defaults to 4, which
+    // adds padding bytes to rows whose width is not a multiple of 4 (e.g. 250).
+    // Our buffer is tightly packed (1 byte/cell), so we need alignment = 1.
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texImage2D(
       gl.TEXTURE_2D,
       0,
@@ -509,6 +510,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       gl.UNSIGNED_BYTE,
       state.luminance,
     );
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4); // restore default
   }
 
   private destroyTileState(state: TileGPUState): void {
