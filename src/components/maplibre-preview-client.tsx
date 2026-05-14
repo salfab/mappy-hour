@@ -31,6 +31,7 @@ import {
 } from "@/components/sunlight-overlay/maplibre-sunlight-custom-layer";
 import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
 import type { NormalizedPlaceLite } from "@/components/places-overlay/viewport-places";
+import { DaySelector } from "@/components/map-ui/controls";
 
 type BaseMapId = "aquarelle" | "carto-voyager" | "osm" | "satellite";
 
@@ -419,6 +420,11 @@ export function MapLibrePreviewClient() {
   const [frameIndex, setFrameIndex] = useState(0);
   const [timelineFrames, setTimelineFrames] = useState<Array<{ localTime: string }>>([]);
   const [sunlightLoading, setSunlightLoading] = useState(false);
+  // Local date (YYYY-MM-DD) used for both the timeline SSE and the place
+  // card's /api/places/windows fetch. Defaults to today in Europe/Zurich.
+  const [date, setDate] = useState<string>(() =>
+    new Date().toLocaleDateString("sv", { timeZone: "Europe/Zurich" }),
+  );
   const sunlightLayerRef = useRef<MapLibreSunlightCustomLayer | null>(null);
 
   // ── Place card state ────────────────────────────────────────────────────────
@@ -437,10 +443,9 @@ export function MapLibrePreviewClient() {
   }
 
   // ── SSE timeline fetch ──────────────────────────────────────────────────────
-  const fetchTimeline = useCallback(async (map: MapLibreMap) => {
+  const fetchTimeline = useCallback(async (map: MapLibreMap, date: string) => {
     setSunlightLoading(true);
     const bounds = map.getBounds();
-    const date = new Date().toLocaleDateString("sv", { timeZone: "Europe/Zurich" });
     const params = new URLSearchParams({
       minLon: String(bounds.getWest()),
       minLat: String(bounds.getSouth()),
@@ -603,7 +608,6 @@ export function MapLibrePreviewClient() {
     setIsCardSunlightLoading(true);
     setCardSunlightError(null);
     setCardSunlightWindows(null);
-    const date = new Date().toLocaleDateString("sv", { timeZone: "Europe/Zurich" });
     fetch("/api/places/windows", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -642,7 +646,14 @@ export function MapLibrePreviewClient() {
         setIsCardSunlightLoading(false);
       });
     return () => controller.abort();
-  }, [selectedPlace]);
+  }, [selectedPlace, date]);
+
+  // Refetch the timeline SSE whenever the user changes the date.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    void fetchTimeline(map, date);
+  }, [date, ready, fetchTimeline]);
 
   // Mount the map once.
   useEffect(() => {
@@ -671,7 +682,8 @@ export function MapLibrePreviewClient() {
       const sunlightLayer = new MapLibreSunlightCustomLayer(map);
       map.addLayer(sunlightLayer, "cluster-circles");
       sunlightLayerRef.current = sunlightLayer;
-      void fetchTimeline(map);
+      // The date-watching effect triggers the initial fetchTimeline once
+      // setReady(true) above causes it to re-evaluate.
       void fetchViewportPlaces(map);
     });
 
@@ -742,6 +754,12 @@ export function MapLibrePreviewClient() {
   return (
     <div className="absolute inset-0">
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
+
+      {/* Left control panel — date picker (matches the Leaflet main page). */}
+      <div className="pointer-events-auto absolute left-3 top-3 z-10 w-[260px] rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur">
+        <DaySelector date={date} onDateChange={setDate} />
+      </div>
+
       {/* Basemap switcher */}
       <div
         className="absolute top-3 right-3 z-10 rounded-md bg-white/95 px-2 py-2 shadow-md backdrop-blur"

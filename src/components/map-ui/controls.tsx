@@ -185,7 +185,7 @@ function formatDisplayDate(date: string): string {
   return formatted.charAt(0).toUpperCase() + formatted.slice(1);
 }
 
-function DaySelector(props: {
+export function DaySelector(props: {
   date: string;
   onDateChange: (date: string) => void;
 }) {
