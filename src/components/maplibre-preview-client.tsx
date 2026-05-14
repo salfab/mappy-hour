@@ -26,6 +26,7 @@ import {
   type ViewportPlaceLite,
 } from "@/components/maplibre-preview/places-source";
 import { PlaceDetailCard } from "@/components/maplibre-preview/place-card";
+import { SearchPanel } from "@/components/maplibre-preview/search-panel";
 import { fetchTimeline } from "@/components/maplibre-preview/sunlight-timeline";
 
 const DEFAULT_CENTER: [number, number] = [6.6323, 46.5197];
@@ -276,9 +277,10 @@ export function MapLibrePreviewClient() {
     <div className="absolute inset-0">
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 
-      {/* Left control panel — date picker. */}
-      <div className="pointer-events-auto absolute left-3 top-3 z-10 w-[260px] rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur">
+      {/* Left control panel — date picker + address search. */}
+      <div className="pointer-events-auto absolute left-3 top-3 z-10 flex w-[280px] flex-col gap-3 rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur">
         <DaySelector date={date} onDateChange={setDate} />
+        <SearchPanel mapRef={mapRef} />
       </div>
 
       {/* Basemap switcher (top-right). */}
