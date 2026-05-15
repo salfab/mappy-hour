@@ -173,6 +173,23 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
             onResult({ tiles: collected, frames });
             onLoadingChange?.(false);
           } else if (eventType === "error") {
+            // Defensive fallback: if the server errored before emitting a
+            // start event AND we have cached tiles to seed in the bbox, we
+            // still render those rather than leaving the layer empty. The
+            // server fix above should make this branch rare, but it keeps
+            // older server versions usable.
+            if (collected.length === 0 && cachedIdsInBbox.length > 0) {
+              seedFromCache();
+              if (collected.length > 0) {
+                const frames = collected[0].frames?.map((f) => ({ localTime: f.localTime })) ?? [];
+                console.log(
+                  `[timeline] error event fallback: server said no tiles but we have ${collected.length} cached in bbox — rendering those.`,
+                );
+                onResult({ tiles: collected, frames });
+                onLoadingChange?.(false);
+                continue;
+              }
+            }
             onError?.(payload);
             onLoadingChange?.(false);
           }

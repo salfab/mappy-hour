@@ -422,15 +422,21 @@ export async function GET(request: Request) {
           const tStreamNext0 = performance.now();
           let result = await tileStream.next();
           perTileTiming.streamNext += performance.now() - tStreamNext0;
+          let tilesEncountered = 0;
+          let tilesSkippedByExclude = 0;
+          let lastSeenTotalTiles = 0;
           while (!result.done) {
             if (streamAborted) return;
             const tileT0 = performance.now();
             const { tileId, tileIndex, totalTiles, artifact, binary, atlases, layer } = result.value;
+            tilesEncountered += 1;
+            lastSeenTotalTiles = totalTiles;
             // Client already holds this tile decoded in its LRU; skip the
             // encode + send work entirely. The exclude list is in compact
             // form so we compute the same key here before lookup.
             const compactId = compactTileId(tileId);
             if (compactId && query.excludeTileIds.has(compactId)) {
+              tilesSkippedByExclude += 1;
               const tStreamNextSkip = performance.now();
               result = await tileStream.next();
               perTileTiming.streamNext += performance.now() - tStreamNextSkip;
@@ -865,11 +871,31 @@ export async function GET(request: Request) {
 
           // Generator returned init metadata (or null if region not found)
           if (!sentStart) {
-            // No tiles at all — region not found or no intersecting tiles
-            sendEvent("error", {
-              error: "No tiles found for the requested area.",
-            });
-            return;
+            // Distinguish "no tiles in this area at all" (real error) from
+            // "all the tiles you asked for are already in your cache" (the
+            // client passed every intersecting tile in excludeTileIds, so the
+            // server has nothing fresh to send). In the second case we still
+            // emit start + done so the client treats it as a normal completion
+            // and renders the cached tiles it pre-seeded into `collected`.
+            if (tilesEncountered > 0 && tilesSkippedByExclude === tilesEncountered) {
+              sendEvent("start", {
+                date: query.date,
+                timezone: query.timezone,
+                startLocalTime: query.startLocalTime,
+                endLocalTime: query.endLocalTime,
+                sampleEveryMinutes: query.sampleEveryMinutes,
+                gridStepMeters: query.gridStepMeters,
+                totalTiles: lastSeenTotalTiles,
+                frameCount: timelineUtcSamples.length,
+                model: {},
+              });
+              await yieldToEventLoop();
+            } else {
+              sendEvent("error", {
+                error: "No tiles found for the requested area.",
+              });
+              return;
+            }
           }
 
           // Compute precise overlay bounds from global col/row extremes
