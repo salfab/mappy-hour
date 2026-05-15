@@ -8,6 +8,7 @@ import { MapLibreSunlightCustomLayer } from "@/components/sunlight-overlay/mapli
 import { MapLibreHeatmapCustomLayer } from "@/components/sunlight-overlay/maplibre-heatmap-custom-layer";
 import {
   CalculationControls,
+  DailyCoverage,
   LayerFilters,
   ProgressStatus,
   ViewTabs,
@@ -1286,6 +1287,18 @@ export function MapLibrePreviewClient() {
       formatDuration={formatDuration}
     />
   );
+  // DECISION: the preview client does not (yet) wire SSE timeline warnings,
+  // focus-run messaging, calc/timeline errors or places-error state. Pass the
+  // empty defaults so DailyCoverage renders null when there is nothing to say.
+  const coveragePanel = (
+    <DailyCoverage
+      focusRunMessage={null}
+      focusRunMessageIsError={false}
+      error={null}
+      warnings={[]}
+      placesError={null}
+    />
+  );
   const layerFiltersNode = (
     <LayerFilters
       overlayMode={overlayMode}
@@ -1342,6 +1355,7 @@ export function MapLibrePreviewClient() {
             params, and cache-focus selection). */}
         {progressStatusNode}
         {layerFiltersNode}
+        {coveragePanel}
         <FilterPanel filters={filters} onChange={setFilters} />
         <StylePanel settings={styleSettings} onChange={setStyleSettings} />
       </div>
@@ -1532,8 +1546,7 @@ export function MapLibrePreviewClient() {
             </div>
           }
           filters={layerFiltersNode}
-          // DECISION: DailyCoverage is not ported in this chunk — pass null.
-          coverage={null}
+          coverage={coveragePanel}
           onStateChange={setBottomSheetState}
           onOpenBars={() => setIsMobileBarsOpen(true)}
         />
