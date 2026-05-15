@@ -868,6 +868,9 @@ export async function GET(request: Request) {
               `[stream:per-tile-timing] ${n} tiles avg parse=${(perTileTiming.parse / n).toFixed(1)}ms remap=${(perTileTiming.remap / n).toFixed(1)}ms encode=${(perTileTiming.encode / n).toFixed(1)}ms send=${(perTileTiming.send / n).toFixed(1)}ms streamNext=${(perTileTiming.streamNext / n).toFixed(1)}ms | totals parse=${perTileTiming.parse.toFixed(0)} remap=${perTileTiming.remap.toFixed(0)} encode=${perTileTiming.encode.toFixed(0)} send=${perTileTiming.send.toFixed(0)} streamNext=${perTileTiming.streamNext.toFixed(0)}\n`,
             );
           }
+          process.stderr.write(
+            `[stream:exclude] requested=${query.excludeTileIds.size} encountered=${tilesEncountered} skippedByExclude=${tilesSkippedByExclude} streamed=${tilesEncountered - tilesSkippedByExclude}\n`,
+          );
 
           // Generator returned init metadata (or null if region not found)
           if (!sentStart) {
