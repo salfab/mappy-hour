@@ -70,6 +70,69 @@ import {
 const DEFAULT_CENTER: [number, number] = [6.6323, 46.5197];
 const DEFAULT_ZOOM = 17;
 
+// Source + layer IDs for the instant-mode per-point overlay. One source, one
+// layer per category so each can be toggled independently via setLayoutProperty.
+const INSTANT_POINTS_SOURCE_ID = "instant-points";
+type InstantPointCategory =
+  | "sunny"
+  | "shadow"
+  | "terrain-blocked"
+  | "buildings-blocked"
+  | "vegetation-blocked";
+const INSTANT_POINT_LAYER_IDS: Record<InstantPointCategory, string> = {
+  sunny: "instant-points-sunny",
+  shadow: "instant-points-shadow",
+  "terrain-blocked": "instant-points-terrain",
+  "buildings-blocked": "instant-points-buildings",
+  "vegetation-blocked": "instant-points-vegetation",
+};
+// Colors mirror the Leaflet client polygon palette where available, with a
+// dedicated brown for terrain (Leaflet does not render terrain-blocked points
+// as a distinct layer — see sunlight-map-client.tsx l.3514).
+const INSTANT_POINT_COLORS: Record<InstantPointCategory, string> = {
+  sunny: "#facc15", // yellow-400 (Leaflet sunny fillColor)
+  shadow: "#64748b", // slate-500 (Leaflet shadow fillColor)
+  "terrain-blocked": "#92400e", // amber-800 (no Leaflet equivalent)
+  "buildings-blocked": "#6b7280", // gray-500
+  "vegetation-blocked": "#22c55e", // green-500 (Leaflet vegetation fillColor)
+};
+
+// Minimal per-point shape we keep client-side: rendering only needs lat/lon +
+// the flags that determine the category.
+interface AreaInstantPointLite {
+  id: string;
+  lat: number;
+  lon: number;
+  isSunny: boolean;
+  terrainBlocked: boolean;
+  buildingsBlocked: boolean;
+  vegetationBlocked?: boolean;
+}
+
+// Bucket a point into a single category. Priority mirrors the Leaflet client's
+// `selectPrimaryShadowCause` (terrain > vegetation > buildings) for shadows;
+// sunny wins outright.
+function categorizeInstantPoint(p: AreaInstantPointLite): InstantPointCategory {
+  if (p.isSunny) return "sunny";
+  if (p.terrainBlocked) return "terrain-blocked";
+  if (p.vegetationBlocked) return "vegetation-blocked";
+  if (p.buildingsBlocked) return "buildings-blocked";
+  return "shadow";
+}
+
+function instantPointsToFeatureCollection(
+  points: AreaInstantPointLite[],
+): GeoJSON.FeatureCollection<GeoJSON.Point, { category: InstantPointCategory }> {
+  return {
+    type: "FeatureCollection",
+    features: points.map((p) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [p.lon, p.lat] },
+      properties: { category: categorizeInstantPoint(p) },
+    })),
+  };
+}
+
 // Deep-link query keys — kept verbatim in sync with sunlight-map-client.tsx so
 // the same URL works on both the Leaflet homepage and the MapLibre preview.
 const DEEP_LINK_QUERY_KEYS = {
@@ -255,11 +318,19 @@ export function MapLibrePreviewClient() {
   const autoBasemapDone = useRef(false);
 
   // ── Calculation state (ported from Leaflet client) ────────────────────────
-  // DECISION: instant mode rendering of points is intentionally NOT ported
-  // (scope). We only consume SSE progress events; the timeline overlay refreshes
-  // via `recalcSignal` once the precompute completes, which makes the new tiles
-  // visible without us reimplementing the lastResult pipeline.
+  // DECISION: instant mode point rendering IS now ported (chunk 3). We accumulate
+  // the SSE partial points into `lastResult` and push them into a per-category
+  // GeoJSON source. The daily-mode overlay still refreshes via `recalcSignal`
+  // once the precompute completes.
   const [mode, setMode] = useState<AreaMode>("daily");
+  // Accumulated instant-mode points (lat/lon + blocking flags). Survives mode
+  // switches so flipping back to instant keeps the last result visible.
+  // DECISION: we don't reuse the full Leaflet `AreaApiResponse` shape here —
+  // for rendering only `lat`/`lon`/category matter. The richer fields stay on
+  // the wire for the Leaflet client which consumes the same endpoint.
+  const [lastResult, setLastResult] = useState<AreaInstantPointLite[] | null>(
+    null,
+  );
   const [isCalculating, setIsCalculating] = useState(false);
   const [dailyProgress, setDailyProgress] = useState<TimelineProgressView | null>(null);
   const [instantProgress, setInstantProgress] = useState<TimelineProgressView | null>(null);
@@ -293,13 +364,10 @@ export function MapLibrePreviewClient() {
   // new state because no equivalent exists yet in the preview.
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [showTerrain, setShowTerrain] = useState(true);
-  // showBuildings / showVegetation are kept for symmetry with the homepage
-  // even though LayerFilters itself does not surface them — they will be
-  // wired to MapLibre layers in a later chunk. Marked with eslint-disable so
-  // the unused setter does not break the build right now.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // showBuildings / showVegetation gate the per-category visibility of the
+  // instant-mode point overlay. LayerFilters does not surface a toggle yet —
+  // they're driven by stored UI params + deep-link query for now.
   const [showBuildings, setShowBuildings] = useState(true);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [showVegetation, setShowVegetation] = useState(true);
   const [showPlaces, setShowPlaces] = useState(true);
   const overlayMode: OverlayMode =
@@ -492,15 +560,35 @@ export function MapLibrePreviewClient() {
       });
 
       instantCancelledRef.current = false;
+      // DECISION: reset accumulated points at the start of every fresh run so
+      // a new SSE doesn't blend with the previous result. We keep lastResult
+      // alive across mode switches but a new instant calc means a new dataset.
+      setLastResult([]);
       const stream = new EventSource(
         `/api/sunlight/instant/stream?${query.toString()}`,
       );
       instantStreamRef.current = stream;
 
+      stream.addEventListener("start", () => {
+        if (instantCancelledRef.current) return;
+        // start payload carries metadata only; reset to an empty array so the
+        // first `partial` event repaints the source from a clean slate.
+        setLastResult([]);
+      });
+
       stream.addEventListener("progress", (event) => {
         if (instantCancelledRef.current) return;
         const data = JSON.parse((event as MessageEvent).data) as TimelineProgressView;
         setInstantProgress(data);
+      });
+
+      stream.addEventListener("partial", (event) => {
+        if (instantCancelledRef.current) return;
+        const data = JSON.parse((event as MessageEvent).data) as {
+          points: AreaInstantPointLite[];
+          pointCount: number;
+        };
+        setLastResult((previous) => [...(previous ?? []), ...data.points]);
       });
       stream.addEventListener("done", () => {
         if (instantCancelledRef.current) {
@@ -940,9 +1028,39 @@ export function MapLibrePreviewClient() {
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "top-left");
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-left");
 
+    // Add the instant-points source + one circle layer per category. Idempotent:
+    // safe to call again after setStyle wipes user-defined sources.
+    const addInstantPointsLayers = (m: MapLibreMap) => {
+      if (!m.getSource(INSTANT_POINTS_SOURCE_ID)) {
+        m.addSource(INSTANT_POINTS_SOURCE_ID, {
+          type: "geojson",
+          data: { type: "FeatureCollection", features: [] },
+        });
+      }
+      for (const category of Object.keys(INSTANT_POINT_LAYER_IDS) as InstantPointCategory[]) {
+        const layerId = INSTANT_POINT_LAYER_IDS[category];
+        if (m.getLayer(layerId)) continue;
+        m.addLayer({
+          id: layerId,
+          type: "circle",
+          source: INSTANT_POINTS_SOURCE_ID,
+          filter: ["==", ["get", "category"], category],
+          paint: {
+            "circle-radius": 3,
+            "circle-color": INSTANT_POINT_COLORS[category],
+            "circle-stroke-width": 0.5,
+            "circle-stroke-color": "rgba(0,0,0,0.35)",
+            "circle-opacity": 0.85,
+          },
+          layout: { visibility: "none" },
+        });
+      }
+    };
+
     map.on("load", () => {
       addPlacesLayers(map);
       attachPlacesInteractions(map, setSelectedPlace);
+      addInstantPointsLayers(map);
       setReady(true);
 
       const sunlightLayer = new MapLibreSunlightCustomLayer(map);
@@ -999,6 +1117,10 @@ export function MapLibrePreviewClient() {
         // counts repaint immediately without waiting for a refetch.
         applyPlacesToSource(map, filtersRef.current);
       }
+      // setStyle wipes user-defined GeoJSON sources too — re-add the instant
+      // points overlay. Data + visibility are re-applied by the dedicated
+      // effects below (they re-run on `ready`/`lastResult`/toggle changes).
+      addInstantPointsLayers(map);
       const sl = sunlightLayerRef.current;
       if (sl) {
         // MapLibre keeps the custom layer reference across setStyle but does
@@ -1055,6 +1177,58 @@ export function MapLibrePreviewClient() {
     layer.setVisible(sunlightShouldRender);
     if (sunlightShouldRender) layer.setFrameIndex(frameIndex, showSunny, showShadow);
   }, [sunlightVisible, frameIndex, showSunny, showShadow, showHeatmap]);
+
+  // Push accumulated instant-mode points into the GeoJSON source on every
+  // partial/start/done. Cheap: setData is O(features) once per batch.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const source = map.getSource(INSTANT_POINTS_SOURCE_ID) as
+      | maplibregl.GeoJSONSource
+      | undefined;
+    if (!source) return;
+    source.setData(instantPointsToFeatureCollection(lastResult ?? []));
+  }, [lastResult, ready]);
+
+  // Per-category visibility for the instant points. Each layer is toggled
+  // independently so user can hide e.g. only `terrain-blocked` while keeping
+  // `sunny` visible. Switching to daily hides every category.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const isInstant = mode === "instant";
+    const visibility: Record<InstantPointCategory, boolean> = {
+      sunny: isInstant && showSunny,
+      shadow: isInstant && showShadow,
+      "terrain-blocked": isInstant && showTerrain,
+      "buildings-blocked": isInstant && showBuildings,
+      // DECISION: vegetation-blocked points stay visible (in green) only when
+      // the user has NOT enabled "ignore vegetation shadow". When the user
+      // explicitly ignores vegetation, those points should not show up as a
+      // shadow cause — matches the Leaflet visibility.ignoreVegetationShadow
+      // branch which skips buildInstantBlockedContours for vegetation.
+      "vegetation-blocked":
+        isInstant && showVegetation && !ignoreVegetationShadow,
+    };
+    for (const category of Object.keys(INSTANT_POINT_LAYER_IDS) as InstantPointCategory[]) {
+      const layerId = INSTANT_POINT_LAYER_IDS[category];
+      if (!map.getLayer(layerId)) continue;
+      map.setLayoutProperty(
+        layerId,
+        "visibility",
+        visibility[category] ? "visible" : "none",
+      );
+    }
+  }, [
+    ready,
+    mode,
+    showSunny,
+    showShadow,
+    showTerrain,
+    showBuildings,
+    showVegetation,
+    ignoreVegetationShadow,
+  ]);
 
   // Heatmap visibility — independent of sunlightVisible so the user can flip
   // back and forth without losing the sunlight slider position.
