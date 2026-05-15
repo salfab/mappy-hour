@@ -670,9 +670,30 @@ export function MapLibrePreviewClient() {
     const abortController = new AbortController();
     timelineCalcAbortRef.current = abortController;
 
+    // Track tile count from event:start so we can flag "unchartered-territory"
+    // (server accepted non-empty bbox but served zero tiles) on event:done.
+    let requestedTileCount = 0;
+
     const handleSseEvent = (eventType: string, jsonData: string) => {
       if (timelineCancelledRef.current) return;
-      if (eventType === "tile") {
+      if (eventType === "start") {
+        // Umami analytics — emit one event per compute job the server actually
+        // accepted (matches Leaflet behaviour: tracking earlier overcounts pan/
+        // zoom cancellations). Coordinates bucketed to 3 decimals (~110m) to
+        // keep dashboard cardinality usable.
+        const data = JSON.parse(jsonData) as { totalTiles?: number };
+        requestedTileCount = data.totalTiles ?? 0;
+        if (typeof window !== "undefined" && window.umami) {
+          const centerLat = Math.round(((bbox[1] + bbox[3]) / 2) * 1000) / 1000;
+          const centerLon = Math.round(((bbox[0] + bbox[2]) / 2) * 1000) / 1000;
+          window.umami.track("compute-start", {
+            centerLat,
+            centerLon,
+            tilesRequested: requestedTileCount,
+            basemap: baseMapIdToBaseMapStyle(basemapId),
+          });
+        }
+      } else if (eventType === "tile") {
         // DECISION: we don't accumulate tiles client-side (no overlay rendering
         // here). Just surface progress.
         const data = JSON.parse(jsonData) as {
@@ -696,7 +717,12 @@ export function MapLibrePreviewClient() {
         setDailyProgress(data);
       } else if (eventType === "done") {
         const parsed = JSON.parse(jsonData) as {
-          stats?: { elapsedMs?: number; totalEvaluations?: number };
+          stats?: {
+            elapsedMs?: number;
+            totalEvaluations?: number;
+            tilesFromCache?: number;
+            tilesComputed?: number;
+          };
         };
         setDailyProgress({
           phase: "done",
@@ -704,6 +730,28 @@ export function MapLibrePreviewClient() {
           etaSeconds: 0,
           elapsedMs: parsed.stats?.elapsedMs,
         });
+        // Umami analytics — track requests where the server accepted a non-empty
+        // bbox but couldn't serve a single tile. With cacheOnly=true on Mitch
+        // this is the canonical signal that the user asked about a zone we
+        // haven't precomputed yet — the most actionable input for picking
+        // which region to ingest next.
+        const tilesFromCache = parsed.stats?.tilesFromCache ?? 0;
+        const tilesComputed = parsed.stats?.tilesComputed ?? 0;
+        if (
+          typeof window !== "undefined" &&
+          window.umami &&
+          requestedTileCount > 0 &&
+          tilesFromCache === 0 &&
+          tilesComputed === 0
+        ) {
+          const centerLat = Math.round(((bbox[1] + bbox[3]) / 2) * 1000) / 1000;
+          const centerLon = Math.round(((bbox[0] + bbox[2]) / 2) * 1000) / 1000;
+          window.umami.track("unchartered-territory", {
+            centerLat,
+            centerLon,
+            tilesRequested: requestedTileCount,
+          });
+        }
       }
     };
 
@@ -748,7 +796,7 @@ export function MapLibrePreviewClient() {
       // Refresh the overlay timeline so the new precompute is visible.
       setRecalcSignal((c) => c + 1);
     }
-  }, [date, mode]);
+  }, [date, mode, basemapId]);
 
   const baseMapsRef = useRef<BaseMapDef[] | null>(null);
   if (baseMapsRef.current === null) {
@@ -1563,6 +1611,16 @@ export function MapLibrePreviewClient() {
                 // Manual selection locks the one-shot auto-swap so a late
                 // sunlight-loaded event can't override the user's choice.
                 autoBasemapDone.current = true;
+                // Umami analytics — explicit user interaction with the basemap
+                // selector. State restoration paths (storage, deep-link) set
+                // basemapId directly via setBasemapId without going through
+                // this onClick, so they don't pollute the metric.
+                if (b.id !== basemapId && typeof window !== "undefined" && window.umami) {
+                  window.umami.track("basemap-change", {
+                    fromBasemap: baseMapIdToBaseMapStyle(basemapId),
+                    toBasemap: baseMapIdToBaseMapStyle(b.id),
+                  });
+                }
                 setBasemapId(b.id);
               }}
               className={
