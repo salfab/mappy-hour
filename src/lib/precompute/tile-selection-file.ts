@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { CANONICAL_PRECOMPUTE_TILE_SIZE_METERS } from "@/lib/precompute/constants";
 import { buildRegionTiles, type PrecomputedRegionName } from "@/lib/precompute/sunlight-cache";
+import { DATA_ROOT } from "@/lib/storage/data-paths";
 
 const regionSchema = z.enum(["lausanne", "nyon", "morges", "geneve", "vevey", "vevey_city", "neuchatel", "la_chaux_de_fonds", "bern", "zurich", "thun"]);
 
@@ -50,8 +51,17 @@ export interface RegionTileSelection {
   entries: TileSelectionEntry[];
 }
 
+function resolveSelectionPath(filePath: string): string {
+  if (path.isAbsolute(filePath)) return filePath;
+  // "data/..." → DATA_ROOT/... so MAPPY_DATA_ROOT is honoured
+  if (filePath.startsWith("data/") || filePath.startsWith("data\\")) {
+    return path.join(DATA_ROOT, filePath.slice("data/".length));
+  }
+  return path.resolve(process.cwd(), filePath);
+}
+
 export async function loadTileSelectionFile(filePath: string): Promise<TileSelectionFile> {
-  const resolvedPath = path.resolve(process.cwd(), filePath);
+  const resolvedPath = resolveSelectionPath(filePath);
   const raw = await fs.readFile(resolvedPath, "utf8");
   return tileSelectionFileSchema.parse(JSON.parse(raw));
 }
@@ -63,7 +73,7 @@ export async function loadTileSelectionForRegion(params: {
   region: PrecomputedRegionName;
   groupFilter?: GroupFilter;
 }): Promise<RegionTileSelection> {
-  const resolvedPath = path.resolve(process.cwd(), params.filePath);
+  const resolvedPath = resolveSelectionPath(params.filePath);
   const parsed = await loadTileSelectionFile(resolvedPath);
 
   if (parsed.tileSizeMeters !== CANONICAL_PRECOMPUTE_TILE_SIZE_METERS) {

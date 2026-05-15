@@ -25,6 +25,15 @@ interface ViewportPlaceLite extends NormalizedPlaceLite {
   outdoorSeatingHeated?: boolean;
 }
 
+/** Normalise a sunlight-window timestamp to `HH:mm`. The /api/places/windows
+ *  route returns mixed shapes depending on which fast path served the
+ *  response: tile-cache → `HH:mm`, GPU fallback → `YYYY-MM-DD HH:mm:ss`. We
+ *  extract the first `HH:mm` we can find. */
+function formatCardClock(value: string): string {
+  const match = /\b(\d{2}:\d{2})(?::\d{2})?\b/.exec(value);
+  return match ? match[1] : value;
+}
+
 function viewportCardEmoji(place: ViewportPlaceLite): string {
   if (place.category === "park") return "🌳";
   switch (place.subcategory) {
@@ -82,74 +91,25 @@ import {
   venueMarkerClassName,
 } from "@/components/map-ui/venue-assets";
 import type { VenueCardPlace } from "@/components/map-ui/venue-card";
+import {
+  BASE_MAP_OPTIONS,
+  BASE_MAP_OPTION_BY_ID,
+  isBaseMapStyle,
+  type AreaMode,
+  type BaseMapOption,
+  type BaseMapStyle,
+} from "@/components/sunlight-map/types";
+import {
+  loadStoredMapView,
+  loadStoredUiParams,
+  persistMapView,
+  persistUiParams,
+  MAP_MAX_ZOOM,
+  type StoredMapView,
+  type StoredUiParams,
+} from "@/components/sunlight-map/stored-map-view";
 
-type AreaMode = "instant" | "daily";
-type BaseMapStyle =
-  | "stamen-watercolor"
-  | "carto-voyager"
-  | "osm"
-  | "satellite";
 type MapPanelTab = "map" | "terraces";
-
-interface BaseMapOption {
-  id: BaseMapStyle;
-  label: string;
-  url: string;
-  attribution: string;
-  maxNativeZoom: number;
-  /** Additional raster tile URLs stacked on top of the base layer (e.g.
-   *  Stamen Watercolor with Toner labels). Rendered in array order — first
-   *  overlay sits directly above the base, last overlay on top. */
-  overlays?: Array<{ url: string; maxNativeZoom?: number; opacity?: number }>;
-}
-
-// Order matters — the first entry is the default basemap (Aquarelle).
-// The selector in the UI keeps this order.
-const BASE_MAP_OPTIONS: BaseMapOption[] = [
-  {
-    // Stamen Watercolor — peinture artistique + labels CARTO Voyager.
-    // Les labels viennent de CARTO (`voyager_only_labels`) pour rester
-    // indépendants du quota Stadia : si Stadia tombe, le watercolor
-    // bascule en Voyager via le fallback per-tile (`attachStadiaFallback`)
-    // et les labels continuent à charger normalement.
-    id: "stamen-watercolor",
-    label: "Aquarelle",
-    url: "https://tiles.stadiamaps.com/tiles/stamen_watercolor/{z}/{x}/{y}.jpg",
-    overlays: [
-      { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}.png", maxNativeZoom: 20 },
-    ],
-    attribution:
-      "&copy; <a href=\"https://stamen.com\">Stamen Design</a>, hosted by <a href=\"https://stadiamaps.com/\">Stadia Maps</a> | Labels &copy; CARTO &mdash; Map data &copy; OpenStreetMap contributors",
-    maxNativeZoom: 18,
-  },
-  {
-    id: "carto-voyager",
-    label: "CARTO Voyager",
-    url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-    attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
-    maxNativeZoom: 20,
-  },
-  {
-    id: "osm",
-    label: "OSM standard",
-    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-    attribution: "&copy; OpenStreetMap contributors",
-    maxNativeZoom: 19,
-  },
-  {
-    id: "satellite",
-    label: "Satellite",
-    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    attribution: "Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics",
-    maxNativeZoom: 19,
-  },
-];
-
-const BASE_MAP_OPTION_BY_ID = new Map(BASE_MAP_OPTIONS.map((option) => [option.id, option]));
-
-function isBaseMapStyle(value: unknown): value is BaseMapStyle {
-  return typeof value === "string" && BASE_MAP_OPTION_BY_ID.has(value as BaseMapStyle);
-}
 
 interface AreaInstantPoint {
   id: string;
@@ -446,11 +406,8 @@ interface InstantStreamDonePayload {
 
 const METERS_PER_DEGREE_LAT = 111_320;
 const DEFAULT_MAP_CENTER: [number, number] = [46.5197, 6.6323];
-const DEFAULT_MAP_ZOOM = 13;
+const DEFAULT_MAP_ZOOM = 17;
 const MAP_MAX_NATIVE_ZOOM = 19;
-const MAP_MAX_ZOOM = 23;
-const MAP_VIEW_STORAGE_KEY = "mappy-hour:map:view";
-const UI_PARAMS_STORAGE_KEY = "mappy-hour:ui:params";
 const FOCUS_RUN_QUERY_KEYS = {
   region: "focusRunRegion",
   modelVersionHash: "focusRunModel",
@@ -553,179 +510,8 @@ interface ParsedPoint {
   isSunny: boolean;
 }
 
-interface StoredMapView {
-  lat: number;
-  lon: number;
-  zoom: number;
-}
-
-interface StoredUiParams {
-  mode: AreaMode;
-  date: string;
-  localTime: string;
-  dailyStartLocalTime: string;
-  dailyEndLocalTime: string;
-  gridStepMeters: number;
-  sampleEveryMinutes: number;
-  buildingHeightBiasMeters: number;
-  baseMapStyle: BaseMapStyle;
-  ignoreVegetationShadow: boolean;
-  showSunny: boolean;
-  showShadow: boolean;
-  showBuildings: boolean;
-  showTerrain: boolean;
-  showVegetation: boolean;
-  showHeatmap: boolean;
-  showPlaces: boolean;
-}
-
-function loadStoredMapView(): StoredMapView | null {
-  try {
-    const raw = globalThis.localStorage.getItem(MAP_VIEW_STORAGE_KEY);
-    if (!raw) {
-      return null;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<StoredMapView>;
-    const lat = parsed.lat;
-    const lon = parsed.lon;
-    const zoom = parsed.zoom;
-    if (
-      typeof lat !== "number" ||
-      !Number.isFinite(lat) ||
-      lat < -90 ||
-      lat > 90 ||
-      typeof lon !== "number" ||
-      !Number.isFinite(lon) ||
-      lon < -180 ||
-      lon > 180 ||
-      typeof zoom !== "number" ||
-      !Number.isFinite(zoom) ||
-      zoom < 0 ||
-      zoom > MAP_MAX_ZOOM
-    ) {
-      return null;
-    }
-
-    return {
-      lat,
-      lon,
-      zoom,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function persistMapView(view: StoredMapView): void {
-  try {
-    globalThis.localStorage.setItem(MAP_VIEW_STORAGE_KEY, JSON.stringify(view));
-  } catch {
-    // Ignore storage errors to avoid blocking map interactions.
-  }
-}
-
-function loadStoredUiParams(): StoredUiParams | null {
-  try {
-    const raw = globalThis.localStorage.getItem(UI_PARAMS_STORAGE_KEY);
-    if (!raw) {
-      return null;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<StoredUiParams>;
-    const mode = parsed.mode;
-    const date = parsed.date;
-    const localTime = parsed.localTime;
-    const dailyStartLocalTime = parsed.dailyStartLocalTime;
-    const dailyEndLocalTime = parsed.dailyEndLocalTime;
-    const gridStepMeters = parsed.gridStepMeters;
-    const sampleEveryMinutes = parsed.sampleEveryMinutes;
-    const buildingHeightBiasMeters = parsed.buildingHeightBiasMeters;
-    const baseMapStyle = parsed.baseMapStyle as BaseMapStyle | "map" | undefined;
-    const ignoreVegetationShadow = parsed.ignoreVegetationShadow;
-    const showSunny = parsed.showSunny;
-    const showShadow = parsed.showShadow;
-    const showBuildings = parsed.showBuildings;
-    const showTerrain = parsed.showTerrain;
-    const showVegetation = parsed.showVegetation;
-    const showHeatmap = parsed.showHeatmap;
-    const showPlaces = parsed.showPlaces;
-
-    const valid =
-      (mode === "instant" || mode === "daily") &&
-      typeof date === "string" &&
-      /^\d{4}-\d{2}-\d{2}$/.test(date) &&
-      typeof localTime === "string" &&
-      /^\d{2}:\d{2}$/.test(localTime) &&
-      (typeof dailyStartLocalTime === "string"
-        ? /^\d{2}:\d{2}$/.test(dailyStartLocalTime)
-        : dailyStartLocalTime === undefined) &&
-      (typeof dailyEndLocalTime === "string"
-        ? /^\d{2}:\d{2}$/.test(dailyEndLocalTime)
-        : dailyEndLocalTime === undefined) &&
-      typeof gridStepMeters === "number" &&
-      Number.isFinite(gridStepMeters) &&
-      gridStepMeters >= 1 &&
-      gridStepMeters <= 2000 &&
-      typeof sampleEveryMinutes === "number" &&
-      Number.isFinite(sampleEveryMinutes) &&
-      sampleEveryMinutes >= 1 &&
-      sampleEveryMinutes <= 60 &&
-      (typeof buildingHeightBiasMeters === "number"
-        ? Number.isFinite(buildingHeightBiasMeters) &&
-          buildingHeightBiasMeters >= -20 &&
-          buildingHeightBiasMeters <= 20
-        : buildingHeightBiasMeters === undefined) &&
-      (isBaseMapStyle(baseMapStyle) || baseMapStyle === "map" || baseMapStyle === undefined) &&
-      (typeof ignoreVegetationShadow === "boolean" ||
-        ignoreVegetationShadow === undefined) &&
-      typeof showSunny === "boolean" &&
-      typeof showShadow === "boolean" &&
-      typeof showBuildings === "boolean" &&
-      (typeof showTerrain === "boolean" || showTerrain === undefined) &&
-      (typeof showVegetation === "boolean" || showVegetation === undefined) &&
-      (typeof showHeatmap === "boolean" || showHeatmap === undefined) &&
-      (typeof showPlaces === "boolean" || showPlaces === undefined);
-    if (!valid) {
-      return null;
-    }
-
-    return {
-      mode,
-      date,
-      localTime,
-      dailyStartLocalTime: dailyStartLocalTime ?? "06:00",
-      dailyEndLocalTime: dailyEndLocalTime ?? "21:00",
-      gridStepMeters,
-      sampleEveryMinutes,
-      buildingHeightBiasMeters: buildingHeightBiasMeters ?? 0,
-      baseMapStyle:
-        baseMapStyle === "map"
-          ? "osm"
-          : isBaseMapStyle(baseMapStyle)
-            ? baseMapStyle
-            : "carto-voyager",
-      ignoreVegetationShadow: ignoreVegetationShadow ?? false,
-      showSunny,
-      showShadow,
-      showBuildings,
-      showTerrain: showTerrain ?? true,
-      showVegetation: showVegetation ?? true,
-      showHeatmap: showHeatmap ?? true,
-      showPlaces: showPlaces ?? true,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function persistUiParams(params: StoredUiParams): void {
-  try {
-    globalThis.localStorage.setItem(UI_PARAMS_STORAGE_KEY, JSON.stringify(params));
-  } catch {
-    // Ignore storage errors to avoid blocking interactions.
-  }
-}
+// Storage helpers + StoredMapView / StoredUiParams interfaces live in
+// `components/sunlight-map/stored-map-view.ts`, imported at the top.
 
 function parseBoundedInteger(
   value: string | null,
@@ -2445,6 +2231,20 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const [viewportPlaces, setViewportPlaces] = useState<ViewportPlaceLite[]>([]);
   const [selectedViewportPlace, setSelectedViewportPlace] =
     useState<ViewportPlaceLite | null>(null);
+  // Per-card sunlight windows for the clicked place. We re-fetch on every
+  // click (and on date change while a card is open) by POSTing a tiny bbox
+  // around the place's lat/lon to /api/places/windows — reuses the existing
+  // batched tile-lookup logic instead of duplicating it in a new route.
+  const [cardSunlightWindows, setCardSunlightWindows] = useState<
+    Array<{ startLocalTime: string; endLocalTime: string }> | null
+  >(null);
+  const [isCardSunlightLoading, setIsCardSunlightLoading] = useState(false);
+  const [cardSunlightError, setCardSunlightError] = useState<string | null>(
+    null,
+  );
+  // Token to discard stale responses if the user clicks a different place
+  // before the previous request resolves.
+  const cardSunlightRequestRef = useRef(0);
   const [activeDesktopTab, setActiveDesktopTab] = useState<MapPanelTab>("map");
   const [bottomSheetState, setBottomSheetState] =
     useState<BottomSheetState>("middle");
@@ -3409,7 +3209,10 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
         }
       });
       map.on("zoomend", () => {
-        setMapZoom(map.getZoom());
+        const z = map.getZoom();
+        // eslint-disable-next-line no-console -- debug aid; remove when no longer needed.
+        console.log(`[zoom] ${z.toFixed(2)}`);
+        setMapZoom(z);
         setMapBounds(map.getBounds());
       });
       // Initialize on first ready
@@ -3497,6 +3300,100 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     overlay.setPlaces(viewportPlaces);
     overlay.refresh();
   }, [viewportPlaces]);
+
+  // When a place is selected (card open) or the date changes while a card is
+  // open, fetch the per-place sunlight windows for the currently-selected day.
+  // We POST a tiny ±5 m bbox around the place's lat/lon to /api/places/windows
+  // and rely on the existing batched tile-lookup fast path. `includeNonSunny`
+  // is true so a place with zero sun on the day still comes back (instead of
+  // being filtered out by the API).
+  useEffect(() => {
+    if (!selectedViewportPlace) {
+      setCardSunlightWindows(null);
+      setCardSunlightError(null);
+      setIsCardSunlightLoading(false);
+      return;
+    }
+    const token = ++cardSunlightRequestRef.current;
+    const place = selectedViewportPlace;
+    // ~5 m offset in degrees: 1° lat ≈ 111 320 m. Clamp lon by cos(lat).
+    const dLat = 5 / 111_320;
+    const dLon = dLat / Math.max(Math.cos((place.lat * Math.PI) / 180), 0.01);
+    const bbox: [number, number, number, number] = [
+      place.lon - dLon,
+      place.lat - dLat,
+      place.lon + dLon,
+      place.lat + dLat,
+    ];
+    const controller = new AbortController();
+    setIsCardSunlightLoading(true);
+    setCardSunlightError(null);
+    setCardSunlightWindows(null);
+    fetch("/api/places/windows", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        date,
+        timezone: "Europe/Zurich",
+        mode: "daily",
+        startLocalTime: "00:00",
+        endLocalTime: "23:59",
+        sampleEveryMinutes: 15,
+        includeNonSunny: true,
+        bbox,
+        limit: 10,
+      }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (controller.signal.aborted) return;
+        if (token !== cardSunlightRequestRef.current) return;
+        if (!response.ok) {
+          // 400 from the API is most commonly "no precomputed coverage for
+          // this date" → surface a friendly hint instead of a raw error.
+          if (response.status === 400 || response.status === 404) {
+            setCardSunlightError(
+              "Lancer un calcul du jour pour voir l'ensoleillement.",
+            );
+            setIsCardSunlightLoading(false);
+            return;
+          }
+          setCardSunlightError("Erreur de chargement de l'ensoleillement.");
+          setIsCardSunlightLoading(false);
+          return;
+        }
+        const json = (await response.json()) as {
+          places?: Array<{
+            id: string;
+            sunnyWindows?: Array<{
+              startLocalTime: string;
+              endLocalTime: string;
+            }>;
+          }>;
+        };
+        if (token !== cardSunlightRequestRef.current) return;
+        const match = json.places?.find((p) => p.id === place.id);
+        const windows = match?.sunnyWindows ?? [];
+        setCardSunlightWindows(
+          windows.map((w) => ({
+            startLocalTime: w.startLocalTime,
+            endLocalTime: w.endLocalTime,
+          })),
+        );
+        setIsCardSunlightLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        if (token !== cardSunlightRequestRef.current) return;
+        setCardSunlightError(
+          err instanceof Error ? err.message : "Erreur inconnue.",
+        );
+        setIsCardSunlightLoading(false);
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [selectedViewportPlace, date]);
 
   // Debounced fetch of /api/places/viewport on map move/zoom. We piggy-back
   // on the existing `mapBounds` state (already updated in the map init
@@ -4665,7 +4562,7 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
               [result.bbox[1], result.bbox[0]],
               [result.bbox[3], result.bbox[2]],
             ],
-            { padding: [40, 40], animate: true },
+            { padding: [40, 40], animate: true, maxZoom: 19 },
           );
         } else {
           map.setView([result.lat, result.lon], Math.max(map.getZoom(), 15), {
@@ -4687,13 +4584,12 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
     }
   }, [searchQuery]);
 
-  // Suggestion target zoom: 17 for a single venue (one 250 m × 250 m tile fits
-  // ~300 px on screen at lat 46.5). For city/region suggestions, use the
-  // Nominatim bbox to fitBounds instead — way more natural than a fixed zoom.
-  // No fancy heuristic on what counts as "a city": if Nominatim returns a bbox,
-  // we trust it; otherwise default to zoom 17 (small enough for venues, large
-  // enough to avoid the "you see 5 tiles" zoom 19 trap).
-  const SUGGESTION_TARGET_ZOOM = 17;
+  // Single-venue auto-zoom: z=19 — user-validated as the right zoom to land
+  // on an établissement (you see the building's tile and its immediate
+  // neighbours). For city/region suggestions, use the Nominatim bbox to
+  // fitBounds but capped at the same z=19 so a tiny bbox doesn't push us
+  // to z=20+ where the basemap is up-scaled and rendering looks chunky.
+  const SUGGESTION_TARGET_ZOOM = 19;
 
   const handleSelectSuggestion = useCallback(
     (suggestion: PlaceSuggestion) => {
@@ -5809,6 +5705,45 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
                   : "Pas de terrasse"}
             </span>
           </div>
+
+          <div className="vpo-card-divider" />
+          <div className="vpo-card-section">
+            <p className="vpo-card-section-title">Heures d&apos;ouverture</p>
+            {selectedViewportPlace.openingHours ? (
+              <ul className="vpo-card-hours-list">
+                {selectedViewportPlace.openingHours
+                  .split(";")
+                  .map((segment) => segment.trim())
+                  .filter((segment) => segment.length > 0)
+                  .map((segment, idx) => (
+                    <li key={idx}>{segment}</li>
+                  ))}
+              </ul>
+            ) : (
+              <p className="vpo-card-muted">Horaires non renseignés</p>
+            )}
+          </div>
+
+          <div className="vpo-card-divider" />
+          <div className="vpo-card-section">
+            <p className="vpo-card-section-title">Ensoleillement aujourd&apos;hui</p>
+            {isCardSunlightLoading ? (
+              <p className="vpo-card-muted">Calcul en cours…</p>
+            ) : cardSunlightError ? (
+              <p className="vpo-card-muted">{cardSunlightError}</p>
+            ) : cardSunlightWindows && cardSunlightWindows.length > 0 ? (
+              <div className="vpo-card-sun-pills">
+                {cardSunlightWindows.map((window, idx) => (
+                  <span key={idx} className="vpo-card-sun-pill">
+                    {formatCardClock(window.startLocalTime)} – {formatCardClock(window.endLocalTime)}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="vpo-card-muted">Aucune fenêtre ensoleillée ce jour</p>
+            )}
+          </div>
+
           <a
             className="mt-3 inline-block text-xs font-semibold text-amber-700 hover:text-amber-900"
             href={`https://www.openstreetmap.org/${selectedViewportPlace.osmType}/${selectedViewportPlace.osmId}`}

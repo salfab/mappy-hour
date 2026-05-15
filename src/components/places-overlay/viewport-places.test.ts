@@ -33,7 +33,8 @@ describe("pickLod", () => {
     expect(pickLod(12)).toBe("L0");
     expect(pickLod(13)).toBe("L1");
     expect(pickLod(15)).toBe("L1");
-    expect(pickLod(16)).toBe("L2");
+    expect(pickLod(17)).toBe("L1"); // clustering extended to z=17
+    expect(pickLod(18)).toBe("L2");
     expect(pickLod(19)).toBe("L2");
   });
 });

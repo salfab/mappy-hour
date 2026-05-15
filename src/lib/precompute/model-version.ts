@@ -18,7 +18,7 @@ import { TERRAIN_SELECTION_STRATEGY } from "@/lib/terrain/swiss-terrain";
 import type { PrecomputedRegionName } from "./sunlight-cache";
 import { TtlCache } from "./runtime-cache";
 
-export const SUNLIGHT_CACHE_ALGORITHM_VERSION = "sunlight-cache-v9";
+export const SUNLIGHT_CACHE_ALGORITHM_VERSION = "sunlight-cache-v10";
 export const SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION = 2;
 
 interface ManifestSummary {
@@ -33,6 +33,14 @@ interface ManifestSummary {
   zipFilesProcessed?: number;
   downloadSummary?: unknown;
   counts?: unknown;
+}
+
+/** Only the manifest fields that actually affect tile computation. Excludes
+ *  download-time metadata (generatedAt, method, source, itemsFetched, …)
+ *  which change every time the manifest is regenerated without touching the
+ *  underlying data files. */
+function manifestHashPayload(m: ManifestSummary): { exists: boolean; counts?: unknown } {
+  return { exists: m.exists, counts: m.counts };
 }
 
 export interface SunlightModelVersion {
@@ -150,49 +158,42 @@ export async function getSunlightModelVersion(
       readManifestSummary(manifestPathForRegion(region, "horizon")),
     ]);
 
+  const buildingsHashPayload = buildingsIndex
+    ? {
+        indexVersion: buildingsIndex.indexVersion ?? 1,
+        rawObstaclesCount: buildingsIndex.rawObstaclesCount,
+        uniqueObstaclesCount: buildingsIndex.uniqueObstaclesCount,
+        spatialGrid: buildingsIndex.spatialGrid
+          ? {
+              version: buildingsIndex.spatialGrid.version,
+              cellSizeMeters: buildingsIndex.spatialGrid.cellSizeMeters,
+              cellCount: buildingsIndex.spatialGrid.stats?.cellCount ?? null,
+              maxObstaclesPerCell:
+                buildingsIndex.spatialGrid.stats?.maxObstaclesPerCell ?? null,
+            }
+          : null,
+      }
+    : { exists: false };
+
   const payload = {
     artifactFormatVersion: SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION,
     algorithmVersion: SUNLIGHT_CACHE_ALGORITHM_VERSION,
     region,
     calibration: shadowCalibration,
-    buildings: buildingsIndex
-      ? {
-          generatedAt: buildingsIndex.generatedAt,
-          method: buildingsIndex.method,
-          indexVersion: buildingsIndex.indexVersion ?? 1,
-          zipFilesProcessed: buildingsIndex.zipFilesProcessed,
-          rawObstaclesCount: buildingsIndex.rawObstaclesCount,
-          uniqueObstaclesCount: buildingsIndex.uniqueObstaclesCount,
-          spatialGrid: buildingsIndex.spatialGrid
-            ? {
-                version: buildingsIndex.spatialGrid.version,
-                cellSizeMeters: buildingsIndex.spatialGrid.cellSizeMeters,
-                cellCount: buildingsIndex.spatialGrid.stats?.cellCount ?? null,
-                maxObstaclesPerCell:
-                  buildingsIndex.spatialGrid.stats?.maxObstaclesPerCell ?? null,
-              }
-            : null,
-        }
-      : {
-          exists: false,
-        },
-    terrainManifest,
+    buildings: buildingsHashPayload,
+    terrainManifest: manifestHashPayload(terrainManifest),
     terrainSelectionStrategy: TERRAIN_SELECTION_STRATEGY,
-    vegetationManifest,
-    horizonManifest,
+    vegetationManifest: manifestHashPayload(vegetationManifest),
+    horizonManifest: manifestHashPayload(horizonManifest),
     adaptiveHorizonSharing: adaptiveHorizonSharingConfig,
   };
 
-  // Narrow payload for grid-metadata cache key: only the inputs the zenith
-  // shadow + elevation classification actually depend on. Excludes
-  // vegetation/horizon/adaptiveSharing — those affect the atlas only, not
-  // the indoor mask.
   const gridMetadataPayload = {
     algorithmVersion: SUNLIGHT_CACHE_ALGORITHM_VERSION,
     region,
     calibration: shadowCalibration,
-    buildings: payload.buildings,
-    terrainManifest,
+    buildings: buildingsHashPayload,
+    terrainManifest: manifestHashPayload(terrainManifest),
     terrainSelectionStrategy: TERRAIN_SELECTION_STRATEGY,
   };
 
@@ -212,7 +213,13 @@ export async function getSunlightModelVersion(
     inputs: {
       region,
       calibration: shadowCalibration,
-      buildings: payload.buildings,
+      buildings: buildingsIndex
+        ? {
+            generatedAt: buildingsIndex.generatedAt,
+            method: buildingsIndex.method,
+            ...buildingsHashPayload,
+          }
+        : buildingsHashPayload,
       terrainManifest,
       terrainSelectionStrategy: TERRAIN_SELECTION_STRATEGY,
       vegetationManifest,

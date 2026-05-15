@@ -368,6 +368,8 @@ async function runDateTilesWithWorkerPool(params: {
   const succeededTileIds: string[] = [];
   const skippedTileIds: string[] = [];
   const failedTileIds: string[] = [];
+  let consecutiveFailures = 0;
+  const MAX_CONSECUTIVE_FAILURES = 5;
   const tasks: WorkerPoolTileTask[] = params.tiles.map((tile, tileIndex) => ({
     taskId: `${params.date}:${tile.tileId}:${tileIndex}`,
     tileIndex,
@@ -684,20 +686,40 @@ async function runDateTilesWithWorkerPool(params: {
         completedInDay += 1;
 
         if (message.state === "skipped") {
+          consecutiveFailures = 0;
           skippedTileIds.push(task.tile.tileId);
           succeededTileIds.push(task.tile.tileId);
         } else if (message.state === "computed") {
+          consecutiveFailures = 0;
           succeededTileIds.push(task.tile.tileId);
         } else if (message.state === "failed") {
+          consecutiveFailures += 1;
           failedTileIds.push(task.tile.tileId);
+          const errMsg = message.error ?? "Unknown worker error.";
           console.warn(
             `[cache-admin] tile precompute failed ${formatPrecomputeTileFailureLog({
               region: params.region,
               date: params.date,
               tileId: task.tile.tileId,
-              error: message.error ?? "Unknown worker error.",
+              error: errMsg,
             })}`,
           );
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            const RED = "\x1b[1;91m", RESET = "\x1b[0m";
+            console.error(
+              `${RED}[cache-admin] ✗ ABORT — ${consecutiveFailures} tuiles consécutives ont échoué ` +
+              `(région=${params.region} date=${params.date}). ` +
+              `Probable crash GPU/Vulkan. Dernier message : ${errMsg}${RESET}`,
+            );
+            if (!settled) {
+              settled = true;
+              reject(new Error(
+                `Precompute aborted after ${consecutiveFailures} consecutive tile failures ` +
+                `(région=${params.region}). Last error: ${errMsg}`,
+              ));
+            }
+            return;
+          }
         } else if (message.state === "cancelled") {
           if (params.signal?.aborted) {
             if (!settled) {
@@ -1425,6 +1447,7 @@ export async function precomputeCacheRuns(
           region: request.region,
           modelVersionHash: modelVersion.modelVersionHash,
           algorithmVersion: modelVersion.algorithmVersion,
+          modelVersion,
           dates: allDates,
           timezone: request.timezone,
           sampleEveryMinutes: request.sampleEveryMinutes,
@@ -1910,6 +1933,7 @@ export async function precomputeCacheRuns(
             region: request.region,
             modelVersionHash: modelVersion.modelVersionHash,
             algorithmVersion: modelVersion.algorithmVersion,
+            modelVersion,
             date,
             timezone: request.timezone,
             sampleEveryMinutes: request.sampleEveryMinutes,

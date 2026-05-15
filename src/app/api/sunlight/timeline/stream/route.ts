@@ -14,7 +14,6 @@ import {
 } from "@/lib/precompute/sunlight-tile-service";
 import {
   isMaskBitSet,
-  pointInBbox,
   setMaskBit,
 } from "@/lib/precompute/sunlight-cache";
 import {
@@ -28,6 +27,7 @@ import { getAtlasBucketMasks } from "@/lib/precompute/sunlight-cache-atlas";
 import type { PrecomputedSunlightTileArtifact } from "@/lib/precompute/sunlight-cache";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { encodeTileMasksBlob } from "@/lib/encoding/mask-codec-server";
+import { compactTileId } from "@/lib/encoding/tile-id-compact";
 import { getZonedDayRangeUtc, zonedDateTimeToUtc } from "@/lib/time/zoned-date";
 
 export const runtime = "nodejs";
@@ -49,6 +49,14 @@ const querySchema = z
     cacheOnly: z.string().default("false").transform(v => v === "true" || v === "1"),
     ignoreVegetation: z.string().default("false").transform(v => v === "true" || v === "1"),
     maxComputeTiles: z.coerce.number().int().min(0).max(500).default(50),
+    // Compact-encoded tile IDs the client already holds in its LRU cache
+    // for this date (see `lib/encoding/tile-id-compact.ts`). The server
+    // skips streaming them; the client merges its cached copies into the
+    // final tile set. Capped server-side at 2000 entries.
+    excludeTileIds: z.string().optional().transform((s) => {
+      if (!s) return new Set<string>();
+      return new Set(s.split(",").filter(Boolean).slice(0, 2000));
+    }),
   })
   .refine(
     (value) =>
@@ -346,6 +354,7 @@ export async function GET(request: Request) {
             endLocalTime: query.endLocalTime,
             shadowCalibration,
             cacheOnly: query.cacheOnly,
+            excludeCompactTileIds: query.excludeTileIds,
             onTileComputeProgress: (event) => {
               const etaSeconds =
                 event.elapsedMs > 3000 && event.percent > 0.01
@@ -414,10 +423,26 @@ export async function GET(request: Request) {
           const tStreamNext0 = performance.now();
           let result = await tileStream.next();
           perTileTiming.streamNext += performance.now() - tStreamNext0;
+          let tilesEncountered = 0;
+          let tilesSkippedByExclude = 0;
+          let lastSeenTotalTiles = 0;
           while (!result.done) {
             if (streamAborted) return;
             const tileT0 = performance.now();
             const { tileId, tileIndex, totalTiles, artifact, binary, atlases, layer } = result.value;
+            tilesEncountered += 1;
+            lastSeenTotalTiles = totalTiles;
+            // Client already holds this tile decoded in its LRU; skip the
+            // encode + send work entirely. The exclude list is in compact
+            // form so we compute the same key here before lookup.
+            const compactId = compactTileId(tileId);
+            if (compactId && query.excludeTileIds.has(compactId)) {
+              tilesSkippedByExclude += 1;
+              const tStreamNextSkip = performance.now();
+              result = await tileStream.next();
+              perTileTiming.streamNext += performance.now() - tStreamNextSkip;
+              continue;
+            }
             // Meta (points, model, warnings) is identical across all resolutions
             // of a tile's atlas, so the first one is a valid spokesperson.
             const atlas = atlases?.[0];
@@ -463,10 +488,14 @@ export async function GET(request: Request) {
             let tileMinIy = Infinity, tileMaxIy = -Infinity;
             // Atlas and binary both use the same typed-array point layout.
             const binaryLikePoints = atlas ?? binary;
+            // No per-point bbox clipping inside the tile loop: once tileStream
+            // has selected a tile we send its full 250×250 m extent so the
+            // client renders it edge-to-edge even when half of it is off the
+            // current viewport. The cache key (date, tileId) then holds a
+            // canonical tile that doesn't depend on the bbox at fetch time.
             if (binaryLikePoints) {
-              const { pointLon, pointLat, pointIx, pointIy, pointOutdoorIndex, pointFlags } = binaryLikePoints;
+              const { pointIx, pointIy, pointOutdoorIndex, pointFlags } = binaryLikePoints;
               for (let i = 0; i < viewPointCount; i++) {
-                if (!pointInBbox(pointLon[i], pointLat[i], bbox)) continue;
                 tileGridCount += 1;
                 if ((pointFlags[i] & 1) !== 0 || pointOutdoorIndex[i] < 0) {
                   tileIndoorExcluded += 1;
@@ -481,7 +510,6 @@ export async function GET(request: Request) {
               }
             } else {
               for (const p of artifact!.points) {
-                if (!pointInBbox(p.lon, p.lat, bbox)) continue;
                 tileGridCount += 1;
                 if (p.insideBuilding || p.outdoorIndex === null) {
                   tileIndoorExcluded += 1;
@@ -552,11 +580,9 @@ export async function GET(request: Request) {
             ) : null;
 
             if (atlas ?? binary) {
-              const { pointLon, pointLat, pointIx, pointIy, pointOutdoorIndex, pointFlags } = (atlas ?? binary)!;
+              const { pointIx, pointIy, pointOutdoorIndex, pointFlags } = (atlas ?? binary)!;
               const gmW = Math.ceil(tileSizeMeters);
               for (let i = 0; i < viewPointCount; i++) {
-                const lon = pointLon[i], lat = pointLat[i];
-                if (!pointInBbox(lon, lat, bbox)) continue;
                 const ix = pointIx[i], iy = pointIy[i];
                 let isIndoor: boolean;
                 if (gridMetadata) {
@@ -577,7 +603,6 @@ export async function GET(request: Request) {
               }
             } else {
               for (const p of artifact!.points) {
-                if (!pointInBbox(p.lon, p.lat, bbox)) continue;
                 let isIndoor: boolean;
                 if (gridMetadata) {
                   const gmIx = p.ix - tileMinE;
@@ -844,14 +869,37 @@ export async function GET(request: Request) {
               `[stream:per-tile-timing] ${n} tiles avg parse=${(perTileTiming.parse / n).toFixed(1)}ms remap=${(perTileTiming.remap / n).toFixed(1)}ms encode=${(perTileTiming.encode / n).toFixed(1)}ms send=${(perTileTiming.send / n).toFixed(1)}ms streamNext=${(perTileTiming.streamNext / n).toFixed(1)}ms | totals parse=${perTileTiming.parse.toFixed(0)} remap=${perTileTiming.remap.toFixed(0)} encode=${perTileTiming.encode.toFixed(0)} send=${perTileTiming.send.toFixed(0)} streamNext=${perTileTiming.streamNext.toFixed(0)}\n`,
             );
           }
+          process.stderr.write(
+            `[stream:exclude] requested=${query.excludeTileIds.size} encountered=${tilesEncountered} skippedByExclude=${tilesSkippedByExclude} streamed=${tilesEncountered - tilesSkippedByExclude}\n`,
+          );
 
           // Generator returned init metadata (or null if region not found)
           if (!sentStart) {
-            // No tiles at all — region not found or no intersecting tiles
-            sendEvent("error", {
-              error: "No tiles found for the requested area.",
-            });
-            return;
+            // Distinguish "no tiles in this area at all" (real error) from
+            // "all the tiles you asked for are already in your cache" (the
+            // client passed every intersecting tile in excludeTileIds, so the
+            // server has nothing fresh to send). In the second case we still
+            // emit start + done so the client treats it as a normal completion
+            // and renders the cached tiles it pre-seeded into `collected`.
+            if (tilesEncountered > 0 && tilesSkippedByExclude === tilesEncountered) {
+              sendEvent("start", {
+                date: query.date,
+                timezone: query.timezone,
+                startLocalTime: query.startLocalTime,
+                endLocalTime: query.endLocalTime,
+                sampleEveryMinutes: query.sampleEveryMinutes,
+                gridStepMeters: query.gridStepMeters,
+                totalTiles: lastSeenTotalTiles,
+                frameCount: timelineUtcSamples.length,
+                model: {},
+              });
+              await yieldToEventLoop();
+            } else {
+              sendEvent("error", {
+                error: "No tiles found for the requested area.",
+              });
+              return;
+            }
           }
 
           // Compute precise overlay bounds from global col/row extremes

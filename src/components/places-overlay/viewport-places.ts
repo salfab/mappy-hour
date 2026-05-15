@@ -24,6 +24,21 @@ export interface NormalizedPlaceLite {
   lon: number;
   hasOutdoorSeating: boolean;
   hasOutdoorSeatingUnknown?: boolean;
+  /** Raw OSM `opening_hours` tag (e.g. `Mo-Fr 09:00-18:00; Sa 10:00-16:00`).
+   *  Surfaced by /api/places/viewport so the floating card can display it.
+   *  Free-form: the OSM `opening_hours` spec is rich (PH/SH, off, easter,
+   *  sunrise/sunset, …) so we render it verbatim, splitting on `;`. */
+  openingHours?: string;
+  /** Outcome of the server-side outdoor snap (see `snapPlaceToOutdoor`).
+   *  When `terrace_offset`, `lat`/`lon` above have been nudged a few meters
+   *  away from the original OSM position so the marker doesn't sit on a
+   *  roof; the raw values are preserved in `osmLat`/`osmLon`. Optional for
+   *  backward compatibility — older API responses won't include it. */
+  selectionStrategy?: "original" | "terrace_offset" | "indoor_fallback";
+  /** Original OSM latitude before any outdoor-snap nudge. */
+  osmLat?: number;
+  /** Original OSM longitude before any outdoor-snap nudge. */
+  osmLon?: number;
 }
 
 export interface BoundsLatLon {
@@ -59,7 +74,7 @@ export interface ViewportClusterPoint {
  */
 export function pickLod(zoom: number): ViewportPlaceLod {
   if (zoom <= 12) return "L0";
-  if (zoom <= 15) return "L1";
+  if (zoom <= 17) return "L1";
   return "L2";
 }
 

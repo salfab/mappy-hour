@@ -11,10 +11,12 @@ export const ZURICH_CENTER = {
   lon: 8.541,
 };
 
-// Bbox locale autour du centre-ville (≈6×4.4 km).
+// Bbox locale autour du centre-ville (≈6×4.8 km).
 // Couvre Altstadt, Bahnhofstrasse, Niederdorf, Kreis 4/5, rive nord du
 // Zürichsee. Exclut les grands quartiers périphériques.
-export const ZURICH_LOCAL_BBOX: BBox = [8.5, 47.36, 8.58, 47.4];
+// Étendue 2026-05-13 (W + N) pour inclure 17 tuiles de la sélection top-priority
+// hors bbox d'origine (commit feature/maplibre-migration).
+export const ZURICH_LOCAL_BBOX: BBox = [8.4974, 47.359, 8.58, 47.403];
 
 // Même rayon que les autres régions : 120 km couvre l'Alpstein, le Glaernisch,
 // le Säntis et l'arc alpin susceptibles de rétroprojeter des horizons.

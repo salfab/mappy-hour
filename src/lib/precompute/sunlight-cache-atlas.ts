@@ -191,6 +191,9 @@ export interface TileAtlasMetadata {
   resolutionDegAlt: number;
   tile: RegionTileSpec;
   model?: Record<string, unknown>;
+  /** Raw inputs that produced modelVersionHash. Allows re-deriving or migrating
+   *  the hash without re-running getSunlightModelVersion. */
+  hashInputs?: Record<string, unknown>;
   warnings: string[];
   stats: {
     bucketCount: number;

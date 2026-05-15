@@ -6,6 +6,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
 
+import { CACHE_TILE_GRID_METADATA_DIR } from "@/lib/storage/data-paths";
+
 export interface TileGridMetadata {
   tileId: string;
   modelVersionHash: string;
@@ -20,7 +22,7 @@ export interface TileGridMetadata {
 }
 
 export function getTileGridMetadataPath(region: string, modelVersionHash: string, gridStepMeters: number, tileId: string): string {
-  return path.join("data", "cache", "tile-grid-metadata", region, modelVersionHash, `g${gridStepMeters}`, `${tileId}.json.gz`);
+  return path.join(CACHE_TILE_GRID_METADATA_DIR, region, modelVersionHash, `g${gridStepMeters}`, `${tileId}.json.gz`);
 }
 
 export async function loadTileGridMetadata(region: string, modelVersionHash: string, gridStepMeters: number, tileId: string): Promise<TileGridMetadata | null> {

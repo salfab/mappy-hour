@@ -2287,6 +2287,11 @@ export async function* streamTilesForBbox(params: {
   shadowCalibration: ShadowCalibration;
   cacheOnly?: boolean;
   onTileComputeProgress?: (event: TileComputeProgressEvent) => void;
+  /** Caller-side cache hint in COMPACT form (`<e/s>_<n/s>`, see
+   *  `lib/encoding/tile-id-compact.ts`). Tiles whose compact id is in this
+   *  set are filtered BEFORE pre-fetching atlases, so the heavy I/O + zstd
+   *  decompress is also skipped (not just the encode + send). */
+  excludeCompactTileIds?: Set<string>;
 }): AsyncGenerator<StreamTileResult, StreamTilesInit | null> {
   const region = resolveRegionForBbox(params.bbox);
   process.stderr.write(`[stream] bbox=${JSON.stringify(params.bbox)} region=${region} cacheOnly=${params.cacheOnly}\n`);
@@ -2345,6 +2350,25 @@ export async function* streamTilesForBbox(params: {
   let requiredTiles = requiredTileIds
     .map((tileId) => tileById.get(tileId) ?? null)
     .filter((tile): tile is RegionTileSpec => tile !== null);
+
+  // Caller cache hint: skip these tiles entirely. We log the count so we can
+  // tell from the server logs that the heavy work was actually elided.
+  const totalRequiredBeforeExclude = requiredTiles.length;
+  let excludedCount = 0;
+  if (params.excludeCompactTileIds && params.excludeCompactTileIds.size > 0) {
+    const before = requiredTiles.length;
+    const { compactTileId } = await import("@/lib/encoding/tile-id-compact");
+    requiredTiles = requiredTiles.filter((t) => {
+      const c = compactTileId(t.tileId);
+      return !c || !params.excludeCompactTileIds!.has(c);
+    });
+    excludedCount = before - requiredTiles.length;
+    if (excludedCount > 0) {
+      process.stderr.write(
+        `[stream:exclude] dropped ${excludedCount} tiles before prefetch (${requiredTiles.length} remain of ${before})\n`,
+      );
+    }
+  }
 
   // Cache-only optimization: scan the cache directory ONCE to find which
   // tiles actually have an artifact, instead of probing the filesystem for
@@ -2507,7 +2531,7 @@ export async function* streamTilesForBbox(params: {
         yield {
           tileId: tile.tileId,
           tileIndex: tileIdx,
-          totalTiles: requiredTiles.length,
+          totalTiles: totalRequiredBeforeExclude,
           artifact: loaded.artifact ?? undefined,
           binary: loaded.binary,
           atlases: loaded.atlases,
@@ -2559,7 +2583,7 @@ export async function* streamTilesForBbox(params: {
         yield {
           tileId: tile.tileId,
           tileIndex: tileIdx,
-          totalTiles: requiredTiles.length,
+          totalTiles: totalRequiredBeforeExclude,
           atlases: atlasHits,
           layer: "L2" as const,
         };
@@ -2586,7 +2610,7 @@ export async function* streamTilesForBbox(params: {
           params.onTileComputeProgress!({
             phase: "tile-computation",
             tileIndex: tileIdx + 1,
-            totalTiles: requiredTiles.length,
+            totalTiles: totalRequiredBeforeExclude,
             tileId: tile.tileId,
             stage: progress.stage,
             stageCompleted: progress.completed,
@@ -2616,7 +2640,7 @@ export async function* streamTilesForBbox(params: {
       yield {
         tileId: tile.tileId,
         tileIndex: tileIdx,
-        totalTiles: requiredTiles.length,
+        totalTiles: totalRequiredBeforeExclude,
         artifact: resolved.artifact,
         layer: resolved.layer,
       };
@@ -2626,7 +2650,7 @@ export async function* streamTilesForBbox(params: {
   return {
     region,
     modelVersionHash,
-    totalTiles: requiredTiles.length,
+    totalTiles: totalRequiredBeforeExclude,
     tileSizeMeters,
     sampleCount: samples.length,
   };
