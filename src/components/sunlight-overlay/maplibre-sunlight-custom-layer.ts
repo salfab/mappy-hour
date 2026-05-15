@@ -94,8 +94,12 @@ interface RGBA255 {
   a: number;
 }
 
-const DEFAULT_SUNNY: RGBA255  = { r: 255, g: 220, b: 60,  a: 110 };
-const DEFAULT_SHADOW: RGBA255 = { r: 40,  g: 60,  b: 140, a: 100 };
+// Match the Leaflet palette (sunlight-map-client.tsx SUNNY_RGBA/SHADOW_RGBA)
+// so the two clients are visually consistent. The pastel slate-500 shadow
+// reads as a soft veil over the basemap; a saturated navy (the previous
+// MapLibre default) made the sun/shadow boundary look unnaturally sharp.
+const DEFAULT_SUNNY: RGBA255  = { r: 250, g: 204, b: 21,  a: 102 }; // yellow-400 @ 40%
+const DEFAULT_SHADOW: RGBA255 = { r: 100, g: 116, b: 139, a: 89  }; // slate-500 @ 35%
 
 export interface SunlightStyle {
   alphaSoft: number;
