@@ -19,9 +19,11 @@
  *    `map.triggerRepaint()`.
  *
  * Texture format:
- *  Each tile gets a `LUMINANCE` (WebGL1) or `R8` (WebGL2) texture of size
- *  `gridWidth × gridHeight`. Values are decoded from the bit-packed masks in
- *  CPU before upload:
+ *  Each tile gets a `R8` `TEXTURE_2D_ARRAY` of size `gridWidth × gridHeight ×
+ *  frameCount`. All frames for a tile are packed into a single texture so
+ *  `setFrameIndex` only needs to flip a `u_frameIndex` uniform — no CPU work
+ *  and no GPU upload per slider tick. Values are decoded from the bit-packed
+ *  masks in CPU before upload:
  *    0   → indoor  (fragment shader discards)
  *    128 → outdoor + shadow
  *    255 → outdoor + sunny
@@ -187,6 +189,37 @@ function buildLuminanceBuffer(
   return buf;
 }
 
+/**
+ * Build a packed luminance buffer for ALL frames of a tile, laid out
+ * frame-major: `data[frame * W * H + iy * W + ix]`. This matches the OpenGL
+ * convention for `texImage3D(TEXTURE_2D_ARRAY, ...)` where the depth coordinate
+ * is the slowest-varying index — slice `n` occupies bytes `[n*W*H, (n+1)*W*H)`.
+ */
+function buildLuminanceArray(
+  gridWidth: number,
+  gridHeight: number,
+  frames: Array<{ sun: Uint8Array }>,
+  outdoorMask: Uint8Array | undefined,
+): Uint8Array {
+  const cellsPerFrame = gridWidth * gridHeight;
+  const buf = new Uint8Array(cellsPerFrame * frames.length);
+  for (let f = 0; f < frames.length; f++) {
+    const sunMask = frames[f].sun;
+    const base = f * cellsPerFrame;
+    for (let iy = 0; iy < gridHeight; iy++) {
+      for (let ix = 0; ix < gridWidth; ix++) {
+        const cellIdx = iy * gridWidth + ix;
+        if (outdoorMask && readBit(outdoorMask, cellIdx) === 0) {
+          buf[base + cellIdx] = 0;
+        } else {
+          buf[base + cellIdx] = readBit(sunMask, cellIdx) === 1 ? 255 : 128;
+        }
+      }
+    }
+  }
+  return buf;
+}
+
 // ── Shader sources ────────────────────────────────────────────────────────────
 
 const VERT_SRC = /* glsl */ `#version 300 es
@@ -208,7 +241,8 @@ void main() {
 
 const FRAG_SRC = /* glsl */ `#version 300 es
 precision highp float;
-uniform sampler2D u_texture;
+uniform mediump sampler2DArray u_texture;
+uniform int u_frameIndex;
 uniform vec4 u_sunny;
 uniform vec4 u_shadow;
 uniform float u_alphaSoft;
@@ -247,7 +281,8 @@ float vnoise(vec2 p) {
 }
 
 void main() {
-  float v = texture(u_texture, v_texcoord).r;
+  float fi = float(u_frameIndex);
+  float v = texture(u_texture, vec3(v_texcoord, fi)).r;
   float outdoor = smoothstep(0.325 - u_alphaSoft, 0.325 + u_alphaSoft, v);
   float sun = smoothstep(0.675 - u_sunSoft, 0.675 + u_sunSoft, v);
   vec4 color = mix(u_shadow, u_sunny, sun);
@@ -283,13 +318,13 @@ void main() {
   // For the hatch mask, average v across a small neighbourhood of texels so
   // diagonal lines aren't chopped up by single-cell oscillations of the
   // LINEAR-filtered texture at low-DPR cells.
-  vec2 texel = 1.0 / vec2(textureSize(u_texture, 0));
+  vec2 texel = 1.0 / vec2(textureSize(u_texture, 0).xy);
   float vAvg = (
-    texture(u_texture, v_texcoord).r * 2.0 +
-    texture(u_texture, v_texcoord + vec2( texel.x, 0.0)).r +
-    texture(u_texture, v_texcoord - vec2( texel.x, 0.0)).r +
-    texture(u_texture, v_texcoord + vec2( 0.0, texel.y)).r +
-    texture(u_texture, v_texcoord - vec2( 0.0, texel.y)).r
+    texture(u_texture, vec3(v_texcoord, fi)).r * 2.0 +
+    texture(u_texture, vec3(v_texcoord + vec2( texel.x, 0.0), fi)).r +
+    texture(u_texture, vec3(v_texcoord - vec2( texel.x, 0.0), fi)).r +
+    texture(u_texture, vec3(v_texcoord + vec2( 0.0, texel.y), fi)).r +
+    texture(u_texture, vec3(v_texcoord - vec2( 0.0, texel.y), fi)).r
   ) / 6.0;
   float outdoorAvg = smoothstep(0.325 - u_alphaSoft, 0.325 + u_alphaSoft, vAvg);
   float sunAvg = smoothstep(0.675 - u_sunSoft, 0.675 + u_sunSoft, vAvg);
@@ -309,15 +344,17 @@ void main() {
 // ── Per-tile GPU state ────────────────────────────────────────────────────────
 
 interface TileGPUState {
+  /** `gl.TEXTURE_2D_ARRAY`, dimensions gridWidth × gridHeight × frameCount. */
   texture: WebGLTexture;
   /** Interleaved Float32Array: [x, y, u, v] × 6 vertices per quad. */
   vertices: Float32Array;
   /** True when the texture upload is pending (first frame or mask change). */
   textureDirty: boolean;
-  /** Cached luminance buffer for the current frame. */
-  luminance: Uint8Array;
+  /** All frames packed frame-major: byte offset = frame*W*H + iy*W + ix. */
+  luminanceArray: Uint8Array;
   gridWidth: number;
   gridHeight: number;
+  frameCount: number;
 }
 
 // ── Public class ──────────────────────────────────────────────────────────────
@@ -346,6 +383,9 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
   // Current tile list (used in render to iterate deterministically).
   private tiles: TimelineTile[] = [];
 
+  /** Current frame index, sent to the shader as `u_frameIndex` uniform. */
+  private frameIndex = 0;
+
   private visible = true;
 
   // Sunny/shadow color uniforms (pre-normalised to [0,1]).
@@ -367,15 +407,15 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
    *  (pixel-perfect). Re-applies the filter to every existing tile texture. */
   setTextureFilter(mode: "smooth" | "pixel"): void {
     this.textureFilter = mode;
-    const gl = this.gl;
+    const gl = this.gl as WebGL2RenderingContext | null;
     if (!gl) return;
     const f = mode === "pixel" ? gl.NEAREST : gl.LINEAR;
     for (const state of this.tileStates.values()) {
-      gl.bindTexture(gl.TEXTURE_2D, state.texture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, state.texture);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, f);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, f);
     }
-    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
     this.map.triggerRepaint();
   }
 
@@ -383,7 +423,9 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
 
   // ── CustomLayerInterface ────────────────────────────────────────────────────
 
-  onAdd(_map: MapLibreMap, gl: WebGL2RenderingContext | WebGLRenderingContext): void {
+  onAdd(_map: MapLibreMap, glAny: WebGL2RenderingContext | WebGLRenderingContext): void {
+    // WebGL2 is required: we use sampler2DArray + texImage3D.
+    const gl = glAny as WebGL2RenderingContext;
     this.gl = gl;
     this.program = this.createProgram(gl, VERT_SRC, FRAG_SRC);
     if (!this.program) {
@@ -413,21 +455,22 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     for (const state of this.tileStates.values()) {
       const tex = gl.createTexture();
       if (!tex) continue;
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       const filter = this.textureFilter === "pixel" ? gl.NEAREST : gl.LINEAR;
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
-      gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
       state.texture = tex;
       state.textureDirty = true;
     }
     if (this.tileStates.size > 0) this.map.triggerRepaint();
   }
 
-  render(gl: WebGL2RenderingContext | WebGLRenderingContext, options: CustomRenderMethodInput): void {
+  render(glAny: WebGL2RenderingContext | WebGLRenderingContext, options: CustomRenderMethodInput): void {
     if (!this.visible || !this.program || !this.vbo) return;
+    const gl = glAny as WebGL2RenderingContext;
     // `modelViewProjectionMatrix` is the combined projection×view matrix in
     // Mercator space — exactly what the vertex shader needs for `u_matrix`.
     const matrix = options.modelViewProjectionMatrix;
@@ -517,6 +560,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
 
     // Draw each tile with its own texture.
     gl.uniform1i(gl.getUniformLocation(this.program, "u_texture"), 0);
+    gl.uniform1i(gl.getUniformLocation(this.program, "u_frameIndex"), this.frameIndex);
     gl.activeTexture(gl.TEXTURE0);
 
     // Cache per-tile uniform locations + hatch constants used inside the loop.
@@ -530,7 +574,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       const tile = activeTiles[i];
       const state = this.tileStates.get(tile.tileId)!;
 
-      gl.bindTexture(gl.TEXTURE_2D, state.texture);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, state.texture);
 
       // Upload texture if dirty.
       if (state.textureDirty) {
@@ -557,7 +601,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     gl.disableVertexAttribArray(this.aPos);
     gl.disableVertexAttribArray(this.aTexcoord);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
-    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
   }
 
   onRemove(_map: MapLibreMap, _gl: WebGL2RenderingContext | WebGLRenderingContext): void {
@@ -577,6 +621,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     showShadow: boolean,
   ): void {
     this.tiles = tiles;
+    this.frameIndex = frameIndex;
     this.updateColorUniforms(showSunny, showShadow);
 
     // Cull GPU state for tiles that are no longer in the current fetch's
@@ -593,18 +638,17 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     }
 
     for (const tile of tiles) {
-      this.syncTileState(tile, frameIndex);
+      this.syncTileState(tile);
     }
 
     this.map.triggerRepaint();
   }
 
-  /** Fast-path: advance to a different frame without changing the tile set. */
+  /** Fast-path: advance to a different frame. All frames are already on the GPU
+   *  in the TEXTURE_2D_ARRAY of each tile — we only need to flip a uniform. */
   setFrameIndex(frameIndex: number, showSunny: boolean, showShadow: boolean): void {
+    this.frameIndex = frameIndex;
     this.updateColorUniforms(showSunny, showShadow);
-    for (const tile of this.tiles) {
-      this.syncTileState(tile, frameIndex);
-    }
     this.map.triggerRepaint();
   }
 
@@ -649,21 +693,24 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
   }
 
   /**
-   * Create or update the GPU state for a single tile at the given frame.
+   * Create or update the GPU state for a single tile. All frames are packed
+   * into a single TEXTURE_2D_ARRAY, so we don't need a frameIndex parameter —
+   * `setFrameIndex` later only flips a uniform.
    * Geometry is rebuilt only when the tile state is new (corners don't change).
-   * The texture is marked dirty whenever the frame or masks change.
+   * The texture is marked dirty whenever the masks change.
    */
-  private syncTileState(tile: TimelineTile, frameIndex: number): void {
+  private syncTileState(tile: TimelineTile): void {
     if (!tile.tileCorners || !tile.grid) return;
+    if (!tile.decodedMasks) return;
 
-    const sunMask = getTileSunMask(tile, frameIndex);
-    if (!sunMask) return;
+    const frames = tile.decodedMasks.frames;
+    if (frames.length === 0) return;
 
     const outdoorMask = getTileOutdoorMask(tile);
-    const luminance = buildLuminanceBuffer(
+    const luminanceArray = buildLuminanceArray(
       tile.grid.width,
       tile.grid.height,
-      sunMask,
+      frames,
       outdoorMask,
     );
 
@@ -671,62 +718,65 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
 
     if (!existing) {
       // First time seeing this tile — create full GPU state.
-      const gl = this.gl;
+      const gl = this.gl as WebGL2RenderingContext | null;
       if (!gl) return;
 
       const texture = gl.createTexture();
       if (!texture) return;
 
       // Set texture parameters before first upload.
-      gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       const filter = this.textureFilter === "pixel" ? gl.NEAREST : gl.LINEAR;
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
-      gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
 
       const state: TileGPUState = {
         texture,
         vertices: buildQuadVertices(tile.tileCorners),
         textureDirty: true,
-        luminance,
+        luminanceArray,
         gridWidth: tile.grid.width,
         gridHeight: tile.grid.height,
+        frameCount: frames.length,
       };
       this.tileStates.set(tile.tileId, state);
     } else {
-      // Refresh ALL geometry/dimension fields, not just luminance: a refetch
-      // may return slightly different tileCorners (precision rounding) or a
-      // different grid size for tiles at the viewport edge. Leaving the old
-      // vertices or gridWidth/gridHeight in place causes visible misalignment
-      // and texImage2D reading past the new luminance buffer.
+      // Refresh ALL geometry/dimension fields: a refetch may return slightly
+      // different tileCorners (precision rounding), a different grid size for
+      // tiles at the viewport edge, or a different frame count if the timeline
+      // window changed. Leaving stale dimensions in place causes texImage3D to
+      // read past the new luminance buffer or sample the wrong slice.
       existing.vertices = buildQuadVertices(tile.tileCorners);
       existing.gridWidth = tile.grid.width;
       existing.gridHeight = tile.grid.height;
-      existing.luminance = luminance;
+      existing.frameCount = frames.length;
+      existing.luminanceArray = luminanceArray;
       existing.textureDirty = true;
     }
   }
 
   private uploadTexture(
-    gl: WebGL2RenderingContext | WebGLRenderingContext,
+    gl: WebGL2RenderingContext,
     state: TileGPUState,
   ): void {
     // Disable row-alignment padding: UNPACK_ALIGNMENT defaults to 4, which
     // adds padding bytes to rows whose width is not a multiple of 4 (e.g. 250).
     // Our buffer is tightly packed (1 byte/cell), so we need alignment = 1.
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
+    gl.texImage3D(
+      gl.TEXTURE_2D_ARRAY,
       0,
-      gl.LUMINANCE,
+      gl.R8,
       state.gridWidth,
       state.gridHeight,
+      state.frameCount,
       0,
-      gl.LUMINANCE,
+      gl.RED,
       gl.UNSIGNED_BYTE,
-      state.luminance,
+      state.luminanceArray,
     );
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4); // restore default
   }
