@@ -5,6 +5,7 @@ import maplibregl, { type Map as MapLibreMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
 import { MapLibreSunlightCustomLayer } from "@/components/sunlight-overlay/maplibre-sunlight-custom-layer";
+import { MapLibreHeatmapCustomLayer } from "@/components/sunlight-overlay/maplibre-heatmap-custom-layer";
 import {
   CalculationControls,
   LayerFilters,
@@ -198,6 +199,7 @@ export function MapLibrePreviewClient() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const sunlightLayerRef = useRef<MapLibreSunlightCustomLayer | null>(null);
+  const heatmapLayerRef = useRef<MapLibreHeatmapCustomLayer | null>(null);
   const [ready, setReady] = useState(false);
   const [basemapId, setBasemapId] = useState<BaseMapId>("aquarelle");
 
@@ -278,11 +280,11 @@ export function MapLibrePreviewClient() {
   // only reads it for the sr-only announcement, so we pass a no-op setter.
   const cacheOnly = false;
   const forceCacheOnly = false;
-  // DECISION: instant-mode rendering of points is not ported, so heatmap
-  // cannot be derived from a daily run here yet. We still expose the toggle
-  // so the UI looks like the homepage; canShowHeatmap stays false for now so
-  // the heatmap pill is disabled (Leaflet behaviour when no daily timeline).
-  const canShowHeatmap = false;
+  // The heatmap reuses the timeline tiles already fetched for the sunlight
+  // overlay (daily aggregate computed on the client by
+  // MapLibreHeatmapCustomLayer). Enable the pill as soon as we have a daily
+  // timeline loaded — matches the Leaflet client's "needs a daily run" guard.
+  const canShowHeatmap = timelineFrames.length > 1;
 
   // ── View tabs + LayerFilters state (ported from Leaflet homepage) ────────
   const [panelTab, setPanelTab] = useState<MapPanelTab>("map");
@@ -841,6 +843,10 @@ export function MapLibrePreviewClient() {
           );
           const layer = sunlightLayerRef.current;
           if (layer) layer.setTimeline(tiles, clamped, showSunny, showShadow);
+          // Rebuild the daily aggregate for the new tile set. The aggregate is
+          // cached per-tile inside the layer, so subsequent slider moves do
+          // not re-run this computation.
+          heatmapLayerRef.current?.setTiles(tiles);
           setTimelineFrames(frames);
           setFrameIndex(clamped);
         },
@@ -944,6 +950,13 @@ export function MapLibrePreviewClient() {
       sunlightLayerRef.current = sunlightLayer;
       // TEMP: expose for visual A/B style testing
       (window as unknown as Record<string, unknown>).__sl = sunlightLayer;
+
+      // Heatmap layer sits on top of the sunlight layer (added after) so when
+      // it becomes visible it covers the timeline overlay. Only one of the two
+      // is visible at any time (toggled via showHeatmap).
+      const heatmapLayer = new MapLibreHeatmapCustomLayer(map);
+      map.addLayer(heatmapLayer, "cluster-circles");
+      heatmapLayerRef.current = heatmapLayer;
       void fetchViewportPlaces(map);
     });
 
@@ -995,6 +1008,11 @@ export function MapLibrePreviewClient() {
         if (map.getLayer(sl.id)) map.removeLayer(sl.id);
         map.addLayer(sl, "cluster-circles");
       }
+      const hm = heatmapLayerRef.current;
+      if (hm) {
+        if (map.getLayer(hm.id)) map.removeLayer(hm.id);
+        map.addLayer(hm, "cluster-circles");
+      }
     });
 
     return () => {
@@ -1013,6 +1031,8 @@ export function MapLibrePreviewClient() {
       map.remove();
       sunlightLayerRef.current?.dispose();
       sunlightLayerRef.current = null;
+      heatmapLayerRef.current?.dispose();
+      heatmapLayerRef.current = null;
       mapRef.current = null;
     };
   }, [fetchViewportPlaces]);
@@ -1025,13 +1045,24 @@ export function MapLibrePreviewClient() {
     if (target) map.setStyle(buildStyle(target));
   }, [basemapId, ready]);
 
-  // Repaint sunlight overlay on slider / toggle changes.
+  // Repaint sunlight overlay on slider / toggle changes. When the heatmap is
+  // active we hide the sunlight overlay entirely — same behaviour as the
+  // Leaflet client (the two visualisations are mutually exclusive).
   useEffect(() => {
     const layer = sunlightLayerRef.current;
     if (!layer) return;
-    layer.setVisible(sunlightVisible);
-    if (sunlightVisible) layer.setFrameIndex(frameIndex, showSunny, showShadow);
-  }, [sunlightVisible, frameIndex, showSunny, showShadow]);
+    const sunlightShouldRender = sunlightVisible && !showHeatmap;
+    layer.setVisible(sunlightShouldRender);
+    if (sunlightShouldRender) layer.setFrameIndex(frameIndex, showSunny, showShadow);
+  }, [sunlightVisible, frameIndex, showSunny, showShadow, showHeatmap]);
+
+  // Heatmap visibility — independent of sunlightVisible so the user can flip
+  // back and forth without losing the sunlight slider position.
+  useEffect(() => {
+    const layer = heatmapLayerRef.current;
+    if (!layer) return;
+    layer.setVisible(showHeatmap);
+  }, [showHeatmap]);
 
   // One-shot basemap swap: stay on Aquarelle while the first sunlight
   // timeline is loading, then flip to Satellite once the tiles are ready.
