@@ -241,7 +241,8 @@ void main() {
 
 const FRAG_SRC = /* glsl */ `#version 300 es
 precision highp float;
-uniform mediump sampler2DArray u_texture;
+precision highp sampler2DArray;
+uniform sampler2DArray u_texture;
 uniform int u_frameIndex;
 uniform vec4 u_sunny;
 uniform vec4 u_shadow;
