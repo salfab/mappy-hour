@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { BarsList } from "./bars-list";
 import { BackIcon, ChevronRightIcon } from "./icons";
@@ -78,7 +78,24 @@ export function DesktopMapLayout(props: DesktopMapLayoutProps) {
 export function MobileBottomSheet(props: MobileBottomSheetProps) {
   const dragStartYRef = useRef<number | null>(null);
   const suppressNextClickRef = useRef(false);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  // Touch-driven scroll hijack state: when the user starts a touch inside the
+  // scrollable content area we delay the verdict until the first significant
+  // move, then either claim the gesture as a sheet drag (preventDefault on
+  // touchmove to stop native scroll) or release control to the native scroller.
+  const touchHijackRef = useRef<{
+    pointerId: number;
+    startY: number;
+    startScrollTop: number;
+    decided: "sheet" | "scroll" | null;
+  } | null>(null);
   const [dragPreview, setDragPreview] = useState<"down-strong" | "down" | "up" | "up-strong" | null>(null);
+  // Mirror props into refs so the touch-hijack effect (attached once) always
+  // reads the latest sheet state and notifies via the latest onStateChange.
+  const stateRef = useRef(props.state);
+  stateRef.current = props.state;
+  const onStateChangeRef = useRef(props.onStateChange);
+  onStateChangeRef.current = props.onStateChange;
 
   const isInteractiveDragTarget = (target: EventTarget | null) => {
     if (!(target instanceof HTMLElement)) {
@@ -172,12 +189,14 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
 
   const goToNextState = (direction: "up" | "down") => {
     const states: BottomSheetState[] = ["compact", "middle", "expanded"];
-    const currentIndex = states.indexOf(props.state);
+    // Read via refs so this stays correct when called from the long-lived
+    // touch-hijack listener (attached once, would otherwise see a stale state).
+    const currentIndex = states.indexOf(stateRef.current);
     const nextIndex =
       direction === "up"
         ? Math.min(states.length - 1, currentIndex + 1)
         : Math.max(0, currentIndex - 1);
-    props.onStateChange(states[nextIndex]);
+    onStateChangeRef.current(states[nextIndex]);
   };
 
   const finishDrag = (clientY: number) => {
@@ -195,6 +214,153 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
     suppressNextClickRef.current = true;
     goToNextState(deltaY < 0 ? "up" : "down");
   };
+
+  // Touch hijack for the scrollable content area.
+  //
+  // Problem: the inner content has `overflow-y-auto` so the browser owns the
+  // touch scroll gesture and React pointer events fire too late (or get
+  // pointercancel'd) for `onPointerDownCapture` on the parent <section> to
+  // turn a vertical swipe into a sheet drag. The user expects "swipe from
+  // anywhere on the panel = drag the sheet", so we must claim those gestures.
+  //
+  // Approach:
+  //  - On touchstart inside the scrollable content, record startY +
+  //    initial scrollTop. Decision is deferred.
+  //  - On the first significant touchmove (>= HIJACK_DECIDE_PX), decide:
+  //      * Swipe DOWN  + scrollTop === 0           → hijack as sheet drag (collapse).
+  //      * Swipe UP    + sheet in 'compact'/'middle' → hijack as sheet drag (expand).
+  //      * Swipe UP    + 'expanded' + content has more to show → let native scroll happen.
+  //      * Swipe DOWN  + scrollTop > 0             → let native scroll happen.
+  //      * Horizontal-dominant move                → let native handling continue.
+  //    Once hijacked, every subsequent touchmove calls preventDefault() so
+  //    native scrolling stops, and we forward the deltas to the existing
+  //    drag preview / commit pipeline.
+  //  - Inputs (range slider, search, ...) start the gesture on the input
+  //    itself, not the content wrapper, so they are unaffected. The
+  //    isInteractiveDragTarget filter is also re-applied here as a belt-
+  //    and-braces guard.
+  //
+  // We attach the listener manually (passive: false) because React's
+  // onTouchMove is passive by default and cannot call preventDefault.
+  const HIJACK_DECIDE_PX = 6;
+
+  useEffect(() => {
+    const node = contentRef.current;
+    if (node === null) {
+      return;
+    }
+
+    const handleTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) {
+        touchHijackRef.current = null;
+        return;
+      }
+      if (isInteractiveDragTarget(event.target)) {
+        touchHijackRef.current = null;
+        return;
+      }
+      const touch = event.touches[0];
+      touchHijackRef.current = {
+        pointerId: touch.identifier,
+        startY: touch.clientY,
+        startScrollTop: node.scrollTop,
+        decided: null,
+      };
+    };
+
+    const handleTouchMove = (event: TouchEvent) => {
+      const hijack = touchHijackRef.current;
+      if (hijack === null) {
+        return;
+      }
+      const touch = Array.from(event.touches).find((t) => t.identifier === hijack.pointerId);
+      if (touch === undefined) {
+        return;
+      }
+      const deltaY = touch.clientY - hijack.startY;
+
+      if (hijack.decided === null) {
+        if (Math.abs(deltaY) < HIJACK_DECIDE_PX) {
+          return;
+        }
+        const sheetState = stateRef.current;
+        const swipingDown = deltaY > 0;
+        const swipingUp = deltaY < 0;
+        const atTop = hijack.startScrollTop <= 0 && node.scrollTop <= 0;
+        const contentOverflows = node.scrollHeight - node.clientHeight > 1;
+
+        let claim = false;
+        if (swipingDown && atTop) {
+          claim = true;
+        } else if (swipingUp) {
+          // In compact/middle, an upward swipe is almost always an intent to
+          // expand the sheet — the visible content is short anyway. In
+          // expanded, only claim if there's nothing more to scroll to.
+          if (sheetState !== "expanded" || !contentOverflows) {
+            claim = true;
+          }
+        }
+
+        if (claim) {
+          hijack.decided = "sheet";
+          dragStartYRef.current = hijack.startY;
+          setDragPreview(null);
+        } else {
+          hijack.decided = "scroll";
+        }
+      }
+
+      if (hijack.decided === "sheet") {
+        // Cancel native scroll for every move once we have committed.
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+        updateDragPreview(touch.clientY);
+      }
+    };
+
+    const handleTouchEnd = (event: TouchEvent) => {
+      const hijack = touchHijackRef.current;
+      if (hijack === null) {
+        return;
+      }
+      if (hijack.decided === "sheet") {
+        const touch =
+          Array.from(event.changedTouches).find((t) => t.identifier === hijack.pointerId) ??
+          Array.from(event.touches).find((t) => t.identifier === hijack.pointerId);
+        const endY = touch?.clientY ?? hijack.startY;
+        finishDrag(endY);
+      }
+      touchHijackRef.current = null;
+    };
+
+    const handleTouchCancel = () => {
+      const hijack = touchHijackRef.current;
+      if (hijack !== null && hijack.decided === "sheet") {
+        dragStartYRef.current = null;
+        setDragPreview(null);
+      }
+      touchHijackRef.current = null;
+    };
+
+    node.addEventListener("touchstart", handleTouchStart, { passive: true });
+    node.addEventListener("touchmove", handleTouchMove, { passive: false });
+    node.addEventListener("touchend", handleTouchEnd, { passive: true });
+    node.addEventListener("touchcancel", handleTouchCancel, { passive: true });
+
+    return () => {
+      node.removeEventListener("touchstart", handleTouchStart);
+      node.removeEventListener("touchmove", handleTouchMove);
+      node.removeEventListener("touchend", handleTouchEnd);
+      node.removeEventListener("touchcancel", handleTouchCancel);
+    };
+    // updateDragPreview / finishDrag / isInteractiveDragTarget are stable closures
+    // over refs + setState; goToNextState (called via finishDrag) reads
+    // props.state and props.onStateChange via closure. We use stateRef +
+    // a ref-less call chain so the listener doesn't need re-attaching on
+    // every render. props.onStateChange is referentially stable in callers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <section
@@ -267,7 +433,14 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
         </button>
       </div>
 
-      <div className={`grid min-h-0 ${contentGapClass} overflow-y-auto overscroll-contain pb-1`}>
+      <div
+        ref={contentRef}
+        // touch-action: pan-y lets the browser keep ownership of vertical
+        // gestures by default (so the inner list still scrolls when the
+        // user explicitly scrolls), while our touchmove handler can call
+        // preventDefault() to claim the gesture as a sheet drag.
+        className={`grid min-h-0 touch-pan-y ${contentGapClass} overflow-y-auto overscroll-contain pb-1`}
+      >
         {props.timeline}
         {props.state !== "compact" ? (
           <>
