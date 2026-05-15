@@ -354,6 +354,7 @@ export async function GET(request: Request) {
             endLocalTime: query.endLocalTime,
             shadowCalibration,
             cacheOnly: query.cacheOnly,
+            excludeCompactTileIds: query.excludeTileIds,
             onTileComputeProgress: (event) => {
               const etaSeconds =
                 event.elapsedMs > 3000 && event.percent > 0.01
