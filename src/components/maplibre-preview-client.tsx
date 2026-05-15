@@ -1231,6 +1231,78 @@ export function MapLibrePreviewClient() {
     if (target) map.setStyle(buildStyle(target));
   }, [basemapId, ready]);
 
+  // Debug snapshot exposed on the window. Updated on every render so the
+  // closure captures fresh state.
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__diag = () => {
+      const map = mapRef.current;
+      // Cast to any for debug introspection — the layer instances expose
+      // private state we want to peek at without leaking it through their
+      // public API.
+      const sl = sunlightLayerRef.current as unknown as
+        { visible?: boolean; tiles?: unknown[]; tileStates?: Map<string, unknown> } | null;
+      const hm = heatmapLayerRef.current as unknown as
+        { tiles?: unknown[] } | null;
+      const pw = satellitePatchworkLayerRef.current as unknown as
+        { loadedTiles?: unknown[]; tileTextures?: Map<string, unknown> } | null;
+      const center = map?.getCenter();
+      const bounds = map?.getBounds();
+      return {
+        map: map
+          ? {
+              center: center ? [Number(center.lng.toFixed(6)), Number(center.lat.toFixed(6))] : null,
+              zoom: Number((map.getZoom() ?? 0).toFixed(3)),
+              bounds: bounds
+                ? {
+                    w: Number(bounds.getWest().toFixed(6)),
+                    s: Number(bounds.getSouth().toFixed(6)),
+                    e: Number(bounds.getEast().toFixed(6)),
+                    n: Number(bounds.getNorth().toFixed(6)),
+                  }
+                : null,
+              basemapId,
+              layerOrder: map.getStyle().layers.map((l) => l.id),
+            }
+          : null,
+        sunlight: sl
+          ? {
+              visible: sl.visible ?? null,
+              tilesCount: sl.tiles?.length ?? 0,
+              tileStatesCount: sl.tileStates?.size ?? 0,
+            }
+          : null,
+        heatmap: hm ? { tilesCount: hm.tiles?.length ?? 0 } : null,
+        patchwork: pw
+          ? {
+              loadedTilesCount: pw.loadedTiles?.length ?? 0,
+              satelliteTexturesCount: pw.tileTextures?.size ?? 0,
+            }
+          : null,
+        tileCache: inspectTileCache(),
+        ui: {
+          mode,
+          date,
+          frameIndex,
+          timelineFrames: timelineFrames.length,
+          sunlightLoading,
+          timelineFetchProgress,
+          isCalculating,
+          selectedPlace: selectedPlace?.id ?? null,
+          panelTab,
+          showSunny,
+          showShadow,
+          showHeatmap,
+          showTerrain,
+          showBuildings,
+          showVegetation,
+          showPlaces,
+          ignoreVegetationShadow,
+        },
+        dpr: window.devicePixelRatio,
+      };
+    };
+  });
+
   // Repaint sunlight overlay on slider / toggle changes. When the heatmap is
   // active we hide the sunlight overlay entirely — same behaviour as the
   // Leaflet client (the two visualisations are mutually exclusive).
