@@ -356,6 +356,12 @@ interface TileGPUState {
   gridWidth: number;
   gridHeight: number;
   frameCount: number;
+  /** The `tile.decodedMasks` reference this `luminanceArray` was built from.
+   *  When a subsequent `syncTileState` sees the same reference we skip the
+   *  rebuild + texImage3D — the existing GPU upload is still valid. Saves
+   *  ~200 M iterations / tile / progressive flush in the typical pan
+   *  scenario. */
+  decodedMasksRef: TimelineTile["decodedMasks"] | null;
 }
 
 // ── Public class ──────────────────────────────────────────────────────────────
@@ -707,6 +713,15 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     const frames = tile.decodedMasks.frames;
     if (frames.length === 0) return;
 
+    const existing = this.tileStates.get(tile.tileId);
+
+    // Short-circuit: this tile is already on the GPU with the exact same
+    // mask reference. Nothing to do — slider moves and incremental flushes
+    // walk through this branch ~60×/sec, so saving the rebuild is critical.
+    if (existing && existing.decodedMasksRef === tile.decodedMasks) {
+      return;
+    }
+
     const outdoorMask = getTileOutdoorMask(tile);
     const luminanceArray = buildLuminanceArray(
       tile.grid.width,
@@ -714,8 +729,6 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       frames,
       outdoorMask,
     );
-
-    const existing = this.tileStates.get(tile.tileId);
 
     if (!existing) {
       // First time seeing this tile — create full GPU state.
@@ -742,19 +755,18 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
         gridWidth: tile.grid.width,
         gridHeight: tile.grid.height,
         frameCount: frames.length,
+        decodedMasksRef: tile.decodedMasks,
       };
       this.tileStates.set(tile.tileId, state);
     } else {
-      // Refresh ALL geometry/dimension fields: a refetch may return slightly
-      // different tileCorners (precision rounding), a different grid size for
-      // tiles at the viewport edge, or a different frame count if the timeline
-      // window changed. Leaving stale dimensions in place causes texImage3D to
-      // read past the new luminance buffer or sample the wrong slice.
+      // Mask reference changed (either fresh decode after a refetch, or
+      // dimensions/window shifted). Re-upload everything.
       existing.vertices = buildQuadVertices(tile.tileCorners);
       existing.gridWidth = tile.grid.width;
       existing.gridHeight = tile.grid.height;
       existing.frameCount = frames.length;
       existing.luminanceArray = luminanceArray;
+      existing.decodedMasksRef = tile.decodedMasks;
       existing.textureDirty = true;
     }
   }
