@@ -41,6 +41,7 @@
     "precompute:lausanne:terraces:next-weekends": "tsx scripts/precompute/precompute-lausanne-terraces-next-two-weekends.ts",
     "cache:verify": "tsx scripts/precompute/manage-sunlight-cache.ts --action=verify",
     "cache:purge": "tsx scripts/precompute/manage-sunlight-cache.ts --action=purge",
+    "cache:cleanup-orphans": "tsx scripts/diag/cleanup-orphan-caches.ts",
     "ingest:lausanne:buildings": "tsx scripts/ingest/download-lausanne-buildings.ts",
     "ingest:lausanne:terrain:ch": "tsx scripts/ingest/download-lausanne-terrain-ch.ts",
     "ingest:lausanne:vegetation:surface": "tsx scripts/ingest/download-lausanne-vegetation-surface.ts",

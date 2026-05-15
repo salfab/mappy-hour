@@ -386,6 +386,51 @@ pnpm cache:verify
 pnpm cache:purge
 ```
 
+### Nettoyer les caches orphelins (changement de `modelVersionHash`)
+
+Chaque changement d'input (manifest bâtiments, terrain, végétation, calibration, algorithme) bump le `modelVersionHash` et crée un nouveau sous-répertoire `cache/sunlight/<region>/<nouveau-hash>/`. L'ancien reste sur disque — c'est un **orphelin**. Sans nettoyage : (1) gaspillage disque (un seul atlas Lausanne complet pèse ~20 GB), et (2) **bug silencieux** : la résolution cache-only peut tomber sur un orphelin produit avec un pipeline dégradé (ex `terrainHorizonMethod="none"`) et servir des données sunny faussées au frontend.
+
+Trois mécanismes complémentaires :
+
+**1. Endpoint diagnostic — auditer ce qui existe**
+
+```bash
+curl http://localhost:3000/api/admin/diag/model-versions | jq
+```
+
+Retourne, par région, le `modelVersionHash` + `gridMetadataHash` que le serveur produit **au runtime**, et la liste des hashes présents sur disque avec un flag `isCurrent`. Les hashes `isCurrent: false` sont les orphelins. Endpoint GET-only, aucun side-effect.
+
+Audit ciblé d'un atlas spécifique (lecture brute du `meta`) :
+
+```bash
+curl "http://localhost:3000/api/admin/diag/atlas-meta?tileId=e2538250_n1152250_s250&modelVersionHash=<hash>" | jq
+```
+
+**2. Cleanup orphelins — quarantaine, pas suppression**
+
+```bash
+# Dry-run (défaut) — liste les dossiers à déplacer + tailles, ne touche à rien
+pnpm cache:cleanup-orphans
+
+# Vraiment déplacer (dossiers Hash orphelins → data/_quarantine/<timestamp>/)
+pnpm cache:cleanup-orphans -- --apply
+```
+
+Le script appelle l'endpoint diag, calcule le plan, et déplace (jamais `rm`) chaque hash orphelin atlas + grid vers `<dataRoot>/_quarantine/<YYYY-MM-DD-HH-MM-SS>/cache/...`. Si une régression est détectée plus tard, on peut restaurer depuis la quarantaine. À vider manuellement après quelques semaines de stabilité.
+
+Prérequis : le dev server doit tourner (`pnpm start`). Override de l'URL via `MAPPY_DIAG_URL` si besoin.
+
+**3. Preflight précompute — détection automatique avant chaque run**
+
+Le précompute (`pnpm precompute:lausanne` etc.) appelle `runPreflight(region)` au démarrage (`src/lib/precompute/preflight-atlas-health.ts`), qui :
+
+- **Refuse de démarrer** si le manifest horizon DEM n'existe pas pour la région (évite de produire un atlas avec `terrainHorizonMethod: "none"`).
+- **Quarantaine automatiquement** tout atlas existant dont le `meta.model.terrainHorizonMethod === "none"` ou dont `meta.warnings` contient `"No horizon mask"`.
+
+L'orchestrateur multi-régions (`precompute:all-regions:vulkan`) lance le preflight une fois par région et passe `MAPPY_PREFLIGHT_DONE=1` au sous-process pour éviter de scanner deux fois.
+
+**Défense en profondeur côté runtime** : le serveur SSE (`streamTilesForBbox` en mode `cacheOnly`) appelle `promoteCurrentHashCandidate` après `findCachedModelVersionHash` pour mettre le hash courant en tête de la liste de candidats. Si un orphelin existe encore sur disque, il ne sera pas servi en priorité.
+
 ## Déploiement serveur (Docker + Tailscale Funnel)
 
 Procédure from-scratch pour déployer l'app sur un serveur Windows (référence : `mitch`) :
