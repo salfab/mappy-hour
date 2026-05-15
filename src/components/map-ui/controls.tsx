@@ -214,11 +214,15 @@ export function DaySelector(props: {
       <span className="grid min-w-0 gap-0.5">
         <span className="text-sm font-medium text-slate-500">Jour</span>
         <span className="flex min-w-0 items-center gap-2 text-base font-semibold leading-tight text-slate-900">
-          {/* Long labels like "Dimanche 16 décembre" don't fit on a single line:
-              neither in the mobile bottom-sheet header (where the pastille shares
-              the row with the Calculer button) nor in the 280 px desktop side
-              panel. Wrap onto two lines on both breakpoints instead of clipping
-              with an ellipsis. */}
+          {/* Long French dates ("Dimanche 16 décembre" = ~22ch) don't fit on a
+              single line at either breakpoint. The user confirmed truncation
+              shows up on both:
+                - mobile (< lg): bottom-sheet header where the pastille shares
+                  the row with the Calculer button (~160 px usable).
+                - desktop (≥ lg): 280 px side panel minus icon + chevron.
+              So we wrap onto a second line on every breakpoint instead of
+              clipping with an ellipsis. text-base + leading-tight keep the
+              two-line layout from inflating the pastille height. */}
           <span className="min-w-0 whitespace-normal break-words">
             {formatDisplayDate(props.date)}
           </span>
