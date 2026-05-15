@@ -6,7 +6,11 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 import { MapLibreSunlightCustomLayer } from "@/components/sunlight-overlay/maplibre-sunlight-custom-layer";
 import { MapLibreHeatmapCustomLayer } from "@/components/sunlight-overlay/maplibre-heatmap-custom-layer";
-import { MapLibreSatellitePatchworkLayer } from "@/components/sunlight-overlay/maplibre-satellite-patchwork-layer";
+import {
+  MapLibreSatellitePatchworkLayer,
+  isAquarelleTileCovered,
+  type LoadedTile as SatelliteLoadedTile,
+} from "@/components/sunlight-overlay/maplibre-satellite-patchwork-layer";
 import {
   CalculationControls,
   DailyCoverage,
@@ -267,6 +271,9 @@ export function MapLibrePreviewClient() {
   const mapRef = useRef<MapLibreMap | null>(null);
   const sunlightLayerRef = useRef<MapLibreSunlightCustomLayer | null>(null);
   const satellitePatchworkLayerRef = useRef<MapLibreSatellitePatchworkLayer | null>(null);
+  // Mirror of the currently-loaded sunlight tiles, read synchronously by the
+  // map's transformRequest to skip metered aquarelle fetches over covered tiles.
+  const loadedSunlightTilesRef = useRef<SatelliteLoadedTile[]>([]);
   const heatmapLayerRef = useRef<MapLibreHeatmapCustomLayer | null>(null);
   const [ready, setReady] = useState(false);
   const [basemapId, setBasemapId] = useState<BaseMapId>("aquarelle");
@@ -945,9 +952,12 @@ export function MapLibrePreviewClient() {
           if (layer) layer.setTimeline(tiles, clamped, showSunny, showShadow);
           // Sync the satellite patchwork with the currently-loaded sunlight
           // tile set. Only tileCorners is consumed by the patchwork layer.
-          satellitePatchworkLayerRef.current?.setLoadedTiles(
-            tiles.map((t) => ({ tileId: t.tileId, tileCorners: t.tileCorners })),
-          );
+          const patchworkTiles: SatelliteLoadedTile[] = tiles.map((t) => ({
+            tileId: t.tileId,
+            tileCorners: t.tileCorners,
+          }));
+          loadedSunlightTilesRef.current = patchworkTiles;
+          satellitePatchworkLayerRef.current?.setLoadedTiles(patchworkTiles);
           // Rebuild the daily aggregate for the new tile set. The aggregate is
           // cached per-tile inside the layer, so subsequent slider moves do
           // not re-run this computation.
@@ -1034,12 +1044,35 @@ export function MapLibrePreviewClient() {
     const baseMaps = baseMapsRef.current!;
     const initial = baseMaps.find((b) => b.id === "aquarelle") ?? baseMaps[0];
     const storedView = loadStoredMapView();
+    // 1x1 transparent GIF data URI — returned in place of Stadia watercolor
+    // tiles that are fully covered by the satellite patchwork. MapLibre still
+    // sees a "tile" response (no warning) but no network request lands on the
+    // metered Stadia origin.
+    const TRANSPARENT_PIXEL_DATA_URL =
+      "data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: buildStyle(initial),
       center: storedView ? [storedView.lon, storedView.lat] : DEFAULT_CENTER,
       zoom: storedView?.zoom ?? DEFAULT_ZOOM,
       maxZoom: MAP_MAX_ZOOM,
+      transformRequest: (url, resourceType) => {
+        // Only consider Stadia watercolor tiles. Other URLs (CARTO, Esri,
+        // glyphs) pass through untouched.
+        if (resourceType !== "Tile") return { url };
+        if (!url.includes("tiles.stadiamaps.com/tiles/stamen_watercolor/")) {
+          return { url };
+        }
+        const m = /\/stamen_watercolor\/(\d+)\/(\d+)\/(\d+)\.jpg/.exec(url);
+        if (!m) return { url };
+        const z = Number(m[1]);
+        const x = Number(m[2]);
+        const y = Number(m[3]);
+        if (isAquarelleTileCovered(z, x, y, loadedSunlightTilesRef.current)) {
+          return { url: TRANSPARENT_PIXEL_DATA_URL };
+        }
+        return { url };
+      },
     });
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "top-left");
