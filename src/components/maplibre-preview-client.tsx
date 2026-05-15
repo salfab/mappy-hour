@@ -15,6 +15,16 @@ import {
   type OverlayMode,
   type TimelineProgressView,
 } from "@/components/map-ui/controls";
+import { FloatingSearch } from "@/components/map-ui/floating-search";
+import {
+  MobileBottomSheet,
+  MobileBarsView,
+  type BottomSheetState,
+} from "@/components/map-ui/layouts";
+import {
+  PlaceSuggestionsDropdown,
+  type PlaceSuggestion,
+} from "@/components/map-ui/place-suggestions-dropdown";
 
 import {
   buildBaseMaps,
@@ -186,6 +196,24 @@ export function MapLibrePreviewClient() {
   const overlayMode: OverlayMode =
     showHeatmap && !showSunny && !showShadow ? "heatmap" : "sunlight";
   const isDailyRangeInvalid = false; // defaults are valid; no UI to break them
+
+  // ── Mobile UX state (FloatingSearch + MobileBottomSheet + MobileBarsView) ──
+  // DECISION: minimal port of the Leaflet client's mobile stack. The mobile
+  // sheet hosts the same Calculation/Progress/LayerFilters that the desktop
+  // left panel hosts; we render those nodes once (variables below) and place
+  // them in both layouts gated by `hidden lg:flex` / `lg:hidden`. Coverage and
+  // a richer timeline control are deliberately not ported yet (see DECISIONs
+  // below).
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isSearchLoading, setIsSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  // Increment to force PlaceSuggestionsDropdown to hide after submit/select.
+  const [suggestionsCloseSignal, setSuggestionsCloseSignal] = useState(0);
+  // DECISION: mirror Leaflet default ("middle") for the bottom sheet.
+  const [bottomSheetState, setBottomSheetState] =
+    useState<BottomSheetState>("middle");
+  const [isMobileBarsOpen, setIsMobileBarsOpen] = useState(false);
 
   const timelineCalcAbortRef = useRef<AbortController | null>(null);
   const timelineCancelledRef = useRef(false);
@@ -496,6 +524,80 @@ export function MapLibrePreviewClient() {
       }));
   }, [rawPlacesTick, filters]);
 
+  // ── Mobile search handlers (mirror SearchPanel/sunlight-map-client) ───────
+  const SUGGESTION_TARGET_ZOOM = 19;
+  const handleOpenSearch = useCallback(() => {
+    setSearchError(null);
+    setIsSearchOpen(true);
+  }, []);
+  const handleSubmitSearch = useCallback(async () => {
+    const q = searchQuery.trim();
+    if (!q) return;
+    setIsSearchLoading(true);
+    setSearchError(null);
+    try {
+      const response = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`, {
+        cache: "no-store",
+      });
+      const result = (await response.json().catch(() => null)) as {
+        lat?: number;
+        lon?: number;
+        bbox?: [number, number, number, number];
+        error?: string;
+      } | null;
+      if (!response.ok || !result?.lat || !result?.lon) {
+        throw new Error(result?.error ?? "Aucun résultat trouvé.");
+      }
+      const map = mapRef.current;
+      if (map) {
+        if (result.bbox) {
+          const [minLon, minLat, maxLon, maxLat] = result.bbox;
+          map.fitBounds(
+            [[minLon, minLat], [maxLon, maxLat]],
+            { padding: 40, animate: true, maxZoom: SUGGESTION_TARGET_ZOOM },
+          );
+        } else {
+          map.flyTo({
+            center: [result.lon, result.lat],
+            zoom: Math.max(map.getZoom(), SUGGESTION_TARGET_ZOOM),
+            animate: true,
+          });
+        }
+      }
+      setIsSearchOpen(false);
+      setSuggestionsCloseSignal((c) => c + 1);
+    } catch (err) {
+      setSearchError(err instanceof Error ? err.message : "Recherche impossible.");
+    } finally {
+      setIsSearchLoading(false);
+    }
+  }, [searchQuery]);
+  const handleSelectSuggestion = useCallback(
+    (suggestion: PlaceSuggestion) => {
+      const map = mapRef.current;
+      if (map) {
+        if (suggestion.bbox) {
+          const [minLon, minLat, maxLon, maxLat] = suggestion.bbox;
+          map.fitBounds(
+            [[minLon, minLat], [maxLon, maxLat]],
+            { padding: 40, animate: true, maxZoom: SUGGESTION_TARGET_ZOOM },
+          );
+        } else {
+          map.flyTo({
+            center: [suggestion.lon, suggestion.lat],
+            zoom: SUGGESTION_TARGET_ZOOM,
+            animate: true,
+          });
+        }
+      }
+      setSearchQuery(suggestion.name);
+      setSearchError(null);
+      setIsSearchOpen(false);
+      setSuggestionsCloseSignal((c) => c + 1);
+    },
+    [],
+  );
+
   const handleSelectVenue = useCallback((place: VenueCardPlace) => {
     setSelectedVenueId(place.id);
     const map = mapRef.current;
@@ -750,19 +852,69 @@ export function MapLibrePreviewClient() {
     });
   }, [styleSettings, ready]);
 
+  // ── Shared UI fragments (rendered in desktop left panel AND mobile sheet) ─
+  // DECISION: same node passed to both call sites is fine because they're in
+  // different DOM trees gated by `hidden lg:flex` / `lg:hidden` — React
+  // simply renders them twice. This mirrors the Leaflet client's approach.
+  const calculationControlsNode = (
+    <CalculationControls
+      mode={mode}
+      date={date}
+      isLoading={isCalculating}
+      isDailyRangeInvalid={isDailyRangeInvalid}
+      onDateChange={setDate}
+      onRunCalculation={() => void handleRunCalculation()}
+      onCancelDailyCalculation={handleCancelDailyCalculation}
+    />
+  );
+  const progressStatusNode = (
+    <ProgressStatus
+      mode={mode}
+      dailyProgress={dailyProgress}
+      instantProgress={instantProgress}
+      formatDuration={formatDuration}
+    />
+  );
+  const layerFiltersNode = (
+    <LayerFilters
+      overlayMode={overlayMode}
+      showTerrain={showTerrain}
+      showPlaces={showPlaces}
+      ignoreVegetationShadow={ignoreVegetationShadow}
+      canShowHeatmap={canShowHeatmap}
+      cacheOnly={cacheOnly}
+      forceCacheOnly={forceCacheOnly}
+      onOverlayModeChange={(value) => {
+        if (value === "heatmap") {
+          setStyleSettings((s) => ({ ...s, showSunny: false, showShadow: false }));
+          setShowHeatmap(true);
+        } else {
+          setStyleSettings((s) => ({ ...s, showSunny: true, showShadow: true }));
+          setShowHeatmap(false);
+        }
+      }}
+      onShowTerrainChange={setShowTerrain}
+      onShowPlacesChange={setShowPlaces}
+      onIgnoreVegetationShadowChange={setIgnoreVegetationShadow}
+      onCacheOnlyChange={() => {}}
+    />
+  );
+
   return (
     <div className="absolute inset-0">
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 
       {/* Desktop horizontal search banner at the top of the screen. Hidden on
-          mobile (the mobile search lives inside the left panel below). */}
+          mobile (FloatingSearch lives there). */}
       <div className="pointer-events-auto absolute left-1/2 top-3 z-10 hidden w-[420px] -translate-x-1/2 rounded-2xl bg-white/80 p-2 shadow-md backdrop-blur lg:block">
         <SearchPanel mapRef={mapRef} />
       </div>
 
-      {/* Left control panel — date + filters (+ search on mobile).
-          Mobile: full-width minus margins at top. Desktop: 280px sidebar. */}
-      <div className="pointer-events-auto absolute left-3 right-3 top-3 z-10 flex flex-col gap-3 rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur lg:right-auto lg:w-[280px]">
+      {/* Left control panel — date + filters. Desktop only: 280px sidebar.
+          DECISION: mobile no longer renders this stack at the top; controls
+          and filters live in MobileBottomSheet. The desktop panel keeps the
+          same content so the desktop layout stays identical. */}
+      <div className="pointer-events-auto absolute left-3 top-3 z-10 hidden flex-col gap-3 rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur lg:flex lg:right-auto lg:w-[280px]">
         <ViewTabs
           activeTab={panelTab}
           venueCount={sunlitPlaces.length}
@@ -773,54 +925,12 @@ export function MapLibrePreviewClient() {
             }
           }}
         />
-        <CalculationControls
-          mode={mode}
-          date={date}
-          isLoading={isCalculating}
-          isDailyRangeInvalid={isDailyRangeInvalid}
-          onDateChange={setDate}
-          onRunCalculation={() => void handleRunCalculation()}
-          onCancelDailyCalculation={handleCancelDailyCalculation}
-        />
+        {calculationControlsNode}
         {/* No visible Instant/Daily toggle: the Leaflet homepage does not
             expose one either (mode is driven by localStorage, deep-link query
-            params, and cache-focus selection). Keeping `mode` state for the
-            handleRunCalculation branching but the user changes it via those
-            channels, not via a button. */}
-        <ProgressStatus
-          mode={mode}
-          dailyProgress={dailyProgress}
-          instantProgress={instantProgress}
-          formatDuration={formatDuration}
-        />
-        <LayerFilters
-          overlayMode={overlayMode}
-          showTerrain={showTerrain}
-          showPlaces={showPlaces}
-          ignoreVegetationShadow={ignoreVegetationShadow}
-          canShowHeatmap={canShowHeatmap}
-          cacheOnly={cacheOnly}
-          forceCacheOnly={forceCacheOnly}
-          onOverlayModeChange={(value) => {
-            if (value === "heatmap") {
-              setStyleSettings((s) => ({ ...s, showSunny: false, showShadow: false }));
-              setShowHeatmap(true);
-            } else {
-              setStyleSettings((s) => ({ ...s, showSunny: true, showShadow: true }));
-              setShowHeatmap(false);
-            }
-          }}
-          onShowTerrainChange={setShowTerrain}
-          onShowPlacesChange={setShowPlaces}
-          onIgnoreVegetationShadowChange={setIgnoreVegetationShadow}
-          // DECISION: no cache-only UI in the preview yet; provide a no-op so
-          // LayerFilters' contract is satisfied. Wiring will land with the
-          // admin/cache-only chunk later.
-          onCacheOnlyChange={() => {}}
-        />
-        <div className="lg:hidden">
-          <SearchPanel mapRef={mapRef} />
-        </div>
+            params, and cache-focus selection). */}
+        {progressStatusNode}
+        {layerFiltersNode}
         <FilterPanel filters={filters} onChange={setFilters} />
         <StylePanel settings={styleSettings} onChange={setStyleSettings} />
       </div>
@@ -953,6 +1063,81 @@ export function MapLibrePreviewClient() {
           ← Retour à la carte Leaflet
         </a>
       </div>
+
+      {/* ── Mobile UX stack (lg:hidden) ──────────────────────────────────── */}
+      <FloatingSearch
+        isOpen={isSearchOpen}
+        query={searchQuery}
+        isLoading={isSearchLoading}
+        error={searchError}
+        onOpen={handleOpenSearch}
+        onClose={() => setIsSearchOpen(false)}
+        onQueryChange={setSearchQuery}
+        onSubmit={() => void handleSubmitSearch()}
+      />
+      {isSearchOpen ? (
+        <div
+          className="pointer-events-auto absolute inset-x-0 top-0 z-[600] lg:hidden"
+          data-mobile-search-root
+        >
+          <PlaceSuggestionsDropdown
+            query={searchQuery}
+            onSelect={handleSelectSuggestion}
+            variant="floating"
+            closeSignal={suggestionsCloseSignal}
+          />
+        </div>
+      ) : null}
+
+      <div className="lg:hidden">
+        <MobileBottomSheet
+          state={bottomSheetState}
+          venueCount={sunlitPlaces.length}
+          // DECISION: pass the timeline slider as the bottom-sheet timeline.
+          // The preview's existing sunlight slider (the absolute bar at the
+          // bottom of the map) stays in place for desktop; the mobile sheet
+          // gets its own inline copy here. We keep it minimal: range + label.
+          timeline={
+            timelineFrames.length > 1 ? (
+              <div className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="range"
+                  min={0}
+                  max={timelineFrames.length - 1}
+                  value={frameIndex}
+                  onChange={(e) => setFrameIndex(Number(e.target.value))}
+                  className="flex-1"
+                />
+                <span className="w-12 text-center font-mono">
+                  {timelineFrames[frameIndex]?.localTime ?? "--:--"}
+                </span>
+              </div>
+            ) : null
+          }
+          controls={
+            <div className="grid gap-3">
+              {calculationControlsNode}
+              {progressStatusNode}
+            </div>
+          }
+          filters={layerFiltersNode}
+          // DECISION: DailyCoverage is not ported in this chunk — pass null.
+          coverage={null}
+          onStateChange={setBottomSheetState}
+          onOpenBars={() => setIsMobileBarsOpen(true)}
+        />
+      </div>
+
+      <MobileBarsView
+        open={isMobileBarsOpen}
+        places={sunlitPlaces}
+        isLoading={false}
+        mode={mode}
+        localTime={localTime}
+        selectedVenueId={selectedVenueId}
+        onClose={() => setIsMobileBarsOpen(false)}
+        onSelectVenue={handleSelectVenue}
+      />
 
       {selectedPlace ? (
         <PlaceDetailCard
