@@ -25,6 +25,11 @@ export interface FetchTimelineOptions {
   onResult: (result: TimelineResult) => void;
   onError?: (err: unknown) => void;
   onLoadingChange?: (loading: boolean) => void;
+  /** Progress signal for an external timeline progress bar:
+   *  - `number` 0..100 → determinate.
+   *  - `null` → indeterminate (start received but no total announced).
+   *  - `undefined` → idle (cleared at fetch end). */
+  onProgress?: (value: number | null | undefined) => void;
 }
 
 /**
@@ -34,7 +39,7 @@ export interface FetchTimelineOptions {
  * skipped when the signal is aborted.
  */
 export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
-  const { map, date, signal, onResult, onError, onLoadingChange } = opts;
+  const { map, date, signal, onResult, onError, onLoadingChange, onProgress } = opts;
   onLoadingChange?.(true);
   const bounds = map.getBounds();
   const bbox = {
@@ -130,6 +135,13 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
             console.log(
               `[timeline] start event: server announces totalTiles=${totalAnnounced}, pre-seeded ${seededFromCache} from cache`,
             );
+            // Cached tiles are already in `collected` — count them as
+            // "progress so far" against the announced total.
+            if (totalAnnounced > 0) {
+              onProgress?.((collected.length / totalAnnounced) * 100);
+            } else {
+              onProgress?.(null);
+            }
           } else if (eventType === "tile") {
             const tile = payload as unknown as TimelineTile & {
               masksEncoding?: string;
@@ -162,6 +174,9 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
               }
               collected.push(tile);
             }
+            if (totalAnnounced > 0) {
+              onProgress?.((collected.length / totalAnnounced) * 100);
+            }
           } else if (eventType === "done") {
             await Promise.all(pendingDecodes);
             if (signal?.aborted) return;
@@ -171,6 +186,7 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
               `[timeline] done: collected=${collected.length} (seededFromCache=${seededFromCache} + freshDecoded=${freshDecoded} + cacheHitDuringStream=${cacheHitDuringStream}) | server announced totalTiles=${totalAnnounced} excludeRequested=${cachedIdsInBbox.length}`,
             );
             onResult({ tiles: collected, frames });
+            onProgress?.(undefined);
             onLoadingChange?.(false);
           } else if (eventType === "error") {
             // Defensive fallback: if the server errored before emitting a
@@ -186,11 +202,13 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
                   `[timeline] error event fallback: server said no tiles but we have ${collected.length} cached in bbox — rendering those.`,
                 );
                 onResult({ tiles: collected, frames });
+                onProgress?.(undefined);
                 onLoadingChange?.(false);
                 continue;
               }
             }
             onError?.(payload);
+            onProgress?.(undefined);
             onLoadingChange?.(false);
           }
         } catch (parseErr) {
@@ -201,6 +219,7 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") return;
     onError?.(err);
+    onProgress?.(undefined);
     onLoadingChange?.(false);
   }
 }

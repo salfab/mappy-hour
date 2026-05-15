@@ -11,6 +11,7 @@ import {
   DailyCoverage,
   LayerFilters,
   ProgressStatus,
+  TimeSlider,
   ViewTabs,
   type AreaMode,
   type MapPanelTab,
@@ -273,6 +274,12 @@ export function MapLibrePreviewClient() {
   const [frameIndex, setFrameIndex] = useState(0);
   const [timelineFrames, setTimelineFrames] = useState<Array<{ localTime: string }>>([]);
   const [sunlightLoading, setSunlightLoading] = useState(false);
+  // Timeline fetch progress, fed by fetchTimeline.onProgress:
+  //   number 0..100 → determinate (% tiles received), drives the TimeSlider fill.
+  //   null → indeterminate (start seen but no total).
+  //   undefined → idle (no fetch in flight, slider full amber).
+  const [timelineFetchProgress, setTimelineFetchProgress] =
+    useState<number | null | undefined>(undefined);
   const [styleSettings, setStyleSettings] =
     useState<SunlightStyleSettings>(DEFAULT_STYLE_SETTINGS);
   const showSunny = styleSettings.showSunny;
@@ -922,6 +929,7 @@ export function MapLibrePreviewClient() {
         date: atDate,
         signal: abort.signal,
         onLoadingChange: setSunlightLoading,
+        onProgress: setTimelineFetchProgress,
         onError: (err) => console.warn("[maplibre-preview] timeline:", err),
         onResult: ({ tiles, frames }) => {
           // Preserve the user's current slider position when a new fetch
@@ -1462,22 +1470,18 @@ export function MapLibrePreviewClient() {
         </button>
 
         {timelineFrames.length > 1 && (
-          <>
-            <input
-              type="range"
-              min={0}
-              max={timelineFrames.length - 1}
-              value={frameIndex}
-              onChange={(e) => setFrameIndex(Number(e.target.value))}
-              style={{ width: "140px" }}
+          <div className="min-w-[200px] flex-1">
+            <TimeSlider
+              mode="daily"
+              frameIndex={frameIndex}
+              frameCount={timelineFrames.length}
+              activeFrameTime={timelineFrames[frameIndex]?.localTime ?? null}
+              computeProgress={timelineFetchProgress}
+              disabled={sunlightLoading && timelineFetchProgress === undefined}
+              onFrameIndexChange={setFrameIndex}
             />
-            <span className="w-12 text-center">
-              {timelineFrames[frameIndex]?.localTime ?? "--:--"}
-            </span>
-          </>
+          </div>
         )}
-
-        {sunlightLoading && <span className="text-gray-500">chargement…</span>}
       </div>
 
       {/* Phase tag (bottom-right). */}
@@ -1520,25 +1524,17 @@ export function MapLibrePreviewClient() {
         <MobileBottomSheet
           state={bottomSheetState}
           venueCount={sunlitPlaces.length}
-          // DECISION: pass the timeline slider as the bottom-sheet timeline.
-          // The preview's existing sunlight slider (the absolute bar at the
-          // bottom of the map) stays in place for desktop; the mobile sheet
-          // gets its own inline copy here. We keep it minimal: range + label.
           timeline={
             timelineFrames.length > 1 ? (
-              <div className="flex items-center gap-2 text-sm text-slate-700">
-                <input
-                  type="range"
-                  min={0}
-                  max={timelineFrames.length - 1}
-                  value={frameIndex}
-                  onChange={(e) => setFrameIndex(Number(e.target.value))}
-                  className="flex-1"
-                />
-                <span className="w-12 text-center font-mono">
-                  {timelineFrames[frameIndex]?.localTime ?? "--:--"}
-                </span>
-              </div>
+              <TimeSlider
+                mode="daily"
+                frameIndex={frameIndex}
+                frameCount={timelineFrames.length}
+                activeFrameTime={timelineFrames[frameIndex]?.localTime ?? null}
+                computeProgress={timelineFetchProgress}
+                disabled={sunlightLoading && timelineFetchProgress === undefined}
+                onFrameIndexChange={setFrameIndex}
+              />
             ) : null
           }
           controls={
