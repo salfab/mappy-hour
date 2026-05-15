@@ -170,19 +170,20 @@ function OverlaySelector(props: OverlaySelectorProps) {
   );
 }
 
-function formatDisplayDate(date: string): string {
+function formatDisplayDate(date: string): { weekday: string; dayMonth: string } | null {
   const [year, month, day] = date.split("-").map(Number);
   if (!year || !month || !day) {
-    return "Choisir un jour";
+    return null;
   }
 
-  const formatted = new Intl.DateTimeFormat("fr-CH", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-  }).format(new Date(year, month - 1, day));
+  const local = new Date(year, month - 1, day);
+  const weekday = new Intl.DateTimeFormat("fr-CH", { weekday: "long" }).format(local);
+  const dayMonth = new Intl.DateTimeFormat("fr-CH", { day: "numeric", month: "long" }).format(local);
 
-  return formatted.charAt(0).toUpperCase() + formatted.slice(1);
+  return {
+    weekday: weekday.charAt(0).toUpperCase() + weekday.slice(1),
+    dayMonth,
+  };
 }
 
 export function DaySelector(props: {
@@ -211,24 +212,32 @@ export function DaySelector(props: {
       <span className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-amber-100 text-amber-500">
         <SunIcon className="h-8 w-8" />
       </span>
-      <span className="grid min-w-0 gap-0.5">
-        <span className="text-sm font-medium text-slate-500">Jour</span>
-        <span className="flex min-w-0 items-center gap-2 text-base font-semibold leading-tight text-slate-900">
-          {/* Long French dates ("Dimanche 16 décembre" = ~22ch) don't fit on a
-              single line at either breakpoint. The user confirmed truncation
-              shows up on both:
-                - mobile (< lg): bottom-sheet header where the pastille shares
-                  the row with the Calculer button (~160 px usable).
-                - desktop (≥ lg): 280 px side panel minus icon + chevron.
-              So we wrap onto a second line on every breakpoint instead of
-              clipping with an ellipsis. text-base + leading-tight keep the
-              two-line layout from inflating the pastille height. */}
-          <span className="min-w-0 whitespace-normal break-words">
-            {formatDisplayDate(props.date)}
+      {/* Weekday acts as a small caption *replacing* a generic "Jour" label,
+          with day+month as the line that carries weight. Stacking them keeps
+          the pastille short enough not to wrap awkwardly on either breakpoint
+          (mobile bottom-sheet ~160 px, desktop 280 px side panel). */}
+      {(() => {
+        const parts = formatDisplayDate(props.date);
+        if (!parts) {
+          return (
+            <span className="flex min-w-0 flex-1 items-center gap-2 text-base font-semibold leading-tight text-slate-900">
+              <span className="min-w-0 whitespace-normal break-words">Choisir un jour</span>
+              <ChevronDownIcon className="h-5 w-5 shrink-0 text-slate-500" />
+            </span>
+          );
+        }
+        return (
+          <span className="grid min-w-0 flex-1 gap-0.5">
+            <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              {parts.weekday}
+            </span>
+            <span className="flex min-w-0 items-center gap-2 text-base font-semibold leading-tight text-slate-900">
+              <span className="min-w-0 whitespace-normal break-words">{parts.dayMonth}</span>
+              <ChevronDownIcon className="h-5 w-5 shrink-0 text-slate-500" />
+            </span>
           </span>
-          <ChevronDownIcon className="h-5 w-5 shrink-0 text-slate-500" />
-        </span>
-      </span>
+        );
+      })()}
       <input
         type="date"
         value={props.date}
