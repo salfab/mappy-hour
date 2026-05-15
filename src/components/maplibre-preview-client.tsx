@@ -1322,6 +1322,18 @@ export function MapLibrePreviewClient() {
     sunlightLayerRef.current?.setIgnoreVegetationShadow(ignoreVegetationShadow);
   }, [ignoreVegetationShadow]);
 
+  // Show/hide the venue markers (cluster bubbles, individual dots, labels)
+  // when the user toggles "Terrasses". Mirrors the Leaflet client where
+  // `showPlaces=false` disposes the PlacesViewportOverlay entirely.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const visibility = showPlaces ? "visible" : "none";
+    for (const id of ["cluster-circles", "cluster-counts", "places-dots", "places-labels"]) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", visibility);
+    }
+  }, [ready, showPlaces]);
+
   // Push accumulated instant-mode points into the GeoJSON source on every
   // partial/start/done. Cheap: setData is O(features) once per batch.
   useEffect(() => {
