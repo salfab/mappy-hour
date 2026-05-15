@@ -387,13 +387,15 @@ export function buildVulkanFocusCapsule(
     zoneObstacles = filterObstaclesForZone(obstacles, focusBounds, margin);
     zoneObstaclesCache.set(zoneKey, zoneObstacles);
   }
-  if (zoneObstacles.length === 0) {
-    return null;
-  }
   const maxBuildingHeight = zoneObstacles.reduce(
     (max, o) => Math.max(max, o.height),
     0,
   );
+  // Always return a focus update — even for empty zones — so the Rust server's
+  // focusBounds stays aligned with the tile being evaluated. Without this, tiles
+  // with 0 buildings keep the 2m×2m createEmpty bounds while vegetation rasters
+  // cover ~250m×250m, causing the GPU ray-march to operate in wrong coordinate
+  // space and hang indefinitely.
   return {
     focusBounds: {
       minX: focusBounds.minX,
