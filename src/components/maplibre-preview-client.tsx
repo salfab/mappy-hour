@@ -6,6 +6,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 import { MapLibreSunlightCustomLayer } from "@/components/sunlight-overlay/maplibre-sunlight-custom-layer";
 import { MapLibreHeatmapCustomLayer } from "@/components/sunlight-overlay/maplibre-heatmap-custom-layer";
+import { MapLibreSatellitePatchworkLayer } from "@/components/sunlight-overlay/maplibre-satellite-patchwork-layer";
 import {
   CalculationControls,
   DailyCoverage,
@@ -265,6 +266,7 @@ export function MapLibrePreviewClient() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const sunlightLayerRef = useRef<MapLibreSunlightCustomLayer | null>(null);
+  const satellitePatchworkLayerRef = useRef<MapLibreSatellitePatchworkLayer | null>(null);
   const heatmapLayerRef = useRef<MapLibreHeatmapCustomLayer | null>(null);
   const [ready, setReady] = useState(false);
   const [basemapId, setBasemapId] = useState<BaseMapId>("aquarelle");
@@ -941,6 +943,11 @@ export function MapLibrePreviewClient() {
           );
           const layer = sunlightLayerRef.current;
           if (layer) layer.setTimeline(tiles, clamped, showSunny, showShadow);
+          // Sync the satellite patchwork with the currently-loaded sunlight
+          // tile set. Only tileCorners is consumed by the patchwork layer.
+          satellitePatchworkLayerRef.current?.setLoadedTiles(
+            tiles.map((t) => ({ tileId: t.tileId, tileCorners: t.tileCorners })),
+          );
           // Rebuild the daily aggregate for the new tile set. The aggregate is
           // cached per-tile inside the layer, so subsequent slider moves do
           // not re-run this computation.
@@ -1073,6 +1080,12 @@ export function MapLibrePreviewClient() {
       addInstantPointsLayers(map);
       setReady(true);
 
+      // Insert satellite patchwork FIRST (below sunlight): basemap (aquarelle)
+      // → satellite patchwork → sunlight → heatmap → cluster-circles → places.
+      const satellitePatchworkLayer = new MapLibreSatellitePatchworkLayer(map);
+      map.addLayer(satellitePatchworkLayer, "cluster-circles");
+      satellitePatchworkLayerRef.current = satellitePatchworkLayer;
+
       const sunlightLayer = new MapLibreSunlightCustomLayer(map);
       map.addLayer(sunlightLayer, "cluster-circles");
       sunlightLayerRef.current = sunlightLayer;
@@ -1132,6 +1145,11 @@ export function MapLibrePreviewClient() {
       // points overlay. Data + visibility are re-applied by the dedicated
       // effects below (they re-run on `ready`/`lastResult`/toggle changes).
       addInstantPointsLayers(map);
+      const sp = satellitePatchworkLayerRef.current;
+      if (sp) {
+        if (map.getLayer(sp.id)) map.removeLayer(sp.id);
+        map.addLayer(sp, "cluster-circles");
+      }
       const sl = sunlightLayerRef.current;
       if (sl) {
         // MapLibre keeps the custom layer reference across setStyle but does
@@ -1164,6 +1182,8 @@ export function MapLibrePreviewClient() {
       map.remove();
       sunlightLayerRef.current?.dispose();
       sunlightLayerRef.current = null;
+      satellitePatchworkLayerRef.current?.dispose();
+      satellitePatchworkLayerRef.current = null;
       heatmapLayerRef.current?.dispose();
       heatmapLayerRef.current = null;
       mapRef.current = null;
