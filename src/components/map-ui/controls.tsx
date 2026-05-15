@@ -213,8 +213,15 @@ export function DaySelector(props: {
       </span>
       <span className="grid min-w-0 gap-0.5">
         <span className="text-sm font-medium text-slate-500">Jour</span>
-        <span className="flex min-w-0 items-center gap-2 text-lg font-semibold text-slate-900">
-          <span className="truncate">{formatDisplayDate(props.date)}</span>
+        <span className="flex min-w-0 items-center gap-2 text-base font-semibold leading-tight text-slate-900">
+          {/* Long labels like "Dimanche 16 décembre" don't fit on a single line:
+              neither in the mobile bottom-sheet header (where the pastille shares
+              the row with the Calculer button) nor in the 280 px desktop side
+              panel. Wrap onto two lines on both breakpoints instead of clipping
+              with an ellipsis. */}
+          <span className="min-w-0 whitespace-normal break-words">
+            {formatDisplayDate(props.date)}
+          </span>
           <ChevronDownIcon className="h-5 w-5 shrink-0 text-slate-500" />
         </span>
       </span>
