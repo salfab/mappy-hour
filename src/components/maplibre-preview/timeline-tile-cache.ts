@@ -75,6 +75,58 @@ export function clearTileCache(): void {
   store.clear();
 }
 
+/**
+ * Returns `true` when every point of `bbox` falls inside at least one cached
+ * tile's bounding rectangle for the given `date`. Used by `fetchTimeline` to
+ * short-circuit the SSE call entirely when the LRU already holds everything
+ * needed.
+ *
+ * Coverage is approximated by sampling `bbox` at a `samples+1` × `samples+1`
+ * grid (default 8 → 81 points). False positives (declares covered when a tiny
+ * gap exists) require all samples to miss the gap — unlikely on 250 m tiles.
+ * False negatives just fall back to the regular SSE call.
+ */
+export function isBboxCoveredByCache(
+  date: string,
+  bbox: Bbox,
+  samples = 8,
+): boolean {
+  const prefix = `${date}|`;
+  const rects: Array<{
+    minLon: number; maxLon: number; minLat: number; maxLat: number;
+  }> = [];
+  for (const [key, v] of store) {
+    if (!key.startsWith(prefix)) continue;
+    const c = v.tileCorners;
+    const minLon = Math.min(c.nw.lon, c.sw.lon);
+    const maxLon = Math.max(c.ne.lon, c.se.lon);
+    const minLat = Math.min(c.sw.lat, c.se.lat);
+    const maxLat = Math.max(c.nw.lat, c.ne.lat);
+    if (maxLon < bbox.minLon || minLon > bbox.maxLon) continue;
+    if (maxLat < bbox.minLat || minLat > bbox.maxLat) continue;
+    rects.push({ minLon, maxLon, minLat, maxLat });
+  }
+  if (rects.length === 0) return false;
+
+  const stepLon = (bbox.maxLon - bbox.minLon) / samples;
+  const stepLat = (bbox.maxLat - bbox.minLat) / samples;
+  for (let i = 0; i <= samples; i++) {
+    const lon = bbox.minLon + i * stepLon;
+    for (let j = 0; j <= samples; j++) {
+      const lat = bbox.minLat + j * stepLat;
+      let inside = false;
+      for (const r of rects) {
+        if (lon >= r.minLon && lon <= r.maxLon && lat >= r.minLat && lat <= r.maxLat) {
+          inside = true;
+          break;
+        }
+      }
+      if (!inside) return false;
+    }
+  }
+  return true;
+}
+
 /** Debug snapshot — exposed on `window.__tileCache` for console inspection. */
 export function inspectTileCache(): {
   size: number;

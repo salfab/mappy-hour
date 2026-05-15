@@ -4,6 +4,7 @@ import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
 import {
   getCachedTile,
   getCachedTileIdsInBbox,
+  isBboxCoveredByCache,
   putCachedTile,
 } from "./timeline-tile-cache";
 import { encodeCompactTileIds } from "@/lib/encoding/tile-id-compact";
@@ -52,9 +53,37 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
   // the requested bbox. The server skips them; we'll inject the cached
   // versions ourselves into the result.
   const cachedIdsInBbox = getCachedTileIdsInBbox(date, bbox, MAX_EXCLUDE_TILE_IDS);
+  const fullyCovered = cachedIdsInBbox.length > 0 && isBboxCoveredByCache(date, bbox);
   console.log(
-    `[timeline] fetch start date=${date} bbox=${bbox.minLon.toFixed(4)},${bbox.minLat.toFixed(4)},${bbox.maxLon.toFixed(4)},${bbox.maxLat.toFixed(4)} cachedInBbox=${cachedIdsInBbox.length}`,
+    `[timeline] fetch start date=${date} bbox=${bbox.minLon.toFixed(4)},${bbox.minLat.toFixed(4)},${bbox.maxLon.toFixed(4)},${bbox.maxLat.toFixed(4)} cachedInBbox=${cachedIdsInBbox.length} fullyCovered=${fullyCovered}`,
   );
+
+  // Optimistic render: pop the cached tiles to the layer IMMEDIATELY so the
+  // user sees the overlay without waiting for the network. If the bbox is
+  // fully covered we can even skip the SSE call entirely.
+  if (cachedIdsInBbox.length > 0) {
+    const cachedTiles: TimelineTile[] = [];
+    for (const id of cachedIdsInBbox) {
+      const cached = getCachedTile(date, id);
+      if (cached) cachedTiles.push(cached);
+    }
+    if (cachedTiles.length > 0) {
+      const frames =
+        cachedTiles[0].frames?.map((f) => ({ localTime: f.localTime })) ?? [];
+      onResult({ tiles: cachedTiles, frames });
+      onProgress?.(
+        fullyCovered ? undefined : 0,
+      );
+    }
+  }
+
+  if (fullyCovered) {
+    console.log("[timeline] bbox fully covered by LRU — skipping SSE round-trip.");
+    onLoadingChange?.(false);
+    onProgress?.(undefined);
+    return;
+  }
+
   const params = new URLSearchParams({
     minLon: String(bbox.minLon),
     minLat: String(bbox.minLat),
