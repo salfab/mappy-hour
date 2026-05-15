@@ -132,6 +132,27 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
       }
     };
 
+    // Incremental flush: after each fresh tile decodes we push the growing
+    // `collected` to the layer so the user sees tiles appear in real time.
+    // requestAnimationFrame-throttle to ~16 ms so a burst of decodes
+    // landing together only flushes once per frame.
+    let flushScheduled = false;
+    const scheduleIncrementalFlush = () => {
+      if (flushScheduled || signal?.aborted) return;
+      flushScheduled = true;
+      const flushAt = typeof requestAnimationFrame !== "undefined"
+        ? requestAnimationFrame
+        : ((cb: () => void) => setTimeout(cb, 16));
+      flushAt(() => {
+        flushScheduled = false;
+        if (signal?.aborted) return;
+        if (collected.length === 0) return;
+        const frames =
+          collected[0].frames?.map((f) => ({ localTime: f.localTime })) ?? [];
+        onResult({ tiles: [...collected], frames });
+      });
+    };
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -197,6 +218,9 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
                   decodeTileMasksBlob(tile.masksBase64, maskBytes, frameCount).then((decoded) => {
                     tile.decodedMasks = decoded;
                     putCachedTile(date, tile);
+                    // Now that this fresh tile has its masks, push the
+                    // growing set to the layer so it appears progressively.
+                    scheduleIncrementalFlush();
                   }),
                 );
                 freshDecoded++;
