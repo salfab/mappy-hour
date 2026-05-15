@@ -195,8 +195,15 @@ uniform highp vec2  u_megaTexSize;  // (maxW, maxH) — size of the mega-texture
 in vec2 a_localPos;
 
 // Per-instance attributes (divisor = 1).
-in vec2  a_tileNwMerc;   // NW corner of the tile in Mercator [0,1]
-in vec2  a_tileSeMerc;   // SE corner of the tile in Mercator [0,1]
+// All 4 corners are carried independently. The tiles come from an LV95 (Swiss)
+// grid and are TRAPEZOIDAL in WGS84/Mercator (lat differs along the top edge
+// of a tile from west to east). Storing only NW + SE and reconstructing the
+// other two corners would shift NE and SW by ~2.7 m, opening a visible
+// unpainted band between neighbouring tiles.
+in vec2  a_tileNwMerc;   // NW corner in Mercator [0,1]
+in vec2  a_tileNeMerc;   // NE corner in Mercator [0,1]
+in vec2  a_tileSwMerc;   // SW corner in Mercator [0,1]
+in vec2  a_tileSeMerc;   // SE corner in Mercator [0,1]
 in vec2  a_texScale;     // (tileW/maxW, tileH/maxH) — populated subrect of slice
 in float a_tileDirFrac;  // precomputed hatch cycle offset at the NW corner
 in float a_baseLayer;    // starting slice in the mega-texture for this tile
@@ -210,8 +217,16 @@ flat out int    v_baseLayer;
 
 void main() {
   // localPos: (0,0) = NW, (1,1) = SE. UV convention matches the legacy
-  // buildQuadVertices(): nw→uv(0,1), sw→uv(0,0). So v = 1 - localPos.y.
-  vec2 merc = mix(a_tileNwMerc, a_tileSeMerc, a_localPos);
+  // buildQuadVertices(): nw=>uv(0,1), sw=>uv(0,0). So v = 1 - localPos.y.
+  //
+  // The 4 corners are stored independently because the tile is trapezoidal
+  // (LV95 grid -> WGS84). Each vertex picks the matching raw corner —
+  // no arithmetic, so adjacent tiles agree exactly on every shared edge.
+  bool east  = a_localPos.x > 0.5;
+  bool south = a_localPos.y > 0.5;
+  vec2 merc = south
+    ? (east ? a_tileSeMerc : a_tileSwMerc)
+    : (east ? a_tileNeMerc : a_tileNwMerc);
   gl_Position = u_matrix * vec4(merc * u_worldSize, 0.0, 1.0);
 
   // Texture coordinate at the CENTER of the populated texels — emulates
@@ -346,6 +361,13 @@ interface TileCPUState {
   frameCount: number;
   /** Mercator NW corner (x, y). */
   nwMerc: { x: number; y: number };
+  /** Mercator NE corner (x, y). The LV95-aligned tile grid produces
+   *  trapezoidal quads in lat/lon, so all 4 corners must be carried
+   *  independently — reconstructing NE/SW from NW/SE alone would shift
+   *  them ~2.5 m and leave visible bands between neighbouring tiles. */
+  neMerc: { x: number; y: number };
+  /** Mercator SW corner (x, y). */
+  swMerc: { x: number; y: number };
   /** Mercator SE corner (x, y). */
   seMerc: { x: number; y: number };
   /** Starting slice inside the mega-texture. Assigned at re-pack time. */
@@ -357,12 +379,14 @@ interface TileCPUState {
 }
 
 // Per-instance attribute layout (interleaved array-of-structs):
-//   [0..1] iTileNwMerc.xy
-//   [2..3] iTileSeMerc.xy
-//   [4..5] iTexScale.xy
-//   [6]    iTileDirFrac
-//   [7]    iBaseLayer
-const INSTANCE_FLOATS = 8;
+//   [0..1]   iTileNwMerc.xy
+//   [2..3]   iTileNeMerc.xy
+//   [4..5]   iTileSwMerc.xy
+//   [6..7]   iTileSeMerc.xy
+//   [8..9]   iTexScale.xy
+//   [10]     iTileDirFrac
+//   [11]     iBaseLayer
+const INSTANCE_FLOATS = 12;
 const INSTANCE_STRIDE = INSTANCE_FLOATS * 4;
 
 // ── Public class ──────────────────────────────────────────────────────────────
@@ -392,6 +416,8 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
   // Attribute locations (cached after linking).
   private aLocalPos = -1;
   private aTileNwMerc = -1;
+  private aTileNeMerc = -1;
+  private aTileSwMerc = -1;
   private aTileSeMerc = -1;
   private aTexScale = -1;
   private aTileDirFrac = -1;
@@ -458,6 +484,8 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     const p = this.program;
     this.aLocalPos    = gl.getAttribLocation(p, "a_localPos");
     this.aTileNwMerc  = gl.getAttribLocation(p, "a_tileNwMerc");
+    this.aTileNeMerc  = gl.getAttribLocation(p, "a_tileNeMerc");
+    this.aTileSwMerc  = gl.getAttribLocation(p, "a_tileSwMerc");
     this.aTileSeMerc  = gl.getAttribLocation(p, "a_tileSeMerc");
     this.aTexScale    = gl.getAttribLocation(p, "a_texScale");
     this.aTileDirFrac = gl.getAttribLocation(p, "a_tileDirFrac");
@@ -524,26 +552,34 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     gl.vertexAttribPointer(this.aLocalPos, 2, gl.FLOAT, false, 8, 0);
     gl.vertexAttribDivisor(this.aLocalPos, 0);
 
-    // Per-instance attributes (divisor = 1).
+    // Per-instance attributes (divisor = 1). Stride/offsets match INSTANCE_FLOATS.
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceVbo);
     gl.enableVertexAttribArray(this.aTileNwMerc);
     gl.vertexAttribPointer(this.aTileNwMerc, 2, gl.FLOAT, false, INSTANCE_STRIDE, 0);
     gl.vertexAttribDivisor(this.aTileNwMerc, 1);
 
+    gl.enableVertexAttribArray(this.aTileNeMerc);
+    gl.vertexAttribPointer(this.aTileNeMerc, 2, gl.FLOAT, false, INSTANCE_STRIDE, 2 * 4);
+    gl.vertexAttribDivisor(this.aTileNeMerc, 1);
+
+    gl.enableVertexAttribArray(this.aTileSwMerc);
+    gl.vertexAttribPointer(this.aTileSwMerc, 2, gl.FLOAT, false, INSTANCE_STRIDE, 4 * 4);
+    gl.vertexAttribDivisor(this.aTileSwMerc, 1);
+
     gl.enableVertexAttribArray(this.aTileSeMerc);
-    gl.vertexAttribPointer(this.aTileSeMerc, 2, gl.FLOAT, false, INSTANCE_STRIDE, 2 * 4);
+    gl.vertexAttribPointer(this.aTileSeMerc, 2, gl.FLOAT, false, INSTANCE_STRIDE, 6 * 4);
     gl.vertexAttribDivisor(this.aTileSeMerc, 1);
 
     gl.enableVertexAttribArray(this.aTexScale);
-    gl.vertexAttribPointer(this.aTexScale, 2, gl.FLOAT, false, INSTANCE_STRIDE, 4 * 4);
+    gl.vertexAttribPointer(this.aTexScale, 2, gl.FLOAT, false, INSTANCE_STRIDE, 8 * 4);
     gl.vertexAttribDivisor(this.aTexScale, 1);
 
     gl.enableVertexAttribArray(this.aTileDirFrac);
-    gl.vertexAttribPointer(this.aTileDirFrac, 1, gl.FLOAT, false, INSTANCE_STRIDE, 6 * 4);
+    gl.vertexAttribPointer(this.aTileDirFrac, 1, gl.FLOAT, false, INSTANCE_STRIDE, 10 * 4);
     gl.vertexAttribDivisor(this.aTileDirFrac, 1);
 
     gl.enableVertexAttribArray(this.aBaseLayer);
-    gl.vertexAttribPointer(this.aBaseLayer, 1, gl.FLOAT, false, INSTANCE_STRIDE, 7 * 4);
+    gl.vertexAttribPointer(this.aBaseLayer, 1, gl.FLOAT, false, INSTANCE_STRIDE, 11 * 4);
     gl.vertexAttribDivisor(this.aBaseLayer, 1);
 
     // Uniforms.
@@ -590,12 +626,16 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
 
     gl.disableVertexAttribArray(this.aLocalPos);
     gl.disableVertexAttribArray(this.aTileNwMerc);
+    gl.disableVertexAttribArray(this.aTileNeMerc);
+    gl.disableVertexAttribArray(this.aTileSwMerc);
     gl.disableVertexAttribArray(this.aTileSeMerc);
     gl.disableVertexAttribArray(this.aTexScale);
     gl.disableVertexAttribArray(this.aTileDirFrac);
     gl.disableVertexAttribArray(this.aBaseLayer);
     // Reset divisors to 0 for MapLibre's subsequent draws.
     gl.vertexAttribDivisor(this.aTileNwMerc, 0);
+    gl.vertexAttribDivisor(this.aTileNeMerc, 0);
+    gl.vertexAttribDivisor(this.aTileSwMerc, 0);
     gl.vertexAttribDivisor(this.aTileSeMerc, 0);
     gl.vertexAttribDivisor(this.aTexScale, 0);
     gl.vertexAttribDivisor(this.aTileDirFrac, 0);
@@ -720,6 +760,8 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     );
 
     const nwMerc = toMercator(tile.tileCorners.nw);
+    const neMerc = toMercator(tile.tileCorners.ne);
+    const swMerc = toMercator(tile.tileCorners.sw);
     const seMerc = toMercator(tile.tileCorners.se);
 
     if (!existing) {
@@ -729,6 +771,8 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
         gridHeight: tile.grid.height,
         frameCount: frames.length,
         nwMerc,
+        neMerc,
+        swMerc,
         seMerc,
         baseLayer: 0, // assigned in repack()
         textureDirty: true,
@@ -741,6 +785,8 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       existing.gridHeight = tile.grid.height;
       existing.frameCount = frames.length;
       existing.nwMerc = nwMerc;
+      existing.neMerc = neMerc;
+      existing.swMerc = swMerc;
       existing.seMerc = seMerc;
       existing.decodedMasksRef = tile.decodedMasks;
       existing.textureDirty = true;
@@ -900,15 +946,19 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     for (let i = 0; i < fitted.length; i++) {
       const t = fitted[i];
       const off = i * INSTANCE_FLOATS;
-      inst[off    ] = t.nwMerc.x;
-      inst[off + 1] = t.nwMerc.y;
-      inst[off + 2] = t.seMerc.x;
-      inst[off + 3] = t.seMerc.y;
-      inst[off + 4] = this.megaW > 0 ? t.gridWidth  / this.megaW : 1;
-      inst[off + 5] = this.megaH > 0 ? t.gridHeight / this.megaH : 1;
+      inst[off     ] = t.nwMerc.x;
+      inst[off +  1] = t.nwMerc.y;
+      inst[off +  2] = t.neMerc.x;
+      inst[off +  3] = t.neMerc.y;
+      inst[off +  4] = t.swMerc.x;
+      inst[off +  5] = t.swMerc.y;
+      inst[off +  6] = t.seMerc.x;
+      inst[off +  7] = t.seMerc.y;
+      inst[off +  8] = this.megaW > 0 ? t.gridWidth  / this.megaW : 1;
+      inst[off +  9] = this.megaH > 0 ? t.gridHeight / this.megaH : 1;
       const originDir = (t.nwMerc.x * worldSize * cosA + t.nwMerc.y * worldSize * sinA) * invSpacing;
-      inst[off + 6] = originDir - Math.floor(originDir);
-      inst[off + 7] = t.baseLayer;
+      inst[off + 10] = originDir - Math.floor(originDir);
+      inst[off + 11] = t.baseLayer;
     }
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceVbo);
     gl.bufferData(gl.ARRAY_BUFFER, inst, gl.DYNAMIC_DRAW);
