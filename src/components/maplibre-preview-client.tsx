@@ -38,6 +38,11 @@ import {
   MAP_MAX_ZOOM,
 } from "@/components/maplibre-preview/map-view-storage";
 import {
+  loadStoredUiParams,
+  persistUiParams,
+} from "@/components/sunlight-map/stored-map-view";
+import { isBaseMapStyle, type BaseMapStyle } from "@/components/sunlight-map/types";
+import {
   addPlacesLayers,
   attachPlacesInteractions,
   placesToFeatureCollection,
@@ -63,6 +68,101 @@ import {
 
 const DEFAULT_CENTER: [number, number] = [6.6323, 46.5197];
 const DEFAULT_ZOOM = 17;
+
+// Deep-link query keys — kept verbatim in sync with sunlight-map-client.tsx so
+// the same URL works on both the Leaflet homepage and the MapLibre preview.
+const DEEP_LINK_QUERY_KEYS = {
+  mode: "mode",
+  date: "date",
+  baseMapStyle: "basemap",
+  ignoreVegetationShadow: "ignoreVegetation",
+  showSunny: "showSunny",
+  showShadow: "showShadow",
+  showBuildings: "showBuildings",
+  showTerrain: "showTerrain",
+  showVegetation: "showVegetation",
+  showHeatmap: "showHeatmap",
+  showPlaces: "showPlaces",
+} as const;
+
+interface DeepLinkParams {
+  mode?: AreaMode;
+  date?: string;
+  baseMapStyle?: BaseMapStyle;
+  ignoreVegetationShadow?: boolean;
+  showSunny?: boolean;
+  showShadow?: boolean;
+  showBuildings?: boolean;
+  showTerrain?: boolean;
+  showVegetation?: boolean;
+  showHeatmap?: boolean;
+  showPlaces?: boolean;
+}
+
+function parseQueryBoolean(value: string | null): boolean | null {
+  if (!value) return null;
+  const n = value.trim().toLowerCase();
+  if (n === "1" || n === "true" || n === "yes" || n === "on") return true;
+  if (n === "0" || n === "false" || n === "no" || n === "off") return false;
+  return null;
+}
+
+function parseDeepLinkParams(sp: URLSearchParams): DeepLinkParams | null {
+  const parsed: DeepLinkParams = {};
+  let hasValue = false;
+
+  const mode = sp.get(DEEP_LINK_QUERY_KEYS.mode);
+  if (mode === "instant" || mode === "daily") {
+    parsed.mode = mode;
+    hasValue = true;
+  }
+
+  const date = sp.get(DEEP_LINK_QUERY_KEYS.date);
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    parsed.date = date;
+    hasValue = true;
+  }
+
+  const baseMapStyle = sp.get(DEEP_LINK_QUERY_KEYS.baseMapStyle);
+  if (baseMapStyle === "map") {
+    parsed.baseMapStyle = "osm";
+    hasValue = true;
+  } else if (isBaseMapStyle(baseMapStyle)) {
+    parsed.baseMapStyle = baseMapStyle;
+    hasValue = true;
+  }
+
+  const booleanMappings: Array<[keyof DeepLinkParams, string]> = [
+    ["ignoreVegetationShadow", DEEP_LINK_QUERY_KEYS.ignoreVegetationShadow],
+    ["showSunny", DEEP_LINK_QUERY_KEYS.showSunny],
+    ["showShadow", DEEP_LINK_QUERY_KEYS.showShadow],
+    ["showBuildings", DEEP_LINK_QUERY_KEYS.showBuildings],
+    ["showTerrain", DEEP_LINK_QUERY_KEYS.showTerrain],
+    ["showVegetation", DEEP_LINK_QUERY_KEYS.showVegetation],
+    ["showHeatmap", DEEP_LINK_QUERY_KEYS.showHeatmap],
+    ["showPlaces", DEEP_LINK_QUERY_KEYS.showPlaces],
+  ];
+  for (const [targetKey, queryKey] of booleanMappings) {
+    const b = parseQueryBoolean(sp.get(queryKey));
+    if (b !== null) {
+      (parsed[targetKey] as boolean | undefined) = b;
+      hasValue = true;
+    }
+  }
+
+  return hasValue ? parsed : null;
+}
+
+// DECISION: BaseMapStyle ("stamen-watercolor") is the canonical homepage type
+// and what we store in localStorage so the Leaflet client + MapLibre preview
+// stay in sync across tabs. The preview internally indexes basemaps by
+// BaseMapId, so we map at the I/O boundary.
+function baseMapStyleToBaseMapId(style: BaseMapStyle): BaseMapId {
+  return style === "stamen-watercolor" ? "aquarelle" : style;
+}
+function baseMapIdToBaseMapStyle(id: BaseMapId): BaseMapStyle {
+  return id === "aquarelle" ? "stamen-watercolor" : id;
+}
 
 // Maps an OSM subcategory (cuisine/amenity) to the coarse VenueType bucket
 // used by VenueCard for its label + icon. Anything we don't recognise falls
@@ -145,6 +245,13 @@ export function MapLibrePreviewClient() {
   const filtersRef = useRef(filters);
   useEffect(() => { filtersRef.current = filters; }, [filters]);
 
+  // ── UI params hydration flag (gates persistUiParams to avoid clobbering
+  //    localStorage with default state before load happens). ─────────────────
+  const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
+  // One-shot basemap swap latch — declared early so the mount-only deep-link
+  // effect (below) can lock it before the auto-swap effect runs.
+  const autoBasemapDone = useRef(false);
+
   // ── Calculation state (ported from Leaflet client) ────────────────────────
   // DECISION: instant mode rendering of points is intentionally NOT ported
   // (scope). We only consume SSE progress events; the timeline overlay refreshes
@@ -214,6 +321,106 @@ export function MapLibrePreviewClient() {
   const [bottomSheetState, setBottomSheetState] =
     useState<BottomSheetState>("middle");
   const [isMobileBarsOpen, setIsMobileBarsOpen] = useState(false);
+
+  // ── Restore UI params from localStorage + deep-link URL (mount-only) ──────
+  // DECISION: single mount-only effect, mirrors Leaflet client. Order matches
+  // the homepage: localStorage first, then deep-link query overrides. Fields
+  // hardcoded in preview (localTime, dailyStart/End, gridStepMeters,
+  // sampleEveryMinutes, buildingHeightBiasMeters) are intentionally ignored.
+  useEffect(() => {
+    const stored = loadStoredUiParams();
+    if (stored) {
+      setMode(stored.mode);
+      setDate(stored.date);
+      setBasemapId(baseMapStyleToBaseMapId(stored.baseMapStyle));
+      setIgnoreVegetationShadow(stored.ignoreVegetationShadow);
+      setStyleSettings((s) => ({
+        ...s,
+        showSunny: stored.showSunny,
+        showShadow: stored.showShadow,
+      }));
+      setShowBuildings(stored.showBuildings);
+      setShowTerrain(stored.showTerrain);
+      setShowVegetation(stored.showVegetation);
+      setShowHeatmap(stored.showHeatmap);
+      setShowPlaces(stored.showPlaces);
+    }
+
+    const deepLink =
+      typeof window !== "undefined"
+        ? parseDeepLinkParams(new URLSearchParams(window.location.search))
+        : null;
+    if (deepLink) {
+      if (deepLink.mode) setMode(deepLink.mode);
+      if (deepLink.date) setDate(deepLink.date);
+      if (deepLink.baseMapStyle) {
+        setBasemapId(baseMapStyleToBaseMapId(deepLink.baseMapStyle));
+        // Manual selection locks the one-shot auto-swap so the late
+        // sunlight-loaded event can't override the deep-link choice.
+        autoBasemapDone.current = true;
+      }
+      if (typeof deepLink.ignoreVegetationShadow === "boolean") {
+        setIgnoreVegetationShadow(deepLink.ignoreVegetationShadow);
+      }
+      if (typeof deepLink.showSunny === "boolean" || typeof deepLink.showShadow === "boolean") {
+        setStyleSettings((s) => ({
+          ...s,
+          ...(typeof deepLink.showSunny === "boolean" ? { showSunny: deepLink.showSunny } : null),
+          ...(typeof deepLink.showShadow === "boolean" ? { showShadow: deepLink.showShadow } : null),
+        }));
+      }
+      if (typeof deepLink.showBuildings === "boolean") setShowBuildings(deepLink.showBuildings);
+      if (typeof deepLink.showTerrain === "boolean") setShowTerrain(deepLink.showTerrain);
+      if (typeof deepLink.showVegetation === "boolean") setShowVegetation(deepLink.showVegetation);
+      if (typeof deepLink.showHeatmap === "boolean") setShowHeatmap(deepLink.showHeatmap);
+      if (typeof deepLink.showPlaces === "boolean") setShowPlaces(deepLink.showPlaces);
+    }
+
+    setUiParamsHydrated(true);
+    // Intentionally mount-only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist UI params on every relevant change (gated by hydration so the
+  // first render doesn't wipe stored values with defaults).
+  useEffect(() => {
+    if (!uiParamsHydrated) return;
+    persistUiParams({
+      mode,
+      date,
+      // DECISION: preview has no UI for these — persist the hardcoded values
+      // so the schema validation in loadStoredUiParams keeps accepting them.
+      // The Leaflet client will read these back unchanged.
+      localTime,
+      dailyStartLocalTime,
+      dailyEndLocalTime,
+      gridStepMeters,
+      sampleEveryMinutes,
+      buildingHeightBiasMeters,
+      baseMapStyle: baseMapIdToBaseMapStyle(basemapId),
+      ignoreVegetationShadow,
+      showSunny,
+      showShadow,
+      showBuildings,
+      showTerrain,
+      showVegetation,
+      showHeatmap,
+      showPlaces,
+    });
+  }, [
+    uiParamsHydrated,
+    mode,
+    date,
+    basemapId,
+    ignoreVegetationShadow,
+    showSunny,
+    showShadow,
+    showBuildings,
+    showTerrain,
+    showVegetation,
+    showHeatmap,
+    showPlaces,
+  ]);
 
   const timelineCalcAbortRef = useRef<AbortController | null>(null);
   const timelineCancelledRef = useRef(false);
@@ -830,7 +1037,6 @@ export function MapLibrePreviewClient() {
   // timeline is loading, then flip to Satellite once the tiles are ready.
   // Subsequent date changes / recalculations don't re-trigger the swap, and
   // the user can still manually pick another basemap.
-  const autoBasemapDone = useRef(false);
   useEffect(() => {
     if (autoBasemapDone.current) return;
     if (sunlightLoading || timelineFrames.length === 0) return;
