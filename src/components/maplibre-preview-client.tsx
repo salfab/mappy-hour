@@ -1314,6 +1314,14 @@ export function MapLibrePreviewClient() {
     if (sunlightShouldRender) layer.setFrameIndex(frameIndex, showSunny, showShadow);
   }, [sunlightVisible, frameIndex, showSunny, showShadow, showHeatmap]);
 
+  // Propagate the "ignore vegetation shadow" flag to the GPU layer so the
+  // daily rendering switches between `sun` and `sunNoVeg` masks. Mirrors the
+  // Leaflet client where `getTileMask(tile, frameIdx, ignoreVegetationShadow)`
+  // picks the appropriate base64-encoded mask.
+  useEffect(() => {
+    sunlightLayerRef.current?.setIgnoreVegetationShadow(ignoreVegetationShadow);
+  }, [ignoreVegetationShadow]);
+
   // Push accumulated instant-mode points into the GeoJSON source on every
   // partial/start/done. Cheap: setData is O(features) once per batch.
   useEffect(() => {

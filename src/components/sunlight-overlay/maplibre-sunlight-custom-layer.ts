@@ -162,13 +162,16 @@ function getTileOutdoorMask(tile: TimelineTile): Uint8Array | undefined {
 function buildLuminanceArray(
   gridWidth: number,
   gridHeight: number,
-  frames: Array<{ sun: Uint8Array }>,
+  frames: Array<{ sun: Uint8Array; sunNoVeg?: Uint8Array }>,
   outdoorMask: Uint8Array | undefined,
+  useNoVeg: boolean,
 ): Uint8Array {
   const cellsPerFrame = gridWidth * gridHeight;
   const buf = new Uint8Array(cellsPerFrame * frames.length);
   for (let f = 0; f < frames.length; f++) {
-    const sunMask = frames[f].sun;
+    // Fall back to the regular sun mask if the no-vegetation variant is
+    // unavailable for this tile (older atlases lack `sunNoVeg`).
+    const sunMask = useNoVeg && frames[f].sunNoVeg ? frames[f].sunNoVeg! : frames[f].sun;
     const base = f * cellsPerFrame;
     for (let iy = 0; iy < gridHeight; iy++) {
       for (let ix = 0; ix < gridWidth; ix++) {
@@ -376,6 +379,8 @@ interface TileCPUState {
   textureDirty: boolean;
   /** The `tile.decodedMasks` ref this `luminanceArray` was built from. */
   decodedMasksRef: TimelineTile["decodedMasks"] | null;
+  /** The `ignoreVegetationShadow` flag this `luminanceArray` was built with. */
+  useNoVegRef: boolean;
 }
 
 // Per-instance attribute layout (interleaved array-of-structs):
@@ -441,6 +446,10 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
 
   private style: SunlightStyle = { ...DEFAULT_SUNLIGHT_STYLE };
   private textureFilter: "smooth" | "pixel" = "smooth";
+  /** When true, the luminance arrays are built from `sunNoVeg` masks so the
+   *  rendered shadow ignores vegetation. Mirrors the Leaflet
+   *  `ignoreVegetationShadow` flag. */
+  private ignoreVegetationShadow = false;
 
   constructor(private readonly map: MapLibreMap) {}
 
@@ -695,6 +704,38 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     this.map.triggerRepaint();
   }
 
+  /** Toggle the "ignore vegetation shadow" rendering: when true, luminance
+   *  arrays are rebuilt from `sunNoVeg` masks. Cheap when the value does not
+   *  change; expensive (full repack) otherwise. */
+  setIgnoreVegetationShadow(value: boolean): void {
+    if (this.ignoreVegetationShadow === value) return;
+    this.ignoreVegetationShadow = value;
+    // Invalidate every tile so the next render rebuilds the luminance array
+    // from the requested mask source.
+    for (const s of this.tileStates.values()) {
+      s.useNoVegRef = !value; // force mismatch so syncTileState rebuilds
+    }
+    // Trigger a repack via setTimeline-style invalidation: we walk the
+    // existing tile states and rebuild their luminance arrays in place.
+    for (const state of this.tileStates.values()) {
+      // We can't call syncTileState here because we don't have the TimelineTile
+      // refs. Rebuild directly from the decoded masks ref we kept.
+      const decoded = state.decodedMasksRef;
+      if (!decoded) continue;
+      state.luminanceArray = buildLuminanceArray(
+        state.gridWidth,
+        state.gridHeight,
+        decoded.frames,
+        decoded.outdoor,
+        value,
+      );
+      state.useNoVegRef = value;
+      state.textureDirty = true;
+    }
+    this.needsRepack = true;
+    this.map.triggerRepaint();
+  }
+
   /**
    * Destroy GL resources only — tile CPU data is preserved so `onAdd` can
    * re-upload textures after a `setStyle` basemap swap. Called by `onRemove`.
@@ -746,8 +787,12 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
 
     const existing = this.tileStates.get(tile.tileId);
 
-    // Short-circuit: same mask reference → no work, no repack.
-    if (existing && existing.decodedMasksRef === tile.decodedMasks) {
+    // Short-circuit: same mask reference AND same useNoVeg flag → no work.
+    if (
+      existing &&
+      existing.decodedMasksRef === tile.decodedMasks &&
+      existing.useNoVegRef === this.ignoreVegetationShadow
+    ) {
       return false;
     }
 
@@ -757,6 +802,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       tile.grid.height,
       frames,
       outdoorMask,
+      this.ignoreVegetationShadow,
     );
 
     const nwMerc = toMercator(tile.tileCorners.nw);
@@ -777,6 +823,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
         baseLayer: 0, // assigned in repack()
         textureDirty: true,
         decodedMasksRef: tile.decodedMasks,
+        useNoVegRef: this.ignoreVegetationShadow,
       };
       this.tileStates.set(tile.tileId, state);
     } else {
@@ -789,6 +836,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       existing.swMerc = swMerc;
       existing.seMerc = seMerc;
       existing.decodedMasksRef = tile.decodedMasks;
+      existing.useNoVegRef = this.ignoreVegetationShadow;
       existing.textureDirty = true;
     }
     return true;
