@@ -1500,17 +1500,23 @@ export function MapLibrePreviewClient() {
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 
       {/* Desktop horizontal search banner at the top of the screen. Hidden on
-          mobile (FloatingSearch lives there). */}
-      <div className="pointer-events-auto absolute left-1/2 top-3 z-10 hidden w-[420px] -translate-x-1/2 rounded-2xl bg-white/80 p-2 shadow-md backdrop-blur lg:block">
+          mobile (FloatingSearch lives there). Glass aesthetic (translucent +
+          backdrop blur) aligned on the mobile bottom-sheet palette so the
+          desktop layout no longer feels visually heavier than mobile. */}
+      <div className="pointer-events-auto absolute left-1/2 top-3 z-10 hidden w-[420px] -translate-x-1/2 rounded-2xl border border-white/70 bg-white/70 p-2 shadow-md backdrop-blur-xl lg:block">
         <SearchPanel mapRef={mapRef} />
       </div>
 
       {/* Left control panel — date + filters. Desktop only: 280px sidebar.
           DECISION: mobile no longer renders this stack at the top; controls
           and filters live in MobileBottomSheet. The desktop panel keeps the
-          same content so the desktop layout stays identical. */}
+          same content so the desktop layout stays identical. Glass aesthetic
+          (translucent + backdrop blur) aligned on the mobile bottom-sheet
+          palette; kept slightly more opaque (/75) than the lighter panels
+          because the sidebar holds denser text and form controls that need a
+          bit more contrast against busy basemaps. */}
       <div
-        className={`pointer-events-auto absolute left-3 top-3 z-10 hidden flex-col gap-3 overflow-hidden rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur transition-[height] duration-300 ease-out lg:flex lg:right-auto lg:w-[280px] ${
+        className={`pointer-events-auto absolute left-3 top-3 z-10 hidden flex-col gap-3 overflow-hidden rounded-2xl border border-white/70 bg-white/75 p-3 shadow-md backdrop-blur-xl transition-[height] duration-300 ease-out lg:flex lg:right-auto lg:w-[280px] ${
           panelTab === "terraces"
             ? "lg:h-[calc(100dvh-24px)]"
             : "lg:h-[min(640px,calc(100dvh-24px))]"
@@ -1564,9 +1570,10 @@ export function MapLibrePreviewClient() {
 
 
       {/* Basemap switcher — top-right on desktop, hidden on mobile (rarely
-          used; could be moved to a popover later). */}
+          used; could be moved to a popover later). Glass aesthetic aligned on
+          the mobile palette. */}
       <div
-        className="absolute right-3 top-3 z-10 hidden rounded-md bg-white/95 px-2 py-2 shadow-md backdrop-blur lg:block"
+        className="absolute right-3 top-3 z-10 hidden rounded-md border border-white/70 bg-white/70 px-2 py-2 shadow-md backdrop-blur-xl lg:block"
         style={{ font: "13px system-ui, sans-serif" }}
       >
         <div className="mb-1 px-1 text-xs font-semibold text-gray-700">Basemap</div>
@@ -1604,9 +1611,12 @@ export function MapLibrePreviewClient() {
         </div>
       </div>
 
-      {/* Sunlight overlay controls (bottom). Wraps on narrow screens. */}
+      {/* Sunlight overlay controls (bottom). Wraps on narrow screens. Glass
+          aesthetic shared with the other panels; same translucency on mobile
+          and desktop so the visual language stays consistent across
+          breakpoints. */}
       <div
-        className="absolute bottom-10 left-3 right-3 z-10 mx-auto flex max-w-[calc(100%-1.5rem)] flex-wrap items-center justify-center gap-2 rounded-md bg-white/95 px-3 py-2 shadow-md backdrop-blur lg:left-1/2 lg:right-auto lg:max-w-none lg:-translate-x-1/2 lg:flex-nowrap"
+        className="absolute bottom-10 left-3 right-3 z-10 mx-auto flex max-w-[calc(100%-1.5rem)] flex-wrap items-center justify-center gap-2 rounded-md border border-white/70 bg-white/70 px-3 py-2 shadow-md backdrop-blur-xl lg:left-1/2 lg:right-auto lg:max-w-none lg:-translate-x-1/2 lg:flex-nowrap"
         style={{ font: "13px system-ui, sans-serif" }}
       >
         <button
@@ -1661,9 +1671,10 @@ export function MapLibrePreviewClient() {
         )}
       </div>
 
-      {/* Phase tag (bottom-right). */}
+      {/* Phase tag (bottom-right). Glass aesthetic aligned on the mobile
+          palette. */}
       <div
-        className="absolute bottom-3 right-3 z-10 rounded-md bg-white/95 px-3 py-2 shadow-md backdrop-blur"
+        className="absolute bottom-3 right-3 z-10 rounded-md border border-white/70 bg-white/70 px-3 py-2 shadow-md backdrop-blur-xl"
         style={{ font: "12px system-ui, sans-serif" }}
       >
         <div className="font-semibold text-gray-800">MapLibre preview</div>
