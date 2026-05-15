@@ -189,6 +189,7 @@ function buildLuminanceArray(
 const VERT_SRC = /* glsl */ `#version 300 es
 uniform mat4 u_matrix;
 uniform highp float u_worldSize;
+uniform highp vec2  u_megaTexSize;  // (maxW, maxH) — size of the mega-texture in texels
 
 // Shared vertex attribute: unit quad in [0,1]².
 in vec2 a_localPos;
@@ -201,6 +202,8 @@ in float a_tileDirFrac;  // precomputed hatch cycle offset at the NW corner
 in float a_baseLayer;    // starting slice in the mega-texture for this tile
 
 out vec2  v_texcoord;
+out vec2  v_texMin;
+out vec2  v_texMax;
 out highp vec2  v_localPx;
 out highp float v_tileDirFrac;
 flat out int    v_baseLayer;
@@ -211,9 +214,16 @@ void main() {
   vec2 merc = mix(a_tileNwMerc, a_tileSeMerc, a_localPos);
   gl_Position = u_matrix * vec4(merc * u_worldSize, 0.0, 1.0);
 
-  // Texture coordinate within the populated subrect of the mega-texture slice.
-  vec2 uv = vec2(a_localPos.x, 1.0 - a_localPos.y);
-  v_texcoord = uv * a_texScale;
+  // Texture coordinate at the CENTER of the populated texels — emulates
+  // CLAMP_TO_EDGE behavior of the legacy per-tile textures so LINEAR filtering
+  // never mixes with the zero padding past the populated subrect.
+  vec2 tileSize  = a_texScale * u_megaTexSize;            // (gridW, gridH) in texels
+  vec2 halfTexel = 0.5 / u_megaTexSize;
+  vec2 localXY   = vec2(a_localPos.x, 1.0 - a_localPos.y);
+  v_texcoord = halfTexel + localXY * (tileSize - 1.0) / u_megaTexSize;
+  // Clamp bounds for neighbor samples in the fragment shader.
+  v_texMin = halfTexel;
+  v_texMax = halfTexel + (tileSize - 1.0) / u_megaTexSize;
 
   v_localPx = (merc - a_tileNwMerc) * u_worldSize;
   v_tileDirFrac = a_tileDirFrac;
@@ -246,6 +256,8 @@ uniform float u_hatchAlpha;
 uniform highp float u_worldSize;
 
 in vec2  v_texcoord;
+in vec2  v_texMin;
+in vec2  v_texMax;
 in highp vec2  v_localPx;
 in highp float v_tileDirFrac;
 flat in int    v_baseLayer;
@@ -290,12 +302,18 @@ void main() {
   float feather = fwidth(dir) * 0.7;
   float hatchLine = 1.0 - smoothstep(halfWidthCycle, halfWidthCycle + feather, lineDist);
   vec2 texel = 1.0 / vec2(textureSize(u_texture, 0).xy);
+  // Clamp neighbor samples to the populated subrect so we don't dip into the
+  // zero padding past the tile's gridW/gridH boundary.
+  vec2 cE = clamp(v_texcoord + vec2( texel.x, 0.0), v_texMin, v_texMax);
+  vec2 cW = clamp(v_texcoord - vec2( texel.x, 0.0), v_texMin, v_texMax);
+  vec2 cS = clamp(v_texcoord + vec2( 0.0, texel.y), v_texMin, v_texMax);
+  vec2 cN = clamp(v_texcoord - vec2( 0.0, texel.y), v_texMin, v_texMax);
   float vAvg = (
     texture(u_texture, vec3(v_texcoord, layer)).r * 2.0 +
-    texture(u_texture, vec3(v_texcoord + vec2( texel.x, 0.0), layer)).r +
-    texture(u_texture, vec3(v_texcoord - vec2( texel.x, 0.0), layer)).r +
-    texture(u_texture, vec3(v_texcoord + vec2( 0.0, texel.y), layer)).r +
-    texture(u_texture, vec3(v_texcoord - vec2( 0.0, texel.y), layer)).r
+    texture(u_texture, vec3(cE, layer)).r +
+    texture(u_texture, vec3(cW, layer)).r +
+    texture(u_texture, vec3(cS, layer)).r +
+    texture(u_texture, vec3(cN, layer)).r
   ) / 6.0;
   float outdoorAvg = smoothstep(0.325 - u_alphaSoft, 0.325 + u_alphaSoft, vAvg);
   float sunAvg = smoothstep(0.675 - u_sunSoft, 0.675 + u_sunSoft, vAvg);
@@ -534,6 +552,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
 
     const worldSize = 512 * Math.pow(2, this.map.getZoom());
     gl.uniform1f(gl.getUniformLocation(p, "u_worldSize"), worldSize);
+    gl.uniform2f(gl.getUniformLocation(p, "u_megaTexSize"), this.megaW, this.megaH);
 
     gl.uniform4fv(gl.getUniformLocation(p, "u_sunny"),  this.sunnyColor);
     gl.uniform4fv(gl.getUniformLocation(p, "u_shadow"), this.shadowColor);
