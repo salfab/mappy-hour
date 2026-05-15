@@ -211,7 +211,21 @@ flat out int    v_baseLayer;
 void main() {
   // localPos: (0,0) = NW, (1,1) = SE. UV convention matches the legacy
   // buildQuadVertices(): nw→uv(0,1), sw→uv(0,0). So v = 1 - localPos.y.
-  vec2 merc = mix(a_tileNwMerc, a_tileSeMerc, a_localPos);
+  //
+  // SEAM BRIDGE — the server-side tileCorners can disagree on a shared edge
+  // by up to ~1e-7 Mercator (~3 px at zoom 17) due to independent lat/lon→
+  // Mercator rounding between adjacent tiles. We dilate each quad by a small
+  // fraction of its own span on every side; the UV stays clamped to the
+  // populated subrect so the dilated zone bleeds the edge texel value
+  // (manual CLAMP_TO_EDGE within the mega-texture slice).
+  const float EXPAND = 0.005;  // 0.5% of tile span on each side
+  vec2 tileSpan = a_tileSeMerc - a_tileNwMerc;
+  vec2 dilatedNW = a_tileNwMerc - EXPAND * tileSpan;
+  vec2 dilatedSE = a_tileSeMerc + EXPAND * tileSpan;
+  vec2 merc = vec2(
+    a_localPos.x > 0.5 ? dilatedSE.x : dilatedNW.x,
+    a_localPos.y > 0.5 ? dilatedSE.y : dilatedNW.y
+  );
   gl_Position = u_matrix * vec4(merc * u_worldSize, 0.0, 1.0);
 
   // Texture coordinate at the CENTER of the populated texels — emulates
