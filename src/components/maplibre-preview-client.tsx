@@ -517,11 +517,17 @@ export function MapLibrePreviewClient() {
 
   const handleCancelDailyCalculation = useCallback(() => {
     if (mode !== "daily") return;
+    // The daily SSE now flows through refreshTimeline / timelineAbortRef.
+    // We still null timelineCalcAbortRef defensively in case a stale
+    // controller from a pre-unification path is still lingering — harmless
+    // when it's already null.
     timelineCancelledRef.current = true;
     if (timelineCalcAbortRef.current) {
       timelineCalcAbortRef.current.abort();
       timelineCalcAbortRef.current = null;
     }
+    timelineAbortRef.current?.abort();
+    timelineAbortRef.current = null;
     timelineCancelledRef.current = false;
     setIsCalculating(false);
     setDailyProgress((previous) => ({
@@ -641,162 +647,28 @@ export function MapLibrePreviewClient() {
       return;
     }
 
-    // Daily mode — fetch + ReadableStream SSE parser (faithful copy of Leaflet).
+    // Daily mode — delegate the SSE to `refreshTimeline` (single source of
+    // truth, renders tiles, honours every UI toggle). Previously this branch
+    // ran its own discard-only SSE just to feed analytics + progress; that
+    // duplicate flow ignored the UI params and is what made toggles like
+    // "Ignorer végétation" / sampleEveryMinutes appear inert. Analytics +
+    // dailyProgress now flow through the `refreshTimeline` callbacks.
     setInstantProgress(null);
     setDailyProgress({
       phase: "starting",
       percent: 0,
       etaSeconds: null,
     });
-
-    const query = new URLSearchParams({
-      minLon: String(bbox[0]),
-      minLat: String(bbox[1]),
-      maxLon: String(bbox[2]),
-      maxLat: String(bbox[3]),
-      date,
-      timezone: "Europe/Zurich",
-      startLocalTime: dailyStartLocalTime,
-      endLocalTime: dailyEndLocalTime,
-      sampleEveryMinutes: String(sampleEveryMinutes),
-      gridStepMeters: String(gridStepMeters),
-      maxPoints: "2000000",
-      buildingHeightBiasMeters: String(buildingHeightBiasMeters),
-      ignoreVegetation: String(ignoreVegetationShadow),
-      ...(cacheOnly ? { cacheOnly: "true" } : {}),
-    });
-
-    timelineCancelledRef.current = false;
-    const abortController = new AbortController();
-    timelineCalcAbortRef.current = abortController;
-
-    // Track tile count from event:start so we can flag "unchartered-territory"
-    // (server accepted non-empty bbox but served zero tiles) on event:done.
-    let requestedTileCount = 0;
-
-    const handleSseEvent = (eventType: string, jsonData: string) => {
-      if (timelineCancelledRef.current) return;
-      if (eventType === "start") {
-        // Umami analytics — emit one event per compute job the server actually
-        // accepted (matches Leaflet behaviour: tracking earlier overcounts pan/
-        // zoom cancellations). Coordinates bucketed to 3 decimals (~110m) to
-        // keep dashboard cardinality usable.
-        const data = JSON.parse(jsonData) as { totalTiles?: number };
-        requestedTileCount = data.totalTiles ?? 0;
-        if (typeof window !== "undefined" && window.umami) {
-          const centerLat = Math.round(((bbox[1] + bbox[3]) / 2) * 1000) / 1000;
-          const centerLon = Math.round(((bbox[0] + bbox[2]) / 2) * 1000) / 1000;
-          window.umami.track("compute-start", {
-            centerLat,
-            centerLon,
-            tilesRequested: requestedTileCount,
-            basemap: baseMapIdToBaseMapStyle(basemapId),
-          });
-        }
-      } else if (eventType === "tile") {
-        // DECISION: we don't accumulate tiles client-side (no overlay rendering
-        // here). Just surface progress.
-        const data = JSON.parse(jsonData) as {
-          tileIndex: number;
-          totalTiles: number;
-        };
-        if (typeof data.totalTiles === "number" && data.totalTiles > 0) {
-          const doneCount = data.tileIndex + 1;
-          const tileFraction = Math.min(1, doneCount / data.totalTiles);
-          setDailyProgress((previous) => ({
-            phase: "computing",
-            percent: tileFraction * 100,
-            tileIndex: doneCount,
-            totalTiles: data.totalTiles,
-            etaSeconds: previous?.etaSeconds ?? null,
-            elapsedMs: previous?.elapsedMs,
-          }));
-        }
-      } else if (eventType === "progress") {
-        const data = JSON.parse(jsonData) as TimelineProgressView;
-        setDailyProgress(data);
-      } else if (eventType === "done") {
-        const parsed = JSON.parse(jsonData) as {
-          stats?: {
-            elapsedMs?: number;
-            totalEvaluations?: number;
-            tilesFromCache?: number;
-            tilesComputed?: number;
-          };
-        };
-        setDailyProgress({
-          phase: "done",
-          percent: 100,
-          etaSeconds: 0,
-          elapsedMs: parsed.stats?.elapsedMs,
-        });
-        // Umami analytics — track requests where the server accepted a non-empty
-        // bbox but couldn't serve a single tile. With cacheOnly=true on Mitch
-        // this is the canonical signal that the user asked about a zone we
-        // haven't precomputed yet — the most actionable input for picking
-        // which region to ingest next.
-        const tilesFromCache = parsed.stats?.tilesFromCache ?? 0;
-        const tilesComputed = parsed.stats?.tilesComputed ?? 0;
-        if (
-          typeof window !== "undefined" &&
-          window.umami &&
-          requestedTileCount > 0 &&
-          tilesFromCache === 0 &&
-          tilesComputed === 0
-        ) {
-          const centerLat = Math.round(((bbox[1] + bbox[3]) / 2) * 1000) / 1000;
-          const centerLon = Math.round(((bbox[0] + bbox[2]) / 2) * 1000) / 1000;
-          window.umami.track("unchartered-territory", {
-            centerLat,
-            centerLon,
-            tilesRequested: requestedTileCount,
-          });
-        }
-      }
-    };
-
-    try {
-      const response = await fetch(
-        `/api/sunlight/timeline/stream?${query.toString()}`,
-        { signal: abortController.signal },
-      );
-      if (!response.ok || !response.body) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let boundary = buffer.indexOf("\n\n");
-        while (boundary !== -1) {
-          const block = buffer.slice(0, boundary);
-          buffer = buffer.slice(boundary + 2);
-          let eventType = "message";
-          let dataLine = "";
-          for (const line of block.split("\n")) {
-            if (line.startsWith("event: ")) eventType = line.slice(7);
-            else if (line.startsWith("data: ")) dataLine = line.slice(6);
-          }
-          if (dataLine) handleSseEvent(eventType, dataLine);
-          boundary = buffer.indexOf("\n\n");
-        }
-      }
-    } catch (err) {
-      if (!abortController.signal.aborted) {
-        console.warn("[maplibre-preview] timeline calc failed:", err);
-      }
-    } finally {
-      if (timelineCalcAbortRef.current === abortController) {
-        timelineCalcAbortRef.current = null;
-      }
-      setIsCalculating(false);
-      // Refresh the overlay timeline so the new precompute is visible.
-      setRecalcSignal((c) => c + 1);
-    }
-  }, [date, mode, basemapId]);
+    // `recalcSignal` is the trigger for the date/ready/recalc effect that
+    // invokes refreshTimeline. We don't await here — the effect handles the
+    // async lifecycle (loading flag, abort on re-trigger, etc.). We do clear
+    // `isCalculating` immediately though: the dedicated `sunlightLoading` +
+    // `dailyProgress` states drive the in-flight UI from this point on.
+    setIsCalculating(false);
+    setRecalcSignal((c) => c + 1);
+    // bbox is reserved for the instant-mode path above; not used here.
+    void bbox;
+  }, [mode, date]);
 
   const baseMapsRef = useRef<BaseMapDef[] | null>(null);
   if (baseMapsRef.current === null) {
@@ -976,18 +848,103 @@ export function MapLibrePreviewClient() {
   }, []);
 
   // ── Sunlight timeline fetch (re-runs whenever date / ready changes) ───────
+  // DECISION: this is now the SINGLE SSE call for the daily sunlight overlay.
+  // The previous `handleRunCalculation` daily branch used to launch a separate
+  // discard-only stream just to drive analytics + progress; that flow ignored
+  // every UI toggle (cacheOnly / sampleEveryMinutes / ignoreVegetation / etc.)
+  // and produced the well-known "toggles do nothing" bug. We now route every
+  // daily fetch through `fetchTimeline` with the live UI params and surface
+  // analytics from its onStart/onDone callbacks.
   const refreshTimeline = useCallback(
     (map: MapLibreMap, atDate: string) => {
       timelineAbortRef.current?.abort();
       const abort = new AbortController();
       timelineAbortRef.current = abort;
+      // Snapshot bounds for analytics labels (3-decimal bucket ≈ 110 m to keep
+      // Umami cardinality usable, matching the Leaflet client). Cached at
+      // request time so concurrent map movement can't shift the reported point.
+      const bounds = map.getBounds();
+      const centerLat =
+        Math.round(((bounds.getSouth() + bounds.getNorth()) / 2) * 1000) / 1000;
+      const centerLon =
+        Math.round(((bounds.getWest() + bounds.getEast()) / 2) * 1000) / 1000;
+      let requestedTileCount = 0;
       void fetchTimeline({
         map,
         date: atDate,
+        startLocalTime: dailyStartLocalTime,
+        endLocalTime: dailyEndLocalTime,
+        sampleEveryMinutes,
+        gridStepMeters,
+        buildingHeightBiasMeters,
+        ignoreVegetationShadow,
+        cacheOnly,
         signal: abort.signal,
         onLoadingChange: setSunlightLoading,
-        onProgress: setTimelineFetchProgress,
+        onProgress: (value) => {
+          setTimelineFetchProgress(value);
+          // Mirror percent into the richer `dailyProgress` so the
+          // ProgressStatus daily UI tracks the same SSE stream. We only flip
+          // into "computing" once we have a determinate percent — the
+          // "starting" phase is set by `handleRunCalculation` / `onStart`.
+          if (typeof value === "number" && requestedTileCount > 0) {
+            setDailyProgress((previous) => ({
+              phase: "computing",
+              percent: value,
+              totalTiles: requestedTileCount,
+              etaSeconds: previous?.etaSeconds ?? null,
+              elapsedMs: previous?.elapsedMs,
+            }));
+          }
+        },
         onError: (err) => console.warn("[maplibre-preview] timeline:", err),
+        onStart: ({ totalTiles }) => {
+          requestedTileCount = totalTiles;
+          setDailyProgress((previous) => ({
+            phase: "computing",
+            percent: previous?.percent ?? 0,
+            totalTiles,
+            etaSeconds: previous?.etaSeconds ?? null,
+            elapsedMs: previous?.elapsedMs,
+          }));
+          // Umami analytics — emit one event per compute job the server
+          // actually accepted (mirrors Leaflet: tracking earlier overcounts
+          // pan/zoom cancellations).
+          if (typeof window !== "undefined" && window.umami) {
+            window.umami.track("compute-start", {
+              centerLat,
+              centerLon,
+              tilesRequested: totalTiles,
+              basemap: baseMapIdToBaseMapStyle(basemapId),
+            });
+          }
+        },
+        onDone: ({ tilesFromCache, tilesComputed, elapsedMs }) => {
+          setDailyProgress({
+            phase: "done",
+            percent: 100,
+            etaSeconds: 0,
+            elapsedMs,
+          });
+          // Umami analytics — track requests where the server accepted a
+          // non-empty bbox but couldn't serve a single tile. With cacheOnly=
+          // true on Mitch this is the canonical signal that the user asked
+          // about a zone we haven't precomputed yet — the most actionable
+          // input for picking which region to ingest next.
+          if (
+            typeof window !== "undefined" &&
+            window.umami &&
+            requestedTileCount > 0 &&
+            tilesFromCache === 0 &&
+            tilesComputed === 0
+          ) {
+            window.umami.track("unchartered-territory", {
+              centerLat,
+              centerLon,
+              tilesRequested: requestedTileCount,
+            });
+          }
+        },
         onResult: ({ tiles, frames }) => {
           // Preserve the user's current slider position when a new fetch
           // lands. If the new timeline is shorter, clamp; on first load
@@ -1015,13 +972,24 @@ export function MapLibrePreviewClient() {
         },
       });
     },
-    // Intentionally only depends on stable setters / refs. showSunny / showShadow
-    // are read at call time so a date change doesn't force toggle-coupled refetches.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+    // Re-create whenever any UI param feeding the SSE URL changes — that's
+    // what wires the toggles back to the overlay. showSunny / showShadow are
+    // intentionally read at call time (style-only, no refetch needed).
+    [
+      basemapId,
+      cacheOnly,
+      ignoreVegetationShadow,
+      sampleEveryMinutes,
+      gridStepMeters,
+      buildingHeightBiasMeters,
+      dailyStartLocalTime,
+      dailyEndLocalTime,
+    ],
   );
 
-  // Trigger initial fetch + on every date change OR recalc bump.
+  // Trigger initial fetch + on every date change OR recalc bump. refreshTimeline
+  // is itself memoised on the UI params, so a toggle change naturally
+  // re-triggers this effect → refetch.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;

@@ -22,6 +22,22 @@ export interface TimelineResult {
 export interface FetchTimelineOptions {
   map: MapLibreMap;
   date: string;
+  /** Local clock start of the daily sample window, "HH:MM". */
+  startLocalTime: string;
+  /** Local clock end of the daily sample window, "HH:MM". */
+  endLocalTime: string;
+  /** Stride between sampled frames inside the window, in minutes. */
+  sampleEveryMinutes: number;
+  /** Per-cell grid spacing, in metres. */
+  gridStepMeters: number;
+  /** Additive bias on every building height when ray-casting, in metres. */
+  buildingHeightBiasMeters: number;
+  /** When true, ignore the vegetation mask layer in shadow computation. */
+  ignoreVegetationShadow: boolean;
+  /** When true, append `cacheOnly=true` (server returns nothing if not cached). */
+  cacheOnly: boolean;
+  /** Maximum points the server is allowed to evaluate (per its own clamp). */
+  maxPoints?: number;
   signal?: AbortSignal;
   onResult: (result: TimelineResult) => void;
   onError?: (err: unknown) => void;
@@ -31,6 +47,18 @@ export interface FetchTimelineOptions {
    *  - `null` → indeterminate (start received but no total announced).
    *  - `undefined` → idle (cleared at fetch end). */
   onProgress?: (value: number | null | undefined) => void;
+  /** Fired once when the server's `start` event is received and reports the
+   *  total tile count it intends to stream. Lets callers emit analytics or
+   *  track per-job metadata. Not fired when the bbox is fully covered by the
+   *  client LRU (no SSE round-trip in that case). */
+  onStart?: (info: { totalTiles: number }) => void;
+  /** Fired once on the SSE `done` event with server stats. Same caveat as
+   *  `onStart`: skipped when the bbox is fully cached. */
+  onDone?: (info: {
+    tilesFromCache: number;
+    tilesComputed: number;
+    elapsedMs?: number;
+  }) => void;
 }
 
 /**
@@ -40,7 +68,25 @@ export interface FetchTimelineOptions {
  * skipped when the signal is aborted.
  */
 export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
-  const { map, date, signal, onResult, onError, onLoadingChange, onProgress } = opts;
+  const {
+    map,
+    date,
+    startLocalTime,
+    endLocalTime,
+    sampleEveryMinutes,
+    gridStepMeters,
+    buildingHeightBiasMeters,
+    ignoreVegetationShadow,
+    cacheOnly,
+    maxPoints = 2_000_000,
+    signal,
+    onResult,
+    onError,
+    onLoadingChange,
+    onProgress,
+    onStart,
+    onDone,
+  } = opts;
   onLoadingChange?.(true);
   const bounds = map.getBounds();
   const bbox = {
@@ -91,13 +137,14 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
     maxLat: String(bbox.maxLat),
     date,
     timezone: "Europe/Zurich",
-    startLocalTime: "06:00",
-    endLocalTime: "21:00",
-    sampleEveryMinutes: "30",
-    gridStepMeters: "1",
-    maxPoints: "2000000",
-    buildingHeightBiasMeters: "0",
-    cacheOnly: "true",
+    startLocalTime,
+    endLocalTime,
+    sampleEveryMinutes: String(sampleEveryMinutes),
+    gridStepMeters: String(gridStepMeters),
+    maxPoints: String(maxPoints),
+    buildingHeightBiasMeters: String(buildingHeightBiasMeters),
+    ignoreVegetation: String(ignoreVegetationShadow),
+    ...(cacheOnly ? { cacheOnly: "true" } : {}),
   });
   if (cachedIdsInBbox.length > 0) {
     params.set("excludeTileIds", encodeCompactTileIds(cachedIdsInBbox));
@@ -185,6 +232,7 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
             console.log(
               `[timeline] start event: server announces totalTiles=${totalAnnounced}, pre-seeded ${seededFromCache} from cache`,
             );
+            onStart?.({ totalTiles: totalAnnounced });
             // Cached tiles are already in `collected` — count them as
             // "progress so far" against the announced total.
             if (totalAnnounced > 0) {
@@ -239,6 +287,18 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
               `[timeline] done: collected=${collected.length} (seededFromCache=${seededFromCache} + freshDecoded=${freshDecoded} + cacheHitDuringStream=${cacheHitDuringStream}) | server announced totalTiles=${totalAnnounced} excludeRequested=${cachedIdsInBbox.length}`,
             );
             onResult({ tiles: collected, frames });
+            const stats = (payload as {
+              stats?: {
+                elapsedMs?: number;
+                tilesFromCache?: number;
+                tilesComputed?: number;
+              };
+            }).stats;
+            onDone?.({
+              tilesFromCache: stats?.tilesFromCache ?? 0,
+              tilesComputed: stats?.tilesComputed ?? 0,
+              elapsedMs: stats?.elapsedMs,
+            });
             onProgress?.(undefined);
             onLoadingChange?.(false);
           } else if (eventType === "error") {
