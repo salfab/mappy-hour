@@ -252,6 +252,7 @@ function ensureGridMetadataForAllRegions(
   selectionFile: string,
   gridStepMeters: number,
   buildingsShadowMode: ExperimentalBuildingsShadowMode,
+  allowZeroIndoor: boolean,
 ): void {
   console.log(
     `\n[precompute-all] ▶ preflight grid-metadata : ${regions.length} région(s), grid=${gridStepMeters}m, fichier=${selectionFile}`,
@@ -264,6 +265,7 @@ function ensureGridMetadataForAllRegions(
       `--region=${region}`,
       `--tile-selection-file=${selectionFile}`,
       `--grid-step-meters=${gridStepMeters}`,
+      ...(allowZeroIndoor ? ["--allow-zero-indoor"] : []),
     ];
     console.log(`[precompute-all]   · grid-metadata région=${region}`);
     // The preflight renders a zenith shadow map to classify indoor/outdoor;
@@ -299,8 +301,13 @@ async function main() {
   // (this orchestrator consumes it; child precompute scripts don't know it).
   const rawArgs = process.argv.slice(2).filter((a) => a !== "--");
   const skipPreflight = parseSkipPreflightArg(rawArgs);
+  const allowZeroIndoor = rawArgs.includes("--allow-zero-indoor");
   const passthrough = rawArgs.filter(
-    (a) => !a.startsWith("--region=") && a !== "--skip-preflight" && !a.startsWith("--skip-preflight="),
+    (a) =>
+      !a.startsWith("--region=") &&
+      a !== "--skip-preflight" &&
+      !a.startsWith("--skip-preflight=") &&
+      a !== "--allow-zero-indoor",
   );
 
   const selectionFile = parseSelectionFileArg(passthrough);
@@ -370,7 +377,7 @@ async function main() {
     );
   } else {
     try {
-      ensureGridMetadataForAllRegions(regions, selectionFile, gridStepMeters, buildingsShadowMode);
+      ensureGridMetadataForAllRegions(regions, selectionFile, gridStepMeters, buildingsShadowMode, allowZeroIndoor);
     } catch (err) {
       console.error(`[precompute-all] ✗ ${(err as Error).message}`);
       process.exitCode = 1;

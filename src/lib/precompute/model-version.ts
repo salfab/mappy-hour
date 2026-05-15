@@ -152,7 +152,7 @@ export async function getSunlightModelVersion(
 
   const [buildingsIndex, terrainManifest, vegetationManifest, horizonManifest] =
     await Promise.all([
-      loadBuildingsObstacleIndex(),
+      loadBuildingsObstacleIndex(region),
       readManifestSummary(manifestPathForRegion(region, "terrain")),
       readManifestSummary(manifestPathForRegion(region, "vegetation")),
       readManifestSummary(manifestPathForRegion(region, "horizon")),

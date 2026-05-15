@@ -11,7 +11,7 @@ import {
 } from "@/lib/sun/building-footprint";
 
 import {
-  PROCESSED_BUILDINGS_INDEX_PATH,
+  getBuildingsIndexPath,
   RAW_BUILDINGS_DIR,
 } from "@/lib/storage/data-paths";
 
@@ -219,7 +219,8 @@ export interface BuildingsShadowTwoLevelOptions {
 }
 
 
-let obstacleIndexCache: BuildingObstacleIndex | null | undefined;
+/** Per-region cache: undefined = not yet loaded, null = file not found. */
+const obstacleIndexCacheByRegion = new Map<string, BuildingObstacleIndex | null>();
 let buildingZipPathByNameCache: Map<string, string> | null = null;
 const zipPolyfaceCache = new Map<string, Polyface[]>();
 const detailedMeshCacheByObstacleId = new Map<string, DetailedObstacleMesh | null>();
@@ -233,13 +234,17 @@ const BUILDINGS_TWO_LEVEL_NEAR_THRESHOLD_DEGREES = 2;
 const BUILDINGS_TWO_LEVEL_MAX_REFINEMENT_STEPS = 3;
 const DETAILED_MESH_BVH_LEAF_TRIANGLE_COUNT = 12;
 
-export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleIndex | null> {
-  if (obstacleIndexCache !== undefined) {
-    return obstacleIndexCache;
+export async function loadBuildingsObstacleIndex(
+  region = "lausanne",
+): Promise<BuildingObstacleIndex | null> {
+  if (obstacleIndexCacheByRegion.has(region)) {
+    return obstacleIndexCacheByRegion.get(region) ?? null;
   }
 
+  const indexPath = getBuildingsIndexPath(region);
+
   try {
-    const raw = await fs.readFile(PROCESSED_BUILDINGS_INDEX_PATH, "utf8");
+    const raw = await fs.readFile(indexPath, "utf8");
     const parsed = buildingIndexSchema.parse(JSON.parse(raw));
     let sanitizedFootprintsCount = 0;
     const sanitizedObstacles = parsed.obstacles.map((obstacle) => {
@@ -249,7 +254,7 @@ export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleInde
       }
       return sanitized.obstacle;
     });
-    obstacleIndexCache = {
+    const result: BuildingObstacleIndex = {
       ...parsed,
       method:
         sanitizedFootprintsCount > 0
@@ -258,7 +263,8 @@ export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleInde
       obstacles: sanitizedObstacles,
       spatialGrid: sanitizeSpatialGrid(parsed.spatialGrid, sanitizedObstacles),
     };
-    return obstacleIndexCache;
+    obstacleIndexCacheByRegion.set(region, result);
+    return result;
   } catch (error) {
     if (
       typeof error === "object" &&
@@ -266,7 +272,7 @@ export async function loadBuildingsObstacleIndex(): Promise<BuildingObstacleInde
       "code" in error &&
       (error as { code?: string }).code === "ENOENT"
     ) {
-      obstacleIndexCache = null;
+      obstacleIndexCacheByRegion.set(region, null);
       return null;
     }
 

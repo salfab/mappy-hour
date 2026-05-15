@@ -33,10 +33,11 @@ interface Args {
   gridStepMeters: number;
   bbox: [number, number, number, number] | null;
   tileSelectionFile: string | null;
+  allowZeroIndoor: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const result: Args = { region: "lausanne", gridStepMeters: 1, bbox: null, tileSelectionFile: null };
+  const result: Args = { region: "lausanne", gridStepMeters: 1, bbox: null, tileSelectionFile: null, allowZeroIndoor: false };
   for (const arg of argv) {
     if (arg.startsWith("--region=")) result.region = arg.slice(9) as PrecomputedRegionName;
     else if (arg.startsWith("--grid-step-meters=")) result.gridStepMeters = Number(arg.slice(19));
@@ -47,6 +48,7 @@ function parseArgs(argv: string[]): Args {
       }
     }
     else if (arg.startsWith("--tile-selection-file=")) result.tileSelectionFile = arg.slice("--tile-selection-file=".length);
+    else if (arg === "--allow-zero-indoor") result.allowZeroIndoor = true;
   }
   return result;
 }
@@ -98,6 +100,11 @@ async function main() {
   const globalStart = performance.now();
   let totalOutdoor = 0;
   let totalIndoor = 0;
+  let warnedNoGpuBackend = false;
+  const WARN = "\x1b[33m";
+  const ERR  = "\x1b[31m";
+  const BOLD = "\x1b[1m";
+  const RESET = "\x1b[0m";
 
   for (let i = 0; i < tiles.length; i++) {
     const tile = tiles[i];
@@ -108,7 +115,10 @@ async function main() {
     if (existing) {
       totalOutdoor += existing.outdoorCount;
       totalIndoor += existing.indoorCount;
-      console.log(`[grid-metadata] tile ${i + 1}/${tiles.length} ${tile.tileId} — cached (${existing.outdoorCount} outdoor, ${existing.indoorCount} indoor)`);
+      const zeroIndoorWarn = existing.indoorCount === 0
+        ? ` ${WARN}⚠ 0 indoor — buildings manquants ?${RESET}`
+        : "";
+      console.log(`[grid-metadata] tile ${i + 1}/${tiles.length} ${tile.tileId} — cached (${existing.outdoorCount} outdoor, ${existing.indoorCount} indoor)${zeroIndoorWarn}`);
       continue;
     }
 
@@ -137,6 +147,14 @@ async function main() {
     // any point blocked = under a roof = indoor. Uses real DXF mesh
     // geometry instead of convex hull footprints.
     const gpuBackend = sharedSources.gpuShadowBackend;
+    if (!gpuBackend && !warnedNoGpuBackend) {
+      warnedNoGpuBackend = true;
+      console.error(
+        `${ERR}${BOLD}[grid-metadata] ✗ PAS DE BACKEND GPU — buildings index manquant pour region=${args.region}.${RESET}\n` +
+        `${ERR} Tous les points seront classés outdoor (indoor=0 non représentatif).${RESET}\n` +
+        `${ERR} → Exécutez d'abord : npx tsx scripts/ingest/download-buildings.ts --region=${args.region}${RESET}`
+      );
+    }
     if (gpuBackend) {
       // Force re-render by using a unique azimuth per tile (the GPU backend
       // caches by azimuth/altitude and skips re-render if unchanged, but the
@@ -204,9 +222,25 @@ async function main() {
   }
 
   const totalMs = performance.now() - globalStart;
-  console.log(
-    `[grid-metadata] done: ${tiles.length} tiles, ${totalOutdoor} outdoor, ${totalIndoor} indoor in ${(totalMs / 1000).toFixed(1)}s`,
-  );
+  const summaryLine = `[grid-metadata] done: ${tiles.length} tiles, ${totalOutdoor} outdoor, ${totalIndoor} indoor in ${(totalMs / 1000).toFixed(1)}s`;
+  if (totalIndoor === 0 && tiles.length > 0) {
+    console.error(`${ERR}${BOLD}${summaryLine}${RESET}`);
+    if (args.allowZeroIndoor) {
+      console.error(
+        `${WARN}${BOLD}[grid-metadata] ⚠ totalIndoor=0 pour region=${args.region} — ignoré via --allow-zero-indoor.${RESET}`,
+      );
+    } else {
+      console.error(
+        `${ERR}${BOLD}[grid-metadata] ✗ ERREUR : totalIndoor=0 pour toutes les ${tiles.length} tuiles (region=${args.region}).${RESET}`,
+      );
+      console.error(`${ERR} Les buildings SwissBuildings3D ne sont pas ingérés pour cette région.${RESET}`);
+      console.error(`${ERR} Relancez après : npx tsx scripts/ingest/download-buildings.ts --region=${args.region}${RESET}`);
+      console.error(`${ERR} Pour bypasser (non recommandé) : ajoutez --allow-zero-indoor${RESET}`);
+      process.exitCode = 1;
+    }
+  } else {
+    console.log(summaryLine);
+  }
 }
 
 main().catch(e => { console.error(e); process.exitCode = 1; });

@@ -427,6 +427,7 @@ export function buildVulkanFocusCapsule(
  */
 export async function prepareVulkanZoneIfChanged(params: {
   focusBounds: { minX: number; minY: number; maxX: number; maxY: number };
+  region?: string;
 }): Promise<boolean> {
   // Read env at call time (not module load time): the orchestrator may set
   // MAPPY_BUILDINGS_SHADOW_MODE after this module is first imported, e.g.
@@ -441,7 +442,7 @@ export async function prepareVulkanZoneIfChanged(params: {
   // cold-start) — skip silently. The first tile in this zone will cold-start
   // the backend with its own zone-filtered obstacles.
   if (!rustWgpuVulkanBackendCache) return false;
-  const buildingsIndex = await loadBuildingsObstacleIndex();
+  const buildingsIndex = await loadBuildingsObstacleIndex(params.region ?? "lausanne");
   if (!buildingsIndex) return false;
   let zoneObstacles = zoneObstaclesCache.get(zoneKey);
   if (!zoneObstacles) {
@@ -578,7 +579,7 @@ async function getOrCreateWebGpuBackend(
 export async function buildSharedPointEvaluationSources(
   options: BuildSharedPointEvaluationSourcesOptions = {},
 ): Promise<SharedPointEvaluationSources> {
-  const buildingsIndex = await loadBuildingsObstacleIndex();
+  const buildingsIndex = await loadBuildingsObstacleIndex(options.region ?? "lausanne");
   // No static horizon-mask fallback: callers that need one must either
   //  - precompute path → `resolveAdaptiveTerrainHorizonForTile` sets `terrainHorizonOverride`
   //  - live API path   → build it on the fly via `buildDynamicHorizonMask`
