@@ -195,12 +195,28 @@ function selectLatestZipByTile(zipFiles: string[]): string[] {
   return [...passthrough, ...Array.from(latest.values()).map(e => e.filePath)].sort();
 }
 
+/** Iterate DXF buffer line-by-line without a full toString() (avoids ERR_STRING_TOO_LONG). */
+function* bufferLines(buf: Buffer): Generator<string> {
+  let start = 0;
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === 0x0a) {
+      const end = (i > 0 && buf[i - 1] === 0x0d) ? i - 1 : i;
+      yield buf.subarray(start, end).toString("latin1");
+      start = i + 1;
+    }
+  }
+  if (start < buf.length) yield buf.subarray(start).toString("latin1");
+}
+
 function parseZipObstacles(zipPath: string, startId: number, bbox: Lv95Bbox): { obstacles: BuildingObstacle[]; nextId: number } {
   const zip = new AdmZip(zipPath);
   const dxfEntry = zip.getEntries().find(e => !e.isDirectory && e.entryName.toLowerCase().endsWith(".dxf"));
   if (!dxfEntry) return { obstacles: [], nextId: startId };
 
-  const lines = dxfEntry.getData().toString("latin1").split(/\r?\n/);
+  // Build a line-pair array from the buffer without creating a single giant string
+  const lineGen = bufferLines(dxfEntry.getData());
+  const lines: string[] = [];
+  for (const line of lineGen) lines.push(line);
   const obstacles: BuildingObstacle[] = [];
   let pendingSectionName = false, inEntities = false, inPolyline = false;
   let currentPolyline: PolylineAccumulator | null = null;
@@ -266,19 +282,16 @@ function parseZipObstacles(zipPath: string, startId: number, bbox: Lv95Bbox): { 
   return { obstacles, nextId };
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-  const region = args.find(a => a.startsWith("--region="))?.slice(9) ?? "";
-  if (!region || !REGION_CONFIGS[region]) {
-    console.error(`Usage: --region=<${Object.keys(REGION_CONFIGS).join("|")}>`);
-    process.exitCode = 1; return;
+async function buildRegionIndex(region: string): Promise<void> {
+  if (!REGION_CONFIGS[region]) {
+    throw new Error(`Unknown region "${region}". Known: ${Object.keys(REGION_CONFIGS).join(", ")}`);
   }
 
   const config = REGION_CONFIGS[region];
   const bbox = wgs84BboxToLv95(config.localBbox);
   const out = outputPath(region);
 
-  console.log(`[buildings-index] region=${region}`);
+  console.log(`\n[buildings-index] region=${region}`);
   console.log(`[buildings-index] LV95 bbox E=[${Math.round(bbox.minE)},${Math.round(bbox.maxE)}] N=[${Math.round(bbox.minN)},${Math.round(bbox.maxN)}]`);
   console.log(`[buildings-index] output → ${out}`);
 
@@ -328,8 +341,40 @@ async function main() {
   };
 
   await fs.mkdir(path.dirname(out), { recursive: true });
-  await fs.writeFile(out, JSON.stringify(payload, null, 2), "utf8");
+  await fs.writeFile(out, JSON.stringify(payload), "utf8");
   console.log(`[buildings-index] ✓ Wrote ${out} with ${obstacles.length} unique obstacles in ${elapsed}s`);
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const regionArg = args.find(a => a.startsWith("--region="))?.slice(9) ?? "";
+  const knownRegions = Object.keys(REGION_CONFIGS);
+
+  if (!regionArg) {
+    console.error(`Usage: --region=<${knownRegions.join("|")}|all>`);
+    process.exitCode = 1; return;
+  }
+
+  if (regionArg === "all") {
+    // Build cluster index once, then each non-cluster region individually.
+    // Cluster members (lausanne, morges, …) all map to the same output file;
+    // building "lausanne-cluster" once is sufficient.
+    const clusterDone = new Set<string>();
+    for (const r of knownRegions) {
+      const out = outputPath(r);
+      if (clusterDone.has(out)) continue; // shared cluster file already written
+      await buildRegionIndex(r);
+      clusterDone.add(out);
+    }
+    return;
+  }
+
+  if (!REGION_CONFIGS[regionArg]) {
+    console.error(`Unknown region "${regionArg}". Known: ${knownRegions.join(", ")}, all`);
+    process.exitCode = 1; return;
+  }
+
+  await buildRegionIndex(regionArg);
 }
 
 main().catch(e => { console.error(`[buildings-index] Failed:`, e); process.exitCode = 1; });
