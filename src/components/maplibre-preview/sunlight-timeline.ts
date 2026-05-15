@@ -47,6 +47,9 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
   // the requested bbox. The server skips them; we'll inject the cached
   // versions ourselves into the result.
   const cachedIdsInBbox = getCachedTileIdsInBbox(date, bbox, MAX_EXCLUDE_TILE_IDS);
+  console.log(
+    `[timeline] fetch start date=${date} bbox=${bbox.minLon.toFixed(4)},${bbox.minLat.toFixed(4)},${bbox.maxLon.toFixed(4)},${bbox.maxLat.toFixed(4)} cachedInBbox=${cachedIdsInBbox.length}`,
+  );
   const params = new URLSearchParams({
     minLon: String(bbox.minLon),
     minLat: String(bbox.minLat),
@@ -79,11 +82,19 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
     let buffer = "";
     const collected: TimelineTile[] = [];
     const pendingDecodes: Promise<void>[] = [];
+    // Diagnostic counters
+    let seededFromCache = 0;
+    let freshDecoded = 0;
+    let cacheHitDuringStream = 0;
+    let totalAnnounced = 0;
 
     const seedFromCache = () => {
       for (const id of cachedIdsInBbox) {
         const cached = getCachedTile(date, id);
-        if (cached) collected.push(cached);
+        if (cached) {
+          collected.push(cached);
+          seededFromCache++;
+        }
       }
     };
 
@@ -111,7 +122,14 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
           if (eventType === "start") {
             collected.length = 0;
             pendingDecodes.length = 0;
+            seededFromCache = 0;
+            freshDecoded = 0;
+            cacheHitDuringStream = 0;
+            totalAnnounced = (payload as { totalTiles?: number }).totalTiles ?? 0;
             seedFromCache();
+            console.log(
+              `[timeline] start event: server announces totalTiles=${totalAnnounced}, pre-seeded ${seededFromCache} from cache`,
+            );
           } else if (eventType === "tile") {
             const tile = payload as unknown as TimelineTile & {
               masksEncoding?: string;
@@ -124,7 +142,12 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
             // bypassed.
             const cached = getCachedTile(date, tile.tileId);
             if (cached) {
+              // Server didn't skip this tile (probably because the client
+              // didn't list it in excludeTileIds, e.g. cachedIdsInBbox cap
+              // hit, or bbox filter excluded it). The decoded masks are
+              // already in LRU though, so we still skip the decode.
               collected.push(cached);
+              cacheHitDuringStream++;
             } else {
               if (tile.masksEncoding === "gzip-concat-v1" && tile.masksBase64 && tile.grid) {
                 const maskBytes = Math.ceil(tile.grid.width * tile.grid.height / 8);
@@ -135,6 +158,7 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
                     putCachedTile(date, tile);
                   }),
                 );
+                freshDecoded++;
               }
               collected.push(tile);
             }
@@ -143,6 +167,9 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
             if (signal?.aborted) return;
             const first = collected[0];
             const frames = first?.frames?.map((f) => ({ localTime: f.localTime })) ?? [];
+            console.log(
+              `[timeline] done: collected=${collected.length} (seededFromCache=${seededFromCache} + freshDecoded=${freshDecoded} + cacheHitDuringStream=${cacheHitDuringStream}) | server announced totalTiles=${totalAnnounced} excludeRequested=${cachedIdsInBbox.length}`,
+            );
             onResult({ tiles: collected, frames });
             onLoadingChange?.(false);
           } else if (eventType === "error") {

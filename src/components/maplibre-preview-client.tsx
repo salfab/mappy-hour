@@ -62,6 +62,7 @@ import {
   type CategoryFilters,
 } from "@/components/maplibre-preview/filter-panel";
 import { fetchTimeline } from "@/components/maplibre-preview/sunlight-timeline";
+import { inspectTileCache } from "@/components/maplibre-preview/timeline-tile-cache";
 import {
   StylePanel,
   DEFAULT_STYLE_SETTINGS,
@@ -1067,8 +1068,9 @@ export function MapLibrePreviewClient() {
       const sunlightLayer = new MapLibreSunlightCustomLayer(map);
       map.addLayer(sunlightLayer, "cluster-circles");
       sunlightLayerRef.current = sunlightLayer;
-      // TEMP: expose for visual A/B style testing
+      // TEMP: expose for visual A/B style testing + cache diagnostics
       (window as unknown as Record<string, unknown>).__sl = sunlightLayer;
+      (window as unknown as Record<string, unknown>).__tileCache = inspectTileCache;
 
       // Heatmap layer sits on top of the sunlight layer (added after) so when
       // it becomes visible it covers the timeline overlay. Only one of the two

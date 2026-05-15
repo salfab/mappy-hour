@@ -75,6 +75,29 @@ export function clearTileCache(): void {
   store.clear();
 }
 
+/** Debug snapshot — exposed on `window.__tileCache` for console inspection. */
+export function inspectTileCache(): {
+  size: number;
+  capacity: number;
+  byDate: Record<string, number>;
+  oldestKey: string | null;
+  newestKey: string | null;
+} {
+  const byDate: Record<string, number> = {};
+  for (const key of store.keys()) {
+    const date = key.split("|", 1)[0] ?? "?";
+    byDate[date] = (byDate[date] ?? 0) + 1;
+  }
+  const keys = Array.from(store.keys());
+  return {
+    size: store.size,
+    capacity: MAX_ENTRIES,
+    byDate,
+    oldestKey: keys[0] ?? null,
+    newestKey: keys[keys.length - 1] ?? null,
+  };
+}
+
 export interface Bbox {
   minLon: number;
   minLat: number;
