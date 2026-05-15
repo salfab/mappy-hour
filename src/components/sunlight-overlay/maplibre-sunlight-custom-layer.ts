@@ -118,10 +118,22 @@ export interface SunlightStyle {
   hatchAlpha: number;
 }
 
+// DECISION (2026-05-15): default values are chosen to match Leaflet's bitmap
+// renderer pixel-for-pixel (paintTileCanvas in sunlight-map-client.tsx, which
+// writes pure SUNNY_RGBA / SHADOW_RGBA per cell on a canvas displayed via
+// `image-rendering: pixelated`, with no outline). Leaflet has no smoothed
+// transition between outdoor/indoor or sun/shadow, so:
+//   - alphaSoft / sunSoft tiny (≈ε) so smoothstep degenerates to a sharp step
+//     without hitting the GLSL edge0==edge1 undefined behavior;
+//   - outlineWidthPx = -1 so `step(0, u_outlineWidthPx)` zeroes the outline
+//     contribution (Leaflet bitmap mode draws no outline);
+//   - hatchAlpha = 0 (already the case);
+// All these settings remain user-overridable via the Style panel — they're
+// just the defaults that produce Leaflet parity out of the box.
 export const DEFAULT_SUNLIGHT_STYLE: SunlightStyle = {
-  alphaSoft: 0.125,
-  sunSoft: 0.125,
-  outlineWidthPx: 2.0,
+  alphaSoft: 0.001,
+  sunSoft: 0.001,
+  outlineWidthPx: -1,
   outlineDarkness: 1,
   outlineColor: [0, 0, 0],
   outlineMask: [1, 0],         // sun/shadow boundary only
@@ -304,11 +316,11 @@ void main() {
   float layer = float(v_baseLayer + u_frameIndex);
   float v = texture(u_texture, vec3(v_texcoord, layer)).r;
   float outdoor = smoothstep(0.325 - u_alphaSoft, 0.325 + u_alphaSoft, v);
-  float sun = smoothstep(0.675 - u_sunSoft, 0.675 + u_sunSoft, v);
+  float sun = smoothstep(0.751 - u_sunSoft, 0.751 + u_sunSoft, v);
   vec4 color = mix(u_shadow, u_sunny, sun);
 
   float halfW = max(u_outlineWidthPx, 0.0001) * fwidth(v);
-  float outlineSun = (1.0 - smoothstep(0.0, halfW, abs(v - 0.675))) * u_outlineMask.x;
+  float outlineSun = (1.0 - smoothstep(0.0, halfW, abs(v - 0.751))) * u_outlineMask.x;
   float outlineIn  = (1.0 - smoothstep(0.0, halfW, abs(v - 0.325))) * u_outlineMask.y;
   float outline = clamp(outlineSun + outlineIn, 0.0, 1.0) * step(0.0, u_outlineWidthPx) * u_outlineDarkness;
 
@@ -338,7 +350,7 @@ void main() {
     texture(u_texture, vec3(cN, layer)).r
   ) / 6.0;
   float outdoorAvg = smoothstep(0.325 - u_alphaSoft, 0.325 + u_alphaSoft, vAvg);
-  float sunAvg = smoothstep(0.675 - u_sunSoft, 0.675 + u_sunSoft, vAvg);
+  float sunAvg = smoothstep(0.751 - u_sunSoft, 0.751 + u_sunSoft, vAvg);
   float shadowMask = (1.0 - sunAvg) * outdoorAvg;
   float hatch = hatchLine * shadowMask * u_hatchAlpha;
 

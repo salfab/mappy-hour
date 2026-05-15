@@ -14,11 +14,16 @@ export interface SunlightStyleSettings {
   hatchSpaceJitter: number;
 }
 
+// DECISION (2026-05-15): defaults aligned with Leaflet's bitmap renderer.
+// Leaflet writes pure SUNNY_RGBA / SHADOW_RGBA per cell on a canvas displayed
+// via `image-rendering: pixelated` (= NEAREST sampling) with NO outline. To
+// match that look out of the box we default to pixel filtering and outline
+// off. The user can still flip both back on via this panel.
 export const DEFAULT_STYLE_SETTINGS: SunlightStyleSettings = {
-  textureFilter: "smooth",
+  textureFilter: "pixel",
   showSunny: true,
   showShadow: true,
-  outlineEnabled: true,
+  outlineEnabled: false,
   outlineWidthPx: 2.0,
   hatchEnabled: false,
   hatchSpacingPx: 35,
