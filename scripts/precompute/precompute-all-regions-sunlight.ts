@@ -15,6 +15,8 @@ import { spawnSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
+
 // Load .env.local into process.env (only vars not already set).
 // tsx does not auto-load .env files, so this lets MAPPY_DATA_ROOT etc.
 // be picked up without requiring the caller to export them manually.
@@ -376,6 +378,37 @@ async function main() {
     }
   }
 
+  // Atlas-health preflight, per region, before any precompute work. Two
+  // outcomes per region:
+  //   - manifest horizon DEM missing -> skip region (with warning), but other
+  //     regions still get a chance to run.
+  //   - manifest present -> scan existing atlases, quarantine any that were
+  //     generated without terrain horizon (terrainHorizonMethod=none or
+  //     "No horizon mask" warning).
+  // See src/lib/precompute/preflight-atlas-health.ts.
+  const skippedDueToPreflight = new Set<string>();
+  {
+    const { runPreflight } = await import("../../src/lib/precompute/preflight-atlas-health");
+    console.log(`\n[precompute-all] ▶ preflight atlas-health : ${regions.length} région(s)`);
+    for (const region of regions) {
+      const outcome = await runPreflight(region as PrecomputedRegionName);
+      if (!outcome.ok) {
+        console.warn(
+          `\x1b[1;33m[precompute-all] ⚠ skip région=${region} : ${outcome.reason}\x1b[0m`,
+        );
+        skippedDueToPreflight.add(region);
+      } else if (outcome.scan) {
+        const s = outcome.scan;
+        if (s.quarantined.length > 0) {
+          console.warn(
+            `[precompute-all] région=${region} preflight: ${s.quarantined.length} atlas quarantainé(s) → ${s.quarantineRoot}`,
+          );
+        }
+      }
+    }
+    console.log(`[precompute-all] ✓ preflight atlas-health terminé\n`);
+  }
+
   const computeStart = Date.now();
   console.log(
     `[precompute-all] [BENCH] compute_start ${new Date(computeStart).toISOString()} (preflight excluded)`,
@@ -394,6 +427,12 @@ async function main() {
   for (const pass of PASSES) {
     console.log(`\n[precompute-all] ▶▶ Passe ${pass.label}`);
     for (const region of regions) {
+      if (skippedDueToPreflight.has(region)) {
+        console.warn(
+          `[precompute-all] ⏭ pass=${pass.filter} région=${region} sautée (preflight)`,
+        );
+        continue;
+      }
       const args = [
         ...passthrough,
         `--region=${region}`,
@@ -406,7 +445,13 @@ async function main() {
       const result = spawnSync("npx", ["tsx", REGION_SCRIPT, ...args], {
         stdio: "inherit",
         shell: process.platform === "win32",
-        env: { ...process.env, MAPPY_BUILDINGS_SHADOW_MODE: buildingsShadowMode },
+        // MAPPY_PREFLIGHT_DONE=1 tells the child script to skip its own atlas-
+        // health preflight — the orchestrator already ran it above.
+        env: {
+          ...process.env,
+          MAPPY_BUILDINGS_SHADOW_MODE: buildingsShadowMode,
+          MAPPY_PREFLIGHT_DONE: "1",
+        },
       });
 
       if (result.error || result.status !== 0 || result.signal) {

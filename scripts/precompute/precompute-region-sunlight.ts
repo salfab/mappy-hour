@@ -1,6 +1,7 @@
 import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-cache";
 import { buildRegionTiles, getIntersectingTileIds } from "../../src/lib/precompute/sunlight-cache";
 import { loadTileSelectionForRegion } from "../../src/lib/precompute/tile-selection-file";
+import { runPreflight } from "../../src/lib/precompute/preflight-atlas-health";
 import { getHorizonCacheStats } from "../../src/lib/sun/adaptive-horizon-sharing";
 
 type ExperimentalBuildingsShadowMode = "gpu-raster" | "rust-wgpu-vulkan";
@@ -292,6 +293,24 @@ async function main() {
   if (args.buildingsShadowMode) {
     process.env.MAPPY_BUILDINGS_SHADOW_MODE = args.buildingsShadowMode;
   }
+
+  // Preflight (A) refuse to start without a horizon DEM manifest, and (B)
+  // quarantine atlases on disk that were generated without one. The orphan-
+  // atlas bug surfaced in 2026-05-15 made it clear we cannot trust skip-
+  // existing to leave behind only sane caches. See
+  // src/lib/precompute/preflight-atlas-health.ts.
+  //
+  // The multi-region orchestrator runs the preflight itself for each region
+  // before spawning us and sets MAPPY_PREFLIGHT_DONE=1 to avoid scanning twice.
+  if (process.env.MAPPY_PREFLIGHT_DONE !== "1") {
+    const preflight = await runPreflight(args.region);
+    if (!preflight.ok) {
+      console.error(`\x1b[1;31m[precompute] ${preflight.reason}\x1b[0m`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   const { precomputeCacheRuns } = await import("../../src/lib/admin/cache-admin");
   const shadowMode = process.env.MAPPY_BUILDINGS_SHADOW_MODE?.trim().toLowerCase();
   const isGpuIpcBackend = shadowMode === "rust-wgpu-vulkan" || shadowMode === "webgpu-compute";
