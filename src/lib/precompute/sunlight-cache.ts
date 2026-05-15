@@ -316,6 +316,33 @@ export async function findCachedModelVersionHash(params: {
   return [...primary, ...fallback].map(({ modelVersionHash, timeWindows }) => ({ modelVersionHash, timeWindows }));
 }
 
+/**
+ * Reorder cache-hash candidates so that the hash matching the current model
+ * version comes first. Defends against the atlas-only fallback in
+ * `findCachedModelVersionHash` handing back an orphan hash whose atlas was
+ * generated under a degraded pipeline (e.g. `terrainHorizonMethod="none"`,
+ * which silently inflates sunny counts vs live compute).
+ *
+ * Operates on a copy — does NOT mutate the input list.
+ *
+ * Returns the input unchanged when:
+ *   - `currentHash` is null/empty (caller couldn't resolve the live model),
+ *   - the current hash is already at index 0 (or absent from the list),
+ * so the candidate ordering produced by `findCachedModelVersionHash` is
+ * preserved in those cases.
+ */
+export function promoteCurrentHashCandidate<
+  T extends { modelVersionHash: string },
+>(candidates: readonly T[], currentHash: string | null | undefined): T[] {
+  if (!currentHash) return candidates.slice();
+  const idx = candidates.findIndex((c) => c.modelVersionHash === currentHash);
+  if (idx <= 0) return candidates.slice();
+  const next = candidates.slice();
+  const [preferred] = next.splice(idx, 1);
+  next.unshift(preferred);
+  return next;
+}
+
 function isAtlasCacheFileName(fileName: string): boolean {
   return (
     fileName.endsWith(".atlas.bin.gz") ||

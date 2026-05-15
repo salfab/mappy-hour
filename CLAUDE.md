@@ -21,6 +21,21 @@ Le fichier `docs/architecture/shortcuts-registry.md` recense **tous les raccourc
 ## Benchs
 Tout raccourci doit avoir un script reproductible dans `scripts/diag/bench-*`. Les mesures dans un ADR sans script bench sont non-reproductibles et donc fragiles.
 
+## Serveur dev — TOUJOURS `next start`, jamais `next dev` pour valider une modif backend
+
+`next dev` (Turbopack) ajoute ~350× d'overhead sur les routes lourdes (timeline SSE, instant SSE, n'importe quelle route qui appelle `getSunlightModelVersion`, lit l'atlas, ou résout des manifests). Concrètement, une requête timeline qui prend 200 ms sous `next start` peut prendre > 60 s sous `next dev`, et fait paraître le serveur "hang". Cf [[turbopack-dev]] en mémoire.
+
+**Workflow obligatoire dès qu'on modifie du code backend (route, lib, helper) et qu'on veut tester l'effet** :
+
+1. `taskkill /F /IM node.exe` (ou kill ciblé du PID `next start` précédent) pour stopper l'ancien serveur.
+2. `pnpm build` — attendre la fin.
+3. `pnpm start` (= `next start`) — attendre le "Ready".
+4. Tester via `curl` / browser / SSE client.
+
+C'est la **responsabilité de l'assistant** d'enchaîner ces 3 étapes après chaque modif backend qu'il veut observer. Pas de "je laisse le user relancer" : ça casse la boucle de feedback et donne l'illusion que la modif marche alors qu'on teste le binaire d'avant.
+
+Pour les modifs purement frontend (composant React, CSS), `next dev` reste acceptable — l'overhead est sur les routes API serveur, pas sur le HMR client.
+
 ## ADRs
 `docs/architecture/adr-NNNN-*.md`. Numérotation continue. Statut : Proposé / Accepté / Reverté.
 

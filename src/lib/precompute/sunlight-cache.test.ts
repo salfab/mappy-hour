@@ -430,4 +430,142 @@ describe("sunlight cache storage", () => {
 
     await fs.rm(tempRoot, { recursive: true, force: true });
   });
+
+  // ── Atlas-only fallback selects multiple orphan hashes, current must win ──
+  //
+  // Regression coverage for the silent bug that fed cache-only SSE requests
+  // an atlas precomputed under a degraded pipeline (`terrainHorizonMethod="none"`,
+  // no horizon mask). When `m{sample}/` is absent for every hash on disk,
+  // `findCachedModelVersionHash` falls back to scanning `atlas/r*/` and
+  // returns every hash that has at least one atlas file — including orphans
+  // alongside the current hash. The caller (streamTilesForBbox, places/windows)
+  // then has to know which hash is "the right one".
+  //
+  // These tests pin the contract:
+  //   (a) findCachedModelVersionHash returns the orphan candidates so the
+  //       caller has the option to fall through if the current hash isn't
+  //       covering the bbox at all.
+  //   (b) promoteCurrentHashCandidate must reorder so the current hash leads,
+  //       independent of `fs.readdir` order (which is non-portable).
+  describe("findCachedModelVersionHash + promoteCurrentHashCandidate", () => {
+    it("returns every hash with atlas files when no m{sample}/ matches", async () => {
+      const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mappy-hour-cache-"));
+      process.env.MAPPY_DATA_ROOT = tempRoot;
+      vi.resetModules();
+
+      const cache = await import("./sunlight-cache");
+
+      // Three hashes for "lausanne", each with an atlas file but no m30/ dir.
+      // Hash names chosen so alphabetical sort would put orphans first — this
+      // reproduces our real-world Windows fs.readdir ordering trap.
+      const hashes = ["aaa-orphan", "bbb-orphan", "fff-current"];
+      for (const hash of hashes) {
+        const atlasDir = path.join(
+          tempRoot,
+          "cache",
+          "sunlight",
+          "lausanne",
+          hash,
+          "g1",
+          "atlas",
+          "r0.75",
+        );
+        await fs.mkdir(atlasDir, { recursive: true });
+        await fs.writeFile(
+          path.join(atlasDir, "e2538250_n1152250_s250.atlas.bin.gz"),
+          Buffer.alloc(0),
+        );
+      }
+
+      const candidates = await cache.findCachedModelVersionHash({
+        region: "lausanne",
+        date: "2029-12-16",
+        gridStepMeters: 1,
+        sampleEveryMinutes: 30,
+        startLocalTime: "06:00",
+        endLocalTime: "21:00",
+      });
+
+      // All three are returned — caller has full visibility into orphans.
+      expect(candidates.map((c) => c.modelVersionHash).sort()).toEqual([
+        "aaa-orphan",
+        "bbb-orphan",
+        "fff-current",
+      ]);
+      // Each candidate uses the requested time window as a stand-in (atlas
+      // is date-agnostic, so we trust the caller's range).
+      for (const c of candidates) {
+        expect(c.timeWindows).toEqual([
+          { startLocalTime: "06:00", endLocalTime: "21:00" },
+        ]);
+      }
+
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    });
+
+    it("promoteCurrentHashCandidate moves the current hash to index 0", async () => {
+      const { promoteCurrentHashCandidate } = await import("./sunlight-cache");
+      const input = [
+        { modelVersionHash: "aaa-orphan", timeWindows: [] },
+        { modelVersionHash: "bbb-orphan", timeWindows: [] },
+        { modelVersionHash: "fff-current", timeWindows: [] },
+      ];
+      const out = promoteCurrentHashCandidate(input, "fff-current");
+      expect(out.map((c) => c.modelVersionHash)).toEqual([
+        "fff-current",
+        "aaa-orphan",
+        "bbb-orphan",
+      ]);
+      // Input must NOT be mutated — the caller may still want the original
+      // ordering for diagnostics.
+      expect(input.map((c) => c.modelVersionHash)).toEqual([
+        "aaa-orphan",
+        "bbb-orphan",
+        "fff-current",
+      ]);
+    });
+
+    it("promoteCurrentHashCandidate is a no-op when current hash is already first", async () => {
+      const { promoteCurrentHashCandidate } = await import("./sunlight-cache");
+      const input = [
+        { modelVersionHash: "fff-current", timeWindows: [] },
+        { modelVersionHash: "aaa-orphan", timeWindows: [] },
+      ];
+      const out = promoteCurrentHashCandidate(input, "fff-current");
+      expect(out.map((c) => c.modelVersionHash)).toEqual([
+        "fff-current",
+        "aaa-orphan",
+      ]);
+    });
+
+    it("promoteCurrentHashCandidate is a no-op when current hash is absent", async () => {
+      const { promoteCurrentHashCandidate } = await import("./sunlight-cache");
+      const input = [
+        { modelVersionHash: "aaa-orphan", timeWindows: [] },
+        { modelVersionHash: "bbb-orphan", timeWindows: [] },
+      ];
+      const out = promoteCurrentHashCandidate(input, "zzz-not-on-disk");
+      expect(out.map((c) => c.modelVersionHash)).toEqual([
+        "aaa-orphan",
+        "bbb-orphan",
+      ]);
+    });
+
+    it("promoteCurrentHashCandidate is a no-op when currentHash is null or empty", async () => {
+      // Reproduces the cache-only-deploy code path where
+      // `getSunlightModelVersion` may throw (manifests absent) and the caller
+      // falls back to the original candidate ordering.
+      const { promoteCurrentHashCandidate } = await import("./sunlight-cache");
+      const input = [
+        { modelVersionHash: "aaa-orphan", timeWindows: [] },
+        { modelVersionHash: "fff-current", timeWindows: [] },
+      ];
+      expect(
+        promoteCurrentHashCandidate(input, null).map((c) => c.modelVersionHash),
+      ).toEqual(["aaa-orphan", "fff-current"]);
+      expect(
+        promoteCurrentHashCandidate(input, "").map((c) => c.modelVersionHash),
+      ).toEqual(["aaa-orphan", "fff-current"]);
+    });
+  });
 });

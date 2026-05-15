@@ -43,6 +43,7 @@ import {
   buildRegionTiles,
   buildTilePoints,
   findCachedModelVersionHash,
+  promoteCurrentHashCandidate,
   getIntersectingTileIds,
   getPrecomputedRegionBbox,
   isMaskBitSet,
@@ -2318,6 +2319,20 @@ export async function* streamTilesForBbox(params: {
       endLocalTime: params.endLocalTime,
     });
     if (hashCandidates.length === 0) return null;
+    // Defense in depth — see promoteCurrentHashCandidate doc-comment.
+    try {
+      const currentVersion = await getSunlightModelVersion(region, params.shadowCalibration);
+      const before = hashCandidates;
+      hashCandidates = promoteCurrentHashCandidate(before, currentVersion.modelVersionHash);
+      if (hashCandidates[0]?.modelVersionHash !== before[0]?.modelVersionHash) {
+        process.stderr.write(
+          `[stream:cache-only] promoted current-model hash ${currentVersion.modelVersionHash} ahead of orphan candidate(s)\n`,
+        );
+      }
+    } catch {
+      // If we can't resolve the current model (e.g. manifests unavailable in
+      // a cache-only deploy), keep the candidate ordering returned by the scan.
+    }
     // Start with the best candidate; the bbox-aware scan below will cascade
     // through the remaining ones if this hash has no tiles for the bbox.
     modelVersionHash = hashCandidates[0].modelVersionHash;
