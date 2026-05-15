@@ -1493,7 +1493,13 @@ export function MapLibrePreviewClient() {
           DECISION: mobile no longer renders this stack at the top; controls
           and filters live in MobileBottomSheet. The desktop panel keeps the
           same content so the desktop layout stays identical. */}
-      <div className="pointer-events-auto absolute left-3 top-3 z-10 hidden flex-col gap-3 rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur lg:flex lg:right-auto lg:w-[280px]">
+      <div
+        className={`pointer-events-auto absolute left-3 top-3 z-10 hidden flex-col gap-3 overflow-hidden rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur transition-[height] duration-300 ease-out lg:flex lg:right-auto lg:w-[280px] ${
+          panelTab === "terraces"
+            ? "lg:h-[calc(100dvh-24px)]"
+            : "lg:h-[min(640px,calc(100dvh-24px))]"
+        }`}
+      >
         <ViewTabs
           activeTab={panelTab}
           venueCount={sunlitPlaces.length}
@@ -1504,42 +1510,42 @@ export function MapLibrePreviewClient() {
             }
           }}
         />
-        {calculationControlsNode}
-        {/* No visible Instant/Daily toggle: the Leaflet homepage does not
-            expose one either (mode is driven by localStorage, deep-link query
-            params, and cache-focus selection). */}
-        {progressStatusNode}
-        {layerFiltersNode}
-        {coveragePanel}
-        <FilterPanel filters={filters} onChange={setFilters} />
-        <StylePanel settings={styleSettings} onChange={setStyleSettings} />
+        {panelTab === "map" ? (
+          <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
+            {calculationControlsNode}
+            {/* No visible Instant/Daily toggle: the Leaflet homepage does not
+                expose one either (mode is driven by localStorage, deep-link
+                query params, and cache-focus selection). */}
+            {progressStatusNode}
+            {layerFiltersNode}
+            {coveragePanel}
+            <FilterPanel filters={filters} onChange={setFilters} />
+            <StylePanel settings={styleSettings} onChange={setStyleSettings} />
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
+            <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2">
+              <p className="text-sm font-semibold text-slate-900">
+                Terrasses au soleil
+              </p>
+              <p className="text-xs text-slate-500">
+                {`${sunlitPlaces.length} établissements visibles`}
+              </p>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              <BarsList
+                places={sunlitPlaces}
+                isLoading={false}
+                mode={mode}
+                localTime={localTime}
+                selectedVenueId={selectedVenueId}
+                onSelectVenue={handleSelectVenue}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Desktop BarsList — right-hand sliding panel shown when the user
-          flips ViewTabs to "Terrasses". Hidden on mobile (a MobileBarsView
-          will land in a later chunk). */}
-      {panelTab === "terraces" ? (
-        <div className="pointer-events-auto absolute bottom-20 right-3 top-20 z-10 hidden w-[320px] flex-col gap-3 overflow-hidden rounded-2xl bg-white/95 p-3 shadow-md backdrop-blur lg:flex">
-          <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2">
-            <p className="text-sm font-semibold text-slate-900">
-              Terrasses au soleil
-            </p>
-            <p className="text-xs text-slate-500">
-              {`${sunlitPlaces.length} établissements visibles`}
-            </p>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-            <BarsList
-              places={sunlitPlaces}
-              isLoading={false}
-              mode={mode}
-              localTime={localTime}
-              selectedVenueId={selectedVenueId}
-              onSelectVenue={handleSelectVenue}
-            />
-          </div>
-        </div>
-      ) : null}
 
       {/* Basemap switcher — top-right on desktop, hidden on mobile (rarely
           used; could be moved to a popover later). */}
