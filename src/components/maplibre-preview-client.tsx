@@ -1532,8 +1532,22 @@ export function MapLibrePreviewClient() {
             }
           }}
         />
-        {panelTab === "map" ? (
-          <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
+        {/* Cross-fade + slight rise between the two panels. Both panels stay
+            mounted simultaneously and are stacked via `absolute inset-0`; the
+            inactive one is faded out, lifted a few pixels, aria-hidden and
+            inert so screen readers + tab navigation skip it and pointer
+            events fall through. State (scroll positions, focused inputs) is
+            preserved across tab switches because we never unmount. */}
+        <div className="relative min-h-0 flex-1">
+          <div
+            className={`absolute inset-0 flex min-h-0 flex-col gap-3 overflow-y-auto pr-1 transition-[opacity,transform] duration-200 ease-out ${
+              panelTab === "map"
+                ? "translate-y-0 opacity-100"
+                : "pointer-events-none translate-y-1 opacity-0"
+            }`}
+            aria-hidden={panelTab !== "map"}
+            inert={panelTab !== "map"}
+          >
             {calculationControlsNode}
             {/* No visible Instant/Daily toggle: the Leaflet homepage does not
                 expose one either (mode is driven by localStorage, deep-link
@@ -1544,8 +1558,15 @@ export function MapLibrePreviewClient() {
             <FilterPanel filters={filters} onChange={setFilters} />
             <StylePanel settings={styleSettings} onChange={setStyleSettings} />
           </div>
-        ) : (
-          <div className="flex min-h-0 flex-1 flex-col gap-3">
+          <div
+            className={`absolute inset-0 flex min-h-0 flex-col gap-3 transition-[opacity,transform] duration-200 ease-out ${
+              panelTab === "terraces"
+                ? "translate-y-0 opacity-100"
+                : "pointer-events-none translate-y-1 opacity-0"
+            }`}
+            aria-hidden={panelTab !== "terraces"}
+            inert={panelTab !== "terraces"}
+          >
             <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2">
               <p className="text-sm font-semibold text-slate-900">
                 Terrasses au soleil
@@ -1565,7 +1586,7 @@ export function MapLibrePreviewClient() {
               />
             </div>
           </div>
-        )}
+        </div>
       </div>
 
 
