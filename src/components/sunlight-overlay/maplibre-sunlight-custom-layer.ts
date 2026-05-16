@@ -393,11 +393,36 @@ interface TileCPUState {
   baseLayer: number;
   /** True when the slice contents need to be (re-)written. */
   textureDirty: boolean;
+  /** Cursor for spread uploads: index of the NEXT frame slice to upload into
+   *  the mega-texture. Used by `uploadDirtySlices()` to spread a tile's
+   *  ~60-slice burst across multiple render frames and avoid a single-frame
+   *  CPU+GPU spike on tile arrival. Reset to 0 whenever the tile is marked
+   *  dirty again (mask rebuild, basemap swap, repack realloc). */
+  nextSliceUploadIndex: number;
   /** The `tile.decodedMasks` ref this `luminanceArray` was built from. */
   decodedMasksRef: TimelineTile["decodedMasks"] | null;
   /** The `ignoreVegetationShadow` flag this `luminanceArray` was built with. */
   useNoVegRef: boolean;
 }
+
+/**
+ * Upload budget per render frame.
+ *
+ * Each tile carries ~60 frame slices that need to be `texSubImage3D`'d into
+ * the mega-texture. Uploading them all in a single frame produces a visible
+ * jank when tiles arrive via SSE after a pan/zoom (a single frame can spend
+ * 30-60 ms on CPU+GPU upload + driver sync). Spreading those uploads over
+ * ~8 frames keeps each frame well under the 16 ms budget at 60 fps.
+ *
+ * Trade-off: at MAX = 8, a fresh tile with 60 frames takes ~60 / 8 = 8
+ * render frames (~130 ms at 60 fps) to fully appear. During this window the
+ * overlay fades in as the timeline animation reveals previously-uploaded
+ * slices. Lower values make each frame cheaper but stretch the fade-in;
+ * higher values shorten the fade but risk reintroducing the jank. 8 was
+ * picked empirically as a reasonable middle ground; if profiling shows the
+ * fade is too noticeable we can bump to 12-16.
+ */
+const MAX_SLICES_UPLOADED_PER_FRAME = 8;
 
 // Per-instance attribute layout (interleaved array-of-structs):
 //   [0..1]   iTileNwMerc.xy
@@ -545,7 +570,10 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     // After a setStyle basemap swap, tileStates may still hold CPU data.
     // Force a repack so the mega-texture is recreated and re-uploaded.
     if (this.tileStates.size > 0) {
-      for (const s of this.tileStates.values()) s.textureDirty = true;
+      for (const s of this.tileStates.values()) {
+        s.textureDirty = true;
+        s.nextSliceUploadIndex = 0;
+      }
       this.needsRepack = true;
       this.map.triggerRepaint();
     }
@@ -562,6 +590,11 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     }
 
     if (this.renderList.length === 0 || !this.megaTexture) return;
+
+    // Spread slice uploads across frames (see MAX_SLICES_UPLOADED_PER_FRAME).
+    // If any tile is still dirty after this batch, schedule another repaint.
+    const stillDirty = this.uploadDirtySlices(gl);
+    if (stillDirty) this.map.triggerRepaint();
 
     gl.useProgram(this.program);
 
@@ -747,6 +780,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       );
       state.useNoVegRef = value;
       state.textureDirty = true;
+      state.nextSliceUploadIndex = 0;
     }
     this.needsRepack = true;
     this.map.triggerRepaint();
@@ -772,7 +806,10 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     this.instanceVbo = null;
     this.program = null;
     this.gl = null;
-    for (const s of this.tileStates.values()) s.textureDirty = true;
+    for (const s of this.tileStates.values()) {
+      s.textureDirty = true;
+      s.nextSliceUploadIndex = 0;
+    }
   }
 
   /** Full teardown — GPU resources + CPU tile data. Called by React cleanup. */
@@ -838,6 +875,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
         seMerc,
         baseLayer: 0, // assigned in repack()
         textureDirty: true,
+        nextSliceUploadIndex: 0,
         decodedMasksRef: tile.decodedMasks,
         useNoVegRef: this.ignoreVegetationShadow,
       };
@@ -854,6 +892,9 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       existing.decodedMasksRef = tile.decodedMasks;
       existing.useNoVegRef = this.ignoreVegetationShadow;
       existing.textureDirty = true;
+      // Restart from the beginning so the new luminance data is fully written
+      // (previously-written slices belong to the old mask and may be partial).
+      existing.nextSliceUploadIndex = 0;
     }
     return true;
   }
@@ -959,41 +1000,16 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       this.megaW = maxW;
       this.megaH = maxH;
       this.megaLayers = totalLayers;
+      // Restore the default alignment so subsequent MapLibre draws see the
+      // expected GL state. The actual slice uploads will re-set this to 1
+      // from `uploadDirtySlices()`.
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
       // Force every fitted tile to re-upload into its (possibly new) slices.
-      for (const t of fitted) t.textureDirty = true;
-    } else {
-      gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.megaTexture);
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    }
-
-    // Upload dirty slices, frame by frame.
-    // texSubImage3D writes a (gridW × gridH × 1) sub-rect into the slice at
-    // (xoff=0, yoff=0, zoff=baseLayer+f). The remaining (maxW-gridW)×(maxH-gridH)
-    // padding stays at its previous value (0 after realloc); the vertex shader's
-    // a_texScale keeps sampling within the populated subrect.
-    const cellsPerFrame = (t: TileCPUState) => t.gridWidth * t.gridHeight;
-    for (const t of fitted) {
-      if (!t.textureDirty) continue;
-      const stride = cellsPerFrame(t);
-      for (let f = 0; f < t.frameCount; f++) {
-        const slice = new Uint8Array(
-          t.luminanceArray.buffer,
-          t.luminanceArray.byteOffset + f * stride,
-          stride,
-        );
-        gl.texSubImage3D(
-          gl.TEXTURE_2D_ARRAY,
-          0,
-          0, 0, t.baseLayer + f,
-          t.gridWidth, t.gridHeight, 1,
-          gl.RED,
-          gl.UNSIGNED_BYTE,
-          slice,
-        );
+      for (const t of fitted) {
+        t.textureDirty = true;
+        t.nextSliceUploadIndex = 0;
       }
-      t.textureDirty = false;
     }
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
 
     // Build the interleaved per-instance buffer.
@@ -1029,6 +1045,97 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
     this.renderList = fitted;
+  }
+
+  /**
+   * Upload up to MAX_SLICES_UPLOADED_PER_FRAME texSubImage3D writes per render
+   * frame, advancing each dirty tile's `nextSliceUploadIndex` cursor.
+   *
+   * Returns true if any tile is still dirty after this call, so `render()`
+   * knows to schedule another repaint via `map.triggerRepaint()`.
+   *
+   * Strategy:
+   *  - Walk `renderList` once. For each dirty tile, upload its remaining slices
+   *    until the per-frame budget is consumed, then break the double loop and
+   *    leave the cursor pointing at the next slice to write.
+   *  - When a tile's cursor reaches `frameCount`, mark it clean and reset the
+   *    cursor so a future re-dirty (mask rebuild, basemap swap) restarts from
+   *    slice 0.
+   *  - Slice 0 is currently uploaded first for every tile (sequential order).
+   *    We considered prioritising the slice at the current `frameIndex` so the
+   *    overlay is visible at the user's selected time ASAP, but the timeline
+   *    animation generally cycles through frames quickly enough that the
+   *    sequential fill-in produces a natural reveal — and any prioritisation
+   *    would need a swap-and-keep-track-of-uploaded-mask, which is added
+   *    bookkeeping for marginal gain.
+   *
+   * Returns: true if there are still dirty slices to upload next frame.
+   */
+  private uploadDirtySlices(gl: WebGL2RenderingContext): boolean {
+    let uploadsThisFrame = 0;
+    let anyStillDirty = false;
+    let textureBound = false;
+
+    for (const t of this.renderList) {
+      if (!t.textureDirty) continue;
+      const stride = t.gridWidth * t.gridHeight;
+
+      // Lazy bind: we only touch the texture state if we have work to do.
+      if (!textureBound) {
+        gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.megaTexture);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        textureBound = true;
+      }
+
+      while (
+        t.nextSliceUploadIndex < t.frameCount &&
+        uploadsThisFrame < MAX_SLICES_UPLOADED_PER_FRAME
+      ) {
+        const f = t.nextSliceUploadIndex;
+        const slice = new Uint8Array(
+          t.luminanceArray.buffer,
+          t.luminanceArray.byteOffset + f * stride,
+          stride,
+        );
+        gl.texSubImage3D(
+          gl.TEXTURE_2D_ARRAY,
+          0,
+          0, 0, t.baseLayer + f,
+          t.gridWidth, t.gridHeight, 1,
+          gl.RED,
+          gl.UNSIGNED_BYTE,
+          slice,
+        );
+        t.nextSliceUploadIndex++;
+        uploadsThisFrame++;
+      }
+
+      if (t.nextSliceUploadIndex >= t.frameCount) {
+        // Fully uploaded: clean state, reset cursor so a future re-dirty
+        // restarts from slice 0.
+        t.textureDirty = false;
+        t.nextSliceUploadIndex = 0;
+      } else {
+        anyStillDirty = true;
+        if (uploadsThisFrame >= MAX_SLICES_UPLOADED_PER_FRAME) {
+          // Budget consumed — leave subsequent dirty tiles for the next frame.
+          // They will still report `anyStillDirty` because we don't iterate
+          // past this point.
+          // Detect whether there are more dirty tiles beyond this index so we
+          // can keep `anyStillDirty=true`. Cheaper to just early-out and
+          // assume true: even if no later tile is dirty, `anyStillDirty` is
+          // already true here because this tile still has slices to write.
+          break;
+        }
+      }
+    }
+
+    if (textureBound) {
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+    }
+
+    return anyStillDirty;
   }
 
   private createProgram(
