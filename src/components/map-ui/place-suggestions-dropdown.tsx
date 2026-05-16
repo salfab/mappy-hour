@@ -14,6 +14,11 @@ export interface PlaceSuggestion {
   source: "local" | "nominatim";
   /** Best-effort city/suburb name (OSM `addr:city`/`addr:suburb` for local, address segment for Nominatim). */
   locality?: string;
+  /**
+   * Best-effort street (with house number when available) — used to disambiguate
+   * homonyms in the dropdown (e.g. two "The Green Van Company" in Lausanne).
+   */
+  street?: string;
   /** Bounding box `[minLon, minLat, maxLon, maxLat]` — present for Nominatim city/town results. */
   bbox?: [number, number, number, number];
 }
@@ -137,6 +142,20 @@ export function PlaceSuggestionsDropdown(props: PlaceSuggestionsDropdownProps) {
     return null;
   }
 
+  // Detect homonyms — entries sharing the exact same `name` + `locality` pair
+  // (including the "no locality" case where two venues with the same name both
+  // lack `addr:city`). When such a collision exists, we append `street` to the
+  // meta line of each colliding entry so the user can tell them apart.
+  const collisionCounts = new Map<string, number>();
+  for (const suggestion of suggestions) {
+    const key = `${suggestion.name}|${suggestion.locality ?? ""}`;
+    collisionCounts.set(key, (collisionCounts.get(key) ?? 0) + 1);
+  }
+  const collidingKeys = new Set<string>();
+  for (const [key, count] of collisionCounts) {
+    if (count > 1) collidingKeys.add(key);
+  }
+
   const base = "z-[600] divide-y divide-slate-100 overflow-hidden rounded-2xl border border-white/70 bg-white/96 text-slate-900 shadow-2xl backdrop-blur";
   const positioning =
     props.variant === "floating"
@@ -145,29 +164,40 @@ export function PlaceSuggestionsDropdown(props: PlaceSuggestionsDropdownProps) {
 
   return (
     <ul className={`${base} ${positioning} ${props.className ?? ""}`} role="listbox">
-      {suggestions.map((suggestion) => (
-        <li key={suggestion.id}>
-          <button
-            type="button"
-            role="option"
-            aria-selected="false"
-            className="flex w-full flex-col items-start gap-0.5 px-4 py-2.5 text-left transition hover:bg-amber-50 focus:bg-amber-100 focus:outline-none"
-            onMouseDown={(event) => {
-              // mousedown (not click) so the button fires before the input's blur
-              // tears the dropdown down via focus-out.
-              event.preventDefault();
-              props.onSelect(suggestion);
-              setIsVisible(false);
-            }}
-          >
-            <span className="text-sm font-semibold text-slate-950">{suggestion.name}</span>
-            <span className="text-xs text-slate-500">
-              {formatLabel(suggestion)}
-              {suggestion.locality ? ` · ${suggestion.locality}` : null}
-            </span>
-          </button>
-        </li>
-      ))}
+      {suggestions.map((suggestion) => {
+        const collisionKey = `${suggestion.name}|${suggestion.locality ?? ""}`;
+        const isColliding = collidingKeys.has(collisionKey);
+        // Show street only when we actually need to disambiguate AND we have it.
+        // Silent fallback when we don't (no `(commune inconnue)` noise — the
+        // homonym remains ambiguous, which is honest given missing data).
+        const showStreet = isColliding && Boolean(suggestion.street);
+        return (
+          <li key={suggestion.id}>
+            <button
+              type="button"
+              role="option"
+              aria-selected="false"
+              className="flex w-full flex-col items-start gap-0.5 px-4 py-2.5 text-left transition hover:bg-amber-50 focus:bg-amber-100 focus:outline-none"
+              onMouseDown={(event) => {
+                // mousedown (not click) so the button fires before the input's blur
+                // tears the dropdown down via focus-out.
+                event.preventDefault();
+                props.onSelect(suggestion);
+                setIsVisible(false);
+              }}
+            >
+              <span className="w-full truncate text-sm font-semibold text-slate-950">
+                {suggestion.name}
+              </span>
+              <span className="w-full truncate text-xs text-slate-500">
+                {formatLabel(suggestion)}
+                {suggestion.locality ? ` · ${suggestion.locality}` : null}
+                {showStreet ? ` · ${suggestion.street}` : null}
+              </span>
+            </button>
+          </li>
+        );
+      })}
     </ul>
   );
 }
