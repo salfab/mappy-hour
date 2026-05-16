@@ -3,6 +3,8 @@ import { Fraunces, Geist, Geist_Mono } from "next/font/google";
 import "leaflet/dist/leaflet.css";
 import "./globals.css";
 
+import { CpuProbeOverlay } from "@/components/diag/cpu-probe-overlay";
+
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
@@ -77,6 +79,10 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable} antialiased`}
       >
         {children}
+        {/* Opt-in debug overlay shown only when `?debug-cpu=1` is in the URL.
+            Lets us watch Mitch's CPU/memory while users toggle UI knobs that
+            re-trigger SSE timeline streams. See docs/observability/cpu-probe.md. */}
+        <CpuProbeOverlay />
         {umamiWebsiteId ? (
           <script
             defer
