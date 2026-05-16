@@ -49,6 +49,8 @@ import {
   requestUserGeolocation,
   type GeolocationOutcome,
 } from "@/lib/geo/geolocation";
+import { isTurnstileReady } from "@/lib/security/turnstile-ready";
+import { useTurnstileReady } from "@/lib/security/use-turnstile-ready";
 import { GeolocateButton } from "@/components/map-ui/geolocate-button";
 import { GeolocateToast } from "@/components/map-ui/geolocate-toast";
 import {
@@ -290,6 +292,17 @@ export function MapLibrePreviewClient() {
   const heatmapLayerRef = useRef<MapLibreHeatmapCustomLayer | null>(null);
   const [ready, setReady] = useState(false);
   const [basemapId, setBasemapId] = useState<BaseMapId>("aquarelle");
+
+  // ── Turnstile gate readiness ──────────────────────────────────────────────
+  // Flips to `true` once `<TurnstileGate>` has verified the Cloudflare token
+  // and the `mh-turnstile-ok` cookie is set on this origin. Every auto-fetch
+  // below (timeline SSE, viewport-places POST, instant SSE) waits on this so
+  // we don't race the gate and earn a 403 `missing-cookie` from the
+  // expensive routes at page load. In dev / no-keys mode the hook returns
+  // `true` immediately (cf. `markTurnstileReady()` called from the gate's
+  // bypass branch), so local development still triggers the initial fetches
+  // without any Cloudflare provisioning.
+  const turnstileReady = useTurnstileReady();
 
   // ── Geolocation (first-load auto-center + manual "Me localiser") ──────────
   // `hadStoredView` captures whether the user already has a saved camera
@@ -570,6 +583,11 @@ export function MapLibrePreviewClient() {
   const handleRunCalculation = useCallback(async () => {
     const map = mapRef.current;
     if (!map) return;
+    // Defensive guard — the Calculer button is already `disabled` until the
+    // gate clears (cf. `CalculationControls` props below), but a stale
+    // ref or programmatic invocation could still land here. The server
+    // would just 403, but skipping client-side keeps the UI consistent.
+    if (!isTurnstileReady()) return;
 
     const bounds = map.getBounds();
     const bbox: [number, number, number, number] = [
@@ -749,7 +767,21 @@ export function MapLibrePreviewClient() {
   // the initial viewport; on moveend we only re-run it when the user has
   // panned into a different region (rare — switching from Lausanne to Geneva).
   // The legacy per-moveend viewport fetch is intentionally gone.
+  //
+  // Turnstile gate: this endpoint is `requireTurnstile`-gated server-side. If
+  // we issue the POST before the Cloudflare challenge has finished, the
+  // server returns 403 `missing-cookie` and we surface an empty list. Read
+  // the flag at call time (not via the `turnstileReady` state) so an event
+  // handler captured before the flag flipped still skips correctly — a
+  // dedicated effect below re-fires the initial fetch when the gate clears.
   const fetchPlacesForViewport = useCallback(async (map: MapLibreMap) => {
+    if (!isTurnstileReady()) {
+      // The mount-time effect below will retry as soon as the gate clears.
+      // For moveend-triggered calls we lose the specific pan that triggered
+      // it, but the catalogue is region-scoped — the next moveend (or the
+      // gate-cleared effect) covers it.
+      return;
+    }
     const bounds = map.getBounds();
     const south = bounds.getSouth();
     const west = bounds.getWest();
@@ -1190,14 +1222,35 @@ export function MapLibrePreviewClient() {
   // `date` / `ready` go through the same timer (they're rare enough that
   // 250 ms of extra latency is not noticeable; keeping a single path keeps
   // the SSE ordering deterministic). See docs/observability/calc-auto-cpu-risk.md.
+  //
+  // Turnstile gate: we additionally wait for `turnstileReady` before kicking
+  // the SSE. Without this guard the very first auto-fetch on cold page load
+  // races the Cloudflare challenge (~1-3s) and the SSE comes back with a 403
+  // `missing-cookie` — silently dropping the timeline. Once the gate clears,
+  // this effect re-runs naturally and the request goes through.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !ready) return;
+    if (!map || !ready || !turnstileReady) return;
     const handle = window.setTimeout(() => {
       refreshTimeline(map, date);
     }, 250);
     return () => window.clearTimeout(handle);
-  }, [date, ready, recalcSignal, refreshTimeline]);
+  }, [date, ready, turnstileReady, recalcSignal, refreshTimeline]);
+
+  // ── Deferred region-places fetch ──────────────────────────────────────────
+  // The mount-time `fetchPlacesForViewport(map)` call inside `map.on("load")`
+  // no-ops when Turnstile hasn't completed yet (cf. early return in
+  // `fetchPlacesForViewport`). Once the gate clears we kick the fetch again
+  // here. The effect is harmless on warm cache: `fetchPlacesForViewport`
+  // re-applies the cached catalogue immediately and only hits the network
+  // when no places have been loaded yet — so it's essentially a one-shot at
+  // ready-time and a no-op afterwards.
+  useEffect(() => {
+    if (!ready || !turnstileReady) return;
+    const map = mapRef.current;
+    if (!map) return;
+    void fetchPlacesForViewport(map);
+  }, [ready, turnstileReady, fetchPlacesForViewport]);
 
   // ── Place card sunlight windows fetch ─────────────────────────────────────
   useEffect(() => {
@@ -1722,6 +1775,7 @@ export function MapLibrePreviewClient() {
       date={date}
       isLoading={isCalculating}
       isDailyRangeInvalid={isDailyRangeInvalid}
+      turnstileReady={turnstileReady}
       onDateChange={setDate}
       onRunCalculation={() => void handleRunCalculation()}
       onCancelDailyCalculation={handleCancelDailyCalculation}
@@ -1981,9 +2035,13 @@ export function MapLibrePreviewClient() {
         <button
           type="button"
           onClick={() => setRecalcSignal((c) => c + 1)}
-          title="Recalculer l'ensoleillement pour la zone visible"
+          title={
+            !turnstileReady
+              ? "Vérification anti-bot en cours…"
+              : "Recalculer l'ensoleillement pour la zone visible"
+          }
           className="rounded-full bg-gradient-to-b from-amber-400 to-amber-500 px-2 py-0.5 text-sm font-semibold text-amber-950 shadow-amber-900/20 hover:from-amber-300 hover:to-amber-400 disabled:from-slate-200 disabled:to-slate-200 disabled:text-slate-400"
-          disabled={sunlightLoading}
+          disabled={sunlightLoading || !turnstileReady}
         >
           ↻
         </button>

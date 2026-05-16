@@ -29,6 +29,15 @@ interface CalculationControlsProps {
   date: string;
   isLoading: boolean;
   isDailyRangeInvalid: boolean;
+  /**
+   * When `false`, the Cloudflare Turnstile challenge has not completed yet
+   * (or the verify endpoint hasn't accepted the token) — every gated route
+   * the button would call (`/api/sunlight/instant/stream`, the daily SSE
+   * pipeline) would 403. We render the button as disabled with a helper
+   * tooltip until the gate clears. Defaults to `true` so call sites that
+   * don't care (legacy Leaflet client) keep their existing behaviour.
+   */
+  turnstileReady?: boolean;
   onDateChange: (date: string) => void;
   onRunCalculation: () => void;
   onCancelDailyCalculation: () => void;
@@ -279,7 +288,19 @@ export function CalculationControls(props: CalculationControlsProps) {
   // Saves one row of vertical space on mobile and unifies desktop with the
   // pre-Variant-A "Leaflet homepage" pattern the user prefers.
   const isCancelMode = props.mode === "daily" && props.isLoading;
-  const disabled = !isCancelMode && (props.isLoading || (props.mode === "daily" && props.isDailyRangeInvalid));
+  const turnstileReady = props.turnstileReady ?? true;
+  // Order of precedence for the button state:
+  //   1. `isCancelMode` always wins — even if the gate is somehow not ready,
+  //      "Interrompre" must remain clickable so the user can abort an
+  //      in-flight calc. (In practice the gate is ready by the time a calc
+  //      is running, since the SSE itself wouldn't have started without it.)
+  //   2. Otherwise: gate not ready → disabled with the bot-check helper.
+  //   3. Otherwise: loading / invalid range → standard disabled state.
+  const disabled =
+    !isCancelMode &&
+    (!turnstileReady ||
+      props.isLoading ||
+      (props.mode === "daily" && props.isDailyRangeInvalid));
 
   return (
     // `items-center` (not `items-stretch`) so this row does NOT inflate
@@ -297,12 +318,29 @@ export function CalculationControls(props: CalculationControlsProps) {
         }`}
         onClick={isCancelMode ? props.onCancelDailyCalculation : props.onRunCalculation}
         disabled={disabled}
-        aria-label={isCancelMode ? "Interrompre le calcul" : "Calculer l'ensoleillement"}
+        // `title` doubles as the tooltip and is read by most screen readers
+        // when hovering. We surface the "verification in progress" message
+        // only when the gate is the actual blocker — otherwise keep the
+        // aria-label as the source of truth so existing tests pass.
+        title={
+          !isCancelMode && !turnstileReady
+            ? "Vérification anti-bot en cours…"
+            : undefined
+        }
+        aria-label={
+          isCancelMode
+            ? "Interrompre le calcul"
+            : !turnstileReady
+            ? "Calculer l'ensoleillement (vérification anti-bot en cours)"
+            : "Calculer l'ensoleillement"
+        }
       >
         {!isCancelMode ? <span aria-hidden>↻</span> : null}
         <span>
           {isCancelMode
             ? "Interrompre"
+            : !turnstileReady
+            ? "Vérification…"
             : props.isLoading
             ? "Calcul..."
             : (
