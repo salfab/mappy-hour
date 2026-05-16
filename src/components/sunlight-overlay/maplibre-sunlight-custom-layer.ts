@@ -444,6 +444,37 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
   private aTileDirFrac = -1;
   private aBaseLayer = -1;
 
+  // Cached uniform locations. Populated once in `onAdd` right after a
+  // successful link, so the per-frame `render()` does not pay the cost of
+  // ~20 `gl.getUniformLocation` string lookups (each is a driver-side string
+  // search). The WebGL spec guarantees the locations remain valid as long
+  // as the program is not re-linked; we never re-link, but we DO recreate
+  // the program after a basemap swap (`disposeGPU` → `onAdd`), so the cache
+  // is re-populated at that point. A `null` value is fine: a uniform that
+  // was optimised out by the compiler returns `null`, and `gl.uniformXfv`
+  // on a null location is a silent no-op per the WebGL spec.
+  private uMatrix: WebGLUniformLocation | null = null;
+  private uWorldSize: WebGLUniformLocation | null = null;
+  private uMegaTexSize: WebGLUniformLocation | null = null;
+  private uSunny: WebGLUniformLocation | null = null;
+  private uShadow: WebGLUniformLocation | null = null;
+  private uAlphaSoft: WebGLUniformLocation | null = null;
+  private uSunSoft: WebGLUniformLocation | null = null;
+  private uOutlineWidthPx: WebGLUniformLocation | null = null;
+  private uOutlineDarkness: WebGLUniformLocation | null = null;
+  private uOutlineColor: WebGLUniformLocation | null = null;
+  private uOutlineMask: WebGLUniformLocation | null = null;
+  private uOutlineOpaque: WebGLUniformLocation | null = null;
+  private uHatchSpacingPx: WebGLUniformLocation | null = null;
+  private uHatchWidthPx: WebGLUniformLocation | null = null;
+  private uHatchJitter: WebGLUniformLocation | null = null;
+  private uHatchSpaceJitter: WebGLUniformLocation | null = null;
+  private uHatchAngle: WebGLUniformLocation | null = null;
+  private uHatchColor: WebGLUniformLocation | null = null;
+  private uHatchAlpha: WebGLUniformLocation | null = null;
+  private uFrameIndex: WebGLUniformLocation | null = null;
+  private uTexture: WebGLUniformLocation | null = null;
+
   // Per-tile state indexed by tileId.
   private readonly tileStates: Map<string, TileCPUState> = new Map();
 
@@ -515,6 +546,9 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     this.aTexScale    = gl.getAttribLocation(p, "a_texScale");
     this.aTileDirFrac = gl.getAttribLocation(p, "a_tileDirFrac");
     this.aBaseLayer   = gl.getAttribLocation(p, "a_baseLayer");
+
+    // Cache uniform locations once. See `uMatrix` field comment for rationale.
+    this.cacheUniformLocations(gl, p);
 
     // Shared unit-quad VBO. Triangle list: (0,0),(1,0),(0,1) | (1,0),(1,1),(0,1).
     // localPos: x = west→east (0→1), y = north→south (0→1).
@@ -607,38 +641,37 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     gl.vertexAttribPointer(this.aBaseLayer, 1, gl.FLOAT, false, INSTANCE_STRIDE, 11 * 4);
     gl.vertexAttribDivisor(this.aBaseLayer, 1);
 
-    // Uniforms.
-    const p = this.program;
-    gl.uniformMatrix4fv(gl.getUniformLocation(p, "u_matrix"), false, matrix);
+    // Uniforms — locations cached in `onAdd` via `cacheUniformLocations`.
+    gl.uniformMatrix4fv(this.uMatrix, false, matrix);
 
     const worldSize = 512 * Math.pow(2, this.map.getZoom());
-    gl.uniform1f(gl.getUniformLocation(p, "u_worldSize"), worldSize);
-    gl.uniform2f(gl.getUniformLocation(p, "u_megaTexSize"), this.megaW, this.megaH);
+    gl.uniform1f(this.uWorldSize, worldSize);
+    gl.uniform2f(this.uMegaTexSize, this.megaW, this.megaH);
 
-    gl.uniform4fv(gl.getUniformLocation(p, "u_sunny"),  this.sunnyColor);
-    gl.uniform4fv(gl.getUniformLocation(p, "u_shadow"), this.shadowColor);
+    gl.uniform4fv(this.uSunny,  this.sunnyColor);
+    gl.uniform4fv(this.uShadow, this.shadowColor);
 
     const s = this.style;
-    gl.uniform1f(gl.getUniformLocation(p, "u_alphaSoft"),       s.alphaSoft);
-    gl.uniform1f(gl.getUniformLocation(p, "u_sunSoft"),         s.sunSoft);
-    gl.uniform1f(gl.getUniformLocation(p, "u_outlineWidthPx"),  s.outlineWidthPx);
-    gl.uniform1f(gl.getUniformLocation(p, "u_outlineDarkness"), s.outlineDarkness);
-    gl.uniform3fv(gl.getUniformLocation(p, "u_outlineColor"),   s.outlineColor);
-    gl.uniform2fv(gl.getUniformLocation(p, "u_outlineMask"),    s.outlineMask);
-    gl.uniform1f(gl.getUniformLocation(p, "u_outlineOpaque"),   s.outlineOpaque);
-    gl.uniform1f(gl.getUniformLocation(p, "u_hatchSpacingPx"),  s.hatchSpacingPx);
-    gl.uniform1f(gl.getUniformLocation(p, "u_hatchWidthPx"),    s.hatchWidthPx);
-    gl.uniform1f(gl.getUniformLocation(p, "u_hatchJitter"),     s.hatchJitter);
-    gl.uniform1f(gl.getUniformLocation(p, "u_hatchSpaceJitter"),s.hatchSpaceJitter);
-    gl.uniform1f(gl.getUniformLocation(p, "u_hatchAngle"),      s.hatchAngle);
-    gl.uniform3fv(gl.getUniformLocation(p, "u_hatchColor"),     s.hatchColor);
-    gl.uniform1f(gl.getUniformLocation(p, "u_hatchAlpha"),      s.hatchAlpha);
-    gl.uniform1i(gl.getUniformLocation(p, "u_frameIndex"),      this.frameIndex);
+    gl.uniform1f(this.uAlphaSoft,       s.alphaSoft);
+    gl.uniform1f(this.uSunSoft,         s.sunSoft);
+    gl.uniform1f(this.uOutlineWidthPx,  s.outlineWidthPx);
+    gl.uniform1f(this.uOutlineDarkness, s.outlineDarkness);
+    gl.uniform3fv(this.uOutlineColor,   s.outlineColor);
+    gl.uniform2fv(this.uOutlineMask,    s.outlineMask);
+    gl.uniform1f(this.uOutlineOpaque,   s.outlineOpaque);
+    gl.uniform1f(this.uHatchSpacingPx,  s.hatchSpacingPx);
+    gl.uniform1f(this.uHatchWidthPx,    s.hatchWidthPx);
+    gl.uniform1f(this.uHatchJitter,     s.hatchJitter);
+    gl.uniform1f(this.uHatchSpaceJitter,s.hatchSpaceJitter);
+    gl.uniform1f(this.uHatchAngle,      s.hatchAngle);
+    gl.uniform3fv(this.uHatchColor,     s.hatchColor);
+    gl.uniform1f(this.uHatchAlpha,      s.hatchAlpha);
+    gl.uniform1i(this.uFrameIndex,      this.frameIndex);
 
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-    gl.uniform1i(gl.getUniformLocation(p, "u_texture"), 0);
+    gl.uniform1i(this.uTexture, 0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.megaTexture);
 
@@ -772,6 +805,29 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     this.instanceVbo = null;
     this.program = null;
     this.gl = null;
+    // Drop cached uniform locations — they belonged to the deleted program.
+    // `onAdd` re-populates them via `cacheUniformLocations` on rebuild.
+    this.uMatrix = null;
+    this.uWorldSize = null;
+    this.uMegaTexSize = null;
+    this.uSunny = null;
+    this.uShadow = null;
+    this.uAlphaSoft = null;
+    this.uSunSoft = null;
+    this.uOutlineWidthPx = null;
+    this.uOutlineDarkness = null;
+    this.uOutlineColor = null;
+    this.uOutlineMask = null;
+    this.uOutlineOpaque = null;
+    this.uHatchSpacingPx = null;
+    this.uHatchWidthPx = null;
+    this.uHatchJitter = null;
+    this.uHatchSpaceJitter = null;
+    this.uHatchAngle = null;
+    this.uHatchColor = null;
+    this.uHatchAlpha = null;
+    this.uFrameIndex = null;
+    this.uTexture = null;
     for (const s of this.tileStates.values()) s.textureDirty = true;
   }
 
@@ -1029,6 +1085,42 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
     this.renderList = fitted;
+  }
+
+  /**
+   * Look up and cache every `WebGLUniformLocation` we use in `render()`.
+   * Called once per program lifetime, right after a successful link in
+   * `onAdd`. Avoids ~20 `gl.getUniformLocation` driver string lookups per
+   * frame (a noticeable cost on integrated GPUs during pan/zoom).
+   *
+   * Note: a uniform optimised out by the GLSL compiler returns `null` here.
+   * That is fine — `gl.uniform*` on a null location is a documented no-op.
+   */
+  private cacheUniformLocations(
+    gl: WebGL2RenderingContext | WebGLRenderingContext,
+    program: WebGLProgram,
+  ): void {
+    this.uMatrix          = gl.getUniformLocation(program, "u_matrix");
+    this.uWorldSize       = gl.getUniformLocation(program, "u_worldSize");
+    this.uMegaTexSize     = gl.getUniformLocation(program, "u_megaTexSize");
+    this.uSunny           = gl.getUniformLocation(program, "u_sunny");
+    this.uShadow          = gl.getUniformLocation(program, "u_shadow");
+    this.uAlphaSoft       = gl.getUniformLocation(program, "u_alphaSoft");
+    this.uSunSoft         = gl.getUniformLocation(program, "u_sunSoft");
+    this.uOutlineWidthPx  = gl.getUniformLocation(program, "u_outlineWidthPx");
+    this.uOutlineDarkness = gl.getUniformLocation(program, "u_outlineDarkness");
+    this.uOutlineColor    = gl.getUniformLocation(program, "u_outlineColor");
+    this.uOutlineMask     = gl.getUniformLocation(program, "u_outlineMask");
+    this.uOutlineOpaque   = gl.getUniformLocation(program, "u_outlineOpaque");
+    this.uHatchSpacingPx  = gl.getUniformLocation(program, "u_hatchSpacingPx");
+    this.uHatchWidthPx    = gl.getUniformLocation(program, "u_hatchWidthPx");
+    this.uHatchJitter     = gl.getUniformLocation(program, "u_hatchJitter");
+    this.uHatchSpaceJitter= gl.getUniformLocation(program, "u_hatchSpaceJitter");
+    this.uHatchAngle      = gl.getUniformLocation(program, "u_hatchAngle");
+    this.uHatchColor      = gl.getUniformLocation(program, "u_hatchColor");
+    this.uHatchAlpha      = gl.getUniformLocation(program, "u_hatchAlpha");
+    this.uFrameIndex      = gl.getUniformLocation(program, "u_frameIndex");
+    this.uTexture         = gl.getUniformLocation(program, "u_texture");
   }
 
   private createProgram(
