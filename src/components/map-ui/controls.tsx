@@ -264,32 +264,32 @@ export function CalculationControls(props: CalculationControlsProps) {
   // (Previously a secondary rose button appeared underneath, pushing every
   // other panel row down by ~52 px on the precise moment the user wanted
   // to focus on the slider that was about to appear.)
-  // Variant A layout: the day selector stacks on its own row and the
-  // "Calculer" pill sits below, right-aligned, auto-width. The verb alone is
-  // enough once the day picker carries the noun ("...l'ensoleillement de
-  // dimanche 16 décembre"). Smaller footprint frees vertical rhythm.
+  // Variant A layout (revised): the day selector and the "Calculer" pill
+  // share a single row. The day picker stretches with `flex-1` to absorb
+  // the slack; the button stays auto-width on the right. Same visual
+  // anchor (the date) + same action (the verb) read together horizontally.
+  // Saves one row of vertical space on mobile and unifies desktop with the
+  // pre-Variant-A "Leaflet homepage" pattern the user prefers.
   const isCancelMode = props.mode === "daily" && props.isLoading;
   const disabled = !isCancelMode && (props.isLoading || (props.mode === "daily" && props.isDailyRangeInvalid));
 
   return (
-    <div className="grid gap-3">
+    <div className="flex items-stretch gap-2">
       <DaySelector date={props.date} onDateChange={props.onDateChange} />
-      <div className="flex justify-end">
-        <button
-          type="button"
-          className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 ${
-            isCancelMode
-              ? "bg-rose-500 text-white shadow-rose-400/40 hover:bg-rose-400"
-              : "bg-gradient-to-b from-amber-400 to-amber-500 text-amber-950 shadow-amber-900/20 hover:from-amber-300 hover:to-amber-400"
-          }`}
-          onClick={isCancelMode ? props.onCancelDailyCalculation : props.onRunCalculation}
-          disabled={disabled}
-          aria-label={isCancelMode ? "Interrompre le calcul" : "Calculer l'ensoleillement"}
-        >
-          {!isCancelMode ? <span aria-hidden>↻</span> : null}
-          <span>{isCancelMode ? "Interrompre" : props.isLoading ? "Calcul..." : "Calculer"}</span>
-        </button>
-      </div>
+      <button
+        type="button"
+        className={`inline-flex shrink-0 items-center gap-1.5 self-stretch rounded-2xl px-4 py-2 text-sm font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 ${
+          isCancelMode
+            ? "bg-rose-500 text-white shadow-rose-400/40 hover:bg-rose-400"
+            : "bg-gradient-to-b from-amber-400 to-amber-500 text-amber-950 shadow-amber-900/20 hover:from-amber-300 hover:to-amber-400"
+        }`}
+        onClick={isCancelMode ? props.onCancelDailyCalculation : props.onRunCalculation}
+        disabled={disabled}
+        aria-label={isCancelMode ? "Interrompre le calcul" : "Calculer l'ensoleillement"}
+      >
+        {!isCancelMode ? <span aria-hidden>↻</span> : null}
+        <span>{isCancelMode ? "Interrompre" : props.isLoading ? "Calcul..." : "Calculer"}</span>
+      </button>
     </div>
   );
 }
