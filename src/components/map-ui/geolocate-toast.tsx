@@ -56,7 +56,7 @@ export function GeolocateToast({
     <div
       role="status"
       aria-live="polite"
-      className={`pointer-events-none absolute left-1/2 top-16 z-20 -translate-x-1/2 transform rounded-full border border-amber-200/60 bg-[oklch(0.985_0.018_85)/0.92] px-4 py-2 text-sm text-stone-800 shadow-md backdrop-blur-xl transition-opacity duration-200 lg:top-20 ${
+      className={`pointer-events-none absolute left-1/2 top-16 z-20 -translate-x-1/2 transform rounded-full border border-amber-200/60 bg-[oklch(0.985_0.018_85)] px-4 py-2 text-sm text-stone-800 shadow-md transition-opacity duration-200 lg:top-20 ${
         phase === "visible" ? "opacity-100" : "opacity-0"
       }`}
     >

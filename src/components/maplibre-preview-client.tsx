@@ -1814,12 +1814,14 @@ export function MapLibrePreviewClient() {
           DECISION: mobile no longer renders this stack at the top; controls
           and filters live in MobileBottomSheet. The desktop panel keeps the
           same content so the desktop layout stays identical. Variant A "kraft
-          paper" palette: warm cream surface (oklch crème ambré /0.78), amber
+          paper" palette: warm cream surface (oklch crème ambré, opaque), amber
           hairline border, warm dual-shadow that mimics a paper card resting
           on the map. This sidebar carries the strongest shadow of the 5
-          panels because it's the densest information container. */}
+          panels because it's the densest information container. No
+          backdrop-blur here — the frosted-glass effect is reserved for the
+          search bar only (parity with the mobile FloatingSearch). */}
       <div
-        className={`pointer-events-auto absolute left-3 top-3 z-10 hidden flex-col gap-3 overflow-hidden rounded-2xl border border-amber-200/50 bg-[oklch(0.985_0.018_85)/0.78] p-3 shadow-[0_30px_60px_-30px_rgba(146,107,40,0.25),0_8px_20px_-12px_rgba(146,107,40,0.18)] backdrop-blur-xl transition-[height] duration-300 ease-out lg:flex lg:right-auto lg:w-[280px] ${
+        className={`pointer-events-auto absolute left-3 top-3 z-10 hidden flex-col gap-3 overflow-hidden rounded-2xl border border-amber-200/50 bg-[oklch(0.985_0.018_85)] p-3 shadow-[0_30px_60px_-30px_rgba(146,107,40,0.25),0_8px_20px_-12px_rgba(146,107,40,0.18)] transition-[height] duration-300 ease-out lg:flex lg:right-auto lg:w-[280px] ${
           panelTab === "terraces"
             ? "lg:h-[calc(100dvh-24px)]"
             : "lg:h-[min(640px,calc(100dvh-24px))]"
@@ -1897,9 +1899,11 @@ export function MapLibrePreviewClient() {
           used; could be moved to a popover later). Variant A kraft palette:
           warm cream surface + amber hairlines so the panel sits in the same
           vocabulary as the main sidebar. Active basemap chip uses the same
-          amber pastel as the toggleOnClass treatment for visual coherence. */}
+          amber pastel as the toggleOnClass treatment for visual coherence. No
+          backdrop-blur — solid kraft paper, frosted glass is reserved for the
+          search bar. */}
       <div
-        className="absolute right-3 top-3 z-10 hidden rounded-md border border-amber-200/50 bg-[oklch(0.985_0.018_85)/0.78] px-2 py-2 shadow-md backdrop-blur-xl lg:block"
+        className="absolute right-3 top-3 z-10 hidden rounded-md border border-amber-200/50 bg-[oklch(0.985_0.018_85)] px-2 py-2 shadow-md lg:block"
         style={{ font: "13px system-ui, sans-serif" }}
       >
         <div className="mb-1 px-1 text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">
@@ -1940,9 +1944,11 @@ export function MapLibrePreviewClient() {
       </div>
 
       {/* Sunlight overlay controls (bottom). Wraps on narrow screens. Variant
-          A kraft palette so the bottom bar matches the rest of the panels. */}
+          A kraft palette so the bottom bar matches the rest of the panels. No
+          backdrop-blur — solid kraft paper, frosted glass is reserved for the
+          search bar. */}
       <div
-        className="absolute bottom-10 left-3 right-3 z-10 mx-auto flex max-w-[calc(100%-1.5rem)] flex-wrap items-center justify-center gap-2 rounded-md border border-amber-200/50 bg-[oklch(0.985_0.018_85)/0.78] px-3 py-2 shadow-md backdrop-blur-xl lg:left-1/2 lg:right-auto lg:max-w-none lg:-translate-x-1/2 lg:flex-nowrap"
+        className="absolute bottom-10 left-3 right-3 z-10 mx-auto flex max-w-[calc(100%-1.5rem)] flex-wrap items-center justify-center gap-2 rounded-md border border-amber-200/50 bg-[oklch(0.985_0.018_85)] px-3 py-2 shadow-md lg:left-1/2 lg:right-auto lg:max-w-none lg:-translate-x-1/2 lg:flex-nowrap"
         style={{ font: "13px system-ui, sans-serif" }}
       >
         <button
@@ -1997,9 +2003,10 @@ export function MapLibrePreviewClient() {
         )}
       </div>
 
-      {/* Phase tag (bottom-right). Variant A palette. */}
+      {/* Phase tag (bottom-right). Variant A palette, solid kraft (no
+          backdrop-blur — frosted glass is reserved for the search bar). */}
       <div
-        className="absolute bottom-3 right-3 z-10 rounded-md border border-amber-200/50 bg-[oklch(0.985_0.018_85)/0.78] px-3 py-2 shadow-md backdrop-blur-xl"
+        className="absolute bottom-3 right-3 z-10 rounded-md border border-amber-200/50 bg-[oklch(0.985_0.018_85)] px-3 py-2 shadow-md"
         style={{ font: "12px system-ui, sans-serif" }}
       >
         <div className="font-semibold text-stone-800">MapLibre preview</div>
