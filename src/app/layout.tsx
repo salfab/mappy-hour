@@ -5,6 +5,7 @@ import "./globals.css";
 
 import { CpuProbeOverlay } from "@/components/diag/cpu-probe-overlay";
 import { TurnstileGate } from "@/components/security/turnstile-gate";
+import { TurnstileSplash } from "@/components/security/turnstile-splash";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -109,6 +110,13 @@ export default function RootLayout({
             is unset (local dev), the component renders nothing — see
             docs/security/turnstile.md. */}
         <TurnstileGate />
+        {/* Splash screen shown while the Turnstile challenge is running.
+            Lives at the root so every route (homepage Leaflet, MapLibre
+            preview, future entry points) benefits from the same first-paint
+            treatment. Fades out the moment `useTurnstileReady()` flips to
+            `true` — i.e. almost immediately in dev/no-keys mode, after the
+            `/api/turnstile/verify` round-trip in production. */}
+        <TurnstileSplash />
         {/* Opt-in debug overlay shown only when `?debug-cpu=1` is in the URL.
             Lets us watch Mitch's CPU/memory while users toggle UI knobs that
             re-trigger SSE timeline streams. See docs/observability/cpu-probe.md. */}
