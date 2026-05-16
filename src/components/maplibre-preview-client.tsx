@@ -919,6 +919,47 @@ export function MapLibrePreviewClient() {
     applyPlacesToSource(map, filters);
   }, [filters, ready, applyPlacesToSource]);
 
+  // ── Viewport bbox tracking (powers BarsList + ViewTabs venueCount filter) ─
+  // The map already culls cluster markers per moveend via
+  // `applyPlacesToSource`, but the `sunlitPlaces` list passed to ViewTabs /
+  // BarsList / MobileBarsView still iterates the whole region catalogue. We
+  // mirror the current visible bbox into a React state so the memoised list
+  // can drop places outside the viewport. We listen on `moveend` / `zoomend`
+  // only (NOT `move`) so React stays idle during a pan — the list only
+  // updates once the gesture has settled, which is what we want for perf.
+  //
+  // Initial value `null` means "no bbox known yet"; the consumer of this
+  // state treats `null` as "pass everything through" so the very first paint
+  // (before MapLibre has fired `moveend`) still surfaces the full region
+  // catalogue. The bootstrap call inside the effect below seeds the state
+  // synchronously once `ready` flips, so the `null` branch is in practice
+  // only visible for one render.
+  const [mapBounds, setMapBounds] = useState<
+    { minLon: number; minLat: number; maxLon: number; maxLat: number } | null
+  >(null);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const updateBounds = () => {
+      const b = map.getBounds();
+      setMapBounds({
+        minLon: b.getWest(),
+        minLat: b.getSouth(),
+        maxLon: b.getEast(),
+        maxLat: b.getNorth(),
+      });
+    };
+    map.on("moveend", updateBounds);
+    map.on("zoomend", updateBounds);
+    // Seed once with the current viewport so we don't wait for the first
+    // user gesture before culling the list.
+    updateBounds();
+    return () => {
+      map.off("moveend", updateBounds);
+      map.off("zoomend", updateBounds);
+    };
+  }, [ready]);
+
   // ── Sunlit places derivation (powers BarsList + ViewTabs venueCount) ──────
   // We start from the full viewport places list (every place with
   // `hasOutdoorSeating === true` and matching the category filters) and merge
@@ -927,6 +968,15 @@ export function MapLibrePreviewClient() {
   // entries with null/0 sunlight fields — `getVenueSunStatus` falls back to
   // the visually neutral "Ombre/Créneau" branch in that case, matching the
   // Leaflet client's behaviour for not-yet-arrived tiles.
+  //
+  // `mapBounds` culls the list to the visible viewport so the ViewTabs badge
+  // ("Terrasses N"), the desktop BarsList and the MobileBarsView all reflect
+  // what is actually drawn on the map — not the whole region catalogue we
+  // fetched once at mount. The bbox is updated on `moveend` / `zoomend` only
+  // (see effect above) so the list stays stable during a pan/zoom gesture
+  // and only refreshes once the user has settled. When `mapBounds === null`
+  // (pre-map-ready) we pass every place through so the first paint isn't
+  // empty.
   const sunlitPlaces = useMemo<VenueCardPlace[]>(() => {
     // Read both refs at call time; the tick deps below are what re-triggers us
     // when either rawPlacesRef.current or sunlitTimelinePlacesRef.current was
@@ -936,7 +986,18 @@ export function MapLibrePreviewClient() {
     const raw = rawPlacesRef.current;
     const timeline = sunlitTimelinePlacesRef.current;
     return raw
-      .filter((p) => p.hasOutdoorSeating && filters[placeChipKey(p.category, p.subcategory)])
+      .filter((p) => {
+        if (!p.hasOutdoorSeating) return false;
+        if (!filters[placeChipKey(p.category, p.subcategory)]) return false;
+        if (mapBounds) {
+          // Inclusive on all four edges — places exactly on the boundary
+          // are kept (matches `applyPlacesToSource` which uses the same
+          // half-open-but-inclusive semantics for marker culling).
+          if (p.lat < mapBounds.minLat || p.lat > mapBounds.maxLat) return false;
+          if (p.lon < mapBounds.minLon || p.lon > mapBounds.maxLon) return false;
+        }
+        return true;
+      })
       .map<VenueCardPlace>((p) => {
         const match = timeline.get(p.id);
         return {
@@ -966,7 +1027,7 @@ export function MapLibrePreviewClient() {
           sunlightEndLocalTime: match?.sunlightEndLocalTime ?? null,
         };
       });
-  }, [rawPlacesTick, sunlitTimelinePlacesTick, filters]);
+  }, [rawPlacesTick, sunlitTimelinePlacesTick, filters, mapBounds]);
 
   // ── Mobile search handlers (mirror SearchPanel/sunlight-map-client) ───────
   const SUGGESTION_TARGET_ZOOM = 19;
