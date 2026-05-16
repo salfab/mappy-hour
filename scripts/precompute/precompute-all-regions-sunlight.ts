@@ -246,6 +246,10 @@ function parseSkipPreflightArg(argv: string[]): boolean {
  * de TOUTES les régions du fichier de sélection, AVANT de commencer quelque
  * précalcul que ce soit. Le script cible est idempotent : il saute les tuiles
  * déjà cachées et ne régénère que les manquantes.
+ *
+ * Retourne l'ensemble des régions skippées (buildings index manquant ou autre
+ * erreur preflight). Ces régions seront exclues du precompute mais n'abortent
+ * pas les autres.
  */
 function ensureGridMetadataForAllRegions(
   regions: string[],
@@ -253,11 +257,12 @@ function ensureGridMetadataForAllRegions(
   gridStepMeters: number,
   buildingsShadowMode: ExperimentalBuildingsShadowMode,
   allowZeroIndoor: boolean,
-): void {
+): Set<string> {
   console.log(
     `\n[precompute-all] ▶ preflight grid-metadata : ${regions.length} région(s), grid=${gridStepMeters}m, fichier=${selectionFile}`,
   );
   const preflightStart = Date.now();
+  const skipped = new Set<string>();
 
   for (const region of regions) {
     const args = [
@@ -279,20 +284,40 @@ function ensureGridMetadataForAllRegions(
       env: { ...process.env, MAPPY_BUILDINGS_SHADOW_MODE: "gpu-raster" },
     });
     if (result.error) {
-      throw new Error(
-        `grid-metadata preflight spawn error for région=${region}: ${result.error.message}`,
+      console.error(
+        `\x1b[31m\x1b[1m[precompute-all] ✗ grid-metadata spawn error pour région=${region}: ${result.error.message}\x1b[0m`,
       );
+      console.warn(
+        `\x1b[33m[precompute-all] ⚠ région=${region} skippée (erreur preflight grid-metadata)\x1b[0m`,
+      );
+      skipped.add(region);
+      continue;
     }
     if (result.status !== 0 || result.signal) {
       const detail = result.signal ? `signal=${result.signal}` : `exit=${result.status}`;
-      throw new Error(
-        `grid-metadata preflight failed for région=${region} (${detail}). Aucune région n'a été précalculée.`,
+      console.error(
+        `\x1b[31m\x1b[1m[precompute-all] ✗ grid-metadata preflight échoué pour région=${region} (${detail})\x1b[0m`,
       );
+      console.warn(
+        `\x1b[33m[precompute-all] ⚠ région=${region} skippée — vérifiez que les buildings sont ingérés :\x1b[0m`,
+      );
+      console.warn(
+        `\x1b[33m[precompute-all]   npx tsx scripts/preprocess/build-buildings-index.ts --region=${region}\x1b[0m`,
+      );
+      skipped.add(region);
+      continue;
     }
   }
 
   const elapsed = ((Date.now() - preflightStart) / 1000).toFixed(1);
-  console.log(`[precompute-all] ✓ preflight grid-metadata terminé en ${elapsed}s\n`);
+  if (skipped.size > 0) {
+    console.warn(
+      `\x1b[33m[precompute-all] ⚠ preflight grid-metadata terminé en ${elapsed}s — ${skipped.size} région(s) skippée(s) : ${[...skipped].join(", ")}\x1b[0m\n`,
+    );
+  } else {
+    console.log(`[precompute-all] ✓ preflight grid-metadata terminé en ${elapsed}s\n`);
+  }
+  return skipped;
 }
 
 async function main() {
@@ -369,6 +394,8 @@ async function main() {
     );
   }
 
+  const skippedDueToPreflight = new Set<string>();
+
   if (skipPreflight) {
     console.warn(
       "\x1b[1;93m[precompute-all] ⚠ --skip-preflight : la grid-metadata ne sera PAS régénérée.\x1b[0m\n" +
@@ -376,13 +403,11 @@ async function main() {
         "[precompute-all]   déjà les fichiers requis. Si une tuile manque, le précompute en aval échouera.",
     );
   } else {
-    try {
-      ensureGridMetadataForAllRegions(regions, selectionFile, gridStepMeters, buildingsShadowMode, allowZeroIndoor);
-    } catch (err) {
-      console.error(`[precompute-all] ✗ ${(err as Error).message}`);
-      process.exitCode = 1;
-      return;
-    }
+    const gridMetadataSkipped = ensureGridMetadataForAllRegions(
+      regions, selectionFile, gridStepMeters, buildingsShadowMode, allowZeroIndoor,
+    );
+    for (const r of gridMetadataSkipped) skippedDueToPreflight.add(r);
+    if (gridMetadataSkipped.size > 0) process.exitCode = 1;
   }
 
   // Atlas-health preflight, per region, before any precompute work. Two
@@ -393,7 +418,6 @@ async function main() {
   //     generated without terrain horizon (terrainHorizonMethod=none or
   //     "No horizon mask" warning).
   // See src/lib/precompute/preflight-atlas-health.ts.
-  const skippedDueToPreflight = new Set<string>();
   {
     const { runPreflight } = await import("../../src/lib/precompute/preflight-atlas-health");
     console.log(`\n[precompute-all] ▶ preflight atlas-health : ${regions.length} région(s)`);
