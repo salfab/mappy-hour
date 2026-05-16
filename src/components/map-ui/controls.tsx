@@ -42,6 +42,14 @@ interface LayerFiltersProps {
   canShowHeatmap: boolean;
   cacheOnly: boolean;
   forceCacheOnly: boolean;
+  /**
+   * Show the Ensoleillement/Heatmap segmented toggle. Default true.
+   * Hidden in mobile bottom-sheet compact/middle states (where vertical
+   * room is scarce) — Heatmap is an "advanced" view, only worth the
+   * vertical real estate when the user has explicitly expanded the
+   * sheet to its max.
+   */
+  showOverlayMode?: boolean;
   onOverlayModeChange: (value: OverlayMode) => void;
   onShowTerrainChange: (value: boolean) => void;
   onShowPlacesChange: (value: boolean) => void;
@@ -319,14 +327,22 @@ export function LayerFilters(props: LayerFiltersProps) {
   // standalone Relief button — same visual weight, but Relief is an
   // independent layer toggle, not a mutex peer. Below, Sans arbres and
   // Terrasses sit in their own row using the pastel toggle treatment.
+  //
+  // When `showOverlayMode` is false (mobile bottom-sheet not fully expanded),
+  // the Ensoleillement/Heatmap toggle is hidden and Relief gets the full row
+  // — saves the row's vertical footprint, which is exactly what we needed to
+  // make the compact / middle states fit without an inner scrollbar.
+  const showOverlayMode = props.showOverlayMode ?? true;
   return (
     <div className="flex flex-col gap-2 text-sm" aria-label="Couches de carte">
       <div className="flex items-stretch gap-2">
-        <OverlaySelector
-          mode={props.overlayMode}
-          canShowHeatmap={props.canShowHeatmap}
-          onModeChange={props.onOverlayModeChange}
-        />
+        {showOverlayMode ? (
+          <OverlaySelector
+            mode={props.overlayMode}
+            canShowHeatmap={props.canShowHeatmap}
+            onModeChange={props.onOverlayModeChange}
+          />
+        ) : null}
         <ReliefToggle pressed={props.showTerrain} onPressedChange={props.onShowTerrainChange} />
       </div>
       <div className="flex flex-wrap items-center gap-2">

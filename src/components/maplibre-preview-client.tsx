@@ -1529,28 +1529,44 @@ export function MapLibrePreviewClient() {
       placesError={null}
     />
   );
-  const layerFiltersNode = (
+  // Shared props for both desktop and mobile LayerFilters. Building one
+  // object lets the mobile variant override only `showOverlayMode` based on
+  // the bottom-sheet state, without duplicating the callbacks.
+  const layerFiltersBaseProps = {
+    overlayMode,
+    showTerrain,
+    showPlaces,
+    ignoreVegetationShadow,
+    canShowHeatmap,
+    cacheOnly,
+    forceCacheOnly,
+    onOverlayModeChange: (value: OverlayMode) => {
+      if (value === "heatmap") {
+        setStyleSettings((s) => ({ ...s, showSunny: false, showShadow: false }));
+        setShowHeatmap(true);
+      } else {
+        setStyleSettings((s) => ({ ...s, showSunny: true, showShadow: true }));
+        setShowHeatmap(false);
+      }
+    },
+    onShowTerrainChange: setShowTerrain,
+    onShowPlacesChange: setShowPlaces,
+    onIgnoreVegetationShadowChange: setIgnoreVegetationShadow,
+    onCacheOnlyChange: () => {},
+  };
+  // Desktop: always show the Ensoleillement/Heatmap toggle — the sidebar
+  // has the vertical room for it.
+  const layerFiltersNodeDesktop = (
+    <LayerFilters {...layerFiltersBaseProps} showOverlayMode />
+  );
+  // Mobile bottom-sheet: only show the toggle once the user has dragged the
+  // sheet to its `expanded` state. In compact/middle the Heatmap option is
+  // hidden so the inner content fits the sheet height without an inner
+  // scrollbar (Heatmap is an advanced view, not first-screen content).
+  const layerFiltersNodeMobile = (
     <LayerFilters
-      overlayMode={overlayMode}
-      showTerrain={showTerrain}
-      showPlaces={showPlaces}
-      ignoreVegetationShadow={ignoreVegetationShadow}
-      canShowHeatmap={canShowHeatmap}
-      cacheOnly={cacheOnly}
-      forceCacheOnly={forceCacheOnly}
-      onOverlayModeChange={(value) => {
-        if (value === "heatmap") {
-          setStyleSettings((s) => ({ ...s, showSunny: false, showShadow: false }));
-          setShowHeatmap(true);
-        } else {
-          setStyleSettings((s) => ({ ...s, showSunny: true, showShadow: true }));
-          setShowHeatmap(false);
-        }
-      }}
-      onShowTerrainChange={setShowTerrain}
-      onShowPlacesChange={setShowPlaces}
-      onIgnoreVegetationShadowChange={setIgnoreVegetationShadow}
-      onCacheOnlyChange={() => {}}
+      {...layerFiltersBaseProps}
+      showOverlayMode={bottomSheetState === "expanded"}
     />
   );
 
@@ -1612,7 +1628,7 @@ export function MapLibrePreviewClient() {
                 expose one either (mode is driven by localStorage, deep-link
                 query params, and cache-focus selection). */}
             {progressStatusNode}
-            {layerFiltersNode}
+            {layerFiltersNodeDesktop}
             {coveragePanel}
             <FilterPanel filters={filters} onChange={setFilters} />
             <StylePanel settings={styleSettings} onChange={setStyleSettings} />
@@ -1812,7 +1828,7 @@ export function MapLibrePreviewClient() {
               {progressStatusNode}
             </div>
           }
-          filters={layerFiltersNode}
+          filters={layerFiltersNodeMobile}
           coverage={coveragePanel}
           onStateChange={setBottomSheetState}
           onOpenBars={() => setIsMobileBarsOpen(true)}
