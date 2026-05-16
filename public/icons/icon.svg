@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mappy Hour app icon — "any" purpose (full bleed).
+  Placeholder design: amber sun disc on cream background, stylised "M".
+  Replace with designer-made artwork before launch.
+  Safe zone is not enforced here (use icon-maskable.svg for adaptive icons).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Mappy Hour">
+  <title>Mappy Hour</title>
+  <rect width="512" height="512" rx="96" ry="96" fill="#fffbeb"/>
+  <g transform="translate(256 256)">
+    <!-- Sun rays -->
+    <g stroke="#f59e0b" stroke-width="14" stroke-linecap="round" fill="none">
+      <line x1="0" y1="-200" x2="0" y2="-160"/>
+      <line x1="0" y1="200" x2="0" y2="160"/>
+      <line x1="-200" y1="0" x2="-160" y2="0"/>
+      <line x1="200" y1="0" x2="160" y2="0"/>
+      <line x1="-141" y1="-141" x2="-113" y2="-113"/>
+      <line x1="141" y1="141" x2="113" y2="113"/>
+      <line x1="141" y1="-141" x2="113" y2="-113"/>
+      <line x1="-141" y1="141" x2="-113" y2="113"/>
+    </g>
+    <!-- Amber sun disc, ~60% of canvas -->
+    <circle r="138" fill="#fbbf24"/>
+    <!-- Stylised "M" glyph, white, centred in disc -->
+    <path
+      d="M -78 60 L -78 -60 L -36 -60 L 0 -8 L 36 -60 L 78 -60 L 78 60 L 48 60 L 48 -22 L 12 30 L -12 30 L -48 -22 L -48 60 Z"
+      fill="#ffffff"
+      stroke="#ffffff"
+      stroke-width="2"
+      stroke-linejoin="round"
+    />
+  </g>
+</svg>

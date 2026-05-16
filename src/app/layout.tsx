@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Fraunces, Geist, Geist_Mono } from "next/font/google";
 import "leaflet/dist/leaflet.css";
 import "./globals.css";
@@ -61,6 +61,28 @@ export const metadata: Metadata = {
     description,
     images: [ogImage],
   },
+  // PWA — manifest, app icons, and iOS home-screen hints.
+  // The PNG fallback set is not shipped yet (placeholder SVGs only), so iOS
+  // Safari may render a screenshot when a user runs "Add to Home Screen".
+  // See docs/deployment/pwa-install.md for the icon replacement plan.
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Mappy Hour",
+  },
+  icons: {
+    icon: [{ url: "/icons/icon.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/icons/icon.svg", type: "image/svg+xml" }],
+  },
+};
+
+// Next 16 routes `themeColor` and `viewport` through a dedicated export so the
+// values can be tuned per-route. Keeping it minimal here: the amber accent
+// (#f59e0b) matches the PWA manifest theme_color and tints the Android status
+// bar / Chrome address bar when the app is launched standalone.
+export const viewport: Viewport = {
+  themeColor: "#f59e0b",
 };
 
 // Umami analytics — self-hosted on Mitch, proxied at /_analytics/script.js

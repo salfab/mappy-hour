@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mappy Hour app icon — "maskable" purpose.
+  The design (sun disc + "M") sits inside an 80% inner safe zone (radius 205 of 512),
+  so Android's adaptive-icon mask can crop the cream background freely.
+  Replace with designer-made artwork before launch.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Mappy Hour">
+  <title>Mappy Hour</title>
+  <!-- Full-bleed cream background (mask can clip safely). -->
+  <rect width="512" height="512" fill="#fffbeb"/>
+  <g transform="translate(256 256)">
+    <!-- Sun rays kept inside the 80% safe zone (radius <= 205). -->
+    <g stroke="#f59e0b" stroke-width="12" stroke-linecap="round" fill="none">
+      <line x1="0" y1="-170" x2="0" y2="-140"/>
+      <line x1="0" y1="170" x2="0" y2="140"/>
+      <line x1="-170" y1="0" x2="-140" y2="0"/>
+      <line x1="170" y1="0" x2="140" y2="0"/>
+      <line x1="-120" y1="-120" x2="-99" y2="-99"/>
+      <line x1="120" y1="120" x2="99" y2="99"/>
+      <line x1="120" y1="-120" x2="99" y2="-99"/>
+      <line x1="-120" y1="120" x2="-99" y2="99"/>
+    </g>
+    <!-- Sun disc, ~50% of full canvas (radius 115 of 256). -->
+    <circle r="115" fill="#fbbf24"/>
+    <!-- Stylised "M" glyph centred in the disc. -->
+    <path
+      d="M -65 50 L -65 -50 L -30 -50 L 0 -7 L 30 -50 L 65 -50 L 65 50 L 40 50 L 40 -18 L 10 25 L -10 25 L -40 -18 L -40 50 Z"
+      fill="#ffffff"
+      stroke="#ffffff"
+      stroke-width="2"
+      stroke-linejoin="round"
+    />
+  </g>
+</svg>

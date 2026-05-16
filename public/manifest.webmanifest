@@ -1,0 +1,28 @@
+{
+  "name": "Mappy Hour — Terrasses au soleil",
+  "short_name": "Mappy Hour",
+  "description": "Trouve les terrasses au soleil autour de Lausanne, Nyon et du Léman.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#f59e0b",
+  "background_color": "#fffbeb",
+  "lang": "fr",
+  "dir": "ltr",
+  "categories": ["food", "lifestyle", "weather"],
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
