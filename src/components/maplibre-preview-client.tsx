@@ -46,6 +46,12 @@ import {
   MAP_MAX_ZOOM,
 } from "@/components/maplibre-preview/map-view-storage";
 import {
+  requestUserGeolocation,
+  type GeolocationOutcome,
+} from "@/lib/geo/geolocation";
+import { GeolocateButton } from "@/components/map-ui/geolocate-button";
+import { GeolocateToast } from "@/components/map-ui/geolocate-toast";
+import {
   loadStoredUiParams,
   persistUiParams,
 } from "@/components/sunlight-map/stored-map-view";
@@ -81,6 +87,9 @@ import {
 
 const DEFAULT_CENTER: [number, number] = [6.6323, 46.5197];
 const DEFAULT_ZOOM = 17;
+/** Zoom level used when the map auto-centers on the user's geolocation —
+ *  approximately a neighborhood scale (≈800 m × 500 m on a desktop viewport). */
+const GEOLOCATION_ZOOM = 15;
 
 // Source + layer IDs for the instant-mode per-point overlay. One source, one
 // layer per category so each can be toggled independently via setLayoutProperty.
@@ -281,6 +290,15 @@ export function MapLibrePreviewClient() {
   const heatmapLayerRef = useRef<MapLibreHeatmapCustomLayer | null>(null);
   const [ready, setReady] = useState(false);
   const [basemapId, setBasemapId] = useState<BaseMapId>("aquarelle");
+
+  // ── Geolocation (first-load auto-center + manual "Me localiser") ──────────
+  // `hadStoredView` captures whether the user already has a saved camera
+  // position. When `true` we never trigger the first-load geolocation —
+  // returning visitors keep their last view. The ref is read once during the
+  // map-mount effect and never updated afterwards (the auto-prompt is a
+  // first-load-only concern). The button still works regardless.
+  const hadStoredViewRef = useRef<boolean>(false);
+  const [geolocateToast, setGeolocateToast] = useState<string | null>(null);
 
   // ── Sunlight state ────────────────────────────────────────────────────────
   const [sunlightVisible, setSunlightVisible] = useState(true);
@@ -1245,6 +1263,10 @@ export function MapLibrePreviewClient() {
     const baseMaps = baseMapsRef.current!;
     const initial = baseMaps.find((b) => b.id === "aquarelle") ?? baseMaps[0];
     const storedView = loadStoredMapView();
+    // Snapshot for the geolocation effect below — it must NOT auto-prompt
+    // when the user already has a saved view (we'd be jumping them away from
+    // their last camera position on every mount).
+    hadStoredViewRef.current = storedView !== null;
     // 1x1 transparent GIF data URI — returned in place of Stadia watercolor
     // tiles that are fully covered by the satellite patchwork. MapLibre still
     // sees a "tile" response (no warning) but no network request lands on the
@@ -1428,6 +1450,71 @@ export function MapLibrePreviewClient() {
       mapRef.current = null;
     };
   }, [fetchPlacesForViewport, handleMoveEndPlaces]);
+
+  // ── Geolocation: apply an outcome (fly + toast) ───────────────────────────
+  // Shared by the first-load auto-prompt and the "Me localiser" button. Reads
+  // `mapRef` lazily so we do not race with mount — if the map is gone (unmount
+  // between async resolve and apply), we silently no-op.
+  const applyGeolocationOutcome = useCallback(
+    (outcome: GeolocationOutcome, opts: { silentOnRefusal?: boolean } = {}) => {
+      const map = mapRef.current;
+      if (!map) return;
+      const { silentOnRefusal = false } = opts;
+      if (outcome.granted && outcome.position) {
+        map.flyTo({
+          center: [outcome.position.lon, outcome.position.lat],
+          zoom: GEOLOCATION_ZOOM,
+          essential: true,
+        });
+        setGeolocateToast("Position détectée — centrée sur votre quartier.");
+        return;
+      }
+      // Position obtained but outside every supported region — keep the
+      // default Lausanne view and tell the user why nothing happened.
+      if (outcome.reason === "out-of-region") {
+        setGeolocateToast(
+          "Position hors zones couvertes — affichage Lausanne par défaut.",
+        );
+        return;
+      }
+      // No actionable signal on first-load refusal: the user explicitly said
+      // no via the browser prompt OR previously stored a refuse. Stay silent.
+      if (silentOnRefusal) return;
+      if (
+        outcome.reason === "user-denied" ||
+        outcome.reason === "permissions-denied" ||
+        outcome.reason === "stored-refuse"
+      ) {
+        setGeolocateToast("Géolocalisation refusée.");
+        return;
+      }
+      if (outcome.reason === "timeout") {
+        setGeolocateToast("Géolocalisation expirée.");
+        return;
+      }
+      if (outcome.reason === "unavailable" || outcome.reason === "no-browser-api") {
+        setGeolocateToast("Géolocalisation indisponible.");
+      }
+    },
+    [],
+  );
+
+  // First-load auto-prompt: only when no stored map view AND the map is
+  // ready. We avoid awaiting inside `useEffect` directly (React lint) by
+  // wrapping in an IIFE. The cleanup flag guards against unmount races.
+  useEffect(() => {
+    if (!ready) return;
+    if (hadStoredViewRef.current) return;
+    let cancelled = false;
+    void (async () => {
+      const outcome = await requestUserGeolocation();
+      if (cancelled) return;
+      applyGeolocationOutcome(outcome, { silentOnRefusal: true });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, applyGeolocationOutcome]);
 
   // Apply basemap switches.
   useEffect(() => {
@@ -1704,6 +1791,16 @@ export function MapLibrePreviewClient() {
   return (
     <div className="absolute inset-0">
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
+
+      {/* "Me localiser" button + ephemeral toast. The button sits in the
+          bottom-right above the sunlight control bar (which lives at
+          bottom-10), the toast slides down from the top — keeping both clear
+          of the desktop sidebar (left) and basemap switcher (top-right). */}
+      <GeolocateButton onResult={(o) => applyGeolocationOutcome(o)} />
+      <GeolocateToast
+        message={geolocateToast}
+        onDismiss={() => setGeolocateToast(null)}
+      />
 
       {/* Desktop horizontal search banner at the top of the screen. Hidden on
           mobile (FloatingSearch lives there). Variant A "kraft paper" glass

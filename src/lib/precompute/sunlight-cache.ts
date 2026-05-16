@@ -201,6 +201,54 @@ export function getPrecomputedRegionBbox(region: PrecomputedRegionName): RegionB
   return REGION_BBOXES[region];
 }
 
+/**
+ * Names of every region we have precomputed sunlight coverage for. Frozen so
+ * callers cannot mutate the source-of-truth list. Order is informative
+ * (Lausanne first = historical default region used as map fallback).
+ */
+export const PRECOMPUTED_REGION_NAMES: readonly PrecomputedRegionName[] = Object.freeze([
+  "lausanne",
+  "nyon",
+  "morges",
+  "geneve",
+  "vevey",
+  "vevey_city",
+  "neuchatel",
+  "la_chaux_de_fonds",
+  "bern",
+  "zurich",
+  "thun",
+] as const);
+
+/**
+ * Returns the (lat, lon) → containing region for any supported region, or
+ * `null` if the point is outside every region's bounding box. Used client-side
+ * to decide whether a browser geolocation result should drive the initial map
+ * center (and which fallback to use otherwise).
+ *
+ * Bbox containment is intentionally permissive — we accept any point within
+ * a region's `localBbox`, even if no atlas tile covers it precisely. The map
+ * center will simply land on the user's position; tile coverage is handled
+ * separately by the overlay code.
+ */
+export function findContainingPrecomputedRegion(
+  lat: number,
+  lon: number,
+): PrecomputedRegionName | null {
+  for (const region of PRECOMPUTED_REGION_NAMES) {
+    const bbox = REGION_BBOXES[region];
+    if (
+      lon >= bbox.minLon &&
+      lon <= bbox.maxLon &&
+      lat >= bbox.minLat &&
+      lat <= bbox.maxLat
+    ) {
+      return region;
+    }
+  }
+  return null;
+}
+
 export function bboxContains(container: RegionBbox, inner: RegionBbox): boolean {
   return (
     container.minLon <= inner.minLon &&

@@ -108,6 +108,12 @@ import {
   type StoredMapView,
   type StoredUiParams,
 } from "@/components/sunlight-map/stored-map-view";
+import {
+  requestUserGeolocation,
+  type GeolocationOutcome,
+} from "@/lib/geo/geolocation";
+import { GeolocateButton } from "@/components/map-ui/geolocate-button";
+import { GeolocateToast } from "@/components/map-ui/geolocate-toast";
 
 type MapPanelTab = "map" | "terraces";
 
@@ -407,6 +413,9 @@ interface InstantStreamDonePayload {
 const METERS_PER_DEGREE_LAT = 111_320;
 const DEFAULT_MAP_CENTER: [number, number] = [46.5197, 6.6323];
 const DEFAULT_MAP_ZOOM = 17;
+/** Zoom level used when auto-centering on the user's geolocation —
+ *  approximately a neighborhood scale. Aligned with the MapLibre preview. */
+const GEOLOCATION_ZOOM = 15;
 const MAP_MAX_NATIVE_ZOOM = 19;
 const FOCUS_RUN_QUERY_KEYS = {
   region: "focusRunRegion",
@@ -2262,6 +2271,12 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   const [cacheOnly, setCacheOnly] = useState(forceCacheOnly);
   const [uiParamsHydrated, setUiParamsHydrated] = useState(false);
   const [isMapReady, setIsMapReady] = useState(false);
+  // ── Geolocation (first-load auto-center + manual "Me localiser") ──────────
+  // Captured during init from `loadStoredMapView()`. When the user already
+  // has a saved camera we skip the auto-prompt so returning visitors keep
+  // their last view. The manual button bypasses this flag entirely.
+  const hadStoredViewRef = useRef<boolean>(false);
+  const [geolocateToast, setGeolocateToast] = useState<string | null>(null);
   const [focusRunParamsFromUrl, setFocusRunParamsFromUrl] =
     useState<FocusRunParams | null>(null);
   const [deepLinkParamsFromUrl, setDeepLinkParamsFromUrl] =
@@ -3062,6 +3077,9 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
 
       leafletModuleRef.current = L;
       const storedView = loadStoredMapView();
+      // Snapshot for the geolocation effect below — skip the auto-prompt
+      // when the user already has a saved camera position.
+      hadStoredViewRef.current = storedView !== null;
       const map = L.map(mapContainerRef.current, {
         zoomControl: false,
         attributionControl: false,
@@ -3255,6 +3273,67 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
       setIsMapReady(false);
     };
   }, [runPointClickDiagnostics]);
+
+  // ── Geolocation: apply an outcome (flyTo + toast) ─────────────────────────
+  // Shared by the first-load auto-prompt and the manual "Me localiser" button.
+  // Reads `mapRef` lazily so we tolerate unmount races between the async
+  // geoloc resolve and apply.
+  const applyGeolocationOutcome = useCallback(
+    (outcome: GeolocationOutcome, opts: { silentOnRefusal?: boolean } = {}) => {
+      const map = mapRef.current;
+      if (!map) return;
+      const { silentOnRefusal = false } = opts;
+      if (outcome.granted && outcome.position) {
+        map.flyTo(
+          [outcome.position.lat, outcome.position.lon],
+          GEOLOCATION_ZOOM,
+          { animate: true },
+        );
+        setGeolocateToast("Position détectée — centrée sur votre quartier.");
+        return;
+      }
+      if (outcome.reason === "out-of-region") {
+        setGeolocateToast(
+          "Position hors zones couvertes — affichage Lausanne par défaut.",
+        );
+        return;
+      }
+      if (silentOnRefusal) return;
+      if (
+        outcome.reason === "user-denied" ||
+        outcome.reason === "permissions-denied" ||
+        outcome.reason === "stored-refuse"
+      ) {
+        setGeolocateToast("Géolocalisation refusée.");
+        return;
+      }
+      if (outcome.reason === "timeout") {
+        setGeolocateToast("Géolocalisation expirée.");
+        return;
+      }
+      if (outcome.reason === "unavailable" || outcome.reason === "no-browser-api") {
+        setGeolocateToast("Géolocalisation indisponible.");
+      }
+    },
+    [],
+  );
+
+  // First-load auto-prompt: only when no stored map view AND the map is
+  // ready. Refusals stay silent here — the user explicitly opted out via the
+  // native browser prompt.
+  useEffect(() => {
+    if (!isMapReady) return;
+    if (hadStoredViewRef.current) return;
+    let cancelled = false;
+    void (async () => {
+      const outcome = await requestUserGeolocation();
+      if (cancelled) return;
+      applyGeolocationOutcome(outcome, { silentOnRefusal: true });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isMapReady, applyGeolocationOutcome]);
 
   // ===== Viewport places overlay (ADR-0025 follow-up) =====
   // Instantiate once map is ready + showPlaces is true. Owns its own
@@ -5559,6 +5638,21 @@ export function SunlightMapClient({ forceCacheOnly }: SunlightMapClientProps) {
   return (
     <section className="relative h-dvh max-h-dvh overflow-hidden bg-slate-950 text-white">
       <div ref={mapContainerRef} className="absolute inset-0 z-0 h-full w-full" />
+
+      {/* "Me localiser" button + ephemeral toast for first-load auto-center
+          feedback. The Leaflet homepage stacks its control surfaces in dense
+          z-index bands (460–700) — we sit above the map but below the search
+          dropdown / panels so the toast never covers an interactive popover. */}
+      <div className="pointer-events-auto absolute inset-0 z-[450] [&>*]:pointer-events-auto">
+        <GeolocateButton
+          onResult={(o) => applyGeolocationOutcome(o)}
+          className="bottom-24 right-4"
+        />
+        <GeolocateToast
+          message={geolocateToast}
+          onDismiss={() => setGeolocateToast(null)}
+        />
+      </div>
 
       <FloatingSearch
         isOpen={isSearchOpen}
