@@ -16,6 +16,10 @@ interface MobileBottomSheetProps {
   controls: React.ReactNode;
   filters: React.ReactNode;
   coverage: React.ReactNode;
+  /** Optional inline card shown at the very top of the sheet content when a
+   *  venue is selected. Visible in every state (compact / middle / expanded);
+   *  the caller is in charge of showing/hiding it based on selection state. */
+  selectedVenue?: React.ReactNode;
   onStateChange: (state: BottomSheetState) => void;
   onOpenBars: () => void;
 }
@@ -478,6 +482,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
             : "overflow-y-auto"
         } overscroll-contain pb-1`}
       >
+        {props.selectedVenue}
         {props.timeline}
         {props.state !== "compact" ? (
           <>

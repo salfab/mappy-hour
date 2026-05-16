@@ -58,6 +58,7 @@ import {
   type ViewportPlaceLite,
 } from "@/components/maplibre-preview/places-source";
 import { PlaceDetailCard } from "@/components/maplibre-preview/place-card";
+import { MobileSelectedVenueCard } from "@/components/maplibre-preview/mobile-selected-venue-card";
 import { BarsList } from "@/components/map-ui/bars-list";
 import type { VenueCardPlace, VenueType } from "@/components/map-ui/venue-card";
 import { SearchPanel } from "@/components/maplibre-preview/search-panel";
@@ -859,6 +860,9 @@ export function MapLibrePreviewClient() {
 
   const handleSelectVenue = useCallback((place: VenueCardPlace) => {
     setSelectedVenueId(place.id);
+    // Close the fullscreen mobile bars list so the user actually sees the
+    // map fly-to. On desktop this state is always false; harmless to set.
+    setIsMobileBarsOpen(false);
     const map = mapRef.current;
     if (map) {
       const targetZoom = Math.max(map.getZoom(), 18);
@@ -1809,6 +1813,27 @@ export function MapLibrePreviewClient() {
         <MobileBottomSheet
           state={bottomSheetState}
           venueCount={sunlitPlaces.length}
+          selectedVenue={
+            selectedPlace ? (
+              <MobileSelectedVenueCard
+                place={selectedPlace}
+                sunlightWindows={cardSunlightWindows}
+                isLoading={isCardSunlightLoading}
+                error={cardSunlightError}
+                onClose={() => setSelectedPlace(null)}
+                onRequestSheetExpand={() => {
+                  // When the user reveals the expanded details and the sheet is
+                  // still in `compact` (where the clamp leaves ~85 px below the
+                  // selected-venue header), bump it up to `middle` so the hours
+                  // + sunlight windows fit without scroll. Any other state is
+                  // already roomy enough — don't change it.
+                  if (bottomSheetState === "compact") {
+                    setBottomSheetState("middle");
+                  }
+                }}
+              />
+            ) : null
+          }
           timeline={
             // Always render — the timeline is the sole row visible in the
             // compact sheet state, so a missing frame set (cold start before
@@ -1854,13 +1879,19 @@ export function MapLibrePreviewClient() {
       />
 
       {selectedPlace ? (
-        <PlaceDetailCard
-          place={selectedPlace}
-          sunlightWindows={cardSunlightWindows}
-          isLoading={isCardSunlightLoading}
-          error={cardSunlightError}
-          onClose={() => setSelectedPlace(null)}
-        />
+        // Desktop only: keep the floating PlaceDetailCard overlay. On mobile
+        // the same content lives inline inside the bottom sheet via
+        // `MobileSelectedVenueCard` (see the MobileBottomSheet `selectedVenue`
+        // prop above) so it no longer occludes the map.
+        <div className="hidden lg:block">
+          <PlaceDetailCard
+            place={selectedPlace}
+            sunlightWindows={cardSunlightWindows}
+            isLoading={isCardSunlightLoading}
+            error={cardSunlightError}
+            onClose={() => setSelectedPlace(null)}
+          />
+        </div>
       ) : null}
     </div>
   );
