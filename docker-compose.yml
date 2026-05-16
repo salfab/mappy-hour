@@ -42,6 +42,11 @@ services:
       # Runtime flag : MAPPY_FORCE_CACHE_ONLY=true → image immuable utilisable
       # sur un serveur GPU (=false) ou headless (=true) sans rebuild.
       - MAPPY_FORCE_CACHE_ONLY=true
+      # Cloudflare Turnstile server-side secret. Comes from .env.ci synced by
+      # the deploy workflow (cf .github/workflows/deploy-mitch.yml). Absent
+      # locally → requireTurnstile() falls through to bypass mode, so dev
+      # without an account works out of the box.
+      - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-}
     ports:
       - "127.0.0.1:3000:3000"
     volumes:

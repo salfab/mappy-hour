@@ -70,6 +70,7 @@ jobs:
           USER: ${{ secrets.MITCH_SSH_USER }}
           UMAMI_APP_SECRET: ${{ secrets.UMAMI_APP_SECRET }}
           UMAMI_DB_PASSWORD: ${{ secrets.UMAMI_DB_PASSWORD }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
         run: |
           set -e
           # Build the .env content locally from GH secrets, then scp it to Mitch.
@@ -79,9 +80,14 @@ jobs:
           # Existing variables not in this list (MAPPY_ATLAS_PATH, etc.) are
           # stable per-host and live in a separate `.env.host` file that
           # docker-compose loads alongside (cf. mitch-deploy-docker.ps1).
+          # TURNSTILE_SECRET_KEY is the server-side counterpart of
+          # NEXT_PUBLIC_TURNSTILE_SITE_KEY (which is baked into the image at
+          # build time, cf docker-publish.yml). The secret stays runtime-only
+          # so it never lands in image layers.
           {
             printf 'UMAMI_APP_SECRET=%s\n' "$UMAMI_APP_SECRET"
             printf 'UMAMI_DB_PASSWORD=%s\n' "$UMAMI_DB_PASSWORD"
+            printf 'TURNSTILE_SECRET_KEY=%s\n' "$TURNSTILE_SECRET_KEY"
           } > .env.ci
           scp -o ConnectTimeout=30 .env.ci "$USER@$HOST:C:/srv/mappy-hour/.env.ci"
 

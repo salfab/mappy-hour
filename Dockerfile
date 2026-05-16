@@ -28,6 +28,11 @@ ARG NEXT_PUBLIC_STADIA_API_KEY=""
 ENV NEXT_PUBLIC_STADIA_API_KEY=$NEXT_PUBLIC_STADIA_API_KEY
 ARG NEXT_PUBLIC_UMAMI_WEBSITE_ID=""
 ENV NEXT_PUBLIC_UMAMI_WEBSITE_ID=$NEXT_PUBLIC_UMAMI_WEBSITE_ID
+# Public site key for Cloudflare Turnstile. Lives in the client bundle by
+# design — it identifies the site, not the secret. Empty value falls through
+# to bypass mode (cf src/components/security/turnstile-gate.tsx).
+ARG NEXT_PUBLIC_TURNSTILE_SITE_KEY=""
+ENV NEXT_PUBLIC_TURNSTILE_SITE_KEY=$NEXT_PUBLIC_TURNSTILE_SITE_KEY
 
 COPY . .
 RUN pnpm build
