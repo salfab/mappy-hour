@@ -79,6 +79,22 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
   const dragStartYRef = useRef<number | null>(null);
   const suppressNextClickRef = useRef(false);
   const contentRef = useRef<HTMLDivElement | null>(null);
+  // While the panel is animating to a new size (or being live-previewed during
+  // a drag), the content can briefly overflow the smaller target height. With
+  // `overflow-y-auto` always on, the browser shows a scrollbar for those few
+  // animation frames then hides it — visually a flicker. We track an
+  // "isResizing" flag and switch the inner scroller to `overflow-y-hidden`
+  // while it's true, so no scrollbar can appear mid-transition.
+  const [isResizing, setIsResizing] = useState(false);
+  useEffect(() => {
+    // Sheet just settled on a new state — match the CSS `transition-[height]
+    // duration-150` window before re-enabling scroll. Slightly longer (180 ms)
+    // to absorb the trailing frame where height has converged but reflow may
+    // still report a stale scrollHeight.
+    setIsResizing(true);
+    const id = window.setTimeout(() => setIsResizing(false), 180);
+    return () => window.clearTimeout(id);
+  }, [props.state]);
   // Touch-driven scroll hijack state: when the user starts a touch inside the
   // scrollable content area we delay the verdict until the first significant
   // move, then either claim the gesture as a sheet drag (preventDefault on
@@ -451,7 +467,16 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
         // gestures by default (so the inner list still scrolls when the
         // user explicitly scrolls), while our touchmove handler can call
         // preventDefault() to claim the gesture as a sheet drag.
-        className={`grid min-h-0 touch-pan-y ${contentGapClass} overflow-y-auto overscroll-contain pb-1`}
+        //
+        // Suppress the inner scroller while resizing (live drag preview or
+        // height transition) — the content can temporarily overflow the
+        // smaller target before the height animation catches up, and the
+        // browser would flash a scrollbar for a couple of frames otherwise.
+        className={`grid min-h-0 touch-pan-y ${contentGapClass} ${
+          isResizing || dragPreview !== null
+            ? "overflow-hidden"
+            : "overflow-y-auto"
+        } overscroll-contain pb-1`}
       >
         {props.timeline}
         {props.state !== "compact" ? (
