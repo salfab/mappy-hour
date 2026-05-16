@@ -185,16 +185,18 @@ export function TurnstileGate(): React.ReactElement | null {
         if (!container) {
           container = document.createElement("div");
           container.id = WIDGET_CONTAINER_ID;
-          // Out of the document flow, no interaction surface — invisible
-          // challenges don't render anything visible anyway but Turnstile
-          // still requires a host element.
+          // Pinned to bottom-right, *with* room to grow. With `appearance:
+          // "execute"` the widget stays 0×0 for trusted traffic — but when
+          // Cloudflare escalates to an interactive challenge (typical on
+          // mobile / unknown IP / first visit) it injects a ~300×65 iframe
+          // and the user must be able to see and click it. We previously
+          // pinned the container to 0×0 + overflow:hidden, which silently
+          // dropped escalations and left the gate stuck on "Vérification…"
+          // forever.
           container.style.position = "fixed";
-          container.style.bottom = "0";
-          container.style.right = "0";
-          container.style.width = "0";
-          container.style.height = "0";
-          container.style.overflow = "hidden";
-          container.setAttribute("aria-hidden", "true");
+          container.style.bottom = "16px";
+          container.style.right = "16px";
+          container.style.zIndex = "9999";
           document.body.appendChild(container);
         }
 
