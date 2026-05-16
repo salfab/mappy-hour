@@ -25,6 +25,7 @@ import {
 import type { BinaryTileAtlas } from "@/lib/precompute/sunlight-cache-atlas";
 import { getAtlasBucketMasks } from "@/lib/precompute/sunlight-cache-atlas";
 import type { PrecomputedSunlightTileArtifact } from "@/lib/precompute/sunlight-cache";
+import { requireTurnstile } from "@/lib/security/turnstile";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
 import { encodeTileMasksBlob } from "@/lib/encoding/mask-codec-server";
 import { compactTileId } from "@/lib/encoding/tile-id-compact";
@@ -278,6 +279,17 @@ function isInsideQueryBbox(place: PlaceEntry, bbox: { minLon: number; minLat: nu
 }
 
 export async function GET(request: Request) {
+  // Bot gate. In dev (no `TURNSTILE_SECRET_KEY`) this short-circuits to ok.
+  // In prod, the absence of the `mh-turnstile-ok` cookie means the caller
+  // never executed the Turnstile JS widget — almost certainly a crawler.
+  const gate = requireTurnstile(request);
+  if (!gate.ok) {
+    return NextResponse.json(
+      { error: "turnstile-required", reason: gate.reason },
+      { status: 403 },
+    );
+  }
+
   const url = new URL(request.url);
   const rawQuery = Object.fromEntries(url.searchParams.entries());
   const parsed = querySchema.safeParse(rawQuery);

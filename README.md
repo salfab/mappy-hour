@@ -593,3 +593,14 @@ Un changement d'`algorithmVersion` ou d'`artifactFormatVersion` invalide les rel
 - `data/processed/precompute/high-value-tile-selection.json`
 - `data/processed/precompute/high-value-tile-selection.top-priority.json`
 - `docs/assets/high-value-tiles-top-priority-map.html`
+
+## Bot filtering
+
+L'app gate les endpoints SSE coûteux (`/api/sunlight/timeline/stream`,
+`/api/sunlight/instant/stream`, `/api/places/viewport`) derrière Cloudflare
+Turnstile, pour éviter que des crawlers ne saturent le CPU du serveur de prod
+(Mitch). Sans clés provisionnées, le gate est totalement désactivé — utile
+en dev local et sur les preview builds.
+
+Voir [`docs/security/turnstile.md`](docs/security/turnstile.md) pour la
+config Cloudflare et la liste des variables d'environnement.

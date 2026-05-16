@@ -4,6 +4,7 @@ import "leaflet/dist/leaflet.css";
 import "./globals.css";
 
 import { CpuProbeOverlay } from "@/components/diag/cpu-probe-overlay";
+import { TurnstileGate } from "@/components/security/turnstile-gate";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -79,6 +80,13 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable} antialiased`}
       >
         {children}
+        {/* Invisible Cloudflare Turnstile gate. Mounts a hidden challenge widget
+            and POSTs the resulting token to /api/turnstile/verify so an HttpOnly
+            `mh-turnstile-ok` cookie can gate the expensive SSE / viewport
+            endpoints on subsequent fetches. When NEXT_PUBLIC_TURNSTILE_SITE_KEY
+            is unset (local dev), the component renders nothing — see
+            docs/security/turnstile.md. */}
+        <TurnstileGate />
         {/* Opt-in debug overlay shown only when `?debug-cpu=1` is in the URL.
             Lets us watch Mitch's CPU/memory while users toggle UI knobs that
             re-trigger SSE timeline streams. See docs/observability/cpu-probe.md. */}

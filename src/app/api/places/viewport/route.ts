@@ -12,6 +12,7 @@ import {
   mapWithConcurrency,
   snapPlaceToOutdoor,
 } from "@/lib/places/snap-to-outdoor";
+import { requireTurnstile } from "@/lib/security/turnstile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -75,6 +76,16 @@ const MAX_RESPONSE_PLACES = 5000;
 const SNAP_CONCURRENCY = 16;
 
 export async function POST(request: Request) {
+  // Bot gate. In dev (no `TURNSTILE_SECRET_KEY`) this short-circuits to ok.
+  // See `src/lib/security/turnstile.ts` + `docs/security/turnstile.md`.
+  const gate = requireTurnstile(request);
+  if (!gate.ok) {
+    return NextResponse.json(
+      { error: "turnstile-required", reason: gate.reason },
+      { status: 403 },
+    );
+  }
+
   try {
     const raw = (await request.json()) as unknown;
     const parsed = bodySchema.safeParse(raw);

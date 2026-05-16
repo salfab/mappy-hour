@@ -8,6 +8,7 @@ import { wgs84ToLv95Precise } from "@/lib/geo/projection";
 import { getSunlightModelVersion } from "@/lib/precompute/model-version";
 import { resolveRegionForBbox } from "@/lib/precompute/sunlight-tile-service";
 import { loadTileGridMetadata } from "@/lib/precompute/tile-grid-metadata";
+import { requireTurnstile } from "@/lib/security/turnstile";
 import { buildDynamicHorizonMask } from "@/lib/sun/dynamic-horizon-mask";
 import { buildPointEvaluationContext } from "@/lib/sun/evaluation-context";
 import { normalizeShadowCalibration } from "@/lib/sun/shadow-calibration";
@@ -78,6 +79,16 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 export async function GET(request: Request) {
+  // Bot gate. In dev (no `TURNSTILE_SECRET_KEY`) this short-circuits to ok.
+  // See `src/lib/security/turnstile.ts` + `docs/security/turnstile.md`.
+  const gate = requireTurnstile(request);
+  if (!gate.ok) {
+    return NextResponse.json(
+      { error: "turnstile-required", reason: gate.reason },
+      { status: 403 },
+    );
+  }
+
   if (process.env.MAPPY_FORCE_CACHE_ONLY === "true") {
     return NextResponse.json(
       { error: "Instant stream is unavailable in cache-only mode (MAPPY_FORCE_CACHE_ONLY=true). No grid metadata on this server." },
