@@ -18,7 +18,7 @@
 import {
   findContainingPrecomputedRegion,
   type PrecomputedRegionName,
-} from "@/lib/precompute/sunlight-cache";
+} from "@/lib/regions/regions";
 
 /**
  * localStorage key recording the user's prior geolocation decision so we do

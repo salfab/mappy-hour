@@ -3,18 +3,15 @@ import { promisify } from "node:util";
 import { gzip as gzipCallback, gunzip as gunzipCallback } from "node:zlib";
 import path from "node:path";
 
-import { LAUSANNE_CONFIG } from "@/lib/config/lausanne";
-import { NYON_CONFIG } from "@/lib/config/nyon";
-import { MORGES_CONFIG } from "@/lib/config/morges";
-import { GENEVE_CONFIG } from "@/lib/config/geneve";
-import { VEVEY_CONFIG } from "@/lib/config/vevey";
-import { VEVEY_CITY_CONFIG } from "@/lib/config/vevey_city";
-import { NEUCHATEL_CONFIG } from "@/lib/config/neuchatel";
-import { LA_CHAUX_DE_FONDS_CONFIG } from "@/lib/config/la_chaux_de_fonds";
-import { BERN_CONFIG } from "@/lib/config/bern";
-import { ZURICH_CONFIG } from "@/lib/config/zurich";
-import { THUN_CONFIG } from "@/lib/config/thun";
 import { lv95ToWgs84Precise, wgs84ToLv95Precise } from "@/lib/geo/projection";
+import {
+  REGION_BBOXES,
+  PRECOMPUTED_REGION_NAMES,
+  getPrecomputedRegionBbox,
+  findContainingPrecomputedRegion,
+  type PrecomputedRegionName,
+  type RegionBbox,
+} from "@/lib/regions/regions";
 import { CACHE_SUNLIGHT_DIR } from "@/lib/storage/data-paths";
 import { getSunlightCacheStorage } from "./sunlight-cache-storage";
 import { SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "./model-version";
@@ -22,14 +19,18 @@ import { SUNLIGHT_CACHE_ARTIFACT_FORMAT_VERSION } from "./model-version";
 const gzip = promisify(gzipCallback);
 const gunzip = promisify(gunzipCallback);
 
-export type PrecomputedRegionName = "lausanne" | "nyon" | "morges" | "geneve" | "vevey" | "vevey_city" | "neuchatel" | "la_chaux_de_fonds" | "bern" | "zurich" | "thun";
-
-export interface RegionBbox {
-  minLon: number;
-  minLat: number;
-  maxLon: number;
-  maxLat: number;
-}
+// Re-exported from `@/lib/regions/regions` so existing call sites
+// (`import ... from "@/lib/precompute/sunlight-cache"`) keep working without
+// touching every file. Source of truth for region metadata lives in the
+// client-safe module — anything that only needs bboxes should import from
+// there directly.
+export {
+  REGION_BBOXES,
+  PRECOMPUTED_REGION_NAMES,
+  getPrecomputedRegionBbox,
+  findContainingPrecomputedRegion,
+};
+export type { PrecomputedRegionName, RegionBbox };
 
 export interface RegionTileSpec {
   tileId: string;
@@ -126,127 +127,6 @@ export interface PrecomputedSunlightManifest {
   bbox: RegionBbox;
   generatedAt: string;
   complete: boolean;
-}
-
-const REGION_BBOXES: Record<PrecomputedRegionName, RegionBbox> = {
-  lausanne: {
-    minLon: LAUSANNE_CONFIG.localBbox[0],
-    minLat: LAUSANNE_CONFIG.localBbox[1],
-    maxLon: LAUSANNE_CONFIG.localBbox[2],
-    maxLat: LAUSANNE_CONFIG.localBbox[3],
-  },
-  nyon: {
-    minLon: NYON_CONFIG.localBbox[0],
-    minLat: NYON_CONFIG.localBbox[1],
-    maxLon: NYON_CONFIG.localBbox[2],
-    maxLat: NYON_CONFIG.localBbox[3],
-  },
-  morges: {
-    minLon: MORGES_CONFIG.localBbox[0],
-    minLat: MORGES_CONFIG.localBbox[1],
-    maxLon: MORGES_CONFIG.localBbox[2],
-    maxLat: MORGES_CONFIG.localBbox[3],
-  },
-  geneve: {
-    minLon: GENEVE_CONFIG.localBbox[0],
-    minLat: GENEVE_CONFIG.localBbox[1],
-    maxLon: GENEVE_CONFIG.localBbox[2],
-    maxLat: GENEVE_CONFIG.localBbox[3],
-  },
-  vevey: {
-    minLon: VEVEY_CONFIG.localBbox[0],
-    minLat: VEVEY_CONFIG.localBbox[1],
-    maxLon: VEVEY_CONFIG.localBbox[2],
-    maxLat: VEVEY_CONFIG.localBbox[3],
-  },
-  vevey_city: {
-    minLon: VEVEY_CITY_CONFIG.localBbox[0],
-    minLat: VEVEY_CITY_CONFIG.localBbox[1],
-    maxLon: VEVEY_CITY_CONFIG.localBbox[2],
-    maxLat: VEVEY_CITY_CONFIG.localBbox[3],
-  },
-  neuchatel: {
-    minLon: NEUCHATEL_CONFIG.localBbox[0],
-    minLat: NEUCHATEL_CONFIG.localBbox[1],
-    maxLon: NEUCHATEL_CONFIG.localBbox[2],
-    maxLat: NEUCHATEL_CONFIG.localBbox[3],
-  },
-  la_chaux_de_fonds: {
-    minLon: LA_CHAUX_DE_FONDS_CONFIG.localBbox[0],
-    minLat: LA_CHAUX_DE_FONDS_CONFIG.localBbox[1],
-    maxLon: LA_CHAUX_DE_FONDS_CONFIG.localBbox[2],
-    maxLat: LA_CHAUX_DE_FONDS_CONFIG.localBbox[3],
-  },
-  bern: {
-    minLon: BERN_CONFIG.localBbox[0],
-    minLat: BERN_CONFIG.localBbox[1],
-    maxLon: BERN_CONFIG.localBbox[2],
-    maxLat: BERN_CONFIG.localBbox[3],
-  },
-  zurich: {
-    minLon: ZURICH_CONFIG.localBbox[0],
-    minLat: ZURICH_CONFIG.localBbox[1],
-    maxLon: ZURICH_CONFIG.localBbox[2],
-    maxLat: ZURICH_CONFIG.localBbox[3],
-  },
-  thun: {
-    minLon: THUN_CONFIG.localBbox[0],
-    minLat: THUN_CONFIG.localBbox[1],
-    maxLon: THUN_CONFIG.localBbox[2],
-    maxLat: THUN_CONFIG.localBbox[3],
-  },
-};
-
-export function getPrecomputedRegionBbox(region: PrecomputedRegionName): RegionBbox {
-  return REGION_BBOXES[region];
-}
-
-/**
- * Names of every region we have precomputed sunlight coverage for. Frozen so
- * callers cannot mutate the source-of-truth list. Order is informative
- * (Lausanne first = historical default region used as map fallback).
- */
-export const PRECOMPUTED_REGION_NAMES: readonly PrecomputedRegionName[] = Object.freeze([
-  "lausanne",
-  "nyon",
-  "morges",
-  "geneve",
-  "vevey",
-  "vevey_city",
-  "neuchatel",
-  "la_chaux_de_fonds",
-  "bern",
-  "zurich",
-  "thun",
-] as const);
-
-/**
- * Returns the (lat, lon) → containing region for any supported region, or
- * `null` if the point is outside every region's bounding box. Used client-side
- * to decide whether a browser geolocation result should drive the initial map
- * center (and which fallback to use otherwise).
- *
- * Bbox containment is intentionally permissive — we accept any point within
- * a region's `localBbox`, even if no atlas tile covers it precisely. The map
- * center will simply land on the user's position; tile coverage is handled
- * separately by the overlay code.
- */
-export function findContainingPrecomputedRegion(
-  lat: number,
-  lon: number,
-): PrecomputedRegionName | null {
-  for (const region of PRECOMPUTED_REGION_NAMES) {
-    const bbox = REGION_BBOXES[region];
-    if (
-      lon >= bbox.minLon &&
-      lon <= bbox.maxLon &&
-      lat >= bbox.minLat &&
-      lat <= bbox.maxLat
-    ) {
-      return region;
-    }
-  }
-  return null;
 }
 
 export function bboxContains(container: RegionBbox, inner: RegionBbox): boolean {
