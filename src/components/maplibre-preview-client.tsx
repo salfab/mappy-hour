@@ -87,7 +87,19 @@ import {
   type SunlightStyleSettings,
 } from "@/components/maplibre-preview/style-panel";
 
-const DEFAULT_CENTER: [number, number] = [6.6323, 46.5197];
+/**
+ * Ultimate fallback when neither the geolocation API nor the saved map
+ * view in localStorage gave us a point of anchor. We deliberately pick
+ * the Terrasse des Grandes Roches in Lausanne rather than a neutral
+ * Lausanne city center: it's a real terrace within our precomputed
+ * coverage, so the user lands on something useful for the app's purpose
+ * (finding a sunny terrace) instead of a generic intersection.
+ *
+ * Coords come from the bbox of `grandes-roches` in
+ * `scripts/benchmark/lausanne-hotspots-sunrise-sunset.ts`
+ * (centroid of [6.63555, 46.52125] – [6.6362, 46.52165]).
+ */
+const DEFAULT_CENTER: [number, number] = [6.635875, 46.52145];
 const DEFAULT_ZOOM = 17;
 /** Zoom level used when the map auto-centers on the user's geolocation —
  *  approximately a neighborhood scale (≈800 m × 500 m on a desktop viewport). */
