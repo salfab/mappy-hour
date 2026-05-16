@@ -2,6 +2,14 @@ import os from "node:os";
 
 import { NextResponse } from "next/server";
 
+import { getActiveCount } from "@/lib/observability/active-sse";
+import {
+  getRecentWarnings,
+  recordIfWarning,
+  type CpuWarning,
+  type SystemSnapshot,
+} from "@/lib/observability/cpu-warnings";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -100,30 +108,47 @@ export async function GET(): Promise<NextResponse> {
     const freeMemBytes = os.freemem();
     const usedMemBytes = totalMemBytes - freeMemBytes;
     const memoryUsage = process.memoryUsage();
+    const activeSse = getActiveCount();
+
+    const cpuBlock = {
+      averagePercent,
+      maxCorePercent,
+      coreCount,
+      perCorePercent,
+      // os.loadavg() returns [0,0,0] on Windows. Surface it as null there
+      // so the widget can render "n/a" rather than a misleading "0.0".
+      loadAvg:
+        process.platform === "win32"
+          ? null
+          : {
+              oneMin: Number(loadAvg[0].toFixed(2)),
+              fiveMin: Number(loadAvg[1].toFixed(2)),
+              fifteenMin: Number(loadAvg[2].toFixed(2)),
+            },
+    };
+
+    const timestamp = new Date().toISOString();
+    const snapshotForRule: SystemSnapshot = {
+      timestamp,
+      cpu: {
+        maxCorePercent: cpuBlock.maxCorePercent,
+        coreCount: cpuBlock.coreCount,
+        loadAvg: cpuBlock.loadAvg,
+      },
+    };
+    // Side effect: may push a new entry into the warning ring buffer if
+    // we just crossed the threshold while ≥2 SSE/viewport requests were
+    // active. Anti-spam (5s coalesce) lives inside `recordIfWarning`.
+    const justRecorded: CpuWarning | null = recordIfWarning(snapshotForRule);
 
     return NextResponse.json(
       {
-        timestamp: new Date().toISOString(),
+        timestamp,
         platform: process.platform,
         nodeVersion: process.version,
         uptimeSeconds: Math.round(os.uptime()),
         processUptimeSeconds: Math.round(process.uptime()),
-        cpu: {
-          averagePercent,
-          maxCorePercent,
-          coreCount,
-          perCorePercent,
-          // os.loadavg() returns [0,0,0] on Windows. Surface it as null there
-          // so the widget can render "n/a" rather than a misleading "0.0".
-          loadAvg:
-            process.platform === "win32"
-              ? null
-              : {
-                  oneMin: Number(loadAvg[0].toFixed(2)),
-                  fiveMin: Number(loadAvg[1].toFixed(2)),
-                  fifteenMin: Number(loadAvg[2].toFixed(2)),
-                },
-        },
+        cpu: cpuBlock,
         memory: {
           // OS-level view (host or cgroup-limited depending on container).
           totalMb: Math.round(totalMemBytes / 1024 / 1024),
@@ -137,11 +162,21 @@ export async function GET(): Promise<NextResponse> {
           processHeapTotalMb: Math.round(memoryUsage.heapTotal / 1024 / 1024),
           processExternalMb: Math.round(memoryUsage.external / 1024 / 1024),
         },
-        // TODO: expose number of in-flight /api/sunlight/timeline/stream
-        // requests. Requires plumbing a shared counter through the SSE
-        // route handler — left out for now to keep this endpoint cheap
-        // and side-effect free.
-        activeSseStreams: null,
+        // In-flight SSE / viewport-snap requests. Maintained by route
+        // handlers via try/finally pairs around `increment` / `decrement`
+        // in `@/lib/observability/active-sse`. Surface both the total and
+        // a per-route breakdown so the overlay can render `(t:2 v:1)`.
+        activeSse: {
+          total: activeSse.total,
+          byRoute: activeSse.byRoute,
+        },
+        // Newest-first list of CPU pressure events. Always returned (empty
+        // array when the buffer is fresh); the widget renders a badge with
+        // the count and a collapsible inline list. `justRecorded` flags
+        // whether this poll *added* an entry — used by the overlay to
+        // optionally flash the badge but otherwise informational.
+        recentWarnings: getRecentWarnings(10),
+        warningRecordedThisPoll: justRecorded !== null,
       },
       {
         headers: {

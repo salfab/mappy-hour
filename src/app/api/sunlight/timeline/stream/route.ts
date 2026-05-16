@@ -6,6 +6,10 @@ import { z } from "zod";
 
 import { MAX_OUTDOOR_POINTS, DEFAULT_MAX_OUTDOOR_POINTS } from "@/lib/config/grid-limits";
 import { lv95ToWgs84Precise, wgs84ToLv95Precise } from "@/lib/geo/projection";
+import {
+  decrement as decrementActiveSse,
+  increment as incrementActiveSse,
+} from "@/lib/observability/active-sse";
 import { loadAllPlaces, type PlacesFile } from "@/lib/places/lausanne-places";
 import {
   streamTilesForBbox,
@@ -942,6 +946,14 @@ export async function GET(request: Request) {
           });
         };
 
+        // Mark this request as in-flight so /api/admin/diag/system can
+        // correlate CPU pressure with concurrent streams. Increment is
+        // colocated with the `void run()` call so the matching decrement
+        // in `.finally()` cannot be skipped by an unrelated throw earlier
+        // in `start()`. `finally` fires whether `run()` completes cleanly,
+        // throws, or the client aborts (which flips `streamAborted` and
+        // makes `run()` short-circuit), so the counter cannot drift.
+        incrementActiveSse("timeline-stream");
         void run()
           .catch((error) => {
             const message =
@@ -959,6 +971,7 @@ export async function GET(request: Request) {
                 controllerClosed = true;
               }
             }
+            decrementActiveSse("timeline-stream");
           });
       },
     });

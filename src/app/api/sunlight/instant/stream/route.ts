@@ -5,6 +5,10 @@ import { z } from "zod";
 
 import { buildGridFromBbox } from "@/lib/geo/grid";
 import { wgs84ToLv95Precise } from "@/lib/geo/projection";
+import {
+  decrement as decrementActiveSse,
+  increment as incrementActiveSse,
+} from "@/lib/observability/active-sse";
 import { getSunlightModelVersion } from "@/lib/precompute/model-version";
 import { resolveRegionForBbox } from "@/lib/precompute/sunlight-tile-service";
 import { loadTileGridMetadata } from "@/lib/precompute/tile-grid-metadata";
@@ -450,6 +454,12 @@ export async function GET(request: Request) {
           });
         };
 
+        // Mark this request as in-flight so /api/admin/diag/system can
+        // correlate CPU pressure with concurrent streams. `finally` fires
+        // whether the stream completed cleanly, threw, or the client
+        // aborted (which flips `streamAborted` and makes `run()` short-
+        // circuit), so the counter cannot drift.
+        incrementActiveSse("instant-stream");
         void run()
           .catch((error) => {
             const message =
@@ -461,6 +471,7 @@ export async function GET(request: Request) {
           })
           .finally(() => {
             controller.close();
+            decrementActiveSse("instant-stream");
           });
       },
     });

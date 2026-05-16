@@ -3,6 +3,10 @@ import { performance } from "node:perf_hooks";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import {
+  decrement as decrementActiveSse,
+  increment as incrementActiveSse,
+} from "@/lib/observability/active-sse";
 import { loadAllPlaces } from "@/lib/places/lausanne-places";
 import {
   filterPlacesInBounds,
@@ -86,6 +90,11 @@ export async function POST(request: Request) {
     );
   }
 
+  // Mark this request as in-flight so /api/admin/diag/system can correlate
+  // CPU pressure with concurrent viewport snap-loops. Paired with the
+  // matching `decrement` in the `finally` block so the counter cannot
+  // drift on exception, abort, or early return.
+  incrementActiveSse("places-viewport");
   try {
     const raw = (await request.json()) as unknown;
     const parsed = bodySchema.safeParse(raw);
@@ -217,5 +226,7 @@ export async function POST(request: Request) {
       },
       { status: 500 },
     );
+  } finally {
+    decrementActiveSse("places-viewport");
   }
 }
