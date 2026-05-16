@@ -2,6 +2,8 @@
 
 import { useEffect, useRef } from "react";
 
+import { markTurnstileReady } from "@/lib/security/turnstile-ready";
+
 /**
  * Invisible Cloudflare Turnstile widget mounted at the page root.
  *
@@ -15,13 +17,16 @@ import { useEffect, useRef } from "react";
  * return `null` and never inject the Turnstile script. This pairs with the
  * server-side dev mode (no `TURNSTILE_SECRET_KEY` → gates short-circuit to
  * ok=true) so local development works without any Cloudflare provisioning.
+ * In that mode we still flip the global `ready` flag to `true` on mount so
+ * client-side consumers (cf. `useTurnstileReady`) don't sit waiting forever.
  *
  * Lifecycle:
  *   1. On mount, inject `<script src=".../turnstile/v0/api.js">` once.
  *   2. When `window.turnstile` is ready, render the widget in `invisible`
  *      mode. Cloudflare executes the challenge in the background.
  *   3. On `callback(token)`, POST it to `/api/turnstile/verify` (same-origin
- *      so the resulting cookie sticks).
+ *      so the resulting cookie sticks). On 200, mark the gate as ready so
+ *      gated callers can fire (cf. `useTurnstileReady` / `getTurnstileReadyPromise`).
  *   4. On `error-callback` / `expired-callback`, reset the widget so the
  *      next interaction can trigger a fresh challenge. Errors stay silent
  *      from the user's perspective.
@@ -75,7 +80,13 @@ export function TurnstileGate(): React.ReactElement | null {
 
   useEffect(() => {
     if (!siteKey || siteKey.trim().length === 0) {
-      // Dev / no-keys mode — gate is intentionally disabled.
+      // Dev / no-keys mode — gate is intentionally disabled. Mirror the
+      // server-side bypass (cf. `isTurnstileEnabledServer` in
+      // `src/lib/security/turnstile.ts`): flip the client-side ready flag to
+      // `true` immediately so `useTurnstileReady()` resolves without ever
+      // waiting on Cloudflare. Without this, the auto-fetch effects gated on
+      // `turnstileReady` would never fire in local dev.
+      markTurnstileReady();
       return;
     }
     // StrictMode in dev double-invokes effects; the widget would otherwise
@@ -136,12 +147,28 @@ export function TurnstileGate(): React.ReactElement | null {
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
         body: JSON.stringify({ token }),
-      }).catch((err) => {
-        // We intentionally do not surface the error to the UI; the gate is
-        // best-effort. If verification fails the subsequent SSE calls will
-        // simply be rejected with 403 and the user can refresh.
-        console.warn("[turnstile] verify endpoint POST failed:", err);
-      });
+      })
+        .then((response) => {
+          // Only mark ready on a 2xx — a 400 (token rejected) or 502
+          // (siteverify unreachable) leaves the cookie unset, so the gated
+          // routes would still 403. Cloudflare's `retry: "auto"` will fire
+          // the callback again on token refresh; the next successful POST
+          // flips the flag. We intentionally don't track the partial state
+          // (the UI stays in "checking" mode until the gate clears).
+          if (response.ok) {
+            markTurnstileReady();
+          } else {
+            console.warn(
+              `[turnstile] verify endpoint returned ${response.status}; gated routes will keep returning 403 until the next challenge`,
+            );
+          }
+        })
+        .catch((err) => {
+          // We intentionally do not surface the error to the UI; the gate
+          // is best-effort. If verification fails the subsequent SSE calls
+          // will simply be rejected with 403 and the user can refresh.
+          console.warn("[turnstile] verify endpoint POST failed:", err);
+        });
     };
 
     const run = async () => {
