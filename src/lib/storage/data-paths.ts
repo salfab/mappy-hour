@@ -91,33 +91,12 @@ export const PROCESSED_HORIZON_MASK_PATH = path.join(
 export const PROCESSED_BUILDINGS_DIR = path.join(PROCESSED_ROOT, "buildings");
 
 /**
- * Regions that share a single buildings index (the historical Lausanne cluster).
- * Adding Bern/Zurich/etc. to this set would merge their data into the shared
- * index, invalidating cache for all cluster members — don't do that.
- */
-const LAUSANNE_CLUSTER_REGIONS = new Set([
-  "lausanne",
-  "morges",
-  "nyon",
-  "vevey",
-  "vevey_city",
-  "geneve",
-]);
-
-/**
  * Returns the path to the buildings index JSON for a given region.
- *
- * - Lausanne-cluster regions (lausanne, morges, nyon, vevey, vevey_city,
- *   geneve) all share `buildings-index.json` so that adding one does not
- *   bust the atlas cache of the others.
- * - Other regions use `{region}-buildings-index.json` when present,
- *   falling back to `buildings-index.json` if no region-specific file
- *   exists yet (graceful degradation during initial ingest).
+ * Every region has its own `{region}-buildings-index.json` file.
+ * Falls back to the legacy shared `buildings-index.json` if the per-region
+ * file does not exist yet (graceful degradation during initial ingest).
  */
 export function getBuildingsIndexPath(region: string): string {
-  if (LAUSANNE_CLUSTER_REGIONS.has(region)) {
-    return path.join(PROCESSED_BUILDINGS_DIR, "buildings-index.json");
-  }
   const regionSpecific = path.join(
     PROCESSED_BUILDINGS_DIR,
     `${region}-buildings-index.json`,
@@ -127,6 +106,16 @@ export function getBuildingsIndexPath(region: string): string {
   }
   return path.join(PROCESSED_BUILDINGS_DIR, "buildings-index.json");
 }
+/**
+ * @deprecated Use getBuildingsIndexPath(region) instead. This constant points
+ * to the legacy filename and is kept only for backward compat with
+ * build-lausanne-buildings-index.ts.
+ */
+export const PROCESSED_BUILDINGS_INDEX_PATH = path.join(
+  PROCESSED_BUILDINGS_DIR,
+  "lausanne-buildings-index.json",
+);
+
 export const PROCESSED_PLACES_DIR = path.join(PROCESSED_ROOT, "places");
 export const PROCESSED_LAUSANNE_PLACES_PATH = path.join(
   PROCESSED_PLACES_DIR,

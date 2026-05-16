@@ -1590,6 +1590,7 @@ export async function precomputeCacheRuns(
             maxX: tile.maxEasting,
             maxY: tile.maxNorthing,
           },
+          region: request.region,
         });
         lastDispatchedZoneKey = tileZoneKey;
       }
