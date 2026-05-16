@@ -61,7 +61,7 @@ export function GeolocateButton({
   }, [busy, onResult]);
 
   const baseClass =
-    "absolute z-10 grid h-9 w-9 place-items-center rounded-full border border-amber-200/60 bg-[oklch(0.985_0.018_85)/0.92] text-stone-700 shadow-md backdrop-blur-xl transition-colors hover:bg-amber-50 hover:text-amber-900 disabled:opacity-50 disabled:cursor-not-allowed";
+    "absolute z-10 grid h-9 w-9 place-items-center rounded-full border border-amber-200/60 bg-[oklch(0.985_0.018_85)] text-stone-700 shadow-md transition-colors hover:bg-amber-50 hover:text-amber-900 disabled:opacity-50 disabled:cursor-not-allowed";
   const positionClass = className ?? "bottom-24 right-3";
 
   return (
