@@ -12,11 +12,12 @@ export interface PlaceSuggestion {
   subcategory: string;
   hasOutdoorSeating: boolean;
   source: "local" | "nominatim";
-  /** Best-effort city/suburb name (OSM `addr:city`/`addr:suburb` for local, address segment for Nominatim). */
+  /** Best-effort city/suburb name (OSM `addr:city`/`addr:suburb` for local, address segment for Nominatim, region-derived fallback if neither). */
   locality?: string;
   /**
-   * Best-effort street (with house number when available) — used to disambiguate
-   * homonyms in the dropdown (e.g. two "The Green Van Company" in Lausanne).
+   * OSM `addr:street` for local venues (with house number when the dataset
+   * carries one) — surfaced to disambiguate homonyms in the dropdown
+   * (e.g. two "The Green Van Company" branches at the same locality).
    */
   street?: string;
   /** Bounding box `[minLon, minLat, maxLon, maxLat]` — present for Nominatim city/town results. */

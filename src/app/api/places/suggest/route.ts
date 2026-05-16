@@ -21,11 +21,41 @@ interface Suggestion {
   source: SuggestionSource;
   /** Best-effort city/town name (OSM `addr:city`/`addr:suburb`, or Nominatim address segment). */
   locality?: string;
+  /** OSM `addr:street` for local venues. Useful to disambiguate homonyms (e.g. multiple "The Green Van Company" branches). */
+  street?: string;
   /** Nominatim bounding box `[minLon, minLat, maxLon, maxLat]` — used to fitBounds for cities/regions. */
   bbox?: [number, number, number, number];
 }
 
 const LAKE_GENEVA_VIEWBOX = "5.85,46.70,7.05,46.10";
+
+/**
+ * Last-resort locality fallback when an OSM venue has none of
+ * `addr:{city,suburb,place,village}` — we derive a human-readable label
+ * from the region slug the place was ingested under.
+ *
+ * Empirically ~70% of OSM places in our dataset have no `addr:*` tags
+ * at all (audit 2026-05-16: 31% coverage on Lausanne, 24% on Geneva).
+ * Without this fallback, the dropdown shows "The Green Van Company —
+ * Fast-food" with no way to disambiguate between branches.
+ *
+ * The slug-to-label mapping mirrors the per-region configs in
+ * `src/lib/config/{region}.ts` — kept inline because there's no
+ * central registry yet.
+ */
+const REGION_LABEL: Record<string, string> = {
+  lausanne: "Lausanne",
+  geneve: "Genève",
+  morges: "Morges",
+  vevey: "Vevey",
+  vevey_city: "Vevey",
+  neuchatel: "Neuchâtel",
+  la_chaux_de_fonds: "La Chaux-de-Fonds",
+  bern: "Bern",
+  zurich: "Zürich",
+  thun: "Thun",
+  nyon: "Nyon",
+};
 
 interface NominatimResult {
   place_id: number;
@@ -157,25 +187,40 @@ export async function GET(request: Request) {
 
   scored.sort((a, b) => b.score - a.score || a.place.name.localeCompare(b.place.name));
 
-  const localSuggestions: Suggestion[] = scored.slice(0, limit).map(({ place }) => ({
-    id: place.id,
-    name: place.name,
-    lat: place.lat,
-    lon: place.lon,
-    category: place.category,
-    subcategory: place.subcategory,
-    hasOutdoorSeating: place.hasOutdoorSeating,
-    source: "local",
+  const localSuggestions: Suggestion[] = scored.slice(0, limit).map(({ place }) => {
     // OSM tags already carry locality info — no schema change to the places JSON.
-    // Order: `addr:city` is the canonical hit; fall back to `addr:suburb`
-    // (used for districts like "Maupas" in Lausanne), then `addr:place` for
-    // hamlets.
-    locality:
+    // Priority order: `addr:city` is canonical for venues in cities; fall
+    // back to `addr:suburb` (districts like "Maupas" in Lausanne), then
+    // `addr:place` (hamlets), then `addr:village` (small communes outside
+    // cities). Empirically the last three are < 1% coverage combined in our
+    // CH dataset, so the real coverage gain comes from the region fallback
+    // below.
+    const tagLocality =
       place.tags["addr:city"] ??
       place.tags["addr:suburb"] ??
       place.tags["addr:place"] ??
-      undefined,
-  }));
+      place.tags["addr:village"] ??
+      undefined;
+    // Region-derived fallback: ~70% of OSM venues have no `addr:*` tags,
+    // and "The Green Van Company — Fast-food" without a city is useless
+    // when there's one in Lausanne and one in Geneva. Better to surface
+    // the region label (which is itself a city/commune for our 11 covered
+    // areas) than to leave it blank.
+    const regionLocality =
+      place.region && REGION_LABEL[place.region] ? REGION_LABEL[place.region] : undefined;
+    return {
+      id: place.id,
+      name: place.name,
+      lat: place.lat,
+      lon: place.lon,
+      category: place.category,
+      subcategory: place.subcategory,
+      hasOutdoorSeating: place.hasOutdoorSeating,
+      source: "local",
+      locality: tagLocality ?? regionLocality,
+      street: place.tags["addr:street"] ?? undefined,
+    };
+  });
 
   // Always query Nominatim in parallel — even when we have local hits, we
   // want city/commune names to surface (e.g. typing "renens" should show

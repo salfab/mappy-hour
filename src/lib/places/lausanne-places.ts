@@ -30,6 +30,12 @@ const placeSchema = z.object({
   outdoorSeatingHeated: z.boolean().optional(),
   lat: z.number(),
   lon: z.number(),
+  /**
+   * Region slug the place was ingested under (`lausanne`, `geneve`, …).
+   * Optional for backward compat with pre-v0.2 baked files that didn't carry it.
+   * Useful as a last-resort locality fallback for OSM venues missing `addr:*`.
+   */
+  region: z.string().optional(),
   tags: z.record(z.string(), z.string()),
 });
 
