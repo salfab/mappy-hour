@@ -84,40 +84,24 @@ function mergeLv95Bboxes(bboxes: Lv95Bbox[]): Lv95Bbox {
   };
 }
 
-const CLUSTER_REGIONS = [
-  LAUSANNE_CONFIG, NYON_CONFIG, MORGES_CONFIG,
-  GENEVE_CONFIG, VEVEY_CONFIG, VEVEY_CITY_CONFIG,
-];
-
 const REGION_CONFIGS: Record<string, { localBbox: readonly [number, number, number, number] }> = {
-  "lausanne-cluster": { localBbox: [
-    Math.min(...CLUSTER_REGIONS.map(r => r.localBbox[0])),
-    Math.min(...CLUSTER_REGIONS.map(r => r.localBbox[1])),
-    Math.max(...CLUSTER_REGIONS.map(r => r.localBbox[2])),
-    Math.max(...CLUSTER_REGIONS.map(r => r.localBbox[3])),
-  ]},
+  lausanne: LAUSANNE_CONFIG,
+  morges: MORGES_CONFIG,
+  nyon: NYON_CONFIG,
+  geneve: GENEVE_CONFIG,
+  vevey: VEVEY_CONFIG,
+  vevey_city: VEVEY_CITY_CONFIG,
   neuchatel: NEUCHATEL_CONFIG,
   la_chaux_de_fonds: LA_CHAUX_DE_FONDS_CONFIG,
   bern: BERN_CONFIG,
   zurich: ZURICH_CONFIG,
   thun: THUN_CONFIG,
-  lausanne: LAUSANNE_CONFIG,
-  nyon: NYON_CONFIG,
-  morges: MORGES_CONFIG,
-  geneve: GENEVE_CONFIG,
-  vevey: VEVEY_CONFIG,
-  vevey_city: VEVEY_CITY_CONFIG,
 };
 
+// Kept for CLI convenience: `--region=lausanne-cluster` builds all 6 members.
+const LAUSANNE_CLUSTER_MEMBERS = ["lausanne", "morges", "nyon", "geneve", "vevey", "vevey_city"];
+
 function outputPath(region: string): string {
-  if (region === "lausanne-cluster" || CLUSTER_REGIONS.some(
-    r => ["lausanne", "nyon", "morges", "geneve", "vevey", "vevey_city"].includes(region)
-  )) {
-    // Cluster members all share the same global file for hash stability
-    if (region === "lausanne-cluster" || ["lausanne", "nyon", "morges", "geneve", "vevey", "vevey_city"].includes(region)) {
-      return path.join(PROCESSED_BUILDINGS_DIR, "buildings-index.json");
-    }
-  }
   return path.join(PROCESSED_BUILDINGS_DIR, `${region}-buildings-index.json`);
 }
 
@@ -351,26 +335,22 @@ async function main() {
   const knownRegions = Object.keys(REGION_CONFIGS);
 
   if (!regionArg) {
-    console.error(`Usage: --region=<${knownRegions.join("|")}|all>`);
+    console.error(`Usage: --region=<${[...knownRegions, "lausanne-cluster", "all"].join("|")}>`);
     process.exitCode = 1; return;
   }
 
   if (regionArg === "all") {
-    // Build cluster index once, then each non-cluster region individually.
-    // Cluster members (lausanne, morges, …) all map to the same output file;
-    // building "lausanne-cluster" once is sufficient.
-    const clusterDone = new Set<string>();
-    for (const r of knownRegions) {
-      const out = outputPath(r);
-      if (clusterDone.has(out)) continue; // shared cluster file already written
-      await buildRegionIndex(r);
-      clusterDone.add(out);
-    }
+    for (const r of knownRegions) await buildRegionIndex(r);
+    return;
+  }
+
+  if (regionArg === "lausanne-cluster") {
+    for (const r of LAUSANNE_CLUSTER_MEMBERS) await buildRegionIndex(r);
     return;
   }
 
   if (!REGION_CONFIGS[regionArg]) {
-    console.error(`Unknown region "${regionArg}". Known: ${knownRegions.join(", ")}, all`);
+    console.error(`Unknown region "${regionArg}". Known: ${[...knownRegions, "lausanne-cluster", "all"].join(", ")}`);
     process.exitCode = 1; return;
   }
 
