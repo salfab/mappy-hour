@@ -274,11 +274,15 @@ export function CalculationControls(props: CalculationControlsProps) {
   const disabled = !isCancelMode && (props.isLoading || (props.mode === "daily" && props.isDailyRangeInvalid));
 
   return (
-    <div className="flex items-stretch gap-2">
+    // `items-center` (not `items-stretch`) so this row does NOT inflate
+    // vertically when its parent grid grows (middle / expanded sheet states).
+    // Both children keep their intrinsic height, leaving more breathing room
+    // for the rows underneath (toggles, timeline, places list).
+    <div className="flex items-center gap-2">
       <DaySelector date={props.date} onDateChange={props.onDateChange} />
       <button
         type="button"
-        className={`inline-flex shrink-0 items-center gap-1.5 self-stretch rounded-2xl px-4 py-2 text-sm font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 ${
+        className={`inline-flex shrink-0 items-center gap-1.5 rounded-2xl px-4 py-2 text-sm font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 ${
           isCancelMode
             ? "bg-rose-500 text-white shadow-rose-400/40 hover:bg-rose-400"
             : "bg-gradient-to-b from-amber-400 to-amber-500 text-amber-950 shadow-amber-900/20 hover:from-amber-300 hover:to-amber-400"
@@ -288,7 +292,23 @@ export function CalculationControls(props: CalculationControlsProps) {
         aria-label={isCancelMode ? "Interrompre le calcul" : "Calculer l'ensoleillement"}
       >
         {!isCancelMode ? <span aria-hidden>↻</span> : null}
-        <span>{isCancelMode ? "Interrompre" : props.isLoading ? "Calcul..." : "Calculer"}</span>
+        <span>
+          {isCancelMode
+            ? "Interrompre"
+            : props.isLoading
+            ? "Calcul..."
+            : (
+                <>
+                  Calculer
+                  {/* Full noun only when there's horizontal room — mobile
+                      sheet (~288 px usable) couldn't fit it next to the
+                      190 px-wide day pastille without forcing a wrap.
+                      Desktop sidebar is wider so the explicit verb+noun
+                      "Calculer l'ensoleillement" reads naturally. */}
+                  <span className="hidden lg:inline"> l&apos;ensoleillement</span>
+                </>
+              )}
+        </span>
       </button>
     </div>
   );
