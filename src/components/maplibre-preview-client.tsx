@@ -687,46 +687,168 @@ export function MapLibrePreviewClient() {
     baseMapsRef.current = buildBaseMaps(process.env.NEXT_PUBLIC_STADIA_API_KEY);
   }
 
-  // Apply current filters to the cached raw places and push to the source.
-  // Lives in a ref so callers can grab the latest filters at call time
-  // without participating in React state dependency graphs.
+  // Per-region cached catalogue. Switched from "fetch the viewport bbox on
+  // every moveend" to "fetch ALL places of the current region once, then
+  // filter client-side". A region-wide payload is ~100 KB for ~3k places
+  // (Geneva worst case) — cheap to keep in memory, and the moveend filter
+  // is a flat ~2-3 ms array scan even at 3k entries.
+  const allPlacesByRegionRef = useRef<Map<string, ViewportPlaceLite[]>>(new Map());
+  // Tracks the region currently loaded into `rawPlacesRef`. `null` means
+  // "no region resolved" (cold start, or user panned outside every known
+  // precomputed region — we keep showing the previously loaded catalogue
+  // while the latter holds).
+  const loadedRegionRef = useRef<string | null>(null);
+  // Single-flight gate so a slow region fetch can't race a moveend triggering
+  // a second fetch of the same region.
+  const inFlightRegionRef = useRef<string | null>(null);
+
+  // Apply current filters AND the visible viewport bbox to the cached raw
+  // places before pushing the result to the source. The visible-bbox filter
+  // replaces the old server-side viewport prefilter: we now ship the entire
+  // region catalogue once on mount and let the client cull markers per
+  // moveend. Lives in a ref so callers can grab the latest filters at call
+  // time without participating in React state dependency graphs.
   const applyPlacesToSource = useCallback((map: MapLibreMap, current: CategoryFilters) => {
-    const filtered = rawPlacesRef.current.filter((p) =>
-      current[placeChipKey(p.category, p.subcategory)],
-    );
+    const raw = rawPlacesRef.current;
+    const bounds = map.getBounds();
+    const south = bounds.getSouth();
+    const north = bounds.getNorth();
+    const west = bounds.getWest();
+    const east = bounds.getEast();
+    const filtered: ViewportPlaceLite[] = [];
+    for (const p of raw) {
+      if (p.lat < south || p.lat > north) continue;
+      if (p.lon < west || p.lon > east) continue;
+      if (!current[placeChipKey(p.category, p.subcategory)]) continue;
+      filtered.push(p);
+    }
     const source = map.getSource("places") as maplibregl.GeoJSONSource | undefined;
     if (source) source.setData(placesToFeatureCollection(filtered));
   }, []);
 
-  // ── Viewport places fetch (POST /api/places/viewport) ─────────────────────
-  const fetchViewportPlaces = useCallback(async (map: MapLibreMap) => {
+  // ── Region-wide places fetch (POST /api/places/viewport, scope=region) ───
+  // Run ONCE per region. On mount we issue this for the region that contains
+  // the initial viewport; on moveend we only re-run it when the user has
+  // panned into a different region (rare — switching from Lausanne to Geneva).
+  // The legacy per-moveend viewport fetch is intentionally gone.
+  const fetchPlacesForViewport = useCallback(async (map: MapLibreMap) => {
+    const bounds = map.getBounds();
+    const south = bounds.getSouth();
+    const west = bounds.getWest();
+    const north = bounds.getNorth();
+    const east = bounds.getEast();
+
+    // Drain the catalogue cache first — when the viewport is still inside
+    // the region we already loaded, just re-apply the filters & visible
+    // bbox without hitting the network.
+    const currentRegion = loadedRegionRef.current;
+    if (currentRegion) {
+      const cached = allPlacesByRegionRef.current.get(currentRegion);
+      if (cached) {
+        rawPlacesRef.current = cached;
+        applyPlacesToSource(map, filtersRef.current);
+      }
+    }
+
+    // Abort any prior fetch — important when the user pans rapidly across
+    // a region border before the previous response landed.
     viewportPlacesAbortRef.current?.abort();
     const abort = new AbortController();
     viewportPlacesAbortRef.current = abort;
-    const bounds = map.getBounds();
     try {
       const response = await fetch("/api/places/viewport", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          south: bounds.getSouth(),
-          west: bounds.getWest(),
-          north: bounds.getNorth(),
-          east: bounds.getEast(),
+          south,
+          west,
+          north,
+          east,
+          scope: "region",
         }),
         signal: abort.signal,
       });
       if (!response.ok) return;
-      const json = (await response.json()) as { places?: ViewportPlaceLite[] };
+      const json = (await response.json()) as {
+        places?: ViewportPlaceLite[];
+        region?: string | null;
+      };
       if (abort.signal.aborted) return;
-      rawPlacesRef.current = Array.isArray(json.places) ? json.places : [];
+      const places = Array.isArray(json.places) ? json.places : [];
+      const region = typeof json.region === "string" ? json.region : null;
+      if (region) {
+        allPlacesByRegionRef.current.set(region, places);
+        loadedRegionRef.current = region;
+      }
+      // Even if the server couldn't resolve a region, surface whatever it
+      // returned so the user sees SOMETHING (the snap loop falls back to
+      // `original` strategy when no atlas covers the bbox, so the payload
+      // is still meaningful).
+      rawPlacesRef.current = places;
+      inFlightRegionRef.current = null;
       setRawPlacesTick((t) => t + 1);
       applyPlacesToSource(map, filtersRef.current);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
-      console.warn("[maplibre-preview] viewport places fetch failed:", err);
+      console.warn("[maplibre-preview] region places fetch failed:", err);
+    } finally {
+      if (inFlightRegionRef.current && viewportPlacesAbortRef.current === abort) {
+        inFlightRegionRef.current = null;
+      }
     }
   }, [applyPlacesToSource]);
+
+  // Check whether the current viewport center still falls inside a known
+  // region bbox. We don't recompute the region from the server on every
+  // moveend — instead we rely on the LAST fetch's `region` answer and only
+  // re-fetch when the user pans to a viewport whose center cannot possibly
+  // be inside the cached region (a rough lat/lon guard). When in doubt the
+  // network call is cheap enough to make on borderline cases.
+  const handleMoveEndPlaces = useCallback((map: MapLibreMap) => {
+    const map_ = map;
+    const bounds = map_.getBounds();
+    // Always re-apply the visible-bbox filter to update which subset of
+    // the cached catalogue is drawn — independent of any network call.
+    applyPlacesToSource(map_, filtersRef.current);
+
+    // Re-fetch only when the viewport center has drifted outside every
+    // place we have in memory. Heuristic: if the center is inside the
+    // axis-aligned bbox of `rawPlacesRef.current`, the catalogue covers
+    // it; otherwise refresh. Cheap and avoids dragging a hardcoded region
+    // table client-side.
+    const raw = rawPlacesRef.current;
+    if (raw.length === 0) {
+      // First fetch never happened (or returned empty) — try now.
+      void fetchPlacesForViewport(map_);
+      return;
+    }
+    const centerLat = (bounds.getSouth() + bounds.getNorth()) / 2;
+    const centerLon = (bounds.getWest() + bounds.getEast()) / 2;
+    let minLat = Infinity;
+    let maxLat = -Infinity;
+    let minLon = Infinity;
+    let maxLon = -Infinity;
+    for (const p of raw) {
+      if (p.lat < minLat) minLat = p.lat;
+      if (p.lat > maxLat) maxLat = p.lat;
+      if (p.lon < minLon) minLon = p.lon;
+      if (p.lon > maxLon) maxLon = p.lon;
+    }
+    // 10 km margin around the catalogue bbox before we consider the user
+    // out of region. ~0.1° lat / 0.15° lon at Swiss latitudes; keeps the
+    // re-fetch from firing on every adjacent-region pan, while still
+    // catching real cross-region jumps (Lausanne ↔ Bern).
+    const MARGIN_LAT = 0.1;
+    const MARGIN_LON = 0.15;
+    if (
+      centerLat < minLat - MARGIN_LAT ||
+      centerLat > maxLat + MARGIN_LAT ||
+      centerLon < minLon - MARGIN_LON ||
+      centerLon > maxLon + MARGIN_LON
+    ) {
+      void fetchPlacesForViewport(map_);
+    }
+  }, [applyPlacesToSource, fetchPlacesForViewport]);
 
   // Re-apply filters on toggle without refetching from the server.
   useEffect(() => {
@@ -1211,7 +1333,7 @@ export function MapLibrePreviewClient() {
       const heatmapLayer = new MapLibreHeatmapCustomLayer(map);
       map.addLayer(heatmapLayer, "cluster-circles");
       heatmapLayerRef.current = heatmapLayer;
-      void fetchViewportPlaces(map);
+      void fetchPlacesForViewport(map);
     });
 
     map.on("moveend", () => {
@@ -1224,9 +1346,14 @@ export function MapLibrePreviewClient() {
       if (viewportPlacesDebounceRef.current !== null) {
         window.clearTimeout(viewportPlacesDebounceRef.current);
       }
+      // No more per-moveend network call — we just re-apply the visible
+      // bbox filter on the cached region catalogue. The debounce is kept
+      // because `handleMoveEndPlaces` does fire a re-fetch when the user
+      // pans across a region boundary, and back-to-back pans should still
+      // coalesce to a single request.
       viewportPlacesDebounceRef.current = window.setTimeout(() => {
-        void fetchViewportPlaces(map);
-      }, 400);
+        handleMoveEndPlaces(map);
+      }, 150);
       // Auto-refresh the sunlight timeline ~1s after the user stops moving.
       // Longer debounce than places because the SSE is heavier (worth waiting
       // until the user has clearly settled on a viewport).
@@ -1300,7 +1427,7 @@ export function MapLibrePreviewClient() {
       heatmapLayerRef.current = null;
       mapRef.current = null;
     };
-  }, [fetchViewportPlaces]);
+  }, [fetchPlacesForViewport, handleMoveEndPlaces]);
 
   // Apply basemap switches.
   useEffect(() => {

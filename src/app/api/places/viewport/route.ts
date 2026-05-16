@@ -16,6 +16,11 @@ import {
   mapWithConcurrency,
   snapPlaceToOutdoor,
 } from "@/lib/places/snap-to-outdoor";
+import {
+  getPrecomputedRegionBbox,
+  type PrecomputedRegionName,
+} from "@/lib/precompute/sunlight-cache";
+import { resolveRegionForBbox } from "@/lib/precompute/sunlight-tile-service";
 import { requireTurnstile } from "@/lib/security/turnstile";
 
 export const runtime = "nodejs";
@@ -64,14 +69,29 @@ const bodySchema = z.object({
    *  - `all`: return every place in the bbox (debug / future features that
    *    want to show parks or unknown-outdoor candidates client-side). */
   mode: z.enum(["confirmed", "all"]).optional(),
+  /** Bbox scope used to pick the candidate set BEFORE the snap loop.
+   *  - `viewport` (default): only places strictly inside `{south,west,north,east}`.
+   *    Used by the legacy per-pan/zoom fetch that the Leaflet client (and the
+   *    initial MapLibre preview) issues on every moveend.
+   *  - `region`: ignore the bbox extent and serve every place that lives in
+   *    the precomputed region inferred from that bbox (used to resolve which
+   *    region the user is looking at). The MapLibre preview switched to this
+   *    one-shot mode in 2026-05 so the client can keep the full catalogue in
+   *    memory and filter visible markers locally on pan/zoom — no more
+   *    re-fetch per viewport change. The bbox MUST still be a valid Swiss
+   *    coordinate; we use it solely to pick a region. */
+  scope: z.enum(["viewport", "region"]).optional(),
 });
 
 export type ViewportPlacesMode = "confirmed" | "all";
+export type ViewportPlacesScope = "viewport" | "region";
 
-// Hard cap so the JSON payload never explodes (a worldwide bbox over a
-// densely-mapped region could otherwise be megabytes). The client-side
-// clusterer is fine with ~5k input candidates.
-const MAX_RESPONSE_PLACES = 5000;
+// Hard cap so the JSON payload never explodes. The default `viewport` scope
+// caps at 5000 to keep moveend fetches small; the `region` scope (one-shot
+// catalogue load on mount) bumps to 8000 to cover Geneva-class regions whose
+// confirmed-terrasses count tops out around ~3k.
+const MAX_RESPONSE_VIEWPORT = 5000;
+const MAX_RESPONSE_REGION = 8000;
 
 // Outdoor-snap concurrency. Reads gunzipped tile-grid-metadata blobs (~1 MB
 // each, cached after the first hit). 16 keeps disk I/O bursts bounded while
@@ -121,6 +141,10 @@ export async function POST(request: Request) {
     const mode: ViewportPlacesMode =
       parsed.data.mode ??
       (queryMode === "all" || queryMode === "confirmed" ? queryMode : "confirmed");
+    const queryScope = url.searchParams.get("scope");
+    const scope: ViewportPlacesScope =
+      parsed.data.scope ??
+      (queryScope === "region" || queryScope === "viewport" ? queryScope : "viewport");
 
     const placesFile = await loadAllPlaces();
     if (!placesFile) {
@@ -133,7 +157,40 @@ export async function POST(request: Request) {
       );
     }
 
-    let filtered = filterPlacesInBounds(placesFile.places, bounds);
+    // Resolve which precomputed region the request points at (used for the
+    // response payload and, when `scope=region`, to widen the candidate
+    // bbox to the entire region rather than the viewport on screen).
+    const region: PrecomputedRegionName | null = resolveRegionForBbox({
+      minLon: bounds.west,
+      maxLon: bounds.east,
+      minLat: bounds.south,
+      maxLat: bounds.north,
+    });
+
+    let filtered: typeof placesFile.places;
+    if (scope === "region") {
+      // One-shot catalogue load: ignore the viewport and serve every place
+      // in the resolved region. The bbox argument is still required so we
+      // can pick the right region (and so legacy clients keep working).
+      if (!region) {
+        return NextResponse.json(
+          {
+            error:
+              "Could not resolve a precomputed region from the supplied bbox.",
+          },
+          { status: 400 },
+        );
+      }
+      const regionBbox = getPrecomputedRegionBbox(region);
+      filtered = filterPlacesInBounds(placesFile.places, {
+        south: regionBbox.minLat,
+        west: regionBbox.minLon,
+        north: regionBbox.maxLat,
+        east: regionBbox.maxLon,
+      });
+    } else {
+      filtered = filterPlacesInBounds(placesFile.places, bounds);
+    }
 
     // Server-side default filter. Applied BEFORE the snap loop so we don't
     // pay the (~3ms/place cold) snap cost on places nobody will see. On a
@@ -146,7 +203,8 @@ export async function POST(request: Request) {
       });
     }
 
-    filtered = filtered.slice(0, MAX_RESPONSE_PLACES);
+    const cap = scope === "region" ? MAX_RESPONSE_REGION : MAX_RESPONSE_VIEWPORT;
+    filtered = filtered.slice(0, cap);
 
     // Snap each place out of any building it lands inside. Independent
     // per-place; bounded fan-out so we don't issue 500 disk reads at once.
@@ -208,6 +266,11 @@ export async function POST(request: Request) {
         generatedAt: new Date().toISOString(),
         sourceGeneratedAt: placesFile.generatedAt,
         mode,
+        scope,
+        // `null` when the caller's bbox did not overlap any precomputed
+        // region — useful for the client to detect "user panned outside
+        // every known city" and short-circuit subsequent fetches.
+        region,
         places: lite,
       },
       {

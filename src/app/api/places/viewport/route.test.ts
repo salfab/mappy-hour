@@ -427,3 +427,221 @@ describe("POST /api/places/viewport (mocked snap)", () => {
     expect(p.osmLon).toBeUndefined();
   });
 });
+
+// ── scope=region (mocked) ──────────────────────────────────────────────
+// Verifies the one-shot region-wide catalogue load used by the MapLibre
+// preview on mount. With `scope=region` the route must:
+//   - resolve a precomputed region from the supplied bbox,
+//   - return EVERY place inside that region's bbox (not just the bbox the
+//     client sent — that's the whole point of the one-shot mode),
+//   - surface `scope` + `region` in the response so the client can cache
+//     by region and skip subsequent fetches while the user pans inside it,
+//   - keep applying the `mode=confirmed` default filter.
+
+describe("POST /api/places/viewport (scope=region)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("@/lib/places/snap-to-outdoor");
+    vi.doUnmock("@/lib/places/lausanne-places");
+  });
+
+  it("returns every confirmed terrace in the resolved region, regardless of bbox", async () => {
+    // Two confirmed terraces, only one of which sits inside the requested
+    // bbox. Under `scope=viewport` only the first would come back; under
+    // `scope=region` both should be returned because they share a region.
+    vi.doMock("@/lib/places/lausanne-places", () => ({
+      loadAllPlaces: vi.fn(async () => ({
+        generatedAt: "2026-05-15T00:00:00.000Z",
+        source: "test",
+        // Cover the full Lausanne region bbox so both points fall inside.
+        bbox: [6.5, 46.4, 6.8, 46.7],
+        totalPlaces: 2,
+        categories: {
+          parks: 0,
+          terraceCandidates: 2,
+          outdoorSeatingYes: 2,
+          outdoorSeatingUnknown: 0,
+        },
+        places: [
+          // Inside the requested viewport.
+          {
+            id: "p:inside",
+            source: "osm",
+            osmType: "node" as const,
+            osmId: 100,
+            name: "Café Inside",
+            category: "terrace_candidate" as const,
+            subcategory: "cafe",
+            hasOutdoorSeating: true,
+            lat: 46.52,
+            lon: 6.63,
+            tags: {},
+          },
+          // Outside the requested viewport but still inside the Lausanne
+          // region bbox — must be included under scope=region.
+          {
+            id: "p:far",
+            source: "osm",
+            osmType: "node" as const,
+            osmId: 101,
+            name: "Café Far",
+            category: "terrace_candidate" as const,
+            subcategory: "cafe",
+            hasOutdoorSeating: true,
+            lat: 46.55,
+            lon: 6.68,
+            tags: {},
+          },
+        ],
+      })),
+    }));
+    vi.doMock("@/lib/places/snap-to-outdoor", async (importOriginal) => {
+      const actual =
+        await importOriginal<typeof import("@/lib/places/snap-to-outdoor")>();
+      return {
+        ...actual,
+        snapPlaceToOutdoor: vi.fn(async (coords: { lat: number; lon: number }) => ({
+          lat: coords.lat,
+          lon: coords.lon,
+          offsetMeters: 0,
+          selectionStrategy: "original" as const,
+        })),
+      };
+    });
+
+    const { POST } = await import("./route");
+    const request = new Request("http://localhost/api/places/viewport", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        // Tight bbox around the first café — second café is outside.
+        south: 46.518,
+        west: 6.628,
+        north: 46.524,
+        east: 6.638,
+        scope: "region",
+      }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+    const json = (await response.json()) as {
+      scope: string;
+      region: string | null;
+      places: Array<{ id: string }>;
+    };
+    expect(json.scope).toBe("region");
+    expect(json.region).toBe("lausanne");
+    const ids = json.places.map((p) => p.id).sort();
+    expect(ids).toEqual(["p:far", "p:inside"]);
+  });
+
+  it("returns 400 when the bbox doesn't overlap any precomputed region", async () => {
+    vi.doMock("@/lib/places/lausanne-places", () => ({
+      loadAllPlaces: vi.fn(async () => ({
+        generatedAt: "2026-05-15T00:00:00.000Z",
+        source: "test",
+        bbox: [0, 0, 1, 1],
+        totalPlaces: 0,
+        categories: {
+          parks: 0,
+          terraceCandidates: 0,
+          outdoorSeatingYes: 0,
+          outdoorSeatingUnknown: 0,
+        },
+        places: [],
+      })),
+    }));
+    const { POST } = await import("./route");
+    const request = new Request("http://localhost/api/places/viewport", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        // Atlantic Ocean — outside every Swiss precomputed region.
+        south: 0,
+        west: -30,
+        north: 1,
+        east: -29,
+        scope: "region",
+      }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+  });
+
+  it("scope defaults to 'viewport' and continues filtering by bbox", async () => {
+    vi.doMock("@/lib/places/lausanne-places", () => ({
+      loadAllPlaces: vi.fn(async () => ({
+        generatedAt: "2026-05-15T00:00:00.000Z",
+        source: "test",
+        bbox: [6.5, 46.4, 6.8, 46.7],
+        totalPlaces: 2,
+        categories: {
+          parks: 0,
+          terraceCandidates: 2,
+          outdoorSeatingYes: 2,
+          outdoorSeatingUnknown: 0,
+        },
+        places: [
+          {
+            id: "p:inside",
+            source: "osm",
+            osmType: "node" as const,
+            osmId: 100,
+            name: "Café Inside",
+            category: "terrace_candidate" as const,
+            subcategory: "cafe",
+            hasOutdoorSeating: true,
+            lat: 46.52,
+            lon: 6.63,
+            tags: {},
+          },
+          {
+            id: "p:far",
+            source: "osm",
+            osmType: "node" as const,
+            osmId: 101,
+            name: "Café Far",
+            category: "terrace_candidate" as const,
+            subcategory: "cafe",
+            hasOutdoorSeating: true,
+            lat: 46.55,
+            lon: 6.68,
+            tags: {},
+          },
+        ],
+      })),
+    }));
+    vi.doMock("@/lib/places/snap-to-outdoor", async (importOriginal) => {
+      const actual =
+        await importOriginal<typeof import("@/lib/places/snap-to-outdoor")>();
+      return {
+        ...actual,
+        snapPlaceToOutdoor: vi.fn(async (coords: { lat: number; lon: number }) => ({
+          lat: coords.lat,
+          lon: coords.lon,
+          offsetMeters: 0,
+          selectionStrategy: "original" as const,
+        })),
+      };
+    });
+    const { POST } = await import("./route");
+    const request = new Request("http://localhost/api/places/viewport", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        south: 46.518,
+        west: 6.628,
+        north: 46.524,
+        east: 6.638,
+      }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+    const json = (await response.json()) as {
+      scope: string;
+      places: Array<{ id: string }>;
+    };
+    expect(json.scope).toBe("viewport");
+    expect(json.places.map((p) => p.id)).toEqual(["p:inside"]);
+  });
+});
