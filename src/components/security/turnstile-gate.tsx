@@ -173,7 +173,13 @@ export function TurnstileGate(): React.ReactElement | null {
 
         const widgetId = api.render(`#${WIDGET_CONTAINER_ID}`, {
           sitekey: siteKey,
-          size: "invisible",
+          // `size: "invisible"` is not a valid Turnstile parameter — the
+          // Cloudflare widget throws `Invalid value for parameter "size"`
+          // and refuses to render. The correct way to get an invisible
+          // experience for non-suspicious traffic is `appearance: "execute"`
+          // (challenge runs without UI) combined with the default size.
+          // When Cloudflare escalates to an interactive challenge, the
+          // widget will pop up — that's expected and rare.
           appearance: "execute",
           retry: "auto",
           "refresh-expired": "auto",
