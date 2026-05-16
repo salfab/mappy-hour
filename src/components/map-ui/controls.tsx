@@ -99,15 +99,18 @@ interface ToggleIconButtonProps {
 function ToggleIconButton(props: ToggleIconButtonProps) {
   const Icon = props.icon;
 
+  // Variant A palette: amber pastel for pressed, soft cream surface for idle,
+  // ring instead of border. Shape unchanged so the icon + tiny label still
+  // fit the existing grid template.
   return (
     <button
       type="button"
-      className={`group w-[5.5rem] place-items-center gap-1 rounded-2xl border px-2 py-2 text-slate-600 shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45 ${
+      className={`group w-[5.5rem] place-items-center gap-1 rounded-2xl px-2 py-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45 ${
         props.desktopOnly ? "hidden lg:grid" : "grid"
       } ${
         props.pressed
-          ? "border-amber-300 bg-amber-200 text-slate-950 shadow-amber-200/50"
-          : "border-slate-200 bg-white/92 hover:border-amber-200 hover:bg-amber-50"
+          ? "bg-amber-100/80 text-amber-900 ring-1 ring-amber-200/70"
+          : "bg-white/60 text-stone-700 ring-1 ring-amber-100/60 hover:bg-amber-50/80"
       }`}
       aria-label={props.label}
       aria-pressed={props.pressed}
@@ -130,16 +133,20 @@ interface OverlaySelectorProps {
 }
 
 function OverlaySelector(props: OverlaySelectorProps) {
+  // Variant A pattern: segmented mutex on amber-tinted background. Active
+  // radio gets the warm cream surface (#fffdf7) with shadow-sm; inactive
+  // radio is transparent. Stretches to fill its parent (flex-1) so the two
+  // radios share width equally.
   const pillBase =
-    "group grid place-items-center gap-1 rounded-2xl px-3 py-2 text-slate-600 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45";
-  const pillActive = "bg-amber-200 text-slate-950 shadow-sm shadow-amber-200/50";
-  const pillInactive = "hover:bg-amber-50 hover:text-slate-900";
+    "group flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-45";
+  const pillActive = "bg-[#fffdf7] text-stone-900 shadow-sm";
+  const pillInactive = "text-stone-600 hover:text-stone-900";
 
   return (
     <div
       role="radiogroup"
       aria-label="Type de surcouche"
-      className="inline-flex items-center gap-1 rounded-2xl border border-slate-200 bg-white/92 p-1 shadow-sm"
+      className="flex flex-1 gap-1 rounded-2xl bg-amber-900/[0.04] p-1"
     >
       <button
         type="button"
@@ -150,8 +157,8 @@ function OverlaySelector(props: OverlaySelectorProps) {
         className={`${pillBase} ${props.mode === "sunlight" ? pillActive : pillInactive}`}
         onClick={() => props.onModeChange("sunlight")}
       >
-        <SunIcon className="h-5 w-5 transition group-hover:scale-105" />
-        <span className="text-[10px] font-semibold leading-none">Soleil</span>
+        <SunIcon className="h-4 w-4 transition group-hover:scale-105" />
+        <span className="leading-none">Ensoleillement</span>
       </button>
       <button
         type="button"
@@ -163,8 +170,8 @@ function OverlaySelector(props: OverlaySelectorProps) {
         className={`${pillBase} ${props.mode === "heatmap" ? pillActive : pillInactive}`}
         onClick={() => props.onModeChange("heatmap")}
       >
-        <HeatmapIcon className="h-5 w-5 transition group-hover:scale-105" />
-        <span className="text-[10px] font-semibold leading-none">Heatmap</span>
+        <HeatmapIcon className="h-4 w-4 transition group-hover:scale-105" />
+        <span className="leading-none">Heatmap</span>
       </button>
     </div>
   );
@@ -206,7 +213,7 @@ export function DaySelector(props: {
   };
   return (
     <label
-      className="relative flex min-w-[190px] flex-1 cursor-pointer items-center gap-3 rounded-[1.75rem] border border-amber-100 bg-white/80 px-3 py-3 shadow-sm transition focus-within:ring-2 focus-within:ring-amber-300 hover:bg-amber-50/80"
+      className="relative flex min-w-[190px] flex-1 cursor-pointer items-center gap-3 rounded-[1.75rem] border border-amber-200/50 bg-[rgba(255,251,240,0.65)] px-3 py-3 shadow-sm transition focus-within:ring-2 focus-within:ring-amber-300 hover:bg-amber-50/80"
       onClick={openPicker}
     >
       <span className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-amber-100 text-amber-500">
@@ -215,25 +222,27 @@ export function DaySelector(props: {
       {/* Weekday acts as a small caption *replacing* a generic "Jour" label,
           with day+month as the line that carries weight. Stacking them keeps
           the pastille short enough not to wrap awkwardly on either breakpoint
-          (mobile bottom-sheet ~160 px, desktop 280 px side panel). */}
+          (mobile bottom-sheet ~160 px, desktop 280 px side panel).
+          Variant A typography: weekday in uppercase wide tracking, day+month
+          in Fraunces display light to give the date editorial weight. */}
       {(() => {
         const parts = formatDisplayDate(props.date);
         if (!parts) {
           return (
-            <span className="flex min-w-0 flex-1 items-center gap-2 text-base font-semibold leading-tight text-slate-900">
+            <span className="flex min-w-0 flex-1 items-center gap-2 font-[var(--font-display)] text-2xl font-light leading-tight tracking-tight text-stone-900">
               <span className="min-w-0 whitespace-normal break-words">Choisir un jour</span>
-              <ChevronDownIcon className="h-5 w-5 shrink-0 text-slate-500" />
+              <ChevronDownIcon className="h-5 w-5 shrink-0 text-stone-500" />
             </span>
           );
         }
         return (
           <span className="grid min-w-0 flex-1 gap-0.5">
-            <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+            <span className="text-xs font-medium uppercase tracking-[0.18em] text-stone-500">
               {parts.weekday}
             </span>
-            <span className="flex min-w-0 items-center gap-2 text-base font-semibold leading-tight text-slate-900">
+            <span className="flex min-w-0 items-center gap-2 font-[var(--font-display)] text-2xl font-light leading-tight tracking-tight text-stone-900">
               <span className="min-w-0 whitespace-normal break-words">{parts.dayMonth}</span>
-              <ChevronDownIcon className="h-5 w-5 shrink-0 text-slate-500" />
+              <ChevronDownIcon className="h-5 w-5 shrink-0 text-stone-500" />
             </span>
           </span>
         );
@@ -255,25 +264,30 @@ export function CalculationControls(props: CalculationControlsProps) {
   // (Previously a secondary rose button appeared underneath, pushing every
   // other panel row down by ~52 px on the precise moment the user wanted
   // to focus on the slider that was about to appear.)
+  // Variant A layout: the day selector stacks on its own row and the
+  // "Calculer" pill sits below, right-aligned, auto-width. The verb alone is
+  // enough once the day picker carries the noun ("...l'ensoleillement de
+  // dimanche 16 décembre"). Smaller footprint frees vertical rhythm.
   const isCancelMode = props.mode === "daily" && props.isLoading;
   const disabled = !isCancelMode && (props.isLoading || (props.mode === "daily" && props.isDailyRangeInvalid));
 
   return (
     <div className="grid gap-3">
-      <div className="flex flex-wrap items-center gap-3">
-        <DaySelector date={props.date} onDateChange={props.onDateChange} />
+      <DaySelector date={props.date} onDateChange={props.onDateChange} />
+      <div className="flex justify-end">
         <button
           type="button"
-          className={`min-h-14 rounded-[1.35rem] px-5 py-3 text-base font-semibold text-white shadow-sm transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 ${
+          className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 ${
             isCancelMode
-              ? "bg-rose-500 shadow-rose-400/40 hover:bg-rose-400"
-              : "bg-amber-400 shadow-amber-300/40 hover:bg-amber-300"
+              ? "bg-rose-500 text-white shadow-rose-400/40 hover:bg-rose-400"
+              : "bg-gradient-to-b from-amber-400 to-amber-500 text-amber-950 shadow-amber-900/20 hover:from-amber-300 hover:to-amber-400"
           }`}
           onClick={isCancelMode ? props.onCancelDailyCalculation : props.onRunCalculation}
           disabled={disabled}
           aria-label={isCancelMode ? "Interrompre le calcul" : "Calculer l'ensoleillement"}
         >
-          {isCancelMode ? "Interrompre" : props.isLoading ? "Calcul..." : "Calculer"}
+          {!isCancelMode ? <span aria-hidden>↻</span> : null}
+          <span>{isCancelMode ? "Interrompre" : props.isLoading ? "Calcul..." : "Calculer"}</span>
         </button>
       </div>
     </div>
@@ -281,33 +295,35 @@ export function CalculationControls(props: CalculationControlsProps) {
 }
 
 export function LayerFilters(props: LayerFiltersProps) {
+  // Variant A layout: mode selector (segmented mutex) shares its row with a
+  // standalone Relief button — same visual weight, but Relief is an
+  // independent layer toggle, not a mutex peer. Below, Sans arbres and
+  // Terrasses sit in their own row using the pastel toggle treatment.
   return (
-    <div className="flex flex-wrap items-center gap-2 text-sm" aria-label="Couches de carte">
-      <OverlaySelector
-        mode={props.overlayMode}
-        canShowHeatmap={props.canShowHeatmap}
-        onModeChange={props.onOverlayModeChange}
-      />
-      <ToggleIconButton
-        desktopOnly
-        label="Relief"
-        pressed={props.showTerrain}
-        icon={MountainIcon}
-        onPressedChange={props.onShowTerrainChange}
-      />
-      <ToggleIconButton
-        label="Ignorer végétation"
-        shortLabel="Sans arbres"
-        pressed={props.ignoreVegetationShadow}
-        icon={LeafOffIcon}
-        onPressedChange={props.onIgnoreVegetationShadowChange}
-      />
-      <ToggleIconButton
-        label="Terrasses"
-        pressed={props.showPlaces}
-        icon={TerraceIcon}
-        onPressedChange={props.onShowPlacesChange}
-      />
+    <div className="flex flex-col gap-2 text-sm" aria-label="Couches de carte">
+      <div className="flex items-stretch gap-2">
+        <OverlaySelector
+          mode={props.overlayMode}
+          canShowHeatmap={props.canShowHeatmap}
+          onModeChange={props.onOverlayModeChange}
+        />
+        <ReliefToggle pressed={props.showTerrain} onPressedChange={props.onShowTerrainChange} />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <ToggleIconButton
+          label="Ignorer végétation"
+          shortLabel="Sans arbres"
+          pressed={props.ignoreVegetationShadow}
+          icon={LeafOffIcon}
+          onPressedChange={props.onIgnoreVegetationShadowChange}
+        />
+        <ToggleIconButton
+          label="Terrasses"
+          pressed={props.showPlaces}
+          icon={TerraceIcon}
+          onPressedChange={props.onShowPlacesChange}
+        />
+      </div>
       <span className="sr-only">
         {props.cacheOnly || props.forceCacheOnly ? "Cache only actif." : "Cache only inactif."}
       </span>
@@ -315,15 +331,47 @@ export function LayerFilters(props: LayerFiltersProps) {
   );
 }
 
-export function ViewTabs(props: ViewTabsProps) {
+interface ReliefToggleProps {
+  pressed: boolean;
+  onPressedChange: (pressed: boolean) => void;
+}
+
+// Standalone Relief layer toggle, designed to sit next to the segmented
+// Ensoleillement/Heatmap mutex. Visual weight matches the inactive segment so
+// the row reads as one cohesive control band, but the semantics are different
+// — Relief is an independent on/off layer (aria-pressed), not a radio peer.
+function ReliefToggle(props: ReliefToggleProps) {
   return (
-    <div className="grid grid-cols-2 gap-1 rounded-2xl border border-slate-200 bg-white p-1 text-sm font-semibold shadow-sm">
+    <button
+      type="button"
+      aria-pressed={props.pressed}
+      aria-label="Relief"
+      title="Afficher le relief"
+      onClick={() => props.onPressedChange(!props.pressed)}
+      className={`hidden items-center gap-1.5 rounded-2xl px-3 py-2 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 lg:flex ${
+        props.pressed
+          ? "bg-amber-100/80 text-amber-900 ring-1 ring-amber-200/70"
+          : "bg-white/60 text-stone-700 ring-1 ring-amber-100/60 hover:bg-amber-50/80"
+      }`}
+    >
+      <MountainIcon className="h-4 w-4" />
+      <span className="leading-none">Relief</span>
+    </button>
+  );
+}
+
+export function ViewTabs(props: ViewTabsProps) {
+  // Variant A tabs: amber-tinted background with the active tab raised on a
+  // warm cream surface (#fffdf7). Same shape as the segmented mutex below so
+  // the panel reads as one consistent vocabulary of "compartments".
+  return (
+    <div className="grid grid-cols-2 gap-1 rounded-2xl bg-amber-900/[0.04] p-1 text-sm font-medium">
       <button
         type="button"
         className={`rounded-xl px-3 py-2 transition ${
           props.activeTab === "map"
-            ? "bg-amber-200 text-slate-950"
-            : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+            ? "bg-[#fffdf7] text-stone-900 shadow-sm"
+            : "text-stone-600 hover:text-stone-900"
         }`}
         onClick={() => props.onTabChange("map")}
       >
@@ -333,13 +381,13 @@ export function ViewTabs(props: ViewTabsProps) {
         type="button"
         className={`rounded-xl px-3 py-2 transition ${
           props.activeTab === "terraces"
-            ? "bg-amber-200 text-slate-950"
-            : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+            ? "bg-[#fffdf7] text-stone-900 shadow-sm"
+            : "text-stone-600 hover:text-stone-900"
         }`}
         onClick={() => props.onTabChange("terraces")}
       >
         Terrasses
-        <span className="ml-2 rounded-full bg-white/70 px-2 py-0.5 text-xs">
+        <span className="ml-2 rounded-full bg-amber-100/70 px-2 py-0.5 text-xs text-amber-900">
           {props.venueCount}
         </span>
       </button>
@@ -362,11 +410,13 @@ export function TimeSlider(props: TimeSliderProps) {
   // same info more cleanly (Phase 2 UX 2026-05-12).
   const showProgress = computeProgress !== undefined;
   const fillStyle: React.CSSProperties = {};
-  let fillClass = "h-full bg-amber-300";
+  // Variant A: amber gradient fill on a soft amber track. The gradient gives
+  // the slider a slight 3D warmth that matches the kraft-paper card backdrop.
+  let fillClass = "h-full bg-gradient-to-r from-amber-300 to-amber-500";
   if (showProgress) {
     if (computeProgress === null) {
-      // Indeterminate — animated diagonal stripes
-      fillClass = "h-full w-full animate-pulse bg-amber-200";
+      // Indeterminate — animated pulse of the same gradient stripe
+      fillClass = "h-full w-full animate-pulse bg-gradient-to-r from-amber-200 to-amber-400";
     } else {
       fillStyle.width = `${Math.max(0, Math.min(100, computeProgress))}%`;
     }
@@ -377,16 +427,18 @@ export function TimeSlider(props: TimeSliderProps) {
 
   return (
     <div className="grid gap-2 text-sm">
-      <div className="flex items-center justify-between text-slate-700">
-        <span className="font-medium">Timeline</span>
-        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-900">
+      <div className="flex items-baseline justify-between">
+        <span className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">
+          Timeline
+        </span>
+        <span className="rounded-full bg-amber-100/80 px-2 py-0.5 text-xs font-semibold tabular-nums text-amber-900">
           {props.activeFrameTime ?? "--:--:--"}
         </span>
       </div>
       <div className="relative h-6 w-full">
         {/* Backing track + progress fill. Sits behind the slider; the slider's
             own track is made invisible via appearance-none + bg-transparent. */}
-        <div className="absolute inset-y-[10px] left-0 right-0 overflow-hidden rounded-full bg-slate-200">
+        <div className="absolute inset-y-[10px] left-0 right-0 overflow-hidden rounded-full bg-amber-100/70">
           <div className={fillClass} style={fillStyle} />
         </div>
         <input

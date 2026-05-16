@@ -1,12 +1,8 @@
 import type { Metadata } from "next";
-import { Fraunces } from "next/font/google";
 
-const fraunces = Fraunces({
-  subsets: ["latin"],
-  variable: "--font-display",
-  axes: ["SOFT", "WONK", "opsz"],
-  display: "swap",
-});
+// Fraunces (--font-display) is loaded once globally in `app/layout.tsx`. We
+// rely on the CSS variable here instead of re-registering the font locally so
+// the preview page and the production panel share the same font instance.
 
 export const metadata: Metadata = {
   title: "Design Lab — Mappy Hour",
@@ -224,7 +220,7 @@ function Variant({
 export default function DesignLabPage() {
   return (
     <main
-      className={`${fraunces.variable} min-h-dvh bg-[radial-gradient(ellipse_120%_80%_at_50%_-10%,#fffaf2,transparent_60%),linear-gradient(180deg,#fbf6ec_0%,#f3ece1_100%)] pb-24`}
+      className="min-h-dvh bg-[radial-gradient(ellipse_120%_80%_at_50%_-10%,#fffaf2,transparent_60%),linear-gradient(180deg,#fbf6ec_0%,#f3ece1_100%)] pb-24"
     >
       {/* Header strip */}
       <header className="px-6 pt-10 pb-8 md:px-12">

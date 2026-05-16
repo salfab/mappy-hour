@@ -42,14 +42,14 @@ export function StylePanel({ settings, onChange }: StylePanelProps) {
     onChange({ ...settings, ...patch });
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white/80 text-xs">
+    <div className="rounded-2xl bg-white/60 text-xs ring-1 ring-amber-100/60">
       <button
         type="button"
-        className="flex w-full items-center justify-between rounded-xl px-3 py-2 font-semibold text-slate-700"
+        className="flex w-full items-center justify-between rounded-2xl px-3 py-2 font-medium text-stone-700 transition hover:bg-amber-50/80"
         onClick={() => setOpen((o) => !o)}
       >
         <span>Style de l&apos;ombrage</span>
-        <span className="text-slate-400">{open ? "▾" : "▸"}</span>
+        <span className="text-stone-500">{open ? "▾" : "▸"}</span>
       </button>
       {open ? (
         <div className="space-y-2 px-3 pb-3 pt-1">

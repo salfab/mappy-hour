@@ -45,8 +45,8 @@ export function FilterPanel({ filters, onChange }: FilterPanelProps) {
             className={
               "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition " +
               (active
-                ? "bg-amber-100 text-amber-900 ring-1 ring-amber-200"
-                : "bg-slate-100 text-slate-400 ring-1 ring-slate-200 hover:bg-slate-200")
+                ? "bg-amber-100/80 text-amber-900 ring-1 ring-amber-200/70"
+                : "bg-white/60 text-stone-400 ring-1 ring-amber-100/60 hover:bg-amber-50/80")
             }
             aria-pressed={active}
           >

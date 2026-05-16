@@ -1500,23 +1500,23 @@ export function MapLibrePreviewClient() {
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 
       {/* Desktop horizontal search banner at the top of the screen. Hidden on
-          mobile (FloatingSearch lives there). Glass aesthetic (translucent +
-          backdrop blur) aligned on the mobile bottom-sheet palette so the
-          desktop layout no longer feels visually heavier than mobile. */}
-      <div className="pointer-events-auto absolute left-1/2 top-3 z-10 hidden w-[420px] -translate-x-1/2 rounded-2xl border border-white/70 bg-white/70 p-2 shadow-md backdrop-blur-xl lg:block">
+          mobile (FloatingSearch lives there). Variant A "kraft paper" glass
+          — warm cream surface, amber hairlines, no shadow on this banner so
+          the basemap underneath stays the visual anchor at the very top. */}
+      <div className="pointer-events-auto absolute left-1/2 top-3 z-10 hidden w-[420px] -translate-x-1/2 rounded-2xl border border-amber-200/50 bg-[oklch(0.985_0.018_85)/0.78] p-2 shadow-md backdrop-blur-xl lg:block">
         <SearchPanel mapRef={mapRef} />
       </div>
 
       {/* Left control panel — date + filters. Desktop only: 280px sidebar.
           DECISION: mobile no longer renders this stack at the top; controls
           and filters live in MobileBottomSheet. The desktop panel keeps the
-          same content so the desktop layout stays identical. Glass aesthetic
-          (translucent + backdrop blur) aligned on the mobile bottom-sheet
-          palette; kept slightly more opaque (/75) than the lighter panels
-          because the sidebar holds denser text and form controls that need a
-          bit more contrast against busy basemaps. */}
+          same content so the desktop layout stays identical. Variant A "kraft
+          paper" palette: warm cream surface (oklch crème ambré /0.78), amber
+          hairline border, warm dual-shadow that mimics a paper card resting
+          on the map. This sidebar carries the strongest shadow of the 5
+          panels because it's the densest information container. */}
       <div
-        className={`pointer-events-auto absolute left-3 top-3 z-10 hidden flex-col gap-3 overflow-hidden rounded-2xl border border-white/70 bg-white/75 p-3 shadow-md backdrop-blur-xl transition-[height] duration-300 ease-out lg:flex lg:right-auto lg:w-[280px] ${
+        className={`pointer-events-auto absolute left-3 top-3 z-10 hidden flex-col gap-3 overflow-hidden rounded-2xl border border-amber-200/50 bg-[oklch(0.985_0.018_85)/0.78] p-3 shadow-[0_30px_60px_-30px_rgba(146,107,40,0.25),0_8px_20px_-12px_rgba(146,107,40,0.18)] backdrop-blur-xl transition-[height] duration-300 ease-out lg:flex lg:right-auto lg:w-[280px] ${
           panelTab === "terraces"
             ? "lg:h-[calc(100dvh-24px)]"
             : "lg:h-[min(640px,calc(100dvh-24px))]"
@@ -1567,11 +1567,11 @@ export function MapLibrePreviewClient() {
             aria-hidden={panelTab !== "terraces"}
             inert={panelTab !== "terraces"}
           >
-            <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2">
-              <p className="text-sm font-semibold text-slate-900">
+            <div className="rounded-xl border border-amber-200/50 bg-amber-100/40 px-3 py-2">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">
                 Terrasses au soleil
               </p>
-              <p className="text-xs text-slate-500">
+              <p className="font-[var(--font-display)] text-base font-light tracking-tight text-stone-900">
                 {`${sunlitPlaces.length} établissements visibles`}
               </p>
             </div>
@@ -1591,13 +1591,17 @@ export function MapLibrePreviewClient() {
 
 
       {/* Basemap switcher — top-right on desktop, hidden on mobile (rarely
-          used; could be moved to a popover later). Glass aesthetic aligned on
-          the mobile palette. */}
+          used; could be moved to a popover later). Variant A kraft palette:
+          warm cream surface + amber hairlines so the panel sits in the same
+          vocabulary as the main sidebar. Active basemap chip uses the same
+          amber pastel as the toggleOnClass treatment for visual coherence. */}
       <div
-        className="absolute right-3 top-3 z-10 hidden rounded-md border border-white/70 bg-white/70 px-2 py-2 shadow-md backdrop-blur-xl lg:block"
+        className="absolute right-3 top-3 z-10 hidden rounded-md border border-amber-200/50 bg-[oklch(0.985_0.018_85)/0.78] px-2 py-2 shadow-md backdrop-blur-xl lg:block"
         style={{ font: "13px system-ui, sans-serif" }}
       >
-        <div className="mb-1 px-1 text-xs font-semibold text-gray-700">Basemap</div>
+        <div className="mb-1 px-1 text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">
+          Basemap
+        </div>
         <div className="flex flex-col gap-1">
           {baseMapsRef.current!.map((b) => (
             <button
@@ -1620,10 +1624,10 @@ export function MapLibrePreviewClient() {
                 setBasemapId(b.id);
               }}
               className={
-                "rounded px-2 py-1 text-left text-sm transition-colors " +
+                "rounded-lg px-2 py-1 text-left text-sm transition-colors " +
                 (b.id === basemapId
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-100 text-gray-800 hover:bg-gray-200")
+                  ? "bg-amber-100/80 text-amber-900 ring-1 ring-amber-200/70"
+                  : "bg-white/60 text-stone-700 ring-1 ring-amber-100/60 hover:bg-amber-50/80")
               }
             >
               {b.label}
@@ -1632,12 +1636,10 @@ export function MapLibrePreviewClient() {
         </div>
       </div>
 
-      {/* Sunlight overlay controls (bottom). Wraps on narrow screens. Glass
-          aesthetic shared with the other panels; same translucency on mobile
-          and desktop so the visual language stays consistent across
-          breakpoints. */}
+      {/* Sunlight overlay controls (bottom). Wraps on narrow screens. Variant
+          A kraft palette so the bottom bar matches the rest of the panels. */}
       <div
-        className="absolute bottom-10 left-3 right-3 z-10 mx-auto flex max-w-[calc(100%-1.5rem)] flex-wrap items-center justify-center gap-2 rounded-md border border-white/70 bg-white/70 px-3 py-2 shadow-md backdrop-blur-xl lg:left-1/2 lg:right-auto lg:max-w-none lg:-translate-x-1/2 lg:flex-nowrap"
+        className="absolute bottom-10 left-3 right-3 z-10 mx-auto flex max-w-[calc(100%-1.5rem)] flex-wrap items-center justify-center gap-2 rounded-md border border-amber-200/50 bg-[oklch(0.985_0.018_85)/0.78] px-3 py-2 shadow-md backdrop-blur-xl lg:left-1/2 lg:right-auto lg:max-w-none lg:-translate-x-1/2 lg:flex-nowrap"
         style={{ font: "13px system-ui, sans-serif" }}
       >
         <button
@@ -1671,7 +1673,7 @@ export function MapLibrePreviewClient() {
           type="button"
           onClick={() => setRecalcSignal((c) => c + 1)}
           title="Recalculer l'ensoleillement pour la zone visible"
-          className="rounded-full bg-amber-200 px-2 py-0.5 text-sm font-semibold text-amber-900 hover:bg-amber-300 disabled:bg-slate-200 disabled:text-slate-400"
+          className="rounded-full bg-gradient-to-b from-amber-400 to-amber-500 px-2 py-0.5 text-sm font-semibold text-amber-950 shadow-amber-900/20 hover:from-amber-300 hover:to-amber-400 disabled:from-slate-200 disabled:to-slate-200 disabled:text-slate-400"
           disabled={sunlightLoading}
         >
           ↻
@@ -1692,14 +1694,13 @@ export function MapLibrePreviewClient() {
         )}
       </div>
 
-      {/* Phase tag (bottom-right). Glass aesthetic aligned on the mobile
-          palette. */}
+      {/* Phase tag (bottom-right). Variant A palette. */}
       <div
-        className="absolute bottom-3 right-3 z-10 rounded-md border border-white/70 bg-white/70 px-3 py-2 shadow-md backdrop-blur-xl"
+        className="absolute bottom-3 right-3 z-10 rounded-md border border-amber-200/50 bg-[oklch(0.985_0.018_85)/0.78] px-3 py-2 shadow-md backdrop-blur-xl"
         style={{ font: "12px system-ui, sans-serif" }}
       >
-        <div className="font-semibold text-gray-800">MapLibre preview</div>
-        <a href="/" className="mt-1 inline-block text-blue-600 hover:underline">
+        <div className="font-semibold text-stone-800">MapLibre preview</div>
+        <a href="/" className="mt-1 inline-block text-amber-800 hover:underline">
           ← Retour à la carte Leaflet
         </a>
       </div>
