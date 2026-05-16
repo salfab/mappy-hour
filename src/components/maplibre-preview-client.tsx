@@ -1810,17 +1810,24 @@ export function MapLibrePreviewClient() {
           state={bottomSheetState}
           venueCount={sunlitPlaces.length}
           timeline={
-            timelineFrames.length > 1 ? (
-              <TimeSlider
-                mode="daily"
-                frameIndex={frameIndex}
-                frameCount={timelineFrames.length}
-                activeFrameTime={timelineFrames[frameIndex]?.localTime ?? null}
-                computeProgress={timelineFetchProgress}
-                disabled={sunlightLoading && timelineFetchProgress === undefined}
-                onFrameIndexChange={setFrameIndex}
-              />
-            ) : null
+            // Always render — the timeline is the sole row visible in the
+            // compact sheet state, so a missing frame set (cold start before
+            // the SSE arrives, or any state in between) must still draw the
+            // affordance (Timeline label + a disabled slider + "--:--:--"
+            // placeholder) instead of leaving a void. Disabled until at
+            // least 2 frames are available.
+            <TimeSlider
+              mode="daily"
+              frameIndex={frameIndex}
+              frameCount={timelineFrames.length}
+              activeFrameTime={timelineFrames[frameIndex]?.localTime ?? null}
+              computeProgress={timelineFetchProgress}
+              disabled={
+                timelineFrames.length < 2 ||
+                (sunlightLoading && timelineFetchProgress === undefined)
+              }
+              onFrameIndexChange={setFrameIndex}
+            />
           }
           controls={
             <div className="grid gap-3">
