@@ -990,10 +990,21 @@ export function MapLibrePreviewClient() {
   // Trigger initial fetch + on every date change OR recalc bump. refreshTimeline
   // is itself memoised on the UI params, so a toggle change naturally
   // re-triggers this effect → refetch.
+  //
+  // Debounce: a 250 ms timer absorbs spammy toggle clicks (5 toggles in 1s)
+  // so we don't kick off 5 SSE in a row that each burn 1-2 tiles on the
+  // server before being aborted. The cleanup cancels the pending timer
+  // whenever a new dep change arrives, giving us a clean trailing debounce.
+  // `date` / `ready` go through the same timer (they're rare enough that
+  // 250 ms of extra latency is not noticeable; keeping a single path keeps
+  // the SSE ordering deterministic). See docs/observability/calc-auto-cpu-risk.md.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
-    refreshTimeline(map, date);
+    const handle = window.setTimeout(() => {
+      refreshTimeline(map, date);
+    }, 250);
+    return () => window.clearTimeout(handle);
   }, [date, ready, recalcSignal, refreshTimeline]);
 
   // ── Place card sunlight windows fetch ─────────────────────────────────────
