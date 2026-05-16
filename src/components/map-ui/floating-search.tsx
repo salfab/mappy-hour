@@ -52,7 +52,7 @@ export function FloatingSearch(props: FloatingSearchProps) {
     return (
       <button
         type="button"
-        className="absolute right-4 top-4 z-[500] grid h-14 w-14 place-items-center rounded-full border border-white/70 bg-white/70 text-slate-900 shadow-xl shadow-slate-900/10 backdrop-blur-xl transition hover:-translate-y-0.5 hover:bg-white/88 hover:shadow-2xl lg:hidden"
+        className="absolute right-4 top-4 z-[500] grid h-14 w-14 place-items-center rounded-full border border-slate-200 bg-white text-slate-900 shadow-xl shadow-slate-900/10 transition hover:-translate-y-0.5 hover:shadow-2xl lg:hidden"
         aria-label="Rechercher un lieu"
         onClick={props.onOpen}
       >
@@ -86,7 +86,7 @@ export function FloatingSearch(props: FloatingSearchProps) {
         </button>
       </div>
       {props.error ? (
-        <p className="mx-2 rounded-full border border-white/[0.62] bg-white/[0.58] px-4 py-2 text-xs font-semibold text-rose-700 shadow-lg shadow-slate-900/[0.08] backdrop-blur-xl">
+        <p className="mx-2 rounded-full border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-700 shadow-lg shadow-slate-900/[0.08]">
           {props.error}
         </p>
       ) : null}

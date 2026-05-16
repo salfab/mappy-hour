@@ -390,7 +390,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
       // and discard map state). Combined with `touch-none` on the handle
       // strip below, this kills the refresh-on-swipe bug reported on the
       // sides of the grey handle pill on mobile.
-      className={`absolute inset-x-0 bottom-0 z-[460] grid grid-rows-[auto_1fr] overflow-hidden overscroll-y-contain rounded-t-[2rem] border border-b-0 border-white/70 bg-white/92 px-4 pb-[calc(env(safe-area-inset-bottom)+34px)] pt-2 text-slate-900 shadow-2xl backdrop-blur transition-[height] duration-150 ${stateHeightClass}`}
+      className={`absolute inset-x-0 bottom-0 z-[460] grid grid-rows-[auto_1fr] overflow-hidden overscroll-y-contain rounded-t-[2rem] border border-b-0 border-white/70 bg-white px-4 pb-[calc(env(safe-area-inset-bottom)+34px)] pt-2 text-slate-900 shadow-2xl transition-[height] duration-150 ${stateHeightClass}`}
       aria-label="Contrôle de la carte"
       onPointerDownCapture={(event) => {
         if (isInteractiveDragTarget(event.target)) {
@@ -534,7 +534,7 @@ export function MobileBarsView(props: MobileBarsViewProps) {
 
   return (
     <section className="absolute inset-0 z-[520] grid grid-rows-[auto_1fr] bg-slate-50 text-slate-950 lg:hidden">
-      <header className="flex items-center gap-3 border-b border-slate-200 bg-white/92 px-4 py-3 shadow-sm backdrop-blur">
+      <header className="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 shadow-sm">
         <button
           type="button"
           className="grid h-10 w-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-800 shadow-sm"
