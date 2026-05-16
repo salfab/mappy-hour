@@ -364,7 +364,13 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
 
   return (
     <section
-      className={`absolute inset-x-0 bottom-0 z-[460] grid grid-rows-[auto_1fr] overflow-hidden rounded-t-[2rem] border border-b-0 border-white/70 bg-white/92 px-4 pb-[calc(env(safe-area-inset-bottom)+34px)] pt-2 text-slate-900 shadow-2xl backdrop-blur transition-[height] duration-150 ${stateHeightClass}`}
+      // `overscroll-y-contain` prevents a vertical gesture that overshoots
+      // the panel boundary from bubbling up to the document and triggering
+      // the browser's native pull-to-refresh (which would reload the page
+      // and discard map state). Combined with `touch-none` on the handle
+      // strip below, this kills the refresh-on-swipe bug reported on the
+      // sides of the grey handle pill on mobile.
+      className={`absolute inset-x-0 bottom-0 z-[460] grid grid-rows-[auto_1fr] overflow-hidden overscroll-y-contain rounded-t-[2rem] border border-b-0 border-white/70 bg-white/92 px-4 pb-[calc(env(safe-area-inset-bottom)+34px)] pt-2 text-slate-900 shadow-2xl backdrop-blur transition-[height] duration-150 ${stateHeightClass}`}
       aria-label="Contrôle de la carte"
       onPointerDownCapture={(event) => {
         if (isInteractiveDragTarget(event.target)) {
@@ -395,7 +401,13 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
           + screen-reader semantics. Hit area went from 32×112 px → effectively
           ~52 px tall × full width because the section captures pointer events
           on this whole strip (which is non-interactive markup). */}
-      <div className="flex justify-center px-12 py-2">
+      {/* `touch-none` on the WHOLE handle strip (not just the visible pill).
+          Without it, swipes initiated on either side of the pill — i.e. the
+          ~28 px-wide flanks of `px-12 py-2` padding — bubble to the document
+          and trigger the native pull-to-refresh, reloading the page mid-pan
+          and discarding map state. The section parent's pointer handlers
+          still take over the drag, so the panel resize gesture is unaffected. */}
+      <div className="flex touch-none justify-center px-12 py-2">
         <button
           type="button"
           className="grid h-10 w-32 touch-none place-items-center rounded-full outline-none transition focus-visible:ring-2 focus-visible:ring-amber-300"
