@@ -1,5 +1,6 @@
 import type { Map as MapLibreMap } from "maplibre-gl";
 import type { TimelineTile } from "@/components/sunlight-overlay/maplibre-sunlight-custom-layer";
+import type { VenueType } from "@/components/map-ui/venue-card";
 import { decodeTileMasksBlob } from "@/lib/encoding/mask-codec-client";
 import {
   getCachedTile,
@@ -17,6 +18,29 @@ const MAX_EXCLUDE_TILE_IDS = 1000;
 export interface TimelineResult {
   tiles: TimelineTile[];
   frames: Array<{ localTime: string }>;
+}
+
+/** Subset of the server's `places` SSE event payload we consume on the client.
+ *  Mirrors `SunlitPlaceEntry` in sunlight-map-client.tsx so Leaflet and MapLibre
+ *  stay in sync; the heavy fields (sunnyWindows / warnings / etc.) are typed
+ *  permissively because MapLibre's terrace list does not yet surface them. */
+export interface SunlitPlaceEntry {
+  id: string;
+  name: string;
+  category: string;
+  subcategory: string;
+  venueType: VenueType;
+  hasOutdoorSeating: boolean;
+  lat: number;
+  lon: number;
+  evaluationLat: number;
+  evaluationLon: number;
+  selectionStrategy: "original" | "terrace_offset" | "indoor_fallback";
+  selectionOffsetMeters: number;
+  isSunnyNow: boolean | null;
+  sunnyMinutes: number;
+  sunlightStartLocalTime: string | null;
+  sunlightEndLocalTime: string | null;
 }
 
 export interface FetchTimelineOptions {
@@ -59,6 +83,11 @@ export interface FetchTimelineOptions {
     tilesComputed: number;
     elapsedMs?: number;
   }) => void;
+  /** Fired for every `places` SSE event the server emits (one per tile that
+   *  contains outdoor-seating venues). Each batch comes scoped to a tileId so
+   *  callers can dedupe/re-merge across tiles. The caller is responsible for
+   *  accumulating per-id and clearing on a fresh `start`. */
+  onPlaces?: (info: { tileId: string; places: SunlitPlaceEntry[] }) => void;
 }
 
 /**
@@ -86,6 +115,7 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
     onProgress,
     onStart,
     onDone,
+    onPlaces,
   } = opts;
   onLoadingChange?.(true);
   const bounds = map.getBounds();
@@ -277,6 +307,21 @@ export async function fetchTimeline(opts: FetchTimelineOptions): Promise<void> {
             }
             if (totalAnnounced > 0) {
               onProgress?.((collected.length / totalAnnounced) * 100);
+            }
+          } else if (eventType === "places") {
+            // Per-tile bundle of outdoor-seating venues with their sun
+            // status for the current daily window. Forwarded to the caller
+            // so it can merge into a per-id map and render the terraces
+            // list. Mirrors the Leaflet client's "places" handler.
+            const data = payload as {
+              tileId?: string;
+              places?: SunlitPlaceEntry[];
+            };
+            if (Array.isArray(data.places) && data.places.length > 0) {
+              onPlaces?.({
+                tileId: data.tileId ?? "",
+                places: data.places,
+              });
             }
           } else if (eventType === "done") {
             await Promise.all(pendingDecodes);

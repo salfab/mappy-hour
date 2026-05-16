@@ -171,6 +171,84 @@ export function VenueTypeIcon(props: { venueType: VenueType; className?: string 
     );
   }
 
+  if (props.venueType === "snack") {
+    // Paper fry cone — angular cone (cream paper, amber stripes) topped with
+    // three golden fries poking out. Distinct silhouette from the bar's
+    // martini glass and the restaurant's plate.
+    return (
+      <svg
+        aria-hidden="true"
+        className={className}
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+        viewBox="0 0 24 24"
+      >
+        <path d="M5.5 9h13l-5.2 11a1.5 1.5 0 0 1-2.6 0L5.5 9Z" fill="#fef3c7" stroke="#24384a" />
+        <path d="M7 11h10" stroke="#f59e0b" strokeWidth="1.2" />
+        <path d="M9 9V4" stroke="#fbbf24" strokeWidth="2.4" />
+        <path d="M12 9V2.5" stroke="#fbbf24" strokeWidth="2.4" />
+        <path d="M15 9V4" stroke="#fbbf24" strokeWidth="2.4" />
+        <path d="M9 9V4" stroke="#f59e0b" strokeWidth="1" />
+        <path d="M12 9V2.5" stroke="#f59e0b" strokeWidth="1" />
+        <path d="M15 9V4" stroke="#f59e0b" strokeWidth="1" />
+      </svg>
+    );
+  }
+
+  if (props.venueType === "foodtruck") {
+    // Side view of a service truck — cream cab + amber service hatch with
+    // a chimney puff. Two wheels anchor the silhouette so it reads truck
+    // even at small sizes.
+    return (
+      <svg
+        aria-hidden="true"
+        className={className}
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+        viewBox="0 0 24 24"
+      >
+        <path d="M2.5 16V9.5h11.5V16" fill="#fef3c7" stroke="#24384a" />
+        <path d="M14 11.5h4.5l3 3V16H14V11.5Z" fill="#fef3c7" stroke="#24384a" />
+        <rect x="4" y="11" width="8" height="3.5" fill="#fbbf24" stroke="#f59e0b" strokeWidth="1.2" />
+        <path d="M2.5 16h19" stroke="#24384a" />
+        <circle cx="7" cy="18" r="1.6" fill="#24384a" />
+        <circle cx="17" cy="18" r="1.6" fill="#24384a" />
+        <path d="M5 9.5V6" stroke="#24384a" />
+        <path d="M5 6c0 1-.8 1-.8 2 0 1 .8 1 .8 2" stroke="#f59e0b" strokeWidth="1.3" />
+      </svg>
+    );
+  }
+
+  if (props.venueType === "other") {
+    // Café cup with a wisp of steam — generic "lieu où on consomme" symbol
+    // that doesn't collide with bar/restaurant/snack/foodtruck.
+    return (
+      <svg
+        aria-hidden="true"
+        className={className}
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+        viewBox="0 0 24 24"
+      >
+        <path d="M4.5 10h12v6a4 4 0 0 1-4 4H8.5a4 4 0 0 1-4-4V10Z" fill="#fef3c7" stroke="#24384a" />
+        <path d="M16.5 11.5h2a2.5 2.5 0 0 1 0 5h-2" stroke="#24384a" />
+        <path d="M16.5 13h2a1 1 0 0 1 0 2h-2" fill="#fbbf24" stroke="#f59e0b" strokeWidth="1.2" />
+        <path d="M3.5 21h14" stroke="#24384a" />
+        <path d="M8 7c0-1.4.8-1.4.8-2.8C8.8 2.8 8 2.8 8 1.4" stroke="#f59e0b" strokeWidth="1.4" />
+        <path d="M11.5 7c0-1.4.8-1.4.8-2.8 0-1.4-.8-1.4-.8-2.8" stroke="#f59e0b" strokeWidth="1.4" />
+      </svg>
+    );
+  }
+
   return <VenueTerraceIcon className={className} />;
 }
 
@@ -213,6 +291,46 @@ function venueTypeMarkerSvg(venueType: VenueType): string {
           <path d="M16.1 5.1c1.6.9 2.5 2.3 2.5 4.1 0 1.9-.9 3.2-2.5 3.8v5.3" fill="none" stroke="#24384a"></path>
           <path d="M14.5 5.1v13.2" fill="none" stroke="#24384a"></path>
           <path d="M10.8 13.4c1.4.8 3.5.8 4.9 0" fill="none" stroke="#f59e0b" stroke-width="1.5"></path>
+        </svg>`;
+  }
+
+  if (venueType === "snack") {
+    return `
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          <path d="M5.5 9h13l-5.2 11a1.5 1.5 0 0 1-2.6 0L5.5 9Z" fill="#fef3c7" stroke="#24384a"></path>
+          <path d="M7 11h10" fill="none" stroke="#f59e0b" stroke-width="1.2"></path>
+          <path d="M9 9V4" fill="none" stroke="#fbbf24" stroke-width="2.4"></path>
+          <path d="M12 9V2.5" fill="none" stroke="#fbbf24" stroke-width="2.4"></path>
+          <path d="M15 9V4" fill="none" stroke="#fbbf24" stroke-width="2.4"></path>
+          <path d="M9 9V4" fill="none" stroke="#f59e0b" stroke-width="1"></path>
+          <path d="M12 9V2.5" fill="none" stroke="#f59e0b" stroke-width="1"></path>
+          <path d="M15 9V4" fill="none" stroke="#f59e0b" stroke-width="1"></path>
+        </svg>`;
+  }
+
+  if (venueType === "foodtruck") {
+    return `
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          <path d="M2.5 16V9.5h11.5V16" fill="#fef3c7" stroke="#24384a"></path>
+          <path d="M14 11.5h4.5l3 3V16H14V11.5Z" fill="#fef3c7" stroke="#24384a"></path>
+          <rect x="4" y="11" width="8" height="3.5" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.2"></rect>
+          <path d="M2.5 16h19" fill="none" stroke="#24384a"></path>
+          <circle cx="7" cy="18" r="1.6" fill="#24384a"></circle>
+          <circle cx="17" cy="18" r="1.6" fill="#24384a"></circle>
+          <path d="M5 9.5V6" fill="none" stroke="#24384a"></path>
+          <path d="M5 6c0 1-.8 1-.8 2 0 1 .8 1 .8 2" fill="none" stroke="#f59e0b" stroke-width="1.3"></path>
+        </svg>`;
+  }
+
+  if (venueType === "other") {
+    return `
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          <path d="M4.5 10h12v6a4 4 0 0 1-4 4H8.5a4 4 0 0 1-4-4V10Z" fill="#fef3c7" stroke="#24384a"></path>
+          <path d="M16.5 11.5h2a2.5 2.5 0 0 1 0 5h-2" fill="none" stroke="#24384a"></path>
+          <path d="M16.5 13h2a1 1 0 0 1 0 2h-2" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.2"></path>
+          <path d="M3.5 21h14" fill="none" stroke="#24384a"></path>
+          <path d="M8 7c0-1.4.8-1.4.8-2.8C8.8 2.8 8 2.8 8 1.4" fill="none" stroke="#f59e0b" stroke-width="1.4"></path>
+          <path d="M11.5 7c0-1.4.8-1.4.8-2.8 0-1.4-.8-1.4-.8-2.8" fill="none" stroke="#f59e0b" stroke-width="1.4"></path>
         </svg>`;
   }
 

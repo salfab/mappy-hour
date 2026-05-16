@@ -67,7 +67,10 @@ import {
   placeChipKey,
   type CategoryFilters,
 } from "@/components/maplibre-preview/filter-panel";
-import { fetchTimeline } from "@/components/maplibre-preview/sunlight-timeline";
+import {
+  fetchTimeline,
+  type SunlitPlaceEntry,
+} from "@/components/maplibre-preview/sunlight-timeline";
 import { inspectTileCache } from "@/components/maplibre-preview/timeline-tile-cache";
 import {
   StylePanel,
@@ -321,6 +324,14 @@ export function MapLibrePreviewClient() {
   // Tick bumped whenever rawPlacesRef is refreshed so memoised derivations
   // (sunlitPlaces) recompute even though the underlying storage is a ref.
   const [rawPlacesTick, setRawPlacesTick] = useState(0);
+  // Per-id accumulator for the SSE `places` events emitted by the timeline
+  // stream. The server sends one batch per tile with each venue's sunny
+  // window for the current daily window. We dedupe by id (keeping the entry
+  // with the largest sunnyMinutes — matches Leaflet's merge strategy) so a
+  // venue straddling two tiles still surfaces its best sunshine slot. Reset
+  // on every fresh timeline fetch via the start event.
+  const sunlitTimelinePlacesRef = useRef<Map<string, SunlitPlaceEntry>>(new Map());
+  const [sunlitTimelinePlacesTick, setSunlitTimelinePlacesTick] = useState(0);
   const [filters, setFilters] = useState<CategoryFilters>(DEFAULT_FILTERS);
   const [selectedVenueId, setSelectedVenueId] = useState<string | null>(null);
   // Ref mirror so closures captured in setStyle / moveend handlers always see
@@ -724,40 +735,53 @@ export function MapLibrePreviewClient() {
   }, [filters, ready, applyPlacesToSource]);
 
   // ── Sunlit places derivation (powers BarsList + ViewTabs venueCount) ──────
-  // DECISION: pragmatic v1. We do NOT consult the sunlight mask atlas to know
-  // if each place's cell is currently sunny at frameIndex/localTime — wiring
-  // that requires exposing per-tile masks from MapLibreSunlightCustomLayer +
-  // a lat/lon → tile bit lookup, out of scope for this chunk. Instead we list
-  // every visible place that has `hasOutdoorSeating === true` (i.e. a terrace
-  // exists). The venueCount therefore reflects "terrasses visibles", not
-  // "terrasses au soleil maintenant". A later chunk will tighten this.
+  // We start from the full viewport places list (every place with
+  // `hasOutdoorSeating === true` and matching the category filters) and merge
+  // in the server-computed sun status from the `places` SSE event when
+  // available. While the SSE is still streaming we display the not-yet-merged
+  // entries with null/0 sunlight fields — `getVenueSunStatus` falls back to
+  // the visually neutral "Ombre/Créneau" branch in that case, matching the
+  // Leaflet client's behaviour for not-yet-arrived tiles.
   const sunlitPlaces = useMemo<VenueCardPlace[]>(() => {
-    // Read both refs at call time; the tick dep below is what re-triggers us
-    // when rawPlacesRef.current was just refreshed.
+    // Read both refs at call time; the tick deps below are what re-triggers us
+    // when either rawPlacesRef.current or sunlitTimelinePlacesRef.current was
+    // just refreshed.
     void rawPlacesTick;
+    void sunlitTimelinePlacesTick;
     const raw = rawPlacesRef.current;
+    const timeline = sunlitTimelinePlacesRef.current;
     return raw
       .filter((p) => p.hasOutdoorSeating && filters[placeChipKey(p.category, p.subcategory)])
-      .map<VenueCardPlace>((p) => ({
-        id: p.id,
-        name: p.name,
-        // Map OSM subcategory → coarse VenueType bucket used by VenueCard.
-        venueType: subcategoryToVenueType(p.subcategory),
-        lat: p.lat,
-        lon: p.lon,
-        evaluationLat: p.lat,
-        evaluationLon: p.lon,
-        selectionStrategy: p.selectionStrategy ?? "original",
-        selectionOffsetMeters: 0,
-        // DECISION: no sun status wired yet — see comment above. We surface
-        // null so getVenueSunStatus falls back to the "Ombre/Créneau" branch
-        // (visually neutral) instead of falsely showing "Soleil".
-        isSunnyNow: null,
-        sunnyMinutes: 0,
-        sunlightStartLocalTime: null,
-        sunlightEndLocalTime: null,
-      }));
-  }, [rawPlacesTick, filters]);
+      .map<VenueCardPlace>((p) => {
+        const match = timeline.get(p.id);
+        return {
+          id: p.id,
+          name: p.name,
+          // Map OSM subcategory → coarse VenueType bucket used by VenueCard.
+          // Prefer the server-classified venueType when available — it goes
+          // through the same `subcategoryToVenueType`-equivalent path on the
+          // backend, but is the authoritative value if the rules ever diverge.
+          venueType: match?.venueType ?? subcategoryToVenueType(p.subcategory),
+          lat: p.lat,
+          lon: p.lon,
+          evaluationLat: match?.evaluationLat ?? p.lat,
+          evaluationLon: match?.evaluationLon ?? p.lon,
+          selectionStrategy: match?.selectionStrategy ?? p.selectionStrategy ?? "original",
+          selectionOffsetMeters: match?.selectionOffsetMeters ?? 0,
+          // DECISION: mirror Leaflet (sunlight-map-client.tsx l.5151-5165).
+          // In daily mode the SSE timeline always sets isSunnyNow=null (the
+          // window represents the whole day, not the current frame), so the
+          // VenueCard falls into the "Créneau" branch as long as
+          // sunnyMinutes > 0. In instant mode no `places` event is emitted,
+          // so we keep the null/0 fallback until that pipeline gains its own
+          // status — same as the previous v1 behaviour.
+          isSunnyNow: match?.isSunnyNow ?? null,
+          sunnyMinutes: match?.sunnyMinutes ?? 0,
+          sunlightStartLocalTime: match?.sunlightStartLocalTime ?? null,
+          sunlightEndLocalTime: match?.sunlightEndLocalTime ?? null,
+        };
+      });
+  }, [rawPlacesTick, sunlitTimelinePlacesTick, filters]);
 
   // ── Mobile search handlers (mirror SearchPanel/sunlight-map-client) ───────
   const SUGGESTION_TARGET_ZOOM = 19;
@@ -907,6 +931,14 @@ export function MapLibrePreviewClient() {
             etaSeconds: previous?.etaSeconds ?? null,
             elapsedMs: previous?.elapsedMs,
           }));
+          // Drop any sunlit-places merge state from the previous fetch — a
+          // fresh SSE means a new daily window / bbox combo, and stale
+          // entries would otherwise leak into the next terraces list while
+          // tiles trickle in.
+          if (sunlitTimelinePlacesRef.current.size > 0) {
+            sunlitTimelinePlacesRef.current = new Map();
+            setSunlitTimelinePlacesTick((t) => t + 1);
+          }
           // Umami analytics — emit one event per compute job the server
           // actually accepted (mirrors Leaflet: tracking earlier overcounts
           // pan/zoom cancellations).
@@ -918,6 +950,22 @@ export function MapLibrePreviewClient() {
               basemap: baseMapIdToBaseMapStyle(basemapId),
             });
           }
+        },
+        onPlaces: ({ places }) => {
+          // Merge per-id into the accumulator. When a venue straddles two
+          // tiles both batches carry the same id — keep the entry with the
+          // largest sunnyMinutes so the list always shows the best window
+          // (matches sunlight-map-client.tsx l.5151-5157).
+          const map = sunlitTimelinePlacesRef.current;
+          let mutated = false;
+          for (const place of places) {
+            const existing = map.get(place.id);
+            if (!existing || place.sunnyMinutes > existing.sunnyMinutes) {
+              map.set(place.id, place);
+              mutated = true;
+            }
+          }
+          if (mutated) setSunlitTimelinePlacesTick((t) => t + 1);
         },
         onDone: ({ tilesFromCache, tilesComputed, elapsedMs }) => {
           setDailyProgress({
