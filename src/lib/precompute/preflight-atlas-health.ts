@@ -354,8 +354,32 @@ export async function scanAndQuarantineAtlases(
     return quarantineRoot;
   }
 
+  const total = files.length;
+  if (total === 0) {
+    logger(`[preflight] ${region}: aucun atlas à scanner`);
+    return result;
+  }
+  logger(`[preflight] ${region}: ${total} atlas à scanner…`);
+  const scanStart = Date.now();
+  const PROGRESS_EVERY = Math.max(1, Math.min(500, Math.ceil(total / 20)));
+
   for (const filePath of files) {
     result.scanned++;
+
+    if (result.scanned % PROGRESS_EVERY === 0 || result.scanned === total) {
+      const elapsed = (Date.now() - scanStart) / 1000;
+      const rate = result.scanned / elapsed;
+      const remaining = total - result.scanned;
+      const etaSec = rate > 0 ? Math.round(remaining / rate) : 0;
+      const etaStr = etaSec > 60
+        ? `${Math.floor(etaSec / 60)}m${etaSec % 60}s`
+        : `${etaSec}s`;
+      logger(
+        `[preflight] ${region}: ${result.scanned}/${total} (${Math.round((result.scanned / total) * 100)}%)` +
+        ` healthy=${result.healthy} quarantined=${result.quarantined.length}` +
+        (result.scanned < total ? ` ETA≈${etaStr}` : ` elapsed=${Math.round(elapsed)}s`),
+      );
+    }
 
     let raw: Buffer;
     try {

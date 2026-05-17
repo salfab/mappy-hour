@@ -422,6 +422,7 @@ async function main() {
     const { runPreflight } = await import("../../src/lib/precompute/preflight-atlas-health");
     console.log(`\n[precompute-all] ▶ preflight atlas-health : ${regions.length} région(s)`);
     for (const region of regions) {
+      console.log(`[precompute-all] atlas-health région=${region}…`);
       const outcome = await runPreflight(region as PrecomputedRegionName);
       if (!outcome.ok) {
         console.warn(
