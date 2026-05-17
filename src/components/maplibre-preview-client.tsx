@@ -2043,10 +2043,23 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 
       {showFirstTileSpinner ? (
-        <div className="pointer-events-none absolute inset-x-0 top-16 z-30 flex justify-center lg:top-20">
-          <div className="flex items-center gap-2 rounded-full border border-amber-200/60 bg-[oklch(0.985_0.018_85)/0.92] px-3 py-1.5 text-sm text-stone-700 shadow-md backdrop-blur-md">
+        // Centered in the visible map area: on desktop that's the full
+        // viewport (lg:pb-0), on mobile the bottom sheet eats screen real
+        // estate so we compensate with a padding-bottom equal to the sheet
+        // height — `items-center` then centers the chip in the *remaining*
+        // viewport above the sheet.
+        <div
+          className={`pointer-events-none absolute inset-0 z-30 flex items-center justify-center lg:pb-0 ${
+            bottomSheetState === "compact"
+              ? "pb-[210px]"
+              : bottomSheetState === "middle"
+                ? "pb-[360px]"
+                : "pb-[560px]"
+          }`}
+        >
+          <div className="flex items-center gap-3 rounded-2xl border border-amber-300/70 bg-[oklch(0.985_0.018_85)/0.95] px-5 py-3.5 text-base font-medium text-stone-800 shadow-xl backdrop-blur-md">
             <svg
-              className="h-4 w-4 animate-spin text-amber-700"
+              className="h-6 w-6 animate-spin text-amber-600"
               viewBox="0 0 24 24"
               fill="none"
               aria-hidden="true"
