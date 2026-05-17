@@ -344,6 +344,14 @@ export function MapLibrePreviewClient() {
   // explicit ↻ button). The date-watching effect re-runs on every bump.
   const [recalcSignal, setRecalcSignal] = useState(0);
   const sunlightDebounceRef = useRef<number | null>(null);
+  // Raised by the basemap useEffect right before `map.setStyle(...)`. The
+  // `styledata` handler reads it to know "this fire is the aftermath of a real
+  // style swap" (custom layers were purged from style._order, must remove+add
+  // to push them back into the render pipeline). All other styledata fires
+  // (sourcedata, sprite load, and notably the feedback our own addLayer
+  // creates) skip the heavy re-add path — that's what kept the previous
+  // unconditional remove+add looping at ~10×/s and trashing the GPU.
+  const pendingBaseStyleSwapRef = useRef<boolean>(false);
   const [date, setDate] = useState<string>(() =>
     new Date().toLocaleDateString("sv", { timeZone: "Europe/Zurich" }),
   );
@@ -1532,24 +1540,27 @@ export function MapLibrePreviewClient() {
       // points overlay. Data + visibility are re-applied by the dedicated
       // effects below (they re-run on `ready`/`lastResult`/toggle changes).
       addInstantPointsLayers(map);
-      const sp = satellitePatchworkLayerRef.current;
-      if (sp) {
-        if (map.getLayer(sp.id)) map.removeLayer(sp.id);
-        map.addLayer(sp, "cluster-circles");
-      }
-      const sl = sunlightLayerRef.current;
-      if (sl) {
-        // MapLibre keeps the custom layer reference across setStyle but does
-        // NOT call onAdd/onRemove on the swap. We force the lifecycle ourselves
-        // so the layer reinitialises its GL program and re-uploads tile
-        // textures into the (potentially) reset GL state machine.
-        if (map.getLayer(sl.id)) map.removeLayer(sl.id);
-        map.addLayer(sl, "cluster-circles");
-      }
-      const hm = heatmapLayerRef.current;
-      if (hm) {
-        if (map.getLayer(hm.id)) map.removeLayer(hm.id);
-        map.addLayer(hm, "cluster-circles");
+      // Custom layer re-add: only after a real `setStyle` call (basemap swap)
+      // does MapLibre wipe the custom layers from `style._order`. styledata
+      // fires for MANY other reasons (sourcedata, sprite load, and notably
+      // each addLayer/removeLayer we issue here re-emits styledata, so an
+      // unconditional remove+add would feedback into itself at ~10×/s and
+      // trash the GPU). We gate the heavy path on a flag the basemap effect
+      // raises just before setStyle.
+      //
+      // Note: we cannot use `map.getStyle().layers` to detect the purge —
+      // `getStyle()` serialises the style and silently filters out custom
+      // layers (they aren't JSON-representable). And `map.getLayer(id)` keeps
+      // returning a truthy ref even after the layer has been dropped from
+      // `style._order`, so it's not a reliable "is alive" probe either.
+      if (pendingBaseStyleSwapRef.current) {
+        pendingBaseStyleSwapRef.current = false;
+        const sp = satellitePatchworkLayerRef.current;
+        if (sp) { try { map.removeLayer(sp.id); } catch { /* not in order */ }; map.addLayer(sp, "cluster-circles"); }
+        const sl = sunlightLayerRef.current;
+        if (sl) { try { map.removeLayer(sl.id); } catch { /* not in order */ }; map.addLayer(sl, "cluster-circles"); }
+        const hm = heatmapLayerRef.current;
+        if (hm) { try { map.removeLayer(hm.id); } catch { /* not in order */ }; map.addLayer(hm, "cluster-circles"); }
       }
     });
 
@@ -1647,7 +1658,11 @@ export function MapLibrePreviewClient() {
     const map = mapRef.current;
     if (!map || !ready) return;
     const target = baseMapsRef.current!.find((b) => b.id === basemapId);
-    if (target) map.setStyle(buildStyle(target));
+    if (!target) return;
+    // Flag set so the styledata handler knows the next style emission is a
+    // real swap and the custom layers must be re-pushed into style._order.
+    pendingBaseStyleSwapRef.current = true;
+    map.setStyle(buildStyle(target));
   }, [basemapId, ready]);
 
   // Debug snapshot exposed on the window. Updated on every render so the
