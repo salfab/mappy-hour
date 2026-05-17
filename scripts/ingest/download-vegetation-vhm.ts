@@ -15,10 +15,6 @@
  *     composes `canopy_abs = terrain + max(0, vhm)` at sample time
  *     (Option B, ADR-0016 update 2026-04-23)
  *
- * The compose pass is only needed for the CPU ray-march (which reads the
- * raster as absolute altitude) and for the default GPU path. Pass
- * `--skip-compose` to ingest raw only.
- *
  * Usage: npx tsx scripts/ingest/download-vegetation-vhm.ts --region=nyon
  *        npx tsx scripts/ingest/download-vegetation-vhm.ts --region=all
  *        npx tsx scripts/ingest/download-vegetation-vhm.ts --region=nyon --overwrite
@@ -28,38 +24,39 @@
  * path with MAPPY_VHM_PYTHON if needed.
  */
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+import type { PrecomputedRegionName } from "../../src/lib/regions/regions";
 
 const DEFAULT_PYTHON =
   "C:\\Users\\fabio.salvalai\\AppData\\Local\\Programs\\Python\\Python312\\python.exe";
 
-const REGIONS = ["lausanne", "morges", "nyon", "geneve", "vevey", "vevey_city", "neuchatel", "la_chaux_de_fonds", "bern", "zurich", "thun"] as const;
+const REGIONS = ["lausanne", "morges", "nyon", "geneve", "vevey", "vevey_city", "neuchatel", "la_chaux_de_fonds", "bern", "zurich", "thun"] as const satisfies readonly PrecomputedRegionName[];
 type Region = typeof REGIONS[number];
 
-function parseArgs(argv: string[]): {
-  regions: Region[];
-  overwrite: boolean;
-  skipCompose: boolean;
-} {
-  const regionArg = argv.find((a) => a.startsWith("--region="))?.slice(9) ?? "";
-  const overwrite = argv.includes("--overwrite");
-  const skipCompose = argv.includes("--skip-compose");
-  if (!regionArg) {
-    console.error(
-      `Usage: --region=${REGIONS.join("|")}|all [--overwrite] [--skip-compose]`,
-    );
-    process.exit(1);
-  }
-  const regions: Region[] = regionArg === "all"
-    ? [...REGIONS]
-    : [regionArg as Region];
-  for (const r of regions) {
-    if (!REGIONS.includes(r)) {
-      console.error(`Unknown region: ${r}. Expected one of: ${REGIONS.join(", ")} or 'all'.`);
-      process.exit(1);
-    }
-  }
-  return { regions, overwrite, skipCompose };
+export interface RunForRegionArgs {
+  overwrite?: boolean;
+  skipCompose?: boolean;
+  dryRun?: boolean;
+}
+
+export interface RunForRegionResult {
+  region: Region;
+  status: "ok" | "skipped-dry-run";
+}
+
+function terrainAvailableForRegion(region: Region): boolean {
+  const manifest = path.join(
+    process.cwd(),
+    "data",
+    "raw",
+    "swisstopo",
+    "swissalti3d_2m",
+    `manifest-${region}.json`,
+  );
+  return fs.existsSync(manifest);
 }
 
 function runPython(python: string, scriptName: string, region: string, overwrite: boolean): boolean {
@@ -77,22 +74,82 @@ function runPython(python: string, scriptName: string, region: string, overwrite
   return true;
 }
 
-function main(): void {
-  const { regions, overwrite, skipCompose } = parseArgs(process.argv.slice(2));
+export async function runForRegion(
+  region: PrecomputedRegionName,
+  args: RunForRegionArgs = {},
+): Promise<RunForRegionResult> {
+  if (!REGIONS.includes(region as Region)) {
+    throw new Error(`Unknown region: ${region}. Expected one of: ${REGIONS.join(", ")}.`);
+  }
+  const { overwrite = false, skipCompose = false, dryRun = false } = args;
+
+  if (dryRun) {
+    console.log(`[vhm:${region}] dry-run: would download VHM${skipCompose ? "" : " + compose canopy"}`);
+    return { region: region as Region, status: "skipped-dry-run" };
+  }
+
+  // VHM compose needs terrain (canopy_abs = terrain + max(0, vhm)).
+  // We only need terrain when compose is on; raw-only ingest does not need it.
+  if (!skipCompose && !terrainAvailableForRegion(region as Region)) {
+    throw new Error(
+      `[vhm:${region}] VHM compose needs terrain manifest at data/raw/swisstopo/swissalti3d_2m/manifest-${region}.json — run --source=terrain,vhm or download terrain first.`,
+    );
+  }
+
   const python = process.env.MAPPY_VHM_PYTHON ?? DEFAULT_PYTHON;
 
+  if (!runPython(python, "download-vhm.py", region, overwrite)) {
+    throw new Error(`[vhm:${region}] download-vhm.py failed`);
+  }
+  if (!skipCompose) {
+    if (!runPython(python, "compose-vhm-canopy.py", region, overwrite)) {
+      throw new Error(`[vhm:${region}] compose-vhm-canopy.py failed`);
+    }
+  }
+  return { region: region as Region, status: "ok" };
+}
+
+function parseArgs(argv: string[]): {
+  regions: Region[];
+  overwrite: boolean;
+  skipCompose: boolean;
+  dryRun: boolean;
+} {
+  const regionArg = argv.find((a) => a.startsWith("--region="))?.slice(9) ?? "";
+  const overwrite = argv.includes("--overwrite");
+  const skipCompose = argv.includes("--skip-compose");
+  const dryRun = argv.includes("--dry-run");
+  if (!regionArg) {
+    console.error(
+      `Usage: --region=${REGIONS.join("|")}|all [--overwrite] [--skip-compose] [--dry-run]`,
+    );
+    process.exit(1);
+  }
+  const regions: Region[] = regionArg === "all"
+    ? [...REGIONS]
+    : [regionArg as Region];
+  for (const r of regions) {
+    if (!REGIONS.includes(r)) {
+      console.error(`Unknown region: ${r}. Expected one of: ${REGIONS.join(", ")} or 'all'.`);
+      process.exit(1);
+    }
+  }
+  return { regions, overwrite, skipCompose, dryRun };
+}
+
+async function main(): Promise<void> {
+  const { regions, overwrite, skipCompose, dryRun } = parseArgs(process.argv.slice(2));
   for (const region of regions) {
-    if (!runPython(python, "download-vhm.py", region, overwrite)) {
-      process.exitCode = 1;
-      return;
-    }
-    if (!skipCompose) {
-      if (!runPython(python, "compose-vhm-canopy.py", region, overwrite)) {
-        process.exitCode = 1;
-        return;
-      }
-    }
+    await runForRegion(region, { overwrite, skipCompose, dryRun });
   }
 }
 
-main();
+const isDirectInvocation =
+  process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+
+if (isDirectInvocation) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

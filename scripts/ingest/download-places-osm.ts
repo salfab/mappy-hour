@@ -1,7 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { BBox } from "../../src/lib/config/lausanne";
+import type { PrecomputedRegionName } from "../../src/lib/regions/regions";
 import { LAUSANNE_LOCAL_BBOX } from "../../src/lib/config/lausanne";
 import { NYON_LOCAL_BBOX } from "../../src/lib/config/nyon";
 import { MORGES_LOCAL_BBOX } from "../../src/lib/config/morges";
@@ -215,23 +217,40 @@ async function ensureParentDirectory(filePath: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
 }
 
-function parseArgs(argv: string[]): { regions: string[] } {
+function parseArgs(argv: string[]): { regions: string[]; dryRun: boolean } {
   let regions: string[] = ALL_REGIONS;
+  let regionsSet = false;
+  let dryRun = false;
   for (const arg of argv) {
+    if (arg === "--dry-run") {
+      dryRun = true;
+      continue;
+    }
     if (arg.startsWith("--regions=")) {
       regions = arg
         .slice("--regions=".length)
         .split(",")
         .map((r) => r.trim())
         .filter(Boolean);
+      regionsSet = true;
+      continue;
     }
+    // Single-region form, harmonised with other download-*.ts scripts.
+    if (arg.startsWith("--region=")) {
+      regions = [arg.slice("--region=".length).trim()].filter(Boolean);
+      regionsSet = true;
+      continue;
+    }
+  }
+  if (!regionsSet) {
+    // Backwards-compat: no flag = all regions. Existing callers rely on this.
   }
   for (const r of regions) {
     if (!REGION_BBOXES[r]) {
       throw new Error(`Unknown region "${r}". Known: ${ALL_REGIONS.join(", ")}`);
     }
   }
-  return { regions };
+  return { regions, dryRun };
 }
 
 interface PerRegionFile {
@@ -264,9 +283,71 @@ function buildPerRegionPayload(region: string, places: NormalizedPlace[]): PerRe
   };
 }
 
+export interface RunForRegionArgs {
+  dryRun?: boolean;
+}
+
+export interface RunForRegionResult {
+  region: PrecomputedRegionName;
+  totalPlaces: number;
+  status: "ok" | "skipped-dry-run";
+}
+
+/**
+ * Ingest places for a single region. Note: unlike other downloaders, the
+ * combined `places.json` file is NOT rewritten — it's written by the legacy
+ * `runAllRegions()` entry. Call `runAllRegions()` if you also need the
+ * combined file (e.g. for the `places:ingest` script).
+ */
+export async function runForRegion(
+  region: PrecomputedRegionName,
+  args: RunForRegionArgs = {},
+): Promise<RunForRegionResult> {
+  if (!REGION_BBOXES[region]) {
+    throw new Error(`Unknown region "${region}". Known: ${ALL_REGIONS.join(", ")}`);
+  }
+  if (args.dryRun) {
+    console.log(`[places:${region}] dry-run: would query Overpass`);
+    return { region, totalPlaces: 0, status: "skipped-dry-run" };
+  }
+  const bbox = REGION_BBOXES[region];
+  const query = buildOverpassQuery(bbox);
+  console.log(`[places] [${region}] querying Overpass…`);
+  const rawData = await fetchOverpassData(query);
+
+  const normalized = rawData.elements
+    .map((el) => normalizePlace(el, region))
+    .filter((v): v is NormalizedPlace => v !== null)
+    .sort((a, b) => {
+      const c = a.category.localeCompare(b.category);
+      return c !== 0 ? c : a.name.localeCompare(b.name);
+    });
+
+  const rawPath = path.join(RAW_OSM_ROOT, `${region}-places-overpass.json`);
+  await ensureParentDirectory(rawPath);
+  await fs.writeFile(
+    rawPath,
+    JSON.stringify({ generatedAt: new Date().toISOString(), source: "Overpass", bbox, query, response: rawData }, null, 2),
+    "utf8",
+  );
+
+  const perRegionPath = path.join(PROCESSED_PLACES_DIR, `${region}-places.json`);
+  await ensureParentDirectory(perRegionPath);
+  await fs.writeFile(perRegionPath, JSON.stringify(buildPerRegionPayload(region, normalized), null, 2), "utf8");
+  console.log(`[places] [${region}] wrote ${normalized.length} places to ${perRegionPath}`);
+  return { region, totalPlaces: normalized.length, status: "ok" };
+}
+
 async function main() {
-  const { regions } = parseArgs(process.argv.slice(2));
+  const { regions, dryRun } = parseArgs(process.argv.slice(2));
   console.log(`[places] Ingesting regions: ${regions.join(", ")}`);
+
+  if (dryRun) {
+    for (const region of regions) {
+      console.log(`[places:${region}] dry-run: would query Overpass`);
+    }
+    return;
+  }
 
   const perRegion = new Map<string, NormalizedPlace[]>();
 
@@ -338,7 +419,12 @@ async function main() {
   console.log(`[places] wrote combined places.json (${allPlaces.length} places across ${regions.length} regions) to ${combinedPath}`);
 }
 
-main().catch((error) => {
-  console.error(`[places] Failed: ${error instanceof Error ? error.message : "Unknown error"}`);
-  process.exitCode = 1;
-});
+const isDirectInvocation =
+  process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+
+if (isDirectInvocation) {
+  main().catch((error) => {
+    console.error(`[places] Failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    process.exitCode = 1;
+  });
+}
