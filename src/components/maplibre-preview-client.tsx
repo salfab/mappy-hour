@@ -2091,7 +2091,7 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
                 strokeLinecap="round"
               />
             </svg>
-            <span>Calcul du soleil…</span>
+            <span>Calcul de l&apos;ensoleillement…</span>
           </div>
         </div>
       ) : null}
