@@ -2057,14 +2057,14 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
                 : "pb-[560px]"
           }`}
         >
-          <div className="flex items-center gap-3 rounded-2xl border border-amber-300/70 bg-[oklch(0.985_0.018_85)/0.95] px-5 py-3.5 text-base font-medium text-stone-800 shadow-xl backdrop-blur-md">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border border-amber-300 bg-white px-6 py-5 text-base font-semibold text-stone-800 shadow-2xl ring-1 ring-black/5">
             <svg
-              className="h-6 w-6 animate-spin text-amber-600"
+              className="h-12 w-12 animate-spin text-amber-600"
               viewBox="0 0 24 24"
               fill="none"
               aria-hidden="true"
             >
-              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.25" />
+              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.2" />
               <path
                 d="M21 12a9 9 0 0 0-9-9"
                 stroke="currentColor"
