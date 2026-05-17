@@ -332,6 +332,11 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
   const hadStoredViewRef = useRef<boolean>(false);
   const [geolocateToast, setGeolocateToast] = useState<string | null>(null);
 
+  // Last known user position (set by applyGeolocationOutcome on success).
+  // Rendered as a blue-dot Marker on the map via a dedicated effect below.
+  const [userPosition, setUserPosition] = useState<{ lat: number; lon: number } | null>(null);
+  const userMarkerRef = useRef<maplibregl.Marker | null>(null);
+
   // ── Sunlight state ────────────────────────────────────────────────────────
   const [sunlightVisible, setSunlightVisible] = useState(true);
   const [frameIndex, setFrameIndex] = useState(0);
@@ -1623,6 +1628,7 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
       if (!map) return;
       const { silentOnRefusal = false } = opts;
       if (outcome.granted && outcome.position) {
+        setUserPosition({ lat: outcome.position.lat, lon: outcome.position.lon });
         map.flyTo({
           center: [outcome.position.lon, outcome.position.lat],
           zoom: GEOLOCATION_ZOOM,
@@ -1677,6 +1683,41 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
       cancelled = true;
     };
   }, [ready, applyGeolocationOutcome]);
+
+  // User-position marker (blue dot). Sync the MapLibre Marker with
+  // `userPosition`: create on first known position, move on update, remove
+  // when the position is cleared. The marker outlives basemap swaps because
+  // MapLibre Markers attach to the map container, not the style.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    if (!userPosition) {
+      userMarkerRef.current?.remove();
+      userMarkerRef.current = null;
+      return;
+    }
+    if (userMarkerRef.current) {
+      userMarkerRef.current.setLngLat([userPosition.lon, userPosition.lat]);
+      return;
+    }
+    const el = document.createElement("div");
+    el.setAttribute("aria-label", "Votre position");
+    el.style.cssText =
+      "width:18px;height:18px;border-radius:50%;background:#4285F4;" +
+      "border:3px solid #fff;box-shadow:0 0 0 1px rgba(66,133,244,0.45)," +
+      "0 1px 4px rgba(0,0,0,0.35);pointer-events:none;";
+    userMarkerRef.current = new maplibregl.Marker({ element: el })
+      .setLngLat([userPosition.lon, userPosition.lat])
+      .addTo(map);
+  }, [userPosition, ready]);
+
+  // Cleanup the marker on unmount so we never leak a DOM node.
+  useEffect(() => {
+    return () => {
+      userMarkerRef.current?.remove();
+      userMarkerRef.current = null;
+    };
+  }, []);
 
   // Apply basemap switches.
   useEffect(() => {
@@ -1988,11 +2029,21 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
     <div className="absolute inset-0">
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 
-      {/* "Me localiser" button + ephemeral toast. The button sits in the
-          bottom-right above the sunlight control bar (which lives at
-          bottom-10), the toast slides down from the top — keeping both clear
-          of the desktop sidebar (left) and basemap switcher (top-right). */}
-      <GeolocateButton onResult={(o) => applyGeolocationOutcome(o)} />
+      {/* "Me localiser" button + ephemeral toast. Desktop: bottom-24 above
+          the sunlight control bar. Mobile: lifted above the bottom sheet so
+          it stays tappable in any sheet state (compact ≈210 px, middle ≈360,
+          expanded ≈560 — values from MobileBottomSheet.getHeightClass). The
+          `lg:` prefix wins on desktop. */}
+      <GeolocateButton
+        onResult={(o) => applyGeolocationOutcome(o)}
+        className={`${
+          bottomSheetState === "compact"
+            ? "bottom-[226px]"
+            : bottomSheetState === "middle"
+              ? "bottom-[380px]"
+              : "bottom-[580px]"
+        } right-3 lg:bottom-24`}
+      />
       <GeolocateToast
         message={geolocateToast}
         onDismiss={() => setGeolocateToast(null)}
