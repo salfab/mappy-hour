@@ -406,9 +406,24 @@ interface TileCPUState {
 //   [6..7]   iTileSeMerc.xy
 //   [8..9]   iTexScale.xy
 //   [10]     iTileDirFrac
-//   [11]     iBaseLayer
+//   [11]     iBaseLayer  (LOCAL to the chunk's own TEXTURE_2D_ARRAY)
 const INSTANCE_FLOATS = 12;
 const INSTANCE_STRIDE = INSTANCE_FLOATS * 4;
+
+/**
+ * One GPU chunk: a single TEXTURE_2D_ARRAY plus its matching per-instance VBO.
+ * Multiple chunks are needed when total layers (sum of frameCount per tile)
+ * exceeds `MAX_ARRAY_TEXTURE_LAYERS` (typically 2048). Each chunk gets its own
+ * `drawArraysInstanced` call in `render()`. `baseLayer` on every tile inside
+ * `tiles` is LOCAL to this chunk's texture (starts back at 0 in each chunk).
+ */
+interface RenderChunk {
+  texture: WebGLTexture;
+  instanceVbo: WebGLBuffer;
+  tiles: TileCPUState[];
+  /** Sum of frameCount across `tiles` — the actual depth of `texture`. */
+  layers: number;
+}
 
 // ── Public class ──────────────────────────────────────────────────────────────
 
@@ -423,14 +438,15 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
 
   /** Shared vertex buffer (6 vertices of a unit quad, vec2 each). */
   private quadVbo: WebGLBuffer | null = null;
-  /** Per-instance buffer (one struct per tile, see INSTANCE_FLOATS). */
-  private instanceVbo: WebGLBuffer | null = null;
 
-  /** The single mega-texture holding all tile slices. */
-  private megaTexture: WebGLTexture | null = null;
+  /** One TEXTURE_2D_ARRAY + matching per-instance VBO per chunk.
+   *  Multiple chunks needed when sum(frameCount) > MAX_ARRAY_TEXTURE_LAYERS. */
+  private chunks: RenderChunk[] = [];
+  /** Per-chunk texture dimensions are all the same — the max grid width/height
+   *  across every tile currently in `tileStates`. Tracked here so `repack()`
+   *  can detect a shape change and force a realloc on all chunks. */
   private megaW = 0;
   private megaH = 0;
-  private megaLayers = 0;
   /** Cached `gl.MAX_ARRAY_TEXTURE_LAYERS` for chunking decisions. */
   private maxArrayLayers = 0;
 
@@ -476,18 +492,20 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
   }
 
   /** Switch the texture sampling mode between LINEAR (smooth) and NEAREST
-   *  (pixel-perfect). Re-applies the filter to the mega-texture. */
+   *  (pixel-perfect). Re-applies the filter to every chunk's texture. */
   setTextureFilter(mode: "smooth" | "pixel"): void {
     this.textureFilter = mode;
     const gl = this.gl;
-    if (!gl || !this.megaTexture) {
+    if (!gl || this.chunks.length === 0) {
       this.map.triggerRepaint();
       return;
     }
     const f = mode === "pixel" ? gl.NEAREST : gl.LINEAR;
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.megaTexture);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, f);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, f);
+    for (const c of this.chunks) {
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, c.texture);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, f);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, f);
+    }
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
     this.map.triggerRepaint();
   }
@@ -535,15 +553,9 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     gl.bufferData(gl.ARRAY_BUFFER, quadData, gl.STATIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
-    const instBuf = gl.createBuffer();
-    if (!instBuf) {
-      console.error("[sunlight-custom] Failed to create instance VBO.");
-      return;
-    }
-    this.instanceVbo = instBuf;
-
-    // After a setStyle basemap swap, tileStates may still hold CPU data.
-    // Force a repack so the mega-texture is recreated and re-uploaded.
+    // Per-chunk textures and instance VBOs are allocated lazily by repack().
+    // After a setStyle basemap swap, tileStates may still hold CPU data; force
+    // a repack so the chunks are (re)created and slices re-uploaded.
     if (this.tileStates.size > 0) {
       for (const s of this.tileStates.values()) s.textureDirty = true;
       this.needsRepack = true;
@@ -552,7 +564,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
   }
 
   render(glAny: WebGL2RenderingContext | WebGLRenderingContext, options: CustomRenderMethodInput): void {
-    if (!this.visible || !this.program || !this.quadVbo || !this.instanceVbo) return;
+    if (!this.visible || !this.program || !this.quadVbo) return;
     const gl = glAny as WebGL2RenderingContext;
     const matrix = options.modelViewProjectionMatrix;
 
@@ -561,7 +573,7 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       this.needsRepack = false;
     }
 
-    if (this.renderList.length === 0 || !this.megaTexture) return;
+    if (this.chunks.length === 0) return;
 
     gl.useProgram(this.program);
 
@@ -571,43 +583,31 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
     const cullFaceWasEnabled = gl.isEnabled(gl.CULL_FACE);
     gl.disable(gl.CULL_FACE);
 
-    // Shared vertex attribute (divisor = 0).
+    // Shared quad vertex attribute (divisor = 0) — same buffer for every chunk.
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quadVbo);
     gl.enableVertexAttribArray(this.aLocalPos);
     gl.vertexAttribPointer(this.aLocalPos, 2, gl.FLOAT, false, 8, 0);
     gl.vertexAttribDivisor(this.aLocalPos, 0);
 
-    // Per-instance attributes (divisor = 1). Stride/offsets match INSTANCE_FLOATS.
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceVbo);
+    // Per-instance attributes: enable + set divisor once (sticky). The
+    // vertexAttribPointer calls have to be re-done after each chunk's
+    // bindBuffer(instanceVbo) because pointer captures the buffer binding.
     gl.enableVertexAttribArray(this.aTileNwMerc);
-    gl.vertexAttribPointer(this.aTileNwMerc, 2, gl.FLOAT, false, INSTANCE_STRIDE, 0);
     gl.vertexAttribDivisor(this.aTileNwMerc, 1);
-
     gl.enableVertexAttribArray(this.aTileNeMerc);
-    gl.vertexAttribPointer(this.aTileNeMerc, 2, gl.FLOAT, false, INSTANCE_STRIDE, 2 * 4);
     gl.vertexAttribDivisor(this.aTileNeMerc, 1);
-
     gl.enableVertexAttribArray(this.aTileSwMerc);
-    gl.vertexAttribPointer(this.aTileSwMerc, 2, gl.FLOAT, false, INSTANCE_STRIDE, 4 * 4);
     gl.vertexAttribDivisor(this.aTileSwMerc, 1);
-
     gl.enableVertexAttribArray(this.aTileSeMerc);
-    gl.vertexAttribPointer(this.aTileSeMerc, 2, gl.FLOAT, false, INSTANCE_STRIDE, 6 * 4);
     gl.vertexAttribDivisor(this.aTileSeMerc, 1);
-
     gl.enableVertexAttribArray(this.aTexScale);
-    gl.vertexAttribPointer(this.aTexScale, 2, gl.FLOAT, false, INSTANCE_STRIDE, 8 * 4);
     gl.vertexAttribDivisor(this.aTexScale, 1);
-
     gl.enableVertexAttribArray(this.aTileDirFrac);
-    gl.vertexAttribPointer(this.aTileDirFrac, 1, gl.FLOAT, false, INSTANCE_STRIDE, 10 * 4);
     gl.vertexAttribDivisor(this.aTileDirFrac, 1);
-
     gl.enableVertexAttribArray(this.aBaseLayer);
-    gl.vertexAttribPointer(this.aBaseLayer, 1, gl.FLOAT, false, INSTANCE_STRIDE, 11 * 4);
     gl.vertexAttribDivisor(this.aBaseLayer, 1);
 
-    // Uniforms.
+    // Uniforms shared by every chunk.
     const p = this.program;
     gl.uniformMatrix4fv(gl.getUniformLocation(p, "u_matrix"), false, matrix);
 
@@ -640,10 +640,23 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
 
     gl.uniform1i(gl.getUniformLocation(p, "u_texture"), 0);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.megaTexture);
 
-    // Single instanced draw call: 6 vertices × N tiles.
-    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.renderList.length);
+    // One instanced draw per chunk. Order doesn't affect correctness:
+    // tile quads don't overlap (LV95 grid covers each cell exactly once)
+    // so the blend result is independent of draw order across chunks.
+    for (const chunk of this.chunks) {
+      if (chunk.tiles.length === 0) continue;
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, chunk.texture);
+      gl.bindBuffer(gl.ARRAY_BUFFER, chunk.instanceVbo);
+      gl.vertexAttribPointer(this.aTileNwMerc,  2, gl.FLOAT, false, INSTANCE_STRIDE, 0);
+      gl.vertexAttribPointer(this.aTileNeMerc,  2, gl.FLOAT, false, INSTANCE_STRIDE, 2 * 4);
+      gl.vertexAttribPointer(this.aTileSwMerc,  2, gl.FLOAT, false, INSTANCE_STRIDE, 4 * 4);
+      gl.vertexAttribPointer(this.aTileSeMerc,  2, gl.FLOAT, false, INSTANCE_STRIDE, 6 * 4);
+      gl.vertexAttribPointer(this.aTexScale,    2, gl.FLOAT, false, INSTANCE_STRIDE, 8 * 4);
+      gl.vertexAttribPointer(this.aTileDirFrac, 1, gl.FLOAT, false, INSTANCE_STRIDE, 10 * 4);
+      gl.vertexAttribPointer(this.aBaseLayer,   1, gl.FLOAT, false, INSTANCE_STRIDE, 11 * 4);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, chunk.tiles.length);
+    }
 
     // Cleanup.
     gl.disable(gl.BLEND);
@@ -759,17 +772,17 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
   private disposeGPU(): void {
     const gl = this.gl;
     if (gl) {
-      if (this.megaTexture) gl.deleteTexture(this.megaTexture);
+      for (const c of this.chunks) {
+        gl.deleteTexture(c.texture);
+        gl.deleteBuffer(c.instanceVbo);
+      }
       if (this.quadVbo) gl.deleteBuffer(this.quadVbo);
-      if (this.instanceVbo) gl.deleteBuffer(this.instanceVbo);
       if (this.program) gl.deleteProgram(this.program);
     }
-    this.megaTexture = null;
+    this.chunks = [];
     this.megaW = 0;
     this.megaH = 0;
-    this.megaLayers = 0;
     this.quadVbo = null;
-    this.instanceVbo = null;
     this.program = null;
     this.gl = null;
     for (const s of this.tileStates.values()) s.textureDirty = true;
@@ -859,33 +872,32 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
   }
 
   /**
-   * Recompute the mega-texture layout and re-upload everything that changed.
+   * Recompute the chunk layout and re-upload every dirty slice.
    *
-   * Layout decisions:
-   *  - `maxW`, `maxH` = max dimensions across all tiles. Smaller tiles occupy a
-   *    subrect of their slice; the remainder stays zero (= indoor, discarded).
-   *  - Layer-major: tile i's frames occupy layers `[baseLayer[i], baseLayer[i]+F[i])`.
-   *  - `totalLayers = sum(frameCount)`.
+   * Layout:
+   *  - `maxW`, `maxH` = max grid dimensions across all tiles. Smaller tiles
+   *    occupy a subrect of their slice; the remainder stays zero (= indoor,
+   *    discarded by the shader).
+   *  - Tiles are bin-packed into N chunks. Each chunk holds at most
+   *    `MAX_ARRAY_TEXTURE_LAYERS` slices (typically 2048). Within a chunk,
+   *    `baseLayer` is the offset into THAT chunk's TEXTURE_2D_ARRAY — it
+   *    starts back at 0 in each new chunk.
+   *  - Render then issues one `drawArraysInstanced` per chunk; each draw
+   *    binds the chunk's texture + its per-instance VBO. The shader is
+   *    unchanged — it samples `u_texture` at `layer = baseLayer + frameIndex`,
+   *    where `u_texture` is whichever chunk we're currently drawing.
    *
-   * DECISION: if `totalLayers > MAX_ARRAY_TEXTURE_LAYERS` we cap the render
-   * list at the first K tiles that fit. In practice modern desktop GPUs report
-   * 2048+ layers (≈66 tiles × 31 frames). For Lausanne at zoom 12 (~300 tiles)
-   * a multi-mega-texture chunking would be needed if frame count is high, but
-   * for the typical 31-frame timeline this maps to ~2048 / 31 ≈ 66 tiles per
-   * chunk, which is below the 300-tile viewport size. We log a warning and
-   * truncate rather than implementing N-chunk multi-draw — the legacy code was
-   * already issuing one draw call per tile, so even a single batched draw of
-   * the first 66 is a major win, and full coverage is reached on any GPU with
-   * MAX_ARRAY_TEXTURE_LAYERS ≥ 9300 (most Intel/AMD/NVIDIA report ≥ 2048,
-   * commonly 8192). For full coverage with > 66 tiles on a low-cap GPU we'd
-   * need multi-texture chunking — left as a follow-up.
+   * Single tiles whose frameCount alone exceeds the cap can't be rendered
+   * (extremely unlikely — would need > 2048 frames in one tile); we warn
+   * and skip them.
    */
   private repack(gl: WebGL2RenderingContext): void {
     const tiles = Array.from(this.tileStates.values());
     if (tiles.length === 0) {
       this.renderList = [];
-      // Keep the mega-texture allocated so the filter param stays applied;
-      // nothing will be drawn anyway because renderList is empty.
+      // Keep chunks allocated so the filter param remains applied; nothing
+      // will be drawn anyway because each chunk's tile list is empty.
+      for (const c of this.chunks) c.tiles = [];
       return;
     }
 
@@ -896,139 +908,158 @@ export class MapLibreSunlightCustomLayer implements CustomLayerInterface {
       if (t.gridHeight > maxH) maxH = t.gridHeight;
     }
 
-    // Compute baseLayer per tile, capped at MAX_ARRAY_TEXTURE_LAYERS.
+    // Distribute tiles into chunks of <= cap layers each.
     const cap = this.maxArrayLayers > 0 ? this.maxArrayLayers : 256;
-    let layer = 0;
-    const fitted: TileCPUState[] = [];
-    let truncated = 0;
+    const chunkTiles: TileCPUState[][] = [];
+    let current: TileCPUState[] = [];
+    let currentLayers = 0;
+    let skipped = 0;
     for (const t of tiles) {
-      if (layer + t.frameCount > cap) {
-        truncated++;
+      if (t.frameCount > cap) {
+        // Pathological: a single tile won't fit in one chunk. Skip + warn
+        // once. Not reachable for the 60-frame timeline.
+        skipped++;
         continue;
       }
-      t.baseLayer = layer;
-      layer += t.frameCount;
-      fitted.push(t);
+      if (currentLayers + t.frameCount > cap) {
+        chunkTiles.push(current);
+        current = [];
+        currentLayers = 0;
+      }
+      t.baseLayer = currentLayers; // LOCAL to this chunk's texture
+      current.push(t);
+      currentLayers += t.frameCount;
     }
-    if (truncated > 0) {
+    if (current.length > 0) chunkTiles.push(current);
+    if (skipped > 0) {
       console.warn(
-        `[sunlight-custom] mega-texture cap reached (${cap} layers): ` +
-        `${truncated} tile(s) dropped from this frame. ` +
-        `Consider implementing multi-texture chunking.`,
+        `[sunlight-custom] ${skipped} tile(s) skipped — frameCount > ${cap}.`,
       );
     }
 
-    const totalLayers = layer;
-
-    // (Re)allocate the mega-texture if the shape changed or it does not exist.
-    const needsRealloc =
-      !this.megaTexture ||
-      this.megaW !== maxW ||
-      this.megaH !== maxH ||
-      this.megaLayers !== totalLayers;
-
-    if (needsRealloc) {
-      if (this.megaTexture) gl.deleteTexture(this.megaTexture);
-      const tex = gl.createTexture();
-      if (!tex) {
-        console.error("[sunlight-custom] Failed to create mega-texture.");
-        return;
-      }
-      this.megaTexture = tex;
-      gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
-      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      const filter = this.textureFilter === "pixel" ? gl.NEAREST : gl.LINEAR;
-      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
-      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
-      // Allocate storage; contents are zero-initialised by GL spec for
-      // texImage3D with a null pointer. All slices need to be re-uploaded.
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-      gl.texImage3D(
-        gl.TEXTURE_2D_ARRAY,
-        0,
-        gl.R8,
-        maxW,
-        maxH,
-        Math.max(totalLayers, 1),
-        0,
-        gl.RED,
-        gl.UNSIGNED_BYTE,
-        null,
-      );
-      this.megaW = maxW;
-      this.megaH = maxH;
-      this.megaLayers = totalLayers;
-      // Force every fitted tile to re-upload into its (possibly new) slices.
-      for (const t of fitted) t.textureDirty = true;
-    } else {
-      gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.megaTexture);
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    // Drop chunks that are no longer needed (sweep beyond the new count).
+    while (this.chunks.length > chunkTiles.length) {
+      const c = this.chunks.pop()!;
+      gl.deleteTexture(c.texture);
+      gl.deleteBuffer(c.instanceVbo);
     }
 
-    // Upload dirty slices, frame by frame.
-    // texSubImage3D writes a (gridW × gridH × 1) sub-rect into the slice at
-    // (xoff=0, yoff=0, zoff=baseLayer+f). The remaining (maxW-gridW)×(maxH-gridH)
-    // padding stays at its previous value (0 after realloc); the vertex shader's
-    // a_texScale keeps sampling within the populated subrect.
-    const cellsPerFrame = (t: TileCPUState) => t.gridWidth * t.gridHeight;
-    for (const t of fitted) {
-      if (!t.textureDirty) continue;
-      const stride = cellsPerFrame(t);
-      for (let f = 0; f < t.frameCount; f++) {
-        const slice = new Uint8Array(
-          t.luminanceArray.buffer,
-          t.luminanceArray.byteOffset + f * stride,
-          stride,
-        );
-        gl.texSubImage3D(
-          gl.TEXTURE_2D_ARRAY,
-          0,
-          0, 0, t.baseLayer + f,
-          t.gridWidth, t.gridHeight, 1,
-          gl.RED,
-          gl.UNSIGNED_BYTE,
-          slice,
-        );
-      }
-      t.textureDirty = false;
+    const shapeChanged = this.megaW !== maxW || this.megaH !== maxH;
+    if (shapeChanged) {
+      // Every tile must re-upload into its (possibly new) slice — the existing
+      // chunks will be realloc'd below because their dimensions no longer match.
+      for (const t of tiles) t.textureDirty = true;
     }
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
 
-    // Build the interleaved per-instance buffer.
-    const inst = new Float32Array(fitted.length * INSTANCE_FLOATS);
     const cosA = Math.cos(this.style.hatchAngle);
     const sinA = Math.sin(this.style.hatchAngle);
     const invSpacing = 1 / Math.max(this.style.hatchSpacingPx, 1e-6);
     const worldSize = 512 * Math.pow(2, this.map.getZoom());
-    // NOTE: hatchAngle and hatchSpacingPx are part of the style. Changing them
-    // via setStyle does not currently trigger a repack — the cycle offset
-    // would drift. Acceptable: defaults are stable and the toggle path is
-    // hatchAlpha 0/1 which is unaffected. If style A/B testing exposes this,
-    // mark needsRepack on the relevant setStyle deltas.
-    for (let i = 0; i < fitted.length; i++) {
-      const t = fitted[i];
-      const off = i * INSTANCE_FLOATS;
-      inst[off     ] = t.nwMerc.x;
-      inst[off +  1] = t.nwMerc.y;
-      inst[off +  2] = t.neMerc.x;
-      inst[off +  3] = t.neMerc.y;
-      inst[off +  4] = t.swMerc.x;
-      inst[off +  5] = t.swMerc.y;
-      inst[off +  6] = t.seMerc.x;
-      inst[off +  7] = t.seMerc.y;
-      inst[off +  8] = this.megaW > 0 ? t.gridWidth  / this.megaW : 1;
-      inst[off +  9] = this.megaH > 0 ? t.gridHeight / this.megaH : 1;
-      const originDir = (t.nwMerc.x * worldSize * cosA + t.nwMerc.y * worldSize * sinA) * invSpacing;
-      inst[off + 10] = originDir - Math.floor(originDir);
-      inst[off + 11] = t.baseLayer;
+
+    for (let ci = 0; ci < chunkTiles.length; ci++) {
+      const tilesInChunk = chunkTiles[ci];
+      const totalLayers = tilesInChunk.reduce((acc, t) => acc + t.frameCount, 0);
+
+      // Allocate (or reuse) the chunk's GPU resources.
+      let chunk = this.chunks[ci];
+      const needsRealloc =
+        !chunk || shapeChanged || chunk.layers !== totalLayers;
+
+      if (!chunk) {
+        const tex = gl.createTexture();
+        const vbo = gl.createBuffer();
+        if (!tex || !vbo) {
+          console.error("[sunlight-custom] Failed to create chunk resources.");
+          if (tex) gl.deleteTexture(tex);
+          if (vbo) gl.deleteBuffer(vbo);
+          continue;
+        }
+        chunk = { texture: tex, instanceVbo: vbo, tiles: tilesInChunk, layers: totalLayers };
+        this.chunks.push(chunk);
+      } else {
+        chunk.tiles = tilesInChunk;
+        chunk.layers = totalLayers;
+      }
+
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, chunk.texture);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+
+      if (needsRealloc) {
+        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        const filter = this.textureFilter === "pixel" ? gl.NEAREST : gl.LINEAR;
+        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, filter);
+        // Storage is zero-initialised by GL spec when data ptr is null. All
+        // tiles in this chunk must re-upload because slice offsets just changed.
+        gl.texImage3D(
+          gl.TEXTURE_2D_ARRAY, 0, gl.R8,
+          maxW, maxH, Math.max(totalLayers, 1),
+          0, gl.RED, gl.UNSIGNED_BYTE, null,
+        );
+        for (const t of tilesInChunk) t.textureDirty = true;
+      }
+
+      // Upload dirty slices for this chunk.
+      // texSubImage3D writes a (gridW × gridH × 1) sub-rect at
+      // (xoff=0, yoff=0, zoff=baseLayer+f). The (maxW-gridW)×(maxH-gridH)
+      // padding stays at its previous value (0 after realloc); the vertex
+      // shader's a_texScale keeps sampling within the populated subrect.
+      for (const t of tilesInChunk) {
+        if (!t.textureDirty) continue;
+        const stride = t.gridWidth * t.gridHeight;
+        for (let f = 0; f < t.frameCount; f++) {
+          const slice = new Uint8Array(
+            t.luminanceArray.buffer,
+            t.luminanceArray.byteOffset + f * stride,
+            stride,
+          );
+          gl.texSubImage3D(
+            gl.TEXTURE_2D_ARRAY, 0,
+            0, 0, t.baseLayer + f,
+            t.gridWidth, t.gridHeight, 1,
+            gl.RED, gl.UNSIGNED_BYTE, slice,
+          );
+        }
+        t.textureDirty = false;
+      }
+
+      // Build the per-instance buffer for this chunk. NOTE: hatchAngle and
+      // hatchSpacingPx are part of the style. Changing them via setStyle does
+      // not currently trigger a repack — the cycle offset would drift.
+      // Acceptable: defaults are stable and the runtime toggle is hatchAlpha
+      // 0/1 which is unaffected. If style A/B exposes this, mark needsRepack
+      // on the relevant setStyle deltas.
+      const inst = new Float32Array(tilesInChunk.length * INSTANCE_FLOATS);
+      for (let i = 0; i < tilesInChunk.length; i++) {
+        const t = tilesInChunk[i];
+        const off = i * INSTANCE_FLOATS;
+        inst[off     ] = t.nwMerc.x;
+        inst[off +  1] = t.nwMerc.y;
+        inst[off +  2] = t.neMerc.x;
+        inst[off +  3] = t.neMerc.y;
+        inst[off +  4] = t.swMerc.x;
+        inst[off +  5] = t.swMerc.y;
+        inst[off +  6] = t.seMerc.x;
+        inst[off +  7] = t.seMerc.y;
+        inst[off +  8] = maxW > 0 ? t.gridWidth  / maxW : 1;
+        inst[off +  9] = maxH > 0 ? t.gridHeight / maxH : 1;
+        const originDir = (t.nwMerc.x * worldSize * cosA + t.nwMerc.y * worldSize * sinA) * invSpacing;
+        inst[off + 10] = originDir - Math.floor(originDir);
+        inst[off + 11] = t.baseLayer; // LOCAL to this chunk's texture
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, chunk.instanceVbo);
+      gl.bufferData(gl.ARRAY_BUFFER, inst, gl.DYNAMIC_DRAW);
     }
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceVbo);
-    gl.bufferData(gl.ARRAY_BUFFER, inst, gl.DYNAMIC_DRAW);
+
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
-    this.renderList = fitted;
+    this.megaW = maxW;
+    this.megaH = maxH;
+    // Flat list of all rendered tiles, in chunk order — exposed for debug.
+    this.renderList = chunkTiles.flat();
   }
 
   private createProgram(
