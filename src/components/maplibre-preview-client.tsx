@@ -2025,9 +2025,41 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
     />
   );
 
+  // First-tile spinner: the SSE timeline takes a few seconds before the first
+  // tile arrives; during that window `sunlightLoading` is true but
+  // `timelineFetchProgress` is still `null` (start event seen) or `undefined`
+  // (kickoff). The TimeSlider's progress bar is empty in this window — show a
+  // small "Calcul du soleil…" chip in the top-center so the user knows
+  // something is happening. It vanishes the instant the first tile is counted
+  // (progress becomes a number) and the TimeSlider fill takes over.
+  const showFirstTileSpinner =
+    sunlightLoading && typeof timelineFetchProgress !== "number";
+
   return (
     <div className="absolute inset-0">
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
+
+      {showFirstTileSpinner ? (
+        <div className="pointer-events-none absolute inset-x-0 top-16 z-30 flex justify-center lg:top-20">
+          <div className="flex items-center gap-2 rounded-full border border-amber-200/60 bg-[oklch(0.985_0.018_85)/0.92] px-3 py-1.5 text-sm text-stone-700 shadow-md backdrop-blur-md">
+            <svg
+              className="h-4 w-4 animate-spin text-amber-700"
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.25" />
+              <path
+                d="M21 12a9 9 0 0 0-9-9"
+                stroke="currentColor"
+                strokeWidth="3"
+                strokeLinecap="round"
+              />
+            </svg>
+            <span>Calcul du soleil…</span>
+          </div>
+        </div>
+      ) : null}
 
       {/* "Me localiser" button + ephemeral toast. Desktop: bottom-24 above
           the sunlight control bar. Mobile: lifted above the bottom sheet so
