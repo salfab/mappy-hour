@@ -1665,6 +1665,35 @@ export function MapLibrePreviewClient() {
     map.setStyle(buildStyle(target));
   }, [basemapId, ready]);
 
+  // Auto-enable smoothing + outline at high zoom. Crossing the threshold pushes
+  // the new defaults into `styleSettings` so the panel reflects them; the user
+  // can then override via the panel. Recrossing the threshold will re-apply,
+  // which is the documented tradeoff (cf "Défaut auto + le panneau peut
+  // écraser" in the design discussion).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const THRESHOLD = 16;
+    let wasBelow = map.getZoom() < THRESHOLD;
+    // Initial sync at mount: if we boot at zoom >= 16, push the high-zoom
+    // defaults straight away.
+    if (!wasBelow) {
+      setStyleSettings((prev) => ({ ...prev, textureFilter: "smooth", outlineEnabled: true }));
+    }
+    const onZoom = () => {
+      const below = map.getZoom() < THRESHOLD;
+      if (below === wasBelow) return;
+      wasBelow = below;
+      if (below) {
+        setStyleSettings((prev) => ({ ...prev, textureFilter: "pixel", outlineEnabled: false }));
+      } else {
+        setStyleSettings((prev) => ({ ...prev, textureFilter: "smooth", outlineEnabled: true }));
+      }
+    };
+    map.on("zoom", onZoom);
+    return () => { map.off("zoom", onZoom); };
+  }, [ready]);
+
   // Debug snapshot exposed on the window. Updated on every render so the
   // closure captures fresh state.
   useEffect(() => {
