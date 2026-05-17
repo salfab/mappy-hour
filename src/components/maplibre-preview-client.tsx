@@ -1380,23 +1380,22 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
     }
     const token = ++cardSunlightRequestRef.current;
     const place = selectedPlace;
-    const dLat = 5 / 111_320;
-    const dLon = dLat / Math.max(Math.cos((place.lat * Math.PI) / 180), 0.01);
-    const bbox: [number, number, number, number] = [
-      place.lon - dLon, place.lat - dLat,
-      place.lon + dLon, place.lat + dLat,
-    ];
     const controller = new AbortController();
     setIsCardSunlightLoading(true);
     setCardSunlightError(null);
     setCardSunlightWindows(null);
+    // Look up the place directly by id — much cleaner than a bbox-around-snap
+    // dance that has to compensate for outdoor-snap offsets (the server
+    // filters by the place's OSM coords, which can sit several metres off
+    // the snapped marker position).
     fetch("/api/places/windows", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         date, timezone: "Europe/Zurich", mode: "daily",
         startLocalTime: "00:00", endLocalTime: "23:59",
-        sampleEveryMinutes: 15, includeNonSunny: true, bbox, limit: 10,
+        sampleEveryMinutes: 15, includeNonSunny: true,
+        placeIds: [place.id], limit: 1,
       }),
       signal: controller.signal,
     })

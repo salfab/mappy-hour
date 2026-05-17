@@ -10,6 +10,7 @@ import {
   type SunlightWindow,
   type ViewportPlaceLite,
 } from "./places-source";
+import { formatWeeklyOpeningHours, getOpeningHoursStatus } from "@/lib/places/opening-hours";
 
 interface MobileSelectedVenueCardProps {
   place: ViewportPlaceLite;
@@ -130,25 +131,11 @@ export function MobileSelectedVenueCard({
 
       {isExpanded ? (
         <div className="grid gap-2.5 border-t border-amber-200/70 pt-2 text-sm text-slate-900">
-          <div className="grid gap-1">
+          <div className="grid gap-1.5">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
               Heures d&apos;ouverture
             </p>
-            {place.openingHours ? (
-              <ul className="m-0 grid list-none gap-0.5 p-0 text-xs text-slate-800">
-                {place.openingHours
-                  .split(";")
-                  .map((s) => s.trim())
-                  .filter((s) => s.length > 0)
-                  .map((segment, idx) => (
-                    <li key={idx}>{segment}</li>
-                  ))}
-              </ul>
-            ) : (
-              <p className="m-0 text-xs italic text-slate-500">
-                Horaires non renseignés
-              </p>
-            )}
+            <MobileOpeningHoursBlock spec={place.openingHours} />
           </div>
 
           <div className="grid gap-1">
@@ -188,5 +175,60 @@ export function MobileSelectedVenueCard({
         </div>
       ) : null}
     </section>
+  );
+}
+
+/** French-friendly weekly schedule, same logic as the desktop card but with
+ *  mobile-tuned typography (smaller text, tighter spacing). */
+function MobileOpeningHoursBlock({ spec }: { spec: string | null | undefined }): React.JSX.Element {
+  const rows = formatWeeklyOpeningHours(spec ?? null);
+  const status = getOpeningHoursStatus(spec ?? null, new Date());
+
+  if (!rows) {
+    return <p className="m-0 text-xs italic text-slate-500">Horaires non renseignés</p>;
+  }
+  return (
+    <div className="grid gap-1.5">
+      <span
+        className={`inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${
+          status.isOpen
+            ? "bg-emerald-50 text-emerald-800 ring-emerald-200"
+            : "bg-slate-100 text-slate-600 ring-slate-200"
+        }`}
+      >
+        <span
+          aria-hidden="true"
+          className={`h-1.5 w-1.5 rounded-full ${
+            status.isOpen ? "bg-emerald-500" : "bg-slate-400"
+          }`}
+        />
+        {status.isOpen ? "Ouvert" : "Fermé"}
+        <span className="font-normal opacity-80">· {status.todayLabel.replace(/^Ouvert |^Fermé\s*·\s*/, "")}</span>
+      </span>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-0.5 text-[11px]">
+        {rows.map((row, idx) => (
+          <div key={idx} className="contents">
+            <dt
+              className={`tabular-nums ${
+                row.containsToday ? "font-semibold text-slate-900" : "text-slate-500"
+              }`}
+            >
+              {row.daysLabel}
+            </dt>
+            <dd
+              className={`tabular-nums ${
+                row.intervals === null
+                  ? "italic text-slate-400"
+                  : row.containsToday
+                    ? "font-semibold text-slate-900"
+                    : "text-slate-700"
+              }`}
+            >
+              {row.intervals === null ? "Fermé" : row.intervals.join(", ")}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   );
 }

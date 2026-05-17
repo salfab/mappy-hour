@@ -237,3 +237,86 @@ function formatTime(m: number): string {
   const mm = m % 60;
   return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
+
+const DAY_LABEL_FR_SHORT: Record<number, string> = {
+  0: "Dim", 1: "Lun", 2: "Mar", 3: "Mer", 4: "Jeu", 5: "Ven", 6: "Sam",
+};
+const WEEK_ORDER: number[] = [1, 2, 3, 4, 5, 6, 0]; // Lun → Dim (FR convention)
+
+export interface WeeklyOpeningRow {
+  /** "Lun – Ven", "Sam", "Dim" — already formatted for French display. */
+  daysLabel: string;
+  /** ["08:00 – 22:00", "14:00 – 22:00"]; null when the group is closed. */
+  intervals: string[] | null;
+  /** True when one of the group's days is the current day-of-week. Caller
+   *  can highlight the row visually (e.g. bold + amber tone). */
+  containsToday: boolean;
+}
+
+/**
+ * Parse the raw OSM `opening_hours` spec and return a French-friendly,
+ * row-grouped schedule for the week. Consecutive days that share the exact
+ * same intervals are merged into a single row (e.g. `Lun – Ven`).
+ *
+ * Returns `null` when the spec cannot be parsed — caller should fall back
+ * to "Horaires non renseignés".
+ */
+export function formatWeeklyOpeningHours(
+  spec: string | null | undefined,
+  todayDow: number = new Date().getDay(),
+): WeeklyOpeningRow[] | null {
+  if (!spec) return null;
+  const week = parseOpeningHours(spec);
+  if (!week) return null;
+
+  // Build a key per day that captures its intervals so we can group.
+  const keyOf = (d: number): string => {
+    const day = week[d];
+    if (!day || day.intervals === null) return "CLOSED";
+    return day.intervals.map((iv) => `${iv.startMin}-${iv.endMin}`).join("|");
+  };
+
+  const rows: WeeklyOpeningRow[] = [];
+  let groupStart: number | null = null;
+  let groupKey: string | null = null;
+
+  const flush = (groupEnd: number) => {
+    if (groupStart === null || groupKey === null) return;
+    const startIdx = WEEK_ORDER.indexOf(groupStart);
+    const endIdx = WEEK_ORDER.indexOf(groupEnd);
+    const daysInGroup = WEEK_ORDER.slice(startIdx, endIdx + 1);
+    const daysLabel =
+      daysInGroup.length === 1
+        ? DAY_LABEL_FR_SHORT[daysInGroup[0]]
+        : `${DAY_LABEL_FR_SHORT[daysInGroup[0]]} – ${DAY_LABEL_FR_SHORT[daysInGroup[daysInGroup.length - 1]]}`;
+    const day = week[groupStart];
+    const intervals =
+      !day || day.intervals === null
+        ? null
+        : day.intervals.map((iv) => `${formatTime(iv.startMin)} – ${formatTime(iv.endMin)}`);
+    rows.push({
+      daysLabel,
+      intervals,
+      containsToday: daysInGroup.includes(todayDow),
+    });
+  };
+
+  for (const d of WEEK_ORDER) {
+    const k = keyOf(d);
+    if (groupKey === null) {
+      groupStart = d;
+      groupKey = k;
+      continue;
+    }
+    if (k === groupKey) continue;
+    // Close the current group at the previous day, start a new one.
+    const prevIdx = WEEK_ORDER.indexOf(d) - 1;
+    flush(WEEK_ORDER[prevIdx]);
+    groupStart = d;
+    groupKey = k;
+  }
+  // Flush the final group.
+  if (groupStart !== null) flush(WEEK_ORDER[WEEK_ORDER.length - 1]);
+
+  return rows;
+}

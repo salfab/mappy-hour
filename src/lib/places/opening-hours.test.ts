@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getOpeningHoursStatus } from "./opening-hours";
+import { formatWeeklyOpeningHours, getOpeningHoursStatus } from "./opening-hours";
 
 // 2026-05-17 is a Sunday (dow=0). We keep this fixed so the tests stay
 // deterministic regardless of when they run.
@@ -75,5 +75,46 @@ describe("getOpeningHoursStatus", () => {
     const r = getOpeningHoursStatus("Mo-Fr 09:00-18:00", fridayAt(7, 0));
     expect(r.isOpen).toBe(false);
     expect(r.todayLabel).toBe("Fermé · ouvre à 09:00");
+  });
+});
+
+describe("formatWeeklyOpeningHours", () => {
+  it("returns null on empty / unparseable spec", () => {
+    expect(formatWeeklyOpeningHours("")).toBe(null);
+    expect(formatWeeklyOpeningHours("garbage")).toBe(null);
+  });
+
+  it("groups consecutive days with identical schedules", () => {
+    const rows = formatWeeklyOpeningHours(
+      "Mo-Fr 08:00-22:00; Sa 10:00-23:00; Su closed",
+      1, // Monday
+    );
+    expect(rows).toEqual([
+      { daysLabel: "Lun – Ven", intervals: ["08:00 – 22:00"], containsToday: true },
+      { daysLabel: "Sam", intervals: ["10:00 – 23:00"], containsToday: false },
+      { daysLabel: "Dim", intervals: null, containsToday: false },
+    ]);
+  });
+
+  it("handles 24/7", () => {
+    const rows = formatWeeklyOpeningHours("24/7", 3);
+    expect(rows).toEqual([
+      { daysLabel: "Lun – Dim", intervals: ["00:00 – 24:00"], containsToday: true },
+    ]);
+  });
+
+  it("renders multi-interval days (lunch break)", () => {
+    const rows = formatWeeklyOpeningHours("Mo-Su 08:00-12:00, 14:00-22:00", 0);
+    expect(rows).toEqual([
+      { daysLabel: "Lun – Dim", intervals: ["08:00 – 12:00", "14:00 – 22:00"], containsToday: true },
+    ]);
+  });
+
+  it("flags only the current day's group with containsToday=true", () => {
+    const rows = formatWeeklyOpeningHours("Mo-Fr 09:00-18:00; Sa-Su 10:00-16:00", 6); // Saturday
+    expect(rows?.length).toBe(2);
+    expect(rows?.[0].containsToday).toBe(false);
+    expect(rows?.[1].containsToday).toBe(true);
+    expect(rows?.[1].daysLabel).toBe("Sam – Dim");
   });
 });
