@@ -67,6 +67,10 @@ import {
 } from "@/components/maplibre-preview/places-source";
 import { PlaceDetailCard } from "@/components/maplibre-preview/place-card";
 import { MobileSelectedVenueCard } from "@/components/maplibre-preview/mobile-selected-venue-card";
+import {
+  addSelectedPlaceOverlayLayers,
+  updateSelectedPlaceOverlay,
+} from "@/components/maplibre-preview/selected-place-overlay";
 import { BarsList } from "@/components/map-ui/bars-list";
 import type { VenueCardPlace, VenueType } from "@/components/map-ui/venue-card";
 import { SearchPanel } from "@/components/maplibre-preview/search-panel";
@@ -1499,6 +1503,7 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
 
     map.on("load", () => {
       addPlacesLayers(map);
+      addSelectedPlaceOverlayLayers(map);
       attachPlacesInteractions(map, setSelectedPlace);
       addInstantPointsLayers(map);
       setReady(true);
@@ -1569,6 +1574,9 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
         // counts repaint immediately without waiting for a refetch.
         applyPlacesToSource(map, filtersRef.current);
       }
+      // Re-add the eval-offset overlay too; the dedicated effect below
+      // will repopulate its data on the next selectedPlace change.
+      addSelectedPlaceOverlayLayers(map);
       // setStyle wipes user-defined GeoJSON sources too — re-add the instant
       // points overlay. Data + visibility are re-applied by the dedicated
       // effects below (they re-run on `ready`/`lastResult`/toggle changes).
@@ -1721,6 +1729,17 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
       userMarkerRef.current = null;
     };
   }, []);
+
+  // Eval-offset overlay: when the selected place was outdoor-snapped away
+  // from its OSM coordinate, draw a dashed line from the OSM origin to the
+  // evaluation point (= where the main marker lives) and pin a small ringed
+  // dot on the OSM origin. Cleared when no place is selected or when
+  // `selectionStrategy === "original"`.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    updateSelectedPlaceOverlay(map, selectedPlace);
+  }, [selectedPlace, ready]);
 
   // Apply basemap switches.
   useEffect(() => {
