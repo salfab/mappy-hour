@@ -495,6 +495,11 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
             {props.coverage}
             <button
               type="button"
+              // `data-bottom-sheet-no-drag` keeps the sheet's gesture handler
+              // off this button so a tap anywhere on the card (not just the
+              // chevron) reliably reaches our onClick instead of being
+              // claimed as a sheet-drag amorce.
+              data-bottom-sheet-no-drag
               className="group grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-[1.75rem] border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-orange-50 px-3.5 py-3.5 text-left text-slate-950 shadow-sm shadow-amber-100/70 transition hover:-translate-y-0.5 hover:border-amber-300 hover:shadow-md hover:shadow-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
               onClick={props.onOpenBars}
             >

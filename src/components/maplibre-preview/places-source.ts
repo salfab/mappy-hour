@@ -50,6 +50,11 @@ export function placesToFeatureCollection(
         osmId: p.osmId,
         lat: p.lat,
         lon: p.lon,
+        // Outdoor-snap audit trail: needed downstream by the click handler so
+        // the selected-place overlay can draw the OSM → evaluation pointer.
+        selectionStrategy: p.selectionStrategy ?? "original",
+        osmLat: p.osmLat ?? null,
+        osmLon: p.osmLon ?? null,
       },
     })),
   };
@@ -197,6 +202,12 @@ export function attachPlacesInteractions(
         : undefined,
       osmType: (p.osmType as ViewportPlaceLite["osmType"]) ?? "node",
       osmId: Number(p.osmId),
+      // Outdoor-snap fields, needed by the selected-place overlay to draw
+      // the OSM → evaluation pointer when the place was nudged.
+      selectionStrategy:
+        (p.selectionStrategy as ViewportPlaceLite["selectionStrategy"]) ?? "original",
+      osmLat: typeof p.osmLat === "number" ? p.osmLat : undefined,
+      osmLon: typeof p.osmLon === "number" ? p.osmLon : undefined,
     });
   });
 
