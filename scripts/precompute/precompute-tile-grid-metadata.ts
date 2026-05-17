@@ -20,6 +20,7 @@ import type { PrecomputedRegionName } from "../../src/lib/precompute/sunlight-ca
 import { getSunlightModelVersion } from "../../src/lib/precompute/model-version";
 import { loadTileSelectionForRegion } from "../../src/lib/precompute/tile-selection-file";
 import { buildSharedPointEvaluationSources, buildPointEvaluationContext } from "../../src/lib/sun/evaluation-context";
+import { preflightMeshCascade } from "../../src/lib/precompute/preflight-mesh-cascade";
 import { getTileGridMetadataPath, loadTileGridMetadata } from "../../src/lib/precompute/tile-grid-metadata";
 export type { TileGridMetadata } from "../../src/lib/precompute/tile-grid-metadata";
 export { loadTileGridMetadata, getTileGridMetadataPath };
@@ -55,6 +56,33 @@ function parseArgs(argv: string[]): Args {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+
+  // Audit binary mesh caches before building anything. A cache with a
+  // matched-ratio < 100% means a previous build silently skipped obstacles
+  // (cf. Zurich DXF 1091-41 = 714 MB > V8's 512 MB string cap). The cache
+  // will be invalidated on next load by loadFromBinaryCache, but we surface
+  // the issue here so the operator sees it up front.
+  const WARN = "\x1b[33m";
+  const ERR  = "\x1b[31m";
+  const BOLD = "\x1b[1m";
+  const RESET = "\x1b[0m";
+  const cascade = await preflightMeshCascade();
+  if (cascade.incompleteCaches.length > 0) {
+    console.log(`${WARN}[gpu-mesh-audit] ⚠ ${cascade.incompleteCaches.length} incomplete cache(s) detected:${RESET}`);
+    for (const c of cascade.incompleteCaches) {
+      console.log(`${WARN}  ${c.cacheKey}: ${c.matchedCount}/${c.obstacleCount} matched (${c.skippedCount} skipped, ${(100 * c.ratio).toFixed(1)}% ratio)${RESET}`);
+    }
+    if (cascade.affectedRegions.size > 0) {
+      console.log(`${WARN}[gpu-mesh-audit] cascade-quarantining ${cascade.affectedRegions.size} affected region(s): ${[...cascade.affectedRegions].join(", ")}${RESET}`);
+      console.log(`${WARN}[gpu-mesh-audit] quarantine root: ${cascade.quarantineRoot}${RESET}`);
+      console.log(`${WARN}[gpu-mesh-audit] ${cascade.quarantinedPaths.length} path(s) moved — downstream artifacts will be recomputed from rebuilt mesh${RESET}`);
+    }
+    if (cascade.unmappedCaches.length > 0) {
+      console.log(`${WARN}[gpu-mesh-audit] ${cascade.unmappedCaches.length} cache(s) could not be mapped to a region (will rebuild via loadFromBinaryCache invalidation)${RESET}`);
+    }
+  } else {
+    console.log(`[gpu-mesh-audit] ✓ all binary mesh caches are complete (100% obstacles matched)`);
+  }
 
   const allTiles = buildRegionTiles(args.region, 250);
   let tileIds: string[] | null = null;
@@ -101,10 +129,6 @@ async function main() {
   let totalOutdoor = 0;
   let totalIndoor = 0;
   let warnedNoGpuBackend = false;
-  const WARN = "\x1b[33m";
-  const ERR  = "\x1b[31m";
-  const BOLD = "\x1b[1m";
-  const RESET = "\x1b[0m";
 
   for (let i = 0; i < tiles.length; i++) {
     const tile = tiles[i];
@@ -216,8 +240,11 @@ async function main() {
     totalIndoor += indoorCount;
 
     const tileMs = performance.now() - tileStart;
+    const zeroIndoorWarn = indoorCount === 0
+      ? ` ${WARN}⚠ 0 indoor — buildings manquants ?${RESET}`
+      : "";
     console.log(
-      `[grid-metadata] tile ${i + 1}/${tiles.length} ${tile.tileId} — ${outdoorCount} outdoor, ${indoorCount} indoor in ${(tileMs / 1000).toFixed(1)}s`,
+      `[grid-metadata] tile ${i + 1}/${tiles.length} ${tile.tileId} — ${outdoorCount} outdoor, ${indoorCount} indoor in ${(tileMs / 1000).toFixed(1)}s${zeroIndoorWarn}`,
     );
   }
 

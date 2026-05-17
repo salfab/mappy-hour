@@ -128,6 +128,25 @@ function finalizePolyface(rawVertices: RawVertex[]): Polyface | null {
   return { minX, minY, minZ, maxX, maxY, maxZ, vertices: coordVertices, faces };
 }
 
+/**
+ * Iterate over each line of a Buffer without ever materializing the full
+ * decoded string. Required because V8 caps strings at ~512 MB; some DXF
+ * files (Zurich centre tile 1091-41 = 714 MB) exceed this and break
+ * `buffer.toString("latin1")`. Decoding line-by-line keeps memory bounded.
+ */
+function* iterateLatin1Lines(buf: Buffer): Generator<string> {
+  let start = 0;
+  const len = buf.length;
+  for (let i = 0; i < len; i++) {
+    if (buf[i] === 0x0a) { // \n
+      const end = i > 0 && buf[i - 1] === 0x0d ? i - 1 : i; // strip optional \r
+      yield buf.toString("latin1", start, end);
+      start = i + 1;
+    }
+  }
+  if (start < len) yield buf.toString("latin1", start, len);
+}
+
 function parsePolyfacesFromZip(zipPath: string): Polyface[] {
   const zip = new AdmZip(zipPath);
   const dxfEntry = zip
@@ -135,7 +154,7 @@ function parsePolyfacesFromZip(zipPath: string): Polyface[] {
     .find((entry) => !entry.isDirectory && entry.entryName.toLowerCase().endsWith(".dxf"));
   if (!dxfEntry) return [];
 
-  const lines = dxfEntry.getData().toString("latin1").split(/\r?\n/);
+  const buf = dxfEntry.getData();
   const polyfaces: Polyface[] = [];
   let pendingSectionName = false;
   let inEntities = false;
@@ -157,9 +176,17 @@ function parsePolyfacesFromZip(zipPath: string): Polyface[] {
     inPolyline = false;
   };
 
-  for (let index = 0; index + 1 < lines.length; index += 2) {
-    const code = lines[index].trim();
-    const value = lines[index + 1].trim();
+  // DXF format: paired records (group code on one line, value on the next).
+  // We buffer the previous line and process records on every second line.
+  let pendingCode: string | null = null;
+  for (const rawLine of iterateLatin1Lines(buf)) {
+    if (pendingCode === null) {
+      pendingCode = rawLine.trim();
+      continue;
+    }
+    const code = pendingCode;
+    const value = rawLine.trim();
+    pendingCode = null;
 
     if (code === "0") {
       flushVertex();
@@ -340,6 +367,19 @@ async function loadFromBinaryCache(
       fsPromises.readFile(binPath),
     ]);
     const header: GpuMeshCacheHeader = JSON.parse(headerRaw);
+    // Integrity check: every obstacle must have matched a DXF polyface (or a
+    // footprint fallback). A ratio < 100% means the cache was built while a
+    // DXF zip silently failed to parse (e.g. file > V8's 512 MB string cap,
+    // see Zurich tile 1091-41 = 714 MB). Invalidate so the next load rebuilds
+    // and surfaces the underlying error via the crash-loud branch.
+    const matched = header.dxfObstacleCount + header.fallbackObstacleCount;
+    if (matched < header.obstacleCount) {
+      console.warn(
+        `[gpu-mesh-loader] cache ${cacheKey} incomplete: ${matched}/${header.obstacleCount} obstacles matched ` +
+        `(${header.obstacleCount - matched} silently skipped) — invalidating and rebuilding`,
+      );
+      return null;
+    }
     const vertices = new Float32Array(binBuf.buffer, binBuf.byteOffset, binBuf.byteLength / 4);
     if (vertices.length !== header.vertexCount * 3) return null;
     return {
@@ -383,6 +423,55 @@ async function saveToBinaryCache(
     fsPromises.writeFile(headerPath, JSON.stringify(header, null, 2)),
     fsPromises.writeFile(binPath, Buffer.from(result.vertices.buffer, result.vertices.byteOffset, result.vertices.byteLength)),
   ]);
+}
+
+// ── Integrity audit ──────────────────────────────────────────────────────
+
+export interface GpuMeshCacheAudit {
+  cacheKey: string;
+  obstacleCount: number;
+  matchedCount: number;
+  skippedCount: number;
+  ratio: number;
+}
+
+/**
+ * Scan all `gpu-mesh-*.json` headers in the cache directory and return any
+ * cache whose ratio of matched obstacles is < 100%. Such a cache means a
+ * source DXF zip silently failed during the original build (e.g. file
+ * exceeds V8's 512 MB string cap). Loud-warn so the operator knows runtime
+ * loads will trigger a rebuild.
+ */
+export async function auditGpuMeshCaches(): Promise<GpuMeshCacheAudit[]> {
+  const incomplete: GpuMeshCacheAudit[] = [];
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fsPromises.readdir(GPU_MESH_CACHE_DIR, { withFileTypes: true }) as import("node:fs").Dirent[];
+  } catch {
+    return incomplete;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith("gpu-mesh-") || !entry.name.endsWith(".json")) continue;
+    const headerPath = path.join(GPU_MESH_CACHE_DIR, entry.name);
+    try {
+      const raw = await fsPromises.readFile(headerPath, "utf-8");
+      const h: GpuMeshCacheHeader = JSON.parse(raw);
+      if (!Number.isFinite(h.obstacleCount) || h.obstacleCount <= 0) continue;
+      const matched = h.dxfObstacleCount + h.fallbackObstacleCount;
+      if (matched < h.obstacleCount) {
+        incomplete.push({
+          cacheKey: entry.name.replace(/\.json$/, ""),
+          obstacleCount: h.obstacleCount,
+          matchedCount: matched,
+          skippedCount: h.obstacleCount - matched,
+          ratio: matched / h.obstacleCount,
+        });
+      }
+    } catch {
+      // skip unreadable header
+    }
+  }
+  return incomplete;
 }
 
 // ── Main loader ──────────────────────────────────────────────────────────
@@ -430,13 +519,13 @@ export async function loadGpuMeshes(
 
   for (const [zipName, obsGroup] of obstaclesByZip) {
     const zipPath = zipMap.get(zipName);
-    if (!zipPath) continue;
+    if (!zipPath) {
+      throw new Error(`[gpu-mesh-loader] sourceZip missing on disk: ${zipName} (${obsGroup.length} obstacles would be silently skipped)`);
+    }
 
-    let polyfaces: Polyface[];
-    try {
-      polyfaces = parsePolyfacesFromZip(zipPath);
-    } catch {
-      continue;
+    const polyfaces = parsePolyfacesFromZip(zipPath);
+    if (polyfaces.length === 0) {
+      throw new Error(`[gpu-mesh-loader] zero polyfaces parsed from ${zipName} (${obsGroup.length} obstacles would be silently skipped)`);
     }
 
     for (const obs of obsGroup) {
