@@ -93,7 +93,7 @@ async function main() {
     });
     tileIds = selection.tileIds;
     console.log(
-      `[grid-metadata] tileSelectionFile=${selection.filePath} generatedAt=${selection.generatedAt} → ${selection.tileIds.length} tiles`,
+      `[grid-metadata] tileSelectionFile=${selection.filePath} generatedAt=${selection.generatedAt} region=${args.region} → ${selection.tileIds.length} tiles for this region`,
     );
   }
   if (args.bbox) {
@@ -115,7 +115,7 @@ async function main() {
     // combo. Returning here keeps exit code 0 instead of polluting the
     // parent log with `✗ a échoué`.
     console.log(
-      `[grid-metadata] no tiles selected after applying tile-selection-file/bbox/group filters — exiting cleanly.`,
+      `[grid-metadata] no tiles match region=${args.region} in the selection file — this region has no entries in the selection (or none after bbox filter), exiting cleanly (expected when precompute-all-regions iterates regions).`,
     );
     return;
   }

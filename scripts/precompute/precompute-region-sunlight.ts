@@ -330,7 +330,7 @@ async function main() {
     });
     tileIds = selection.tileIds;
     console.log(
-      `[precompute] tileSelectionFile=${selection.filePath} generatedAt=${selection.generatedAt} groupFilter=${args.groupFilter} → ${selection.tileIds.length} tiles`,
+      `[precompute] tileSelectionFile=${selection.filePath} generatedAt=${selection.generatedAt} region=${args.region} groupFilter=${args.groupFilter} → ${selection.tileIds.length} tiles for this (region, group) combo`,
     );
   }
   if (args.bbox) {
@@ -356,7 +356,7 @@ async function main() {
     // throwing here surfaced as a misleading `✗ a échoué (exit 1)` line in
     // the parent log even though nothing was wrong.
     console.log(
-      `[precompute] no tiles selected after applying tile-selection-file/bbox/group filters — exiting cleanly.`,
+      `[precompute] no tiles match (region=${args.region}, groupFilter=${args.groupFilter}) in the selection file — this (region, group) combo is empty, exiting cleanly (this is expected when precompute-all-regions iterates the region × group matrix).`,
     );
     return;
   }
