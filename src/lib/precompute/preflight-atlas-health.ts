@@ -477,8 +477,21 @@ export async function scanAndQuarantineAtlases(
     });
   }
 
+  const REASON_LABELS: Record<PreflightUnhealthyAtlas["reason"], string> = {
+    none: "terrainHorizonMethod=none (généré sans masque relief)",
+    warning: "warning «No horizon mask» dans les métadonnées",
+  };
+  const byReason = result.quarantined.reduce<Record<string, number>>((acc, q) => {
+    acc[q.reason] = (acc[q.reason] ?? 0) + 1;
+    return acc;
+  }, {});
+  const quarantineDetail = result.quarantined.length === 0
+    ? ""
+    : ` (${Object.entries(byReason).map(([r, n]) => `${n}× ${REASON_LABELS[r as PreflightUnhealthyAtlas["reason"]] ?? r}`).join(", ")})`;
   logger(
-    `[preflight] scanned ${result.scanned} atlases, ${result.healthy} healthy, ${result.quarantined.length} quarantined`,
+    `[preflight] ${region}: scanned=${result.scanned} healthy=${result.healthy}` +
+    ` quarantined=${result.quarantined.length}${quarantineDetail}` +
+    (result.unreadable.length > 0 ? ` unreadable=${result.unreadable.length}` : ""),
   );
   if (result.unreadable.length > 0) {
     logger(
