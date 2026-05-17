@@ -14,9 +14,12 @@ export const metadata = {
 export const dynamic = "force-dynamic";
 
 export default function MapLibrePreviewPage() {
+  // Server-side override: when MAPPY_FORCE_CACHE_ONLY=true is set in the env,
+  // the client gets cacheOnly locked to true regardless of any UI toggle.
+  const forceCacheOnly = process.env.MAPPY_FORCE_CACHE_ONLY === "true";
   return (
     <main className="fixed inset-0 h-dvh max-h-dvh w-full overflow-hidden">
-      <MapLibrePreviewClient />
+      <MapLibrePreviewClient forceCacheOnly={forceCacheOnly} />
     </main>
   );
 }

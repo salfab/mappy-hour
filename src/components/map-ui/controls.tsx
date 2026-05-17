@@ -4,6 +4,7 @@ import type { ComponentType } from "react";
 
 import {
   ChevronDownIcon,
+  DatabaseIcon,
   HeatmapIcon,
   LeafOffIcon,
   MountainIcon,
@@ -397,10 +398,19 @@ export function LayerFilters(props: LayerFiltersProps) {
           icon={TerraceIcon}
           onPressedChange={props.onShowPlacesChange}
         />
+        <ToggleIconButton
+          label={
+            props.forceCacheOnly
+              ? "Cache only (verrouillé par le serveur)"
+              : "Cache only"
+          }
+          shortLabel="Cache only"
+          pressed={props.cacheOnly || props.forceCacheOnly}
+          disabled={props.forceCacheOnly}
+          icon={DatabaseIcon}
+          onPressedChange={props.onCacheOnlyChange}
+        />
       </div>
-      <span className="sr-only">
-        {props.cacheOnly || props.forceCacheOnly ? "Cache only actif." : "Cache only inactif."}
-      </span>
     </div>
   );
 }

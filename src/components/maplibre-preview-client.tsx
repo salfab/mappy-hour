@@ -108,6 +108,9 @@ const GEOLOCATION_ZOOM = 15;
 // Source + layer IDs for the instant-mode per-point overlay. One source, one
 // layer per category so each can be toggled independently via setLayoutProperty.
 const INSTANT_POINTS_SOURCE_ID = "instant-points";
+
+/** localStorage key for the user's cacheOnly preference. OFF by default. */
+const CACHE_ONLY_LS_KEY = "mappy:maplibre-preview:cacheOnly";
 type InstantPointCategory =
   | "sunny"
   | "shadow"
@@ -293,7 +296,11 @@ function formatDuration(totalSeconds: number): string {
   return `${s}s`;
 }
 
-export function MapLibrePreviewClient() {
+/**
+ * @param forceCacheOnly Server-injected from `MAPPY_FORCE_CACHE_ONLY=true`. When
+ *   true, the cacheOnly toggle is locked in the UI and the env value wins.
+ */
+export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOnly?: boolean } = {}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const sunlightLayerRef = useRef<MapLibreSunlightCustomLayer | null>(null);
@@ -427,11 +434,29 @@ export function MapLibrePreviewClient() {
   // reflect locally. Wiring to the calc pipeline (re-running with the flag) is
   // already done — the existing `handleRunCalculation` reads this value.
   const [ignoreVegetationShadow, setIgnoreVegetationShadow] = useState(false);
-  // DECISION: cacheOnly stays a const (no LayerFilters toggle for it — the
-  // checkbox lives behind a different mechanism on Leaflet too). LayerFilters
-  // only reads it for the sr-only announcement, so we pass a no-op setter.
-  const cacheOnly = false;
-  const forceCacheOnly = false;
+  // cacheOnly: persisted in localStorage, OFF by default. When the server
+  // forces it via `MAPPY_FORCE_CACHE_ONLY=true` (forceCacheOnly prop), the
+  // env value wins — `cacheOnly` is held at true and the panel toggle is
+  // a read-only indicator. We hydrate from localStorage in a layout effect
+  // so SSR doesn't try to read window and crash hydration.
+  const [cacheOnly, setCacheOnlyState] = useState<boolean>(forceCacheOnly);
+  useEffect(() => {
+    if (forceCacheOnly) return;
+    try {
+      if (window.localStorage.getItem(CACHE_ONLY_LS_KEY) === "true") {
+        setCacheOnlyState(true);
+      }
+    } catch { /* private mode / quota: keep default */ }
+  }, [forceCacheOnly]);
+  const setCacheOnly = useCallback(
+    (value: boolean) => {
+      if (forceCacheOnly) return; // server override wins; toggle is read-only
+      setCacheOnlyState(value);
+      try { window.localStorage.setItem(CACHE_ONLY_LS_KEY, value ? "true" : "false"); }
+      catch { /* ignore: state is still in memory for the session */ }
+    },
+    [forceCacheOnly],
+  );
   // The heatmap reuses the timeline tiles already fetched for the sunlight
   // overlay (daily aggregate computed on the client by
   // MapLibreHeatmapCustomLayer). Enable the pill as soon as we have a daily
@@ -1941,7 +1966,7 @@ export function MapLibrePreviewClient() {
     onShowTerrainChange: setShowTerrain,
     onShowPlacesChange: setShowPlaces,
     onIgnoreVegetationShadowChange: setIgnoreVegetationShadow,
-    onCacheOnlyChange: () => {},
+    onCacheOnlyChange: setCacheOnly,
   };
   // Desktop: always show the Ensoleillement/Heatmap toggle — the sidebar
   // has the vertical room for it.
