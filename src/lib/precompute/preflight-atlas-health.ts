@@ -31,6 +31,7 @@ import path from "node:path";
 
 import { decodeTileAtlasFromBinary } from "@/lib/precompute/sunlight-cache-atlas";
 import type { PrecomputedRegionName } from "@/lib/precompute/sunlight-cache";
+import { ensureHorizonDemManifestForRegion } from "@/lib/ingest/horizon-dem";
 import {
   CACHE_SUNLIGHT_DIR,
   DATA_ROOT,
@@ -100,10 +101,13 @@ export function getHorizonDemManifestPath(region: PrecomputedRegionName): string
 }
 
 /**
- * Throws if the horizon manifest for the region is not on disk.
+ * Ensures the horizon manifest for the region is on disk. If missing, fetches
+ * the Copernicus DEM 30 m tiles covering the region's horizon bbox and writes
+ * the manifest in place — so the precompute can proceed instead of skipping
+ * the region. Idempotent: a region that already has tiles + manifest is a no-op
+ * (no network calls).
  *
- * Caller decides what to do with the exception — single-region precompute
- * exits, multi-region orchestrator skips this region with a warning.
+ * Throws only if the download itself fails (network error, unknown region).
  */
 export async function ensureHorizonDemManifest(
   region: PrecomputedRegionName,
@@ -111,11 +115,29 @@ export async function ensureHorizonDemManifest(
   const manifestPath = getHorizonDemManifestPath(region);
   try {
     await fs.access(manifestPath);
+    return;
   } catch {
+    // Manifest missing — generate it.
+  }
+
+  console.log(
+    `[preflight] Manifest horizon DEM manquant pour ${region}: ${manifestPath}. ` +
+      `Téléchargement des tuiles Copernicus DEM 30 m en cours…`,
+  );
+  try {
+    const result = await ensureHorizonDemManifestForRegion(region, {
+      verbose: true,
+    });
+    console.log(
+      `[preflight] Manifest horizon DEM généré pour ${region} ` +
+        `(${result.counts.downloaded} downloaded, ${result.counts.skipped} cached, ${result.counts.notFound} not-found).`,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
     throw new Error(
       `[preflight] Manifest horizon DEM manquant pour ${region}: ${manifestPath}. ` +
-        `Aborder la précompute pour éviter de générer des atlas sans terrain horizon. ` +
-        `Run \`tsx scripts/ingest/download-${region}-horizon-dem.ts\` (or the equivalent ingest path) first.`,
+        `Tentative de téléchargement automatique a échoué (${message}). ` +
+        `Run \`npx tsx scripts/ingest/download-horizon-dem.ts --region=${region}\` manually.`,
     );
   }
 }
