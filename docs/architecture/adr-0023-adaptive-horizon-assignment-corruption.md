@@ -1,7 +1,7 @@
 # ADR-0023: Corruption des assignations d'horizon adaptatif
 
-**Date:** 2026-05-10
-**Status:** Proposed
+**Date:** 2026-05-10 (Accepté 2026-05-17)
+**Status:** Accepté
 
 ## Context
 
@@ -68,6 +68,21 @@ La route timeline stream normalise maintenant les warnings repetitifs:
 - le warning "No horizon mask" est reformule pour indiquer que l'atlas cache peut manquer de blocage par horizon lointain.
 
 Cette mitigation reduit le bruit UI, mais ne change pas les donnees cachees. Les atlas deja produits restent a auditer/regenerer.
+
+## Implémentation (2026-05-17)
+
+Combo 1+2 appliqué dans `src/lib/sun/adaptive-horizon-sharing.ts` :
+
+1. **Atomic write dans `persistAssignment()`** — écriture vers `<targetPath>.<pid>.<ts>.tmp` dans le même répertoire (donc même filesystem), puis `fs.rename` atomique vers la cible finale. Sur Windows `fs.rename` mappe sur `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` et est atomique aussi. Réutilise le même pattern que `writeFileAtomic` dans `src/lib/precompute/sunlight-cache-atlas.ts`, retry policy incluse sur `EPERM/EBUSY/EACCES` (Windows AV/indexer). Pas de `fsync` explicite — aligné avec le reste du projet, qui s'appuie sur la sémantique du rename plutôt que sur des barrières disque (les tuiles atlas, plus critiques, ne le font pas non plus).
+
+2. **Quarantine en lecture dans `loadAssignment()`** — try/catch séparé pour `fs.readFile` (préserve la branche `ENOENT → createEmptyAssignment` inchangée) et pour `JSON.parse`. En cas de `JSON.parse` qui throw : helper `quarantineCorruptAssignment()` renomme le fichier en `<targetPath>.corrupt-<ISO8601>` (sans extension `.json`, donc ignoré par les readers/scanners filtrant sur `*.json`), `console.warn` clair avec le chemin, et retour d'un `createEmptyAssignment(params)` pour que le run continue. Le prochain `persistAssignment()` réécrira un fichier sain via le nouveau chemin atomique.
+
+Tests ajoutés dans `src/lib/sun/adaptive-horizon-sharing.test.ts` :
+
+- *persists the assignment atomically with no leftover `.tmp` file* — walk de l'arbre temp après un appel, asserte qu'aucun `.tmp` ne reste et que tous les `.json` round-trippent.
+- *quarantines a corrupt assignment JSON on read and returns a fresh empty one* — écrit un assignment sain, append du garbage, vide le module cache (`vi.resetModules`), relance la résolution : asserte la création d'un fichier `.corrupt-*` (sans `.json`), un nouveau `.json` sain en place, et un `console.warn` émis.
+
+Résultat suite complète : 168 passed, 0 failed (4 sur le fichier ciblé, dont les 2 nouveaux).
 
 ## Follow-up
 

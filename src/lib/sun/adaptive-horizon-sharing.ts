@@ -132,6 +132,36 @@ function createEmptyAssignment(params: {
   };
 }
 
+/**
+ * Quarantine a corrupt assignment file by renaming it with a `.corrupt-<ISO>`
+ * suffix. The suffix has no `.json` extension so the file is no longer picked
+ * up by readers/scanners that filter on `*.json`. The original path is left
+ * empty so the next `persistAssignment()` call will write a clean file.
+ *
+ * Returns the quarantine path (best-effort: if the rename itself fails, we
+ * just log and move on — the read path still falls back to a fresh assignment
+ * so the run does not stall on a stuck file).
+ */
+async function quarantineCorruptAssignment(
+  targetPath: string,
+  reason: string,
+): Promise<string | null> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const quarantinePath = `${targetPath}.corrupt-${stamp}`;
+  try {
+    await fs.rename(targetPath, quarantinePath);
+    console.warn(
+      `[adaptive-horizon] quarantined corrupt assignment (${reason}): ${targetPath} -> ${quarantinePath}`,
+    );
+    return quarantinePath;
+  } catch (renameError) {
+    console.warn(
+      `[adaptive-horizon] failed to quarantine corrupt assignment ${targetPath} (${reason}): ${(renameError as Error).message}. Continuing with empty assignment.`,
+    );
+    return null;
+  }
+}
+
 async function loadAssignment(params: {
   region: PrecomputedRegionName;
   modelVersionHash: string;
@@ -149,16 +179,9 @@ async function loadAssignment(params: {
   }
 
   const targetPath = assignmentPath(params);
+  let raw: string;
   try {
-    const raw = await fs.readFile(targetPath, "utf8");
-    const parsed = JSON.parse(raw) as AdaptiveHorizonAssignment;
-    if (parsed.version !== ADAPTIVE_HORIZON_SHARING_VERSION) {
-      const fresh = createEmptyAssignment(params);
-      assignmentCache.set(key, fresh);
-      return fresh;
-    }
-    assignmentCache.set(key, parsed);
-    return parsed;
+    raw = await fs.readFile(targetPath, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       const fresh = createEmptyAssignment(params);
@@ -167,8 +190,47 @@ async function loadAssignment(params: {
     }
     throw error;
   }
+
+  let parsed: AdaptiveHorizonAssignment;
+  try {
+    parsed = JSON.parse(raw) as AdaptiveHorizonAssignment;
+  } catch (parseError) {
+    // Corrupt JSON on disk — most likely the result of a non-atomic write
+    // interrupted by a crash or two concurrent writers (pre-ADR-0019). Move
+    // the bad file aside (so it doesn't keep poisoning every reader) and
+    // return a fresh assignment so the run can rebuild it cleanly via the
+    // atomic-write path in persistAssignment().
+    await quarantineCorruptAssignment(
+      targetPath,
+      (parseError as Error).message,
+    );
+    const fresh = createEmptyAssignment(params);
+    assignmentCache.set(key, fresh);
+    return fresh;
+  }
+
+  if (parsed.version !== ADAPTIVE_HORIZON_SHARING_VERSION) {
+    const fresh = createEmptyAssignment(params);
+    assignmentCache.set(key, fresh);
+    return fresh;
+  }
+  assignmentCache.set(key, parsed);
+  return parsed;
 }
 
+/**
+ * Atomic write of an assignment JSON. Writes to a sibling `.tmp` file in the
+ * same directory (so the final `fs.rename` stays on a single filesystem and
+ * is atomic — POSIX guarantees this, and on Windows `fs.rename` maps to
+ * `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING`). Readers therefore see
+ * either the old content or the new content, never a half-written/truncated
+ * file — which was the root cause of the
+ * "Unexpected non-whitespace character after JSON" warnings (ADR-0023).
+ *
+ * Mirrors the retry policy of `writeFileAtomic` in
+ * `src/lib/precompute/sunlight-cache-atlas.ts` to absorb the brief
+ * Windows AV / indexer handle on freshly-created files.
+ */
 async function persistAssignment(params: {
   region: PrecomputedRegionName;
   modelVersionHash: string;
@@ -182,7 +244,34 @@ async function persistAssignment(params: {
   const targetPath = assignmentPath(params);
   assignment.updatedAt = new Date().toISOString();
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await fs.writeFile(targetPath, JSON.stringify(assignment, null, 2), "utf8");
+
+  const payload = JSON.stringify(assignment, null, 2);
+  const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, payload, "utf8");
+
+    const transientCodes = new Set(["EPERM", "EBUSY", "EACCES"]);
+    const maxAttempts = 6;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await fs.rename(tmpPath, targetPath);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (!code || !transientCodes.has(code) || attempt === maxAttempts) {
+          throw error;
+        }
+        const delayMs = 50 * 2 ** (attempt - 1); // 50, 100, 200, 400, 800, 1600
+        console.warn(
+          `[adaptive-horizon] rename ${code} on ${path.basename(targetPath)} (attempt ${attempt}/${maxAttempts}) — retry in ${delayMs}ms`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  } catch (error) {
+    await fs.unlink(tmpPath).catch(() => {});
+    throw error;
+  }
 }
 
 function normalizeAzimuthDegrees(azimuthDegreesFromSunCalc: number): number {
