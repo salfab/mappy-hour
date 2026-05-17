@@ -1063,6 +1063,9 @@ export function MapLibrePreviewClient({ forceCacheOnly = false }: { forceCacheOn
           sunnyMinutes: match?.sunnyMinutes ?? 0,
           sunlightStartLocalTime: match?.sunlightStartLocalTime ?? null,
           sunlightEndLocalTime: match?.sunlightEndLocalTime ?? null,
+          // Raw OSM spec — the VenueCard parses it to derive a compact
+          // "Ouvert / Fermé" badge + today's hours line.
+          openingHours: p.openingHours && p.openingHours.length > 0 ? p.openingHours : null,
         };
       });
   }, [rawPlacesTick, sunlitTimelinePlacesTick, filters, mapBounds]);

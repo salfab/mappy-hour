@@ -1,5 +1,7 @@
 "use client";
 
+import { getOpeningHoursStatus } from "@/lib/places/opening-hours";
+
 import { getVenueSunStatus, VenueSunStatusIcon, VenueTypeIcon } from "./venue-assets";
 
 export type VenueType = "restaurant" | "bar" | "snack" | "foodtruck" | "other";
@@ -18,6 +20,10 @@ export interface VenueCardPlace {
   sunnyMinutes: number;
   sunlightStartLocalTime: string | null;
   sunlightEndLocalTime: string | null;
+  /** Raw OSM `opening_hours` tag value, when known. Optional so legacy
+   * SunlitPlaceEntry consumers (Leaflet client) can pass their objects as-is
+   * without bubbling the field through every place pipeline. */
+  openingHours?: string | null;
 }
 
 interface VenueCardProps {
@@ -54,6 +60,10 @@ export function VenueCard(props: VenueCardProps) {
       : `${props.place.sunlightStartLocalTime ?? "--:--"} -> ${
           props.place.sunlightEndLocalTime ?? "--:--"
         } (${props.place.sunnyMinutes} min)`;
+  // Opening-hours status computed against "now". Using the user's local
+  // wall-clock is the right reference: opening_hours specs are written in
+  // the venue's local time, and the user is overwhelmingly browsing nearby.
+  const hoursStatus = getOpeningHoursStatus(props.place.openingHours ?? null, new Date());
 
   return (
     <button
@@ -93,6 +103,26 @@ export function VenueCard(props: VenueCardProps) {
                 {props.place.sunnyMinutes} min
               </span>
             ) : null}
+            {hoursStatus.knowable ? (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${
+                  hoursStatus.isOpen
+                    ? "bg-emerald-50 text-emerald-800 ring-emerald-200"
+                    : "bg-slate-100 text-slate-600 ring-slate-200"
+                }`}
+                title={props.place.openingHours ?? undefined}
+                /* The raw OSM spec lives in the title for power-users on
+                   desktop hover; mobile silently ignores it. */
+              >
+                <span
+                  aria-hidden="true"
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    hoursStatus.isOpen ? "bg-emerald-500" : "bg-slate-400"
+                  }`}
+                />
+                {hoursStatus.isOpen ? "Ouvert" : "Fermé"}
+              </span>
+            ) : null}
           </span>
         </span>
         <span
@@ -104,6 +134,19 @@ export function VenueCard(props: VenueCardProps) {
         </span>
       </div>
       <div className="pl-14 text-xs font-medium text-slate-500">{sunlightLabel}</div>
+      {hoursStatus.knowable ? (
+        <div className="pl-14 text-[11px] font-medium text-slate-500">
+          <span
+            className={
+              hoursStatus.isOpen
+                ? "text-emerald-700"
+                : "text-slate-500"
+            }
+          >
+            {hoursStatus.todayLabel}
+          </span>
+        </div>
+      ) : null}
       {props.place.selectionStrategy !== "original" ? (
         <div className="pl-14 text-[11px] text-amber-700">
           Terrasse décalée ({props.place.selectionOffsetMeters}m) pour éviter un point indoor.
