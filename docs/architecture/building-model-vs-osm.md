@@ -62,7 +62,7 @@ swissBUILDINGS3D captures the building as seen from above. For buildings with:
 
 | File | Role |
 |------|------|
-| `scripts/ingest/download-lausanne-buildings.ts` | Downloads swissBUILDINGS3D DXF tiles from STAC |
+| `scripts/ingest/download-buildings.ts --region=<name>` | Downloads swissBUILDINGS3D DXF tiles from STAC |
 | `scripts/preprocess/build-lausanne-buildings-index.ts` | Extracts footprints from DXF, applies simplification |
 | `src/lib/sun/building-footprint.ts` | Footprint normalization, spike detection, convex hull |
 | `src/lib/sun/gpu-mesh-loader.ts` | Loads 3D DXF meshes for GPU shadow rendering |
